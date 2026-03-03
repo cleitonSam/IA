@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import logging
 import httpx
+import json # <-- Adicionado para tratar o pacote de texto + mídia
 import redis.asyncio as redis
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
 from dotenv import load_dotenv
@@ -40,10 +41,8 @@ redis_client: redis.Redis = None
 @app.on_event("startup")
 async def startup_event():
     global http_client, redis_client
-    # Inicia HTTP Pool
     http_client = httpx.AsyncClient(timeout=20.0, limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
     
-    # Inicia Redis Pool com teste de conexão
     try:
         redis_client = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
         await redis_client.ping()
@@ -87,7 +86,6 @@ async def verificar_atendimento_manual(account_id, conversation_id):
     try:
         res = await http_client.get(url, headers=headers)
         dados = res.json()
-        # Se tiver alguém atribuído ou não estiver 'pending'/'open', é manual
         return dados.get("assignee_id") is not None or dados.get("status") not in ["pending", "open"]
     except: return True
 
@@ -98,60 +96,95 @@ async def obter_historico_chatwoot(account_id, conversation_id):
         res = await http_client.get(url, headers=headers)
         msgs = res.json().get("payload", [])
         msgs = sorted(msgs, key=lambda x: x["id"])[-20:]
-        return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m['content']}" for m in msgs if m.get("content")])
+        return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m.get('content') or '[Enviou Mídia]'}" for m in msgs])
     except: return ""
 
-# --- LÓGICA DA IA ---
+# --- LÓGICA DA IA (AGORA MULTIMODAL) ---
 
 async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug_unidade, nome_cliente):
     chave_lock = f"lock:{conversation_id}"
     try:
-        await asyncio.sleep(10) # Tempo de buffet
+        await asyncio.sleep(12) # Tempo de buffet ligeiramente maior para mídias
         
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
         await redis_client.delete(chave_buffet)
         
-        texto_usuario = " ".join(mensagens_lista).strip()
-        if not texto_usuario or await verificar_atendimento_manual(account_id, conversation_id):
+        if not mensagens_lista or await verificar_atendimento_manual(account_id, conversation_id):
             return
+
+        # 1. Separar o que é texto, imagem e áudio do Buffet
+        textos = []
+        imagens = []
+        audios = []
+        
+        for item in mensagens_lista:
+            try:
+                dado = json.loads(item)
+                if dado.get("text"): textos.append(dado["text"])
+                for f in dado.get("files", []):
+                    if f["type"] == "image": imagens.append(f["url"])
+                    elif f["type"] == "audio": audios.append(f["url"])
+            except json.JSONDecodeError:
+                # Segurança caso tenha ficado texto puro antigo no Redis
+                textos.append(item)
+
+        texto_usuario = " ".join(textos).strip()
+        
+        # 2. Montar o array Multimodal para a IA
+        conteudo_usuario_ia = []
+        
+        # Adiciona os textos e os links de áudio (se houver)
+        if texto_usuario or audios:
+            texto_final = texto_usuario
+            if audios:
+                links_audio = ", ".join(audios)
+                texto_final += f"\n\n[O cliente enviou um áudio neste link: {links_audio}. Se possível, acesse o link para ouvir e responder.]"
+            
+            conteudo_usuario_ia.append({"type": "text", "text": texto_final if texto_final else "[O cliente enviou apenas mídia]"})
+        
+        # Adiciona as imagens
+        for img_url in imagens:
+            if img_url:
+                conteudo_usuario_ia.append({"type": "image_url", "image_url": {"url": img_url}})
 
         u = UNIDADES.get(slug_unidade, UNIDADES["marajoara"])
         historico = await obter_historico_chatwoot(account_id, conversation_id)
-
-        # Determina se precisa saudar ou ser direto
-        precisa_saudacao = "Atendente:" not in historico[-200:] # Se não falei nada recentemente
+        precisa_saudacao = "Atendente:" not in historico[-200:]
 
         system_prompt = f"""
         Você é o Consultor de Vendas da {u['nome']}.
         Seu objetivo: Converter curiosos em alunos matriculados de forma natural.
 
+        Você agora tem capacidade de VER imagens. Analise as fotos enviadas pelos clientes (ex: fotos de equipamentos, comprovantes, etc) e interaja de acordo.
+        
         CONTEXTO:
         - Cliente: {nome_cliente}
         - Unidade: {u['nome']} ({u['endereco']})
         - Link de Matrícula: {u['link_venda']}
 
-        REGRAS DE PERSONALIDADE (ANTI-ROBÔ):
-        1. SAUDAÇÃO INTELIGENTE: {'Seja amigável na primeira mensagem.' if precisa_saudacao else 'NÃO diga "Olá" ou "Tudo bem" agora, você já está conversando com ele. Vá direto ao ponto.'}
-        2. ESTILO: Use português do dia a dia (Brasil). Pode usar gírias leves de academia (bora, treinar, foco).
-        3. CURTO E GROSSO: Responda em no máximo 2 parágrafos pequenos. 
-        4. VARIÁVEL: Use variações como "Opa", "E aí", "Tudo certo?" apenas se for o início da conversa. 
-        5. LINK: Só envie o link de matrícula ({u['link_venda']}) se o cliente demonstrar intenção de fechar ou perguntar preços/planos. Se o link já estiver no histórico, NÃO envie de novo.
-        6. CAPTURA DE NOME: Se o cliente se apresentar com outro nome, use [NOME: Valor].
+        REGRAS DE PERSONALIDADE:
+        1. SAUDAÇÃO: {'Seja amigável na primeira mensagem.' if precisa_saudacao else 'Vá direto ao ponto.'}
+        2. ESTILO: Português do dia a dia (Brasil), gírias leves de academia. Máx 2 parágrafos.
+        3. LINK: Só envie se o cliente perguntar de preços. Se já enviou, NÃO envie de novo.
+        4. NOME: Se o cliente der um novo nome, use [NOME: Valor].
 
         HISTÓRICO:
         {historico}
         """
 
         response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.0-flash-lite:preview-0205", # Versão correta e estável
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": texto_usuario}],
+            model="google/gemini-2.0-flash-lite:preview-0205",
+            messages=[
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": conteudo_usuario_ia} # <-- Passando a lista multimodal
+            ],
             temperature=0.8
         )
         
         resposta = response.choices[0].message.content
 
-        # Tratamento de Nome
+        # Tratamento de Nome e Envio (Mantidos)
         if "[NOME:" in resposta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
             if match:
@@ -160,7 +193,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await http_client.put(url_c, json={"name": novo_nome}, headers={"api_access_token": CHATWOOT_TOKEN})
                 resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
 
-        # Envio parcelado para simular digitação
         pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
         for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
@@ -184,14 +216,26 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
         return {"status": "ignorado"}
 
     id_conv = payload.get("conversation", {}).get("id")
-    conteudo = payload.get("content", "")
+    conteudo_texto = payload.get("content", "")
+    
+    # 1. Extrair os Anexos (Imagens e Áudios)
+    anexos = payload.get("attachments", [])
+    arquivos_encontrados = []
+    for a in anexos:
+        # Pega a URL e identifica se é 'image' ou 'audio'
+        tipo = "image" if "image" in str(a.get("file_type", "")) else "audio" if "audio" in str(a.get("file_type", "")) else "documento"
+        arquivos_encontrados.append({
+            "url": a.get("data_url"),
+            "type": tipo
+        })
 
-    # 1. Alimenta o buffet no Redis
+    # 2. Alimenta o buffet no Redis com Texto + Arquivos em formato JSON
     chave_buffet = f"buffet:{id_conv}"
-    await redis_client.rpush(chave_buffet, conteudo)
+    dados_mensagem = json.dumps({"text": conteudo_texto, "files": arquivos_encontrados})
+    await redis_client.rpush(chave_buffet, dados_mensagem)
     await redis_client.expire(chave_buffet, 60)
 
-    # 2. Tenta o Lock
+    # 3. Tenta o Lock
     if await redis_client.set(f"lock:{id_conv}", "1", nx=True, ex=60):
         labels = payload.get("conversation", {}).get("labels", [])
         slug = labels[0].lower() if labels and labels[0].lower() in UNIDADES else "marajoara"
@@ -206,4 +250,4 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     return {"status": "acumulando_no_buffet"}
 
 @app.get("/")
-async def health(): return {"status": "Online e com Redis! 🚀"}
+async def health(): return {"status": "Multimodal Online com Redis! 📸🎙️"}
