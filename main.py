@@ -128,8 +128,9 @@ async def obter_historico_chatwoot(account_id, conversation_id):
     url = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     try:
         res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN})
-        msgs = sorted(res.json().get("payload", []), key=lambda x: x["id"])[-15:]
-        return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m.get('content') or '[Enviou Arquivo]'}" for m in msgs])
+        # 👇 Mude aqui de -15 para -40 (ou o número que achar melhor) 👇
+        msgs = sorted(res.json().get("payload", []), key=lambda x: x["id"])[-40:]
+        return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m.get('content') or '[Enviou Mídia]'}" for m in msgs])
     except: return ""
 
 # --- LÓGICA DA IA (AGORA COM DOWNLOAD E TRANSCRIÇÃO REAIS) ---
