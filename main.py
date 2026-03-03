@@ -291,7 +291,18 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
 
             await asyncio.sleep(len(p) * 0.05 + random.uniform(1, 2))
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
-            await http_client.post(url_m, json={"content": p, "message_type": "outgoing"}, headers={"api_access_token": CHATWOOT_TOKEN})
+            
+            # ATUALIZADO AQUI: Injeta o content_attributes para sinalizar que é a IA mandando
+            payload_msg = {
+                "content": p, 
+                "message_type": "outgoing",
+                "content_attributes": {
+                    "origin": "ai",
+                    "ai_agent": "Agente Red",
+                    "ignore_webhook": True
+                }
+            }
+            await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
@@ -313,15 +324,24 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     if event != "message_created":
         return {"status": "ignorado"}
 
-    # 1. ATENDENTE HUMANO (USER) ASSUMIU/RESPONDEU
+    # 1. IDENTIFICAÇÃO DE QUEM ESTÁ ENVIANDO A MENSAGEM
     sender = payload.get("sender", {})
     sender_type = sender.get("type", "").lower()
+    content_attrs = payload.get("content_attributes") or {}
     
+    # Verifica pelas tags se a mensagem foi originada pelo Agente Red / IA
+    is_ai_message = content_attrs.get("ai_agent") == "Agente Red" or content_attrs.get("origin") == "ai"
+
+    # Se for "outgoing" e "user", precisamos saber se é a IA ou um humano real
     if message_type == "outgoing" and sender_type == "user":
-        # Pausa a IA para esta conversa por 12 horas (43200 segundos)
-        await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
-        logger.info(f"⏸️ IA pausada por 12h na conversa {id_conv} (Atendente assumiu).")
-        return {"status": "ia_pausada"}
+        if is_ai_message:
+            # É a nossa IA respondendo. Ignoramos e não pausamos o sistema.
+            return {"status": "ignorado_mensagem_da_ia"}
+        else:
+            # Não tem as tags da IA. É um Humano! Pausa a IA para esta conversa por 12 horas.
+            await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+            logger.info(f"⏸️ IA pausada por 12h na conversa {id_conv} (Atendente assumiu).")
+            return {"status": "ia_pausada"}
 
     # 2. SE NÃO FOR MENSAGEM DO CLIENTE (INCOMING), IGNORA
     if message_type != "incoming":
