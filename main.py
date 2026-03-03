@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import logging
 import httpx
+import redis.asyncio as redis # <-- Adicionado
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -26,31 +27,38 @@ CHATWOOT_URL = os.getenv("CHATWOOT_URL")
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+REDIS_URL = os.getenv("REDIS_URL") # <-- URL do Redis
 
 cliente_ia = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
 
-# CLIENTE HTTP GLOBAL (Connection Pool)
+# CLIENTES GLOBAIS
 http_client: httpx.AsyncClient = None
+redis_client: redis.Redis = None # <-- Cliente Redis Global
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client
+    global http_client, redis_client
+    
+    # Inicia HTTP Pool
     limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
     http_client = httpx.AsyncClient(timeout=15.0, limits=limits)
-    logger.info("🚀 Servidor iniciado e Pool HTTP criado.")
+    
+    # Inicia Redis Pool
+    redis_client = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    
+    logger.info("🚀 Servidor iniciado. Pool HTTP e Redis criados.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await http_client.aclose()
+    await redis_client.aclose()
     logger.info("🛑 Servidor desligado.")
 
-# --- ESTADOS EM MEMÓRIA ---
-buffet_mensagens = {}
-processando = set()
 
+# --- DADOS ESTÁTICOS ---
 UNIDADES = {
     "marajoara": {
         "nome": "Panobianco Marajoara",
@@ -61,8 +69,7 @@ UNIDADES = {
     }
 }
 
-# --- FUNÇÕES DE APOIO ---
-
+# --- FUNÇÕES DE APOIO (Mantidas as suas) ---
 async def validar_assinatura(request: Request, x_chatwoot_signature: str):
     if not CHATWOOT_WEBHOOK_SECRET: return
     body = await request.body()
@@ -94,10 +101,7 @@ async def obter_historico_chatwoot(account_id, conversation_id):
         mensagens = payload.get("payload", [])
         if not mensagens: return ""
 
-        # Garante ordem cronológica e pega as últimas 20
-        mensagens = sorted(mensagens, key=lambda x: x["id"])
-        mensagens = mensagens[-30:]
-
+        mensagens = sorted(mensagens, key=lambda x: x["id"])[-30:]
         historico_formatado = []
         for m in mensagens:
             if not m.get("content"): continue
@@ -107,9 +111,7 @@ async def obter_historico_chatwoot(account_id, conversation_id):
             else: continue
             historico_formatado.append(f"{autor}: {m['content']}")
 
-        historico_final = "\n".join(historico_formatado)
-        logger.info(f"📜 Histórico recuperado ({len(historico_formatado)} msgs)")
-        return historico_final
+        return "\n".join(historico_formatado)
     except Exception:
         logger.error("❌ Erro ao obter histórico", exc_info=True)
         return ""
@@ -128,53 +130,51 @@ async def verificar_se_humano_assumiu(account_id, conversation_id):
 
 async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug_unidade, nome_cliente):
     try:
-        await asyncio.sleep(10) # Buffet
-        texto_acumulado = buffet_mensagens.pop(conversation_id, None)
+        # Aguarda o "Buffet" encher por 10 segundos
+        await asyncio.sleep(10) 
+        
+        # Pega todas as mensagens empilhadas no Redis e limpa a lista
+        chave_buffet = f"buffet:{conversation_id}"
+        mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
+        await redis_client.delete(chave_buffet)
+        
+        texto_acumulado = " ".join(mensagens_lista).strip()
+
+        # Valida se há o que responder e se o humano não assumiu
         if not texto_acumulado or await verificar_se_humano_assumiu(account_id, conversation_id):
             return
 
         u = UNIDADES.get(slug_unidade, UNIDADES["marajoara"])
         historico = await obter_historico_chatwoot(account_id, conversation_id)
 
-        # Lógica inteligente do link
         link_ja_enviado = u['link_venda'] in historico
-        if link_ja_enviado:
-            regra_link = "⚠️ O link de matrícula JÁ FOI enviado anteriormente. NÃO envie novamente."
-        else:
-            regra_link = f"Você pode enviar o link se fizer sentido para o fechamento: {u['link_venda']}"
+        regra_link = "⚠️ O link de matrícula JÁ FOI enviado anteriormente. NÃO envie novamente." if link_ja_enviado else f"Você pode enviar o link se fizer sentido para o fechamento: {u['link_venda']}"
 
         system_prompt = f"""
         Você é o Consultor de Vendas da {u['nome']}. Seu objetivo é ser humano e fechar matrículas. 🏋️‍♂️
-
         NOME DO CLIENTE: {nome_cliente}
-
         HISTÓRICO RECENTE:
         {historico}
-
         {regra_link}
-
-        ⚠️ REGRAS DE OURO (NÃO QUEBRE):
-        1. VARIE AS SAUDAÇÕES: Não use sempre 'Olá'. Use 'E aí', 'Fala', 'Tudo certo?', etc.
-        2. Nunca repita informações já respondidas no histórico.
+        ⚠️ REGRAS DE OURO:
+        1. VARIE AS SAUDAÇÕES.
+        2. Nunca repita informações já respondidas.
         3. NÃO use o nome do cliente em todas as frases.
         4. Seja direto e natural. Responda em no máximo 2 blocos curtos.
-        5. Se o cliente disser um nome diferente de '{nome_cliente}', use [NOME: Valor] para eu atualizar o sistema.
-
+        5. Se o cliente disser um nome diferente de '{nome_cliente}', use [NOME: Valor].
         DADOS DA UNIDADE:
         - Endereço: {u['endereco']}
         - Horários: {u['horarios']}
-        - Link de Matrícula: {u['link_venda']}
         """
 
         response = await cliente_ia.chat.completions.create(
             model="google/gemini-2.5-flash-lite:preview", 
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": texto_acumulado}],
-            temperature=0.7 # Aumentado para maior naturalidade e variedade
+            temperature=0.7 
         )
         
         resposta_bruta = response.choices[0].message.content
 
-        # Captura de nome
         if "[NOME:" in resposta_bruta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta_bruta)
             if match:
@@ -194,7 +194,8 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
     except Exception:
         logger.error(f"🔥 Erro na conversa {conversation_id}", exc_info=True)
     finally:
-        processando.discard(conversation_id)
+        # 🔑 IMPORTANTE: Libera o lock no Redis quando a IA termina (ou se der erro)
+        await redis_client.delete(f"lock:{conversation_id}")
 
 # --- WEBHOOK ---
 
@@ -208,27 +209,37 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     conversa = payload.get("conversation", {})
     id_conv = conversa.get("id")
+    conteudo_msg = payload.get("content", "")
 
-    if id_conv in processando:
-        if id_conv in buffet_mensagens:
-            buffet_mensagens[id_conv] += f" {payload.get('content')}"
-        return {"status": "locked"}
+    # Validações básicas de atendimento manual
+    if conversa.get("status") not in ["pending", "open"] or conversa.get("assignee_id") is not None:
+        return {"status": "atendimento_manual"}
 
+    # 1. Coloca a nova mensagem no final da fila (buffet) do Redis
+    chave_buffet = f"buffet:{id_conv}"
+    await redis_client.rpush(chave_buffet, conteudo_msg)
+    await redis_client.expire(chave_buffet, 60) # Expira em 60s como margem de segurança
+    
+    # 2. Tenta pegar o "Lock" para ser o worker que vai processar a fila
+    chave_lock = f"lock:{id_conv}"
+    # setnx (Set if Not eXists): Só retorna True se a chave não existia
+    conseguiu_lock = await redis_client.set(chave_lock, "1", nx=True, ex=45) 
+
+    if not conseguiu_lock:
+        # Se não conseguiu o lock, significa que já tem um processo de IA esperando os 10s.
+        # Como já adicionamos no RPUSH acima, a mensagem já tá no buffet.
+        return {"status": "locked_adicionado_ao_buffet"}
+
+    # 3. Se conseguiu o lock, agenda o processamento (será o único a rodar)
     labels = conversa.get("labels", [])
     slug_unidade = labels[0].lower() if labels and labels[0].lower() in UNIDADES else "marajoara"
-
-    if conversa.get("status") in ["pending", "open"] and conversa.get("assignee_id") is None:
-        processando.add(id_conv)
-        buffet_mensagens[id_conv] = payload.get("content")
-        
-        background_tasks.add_task(
-            processar_ia_e_responder, 
-            payload["account"]["id"], id_conv, payload.get("sender", {}).get("id"), 
-            slug_unidade, limpar_nome(payload.get("sender", {}).get("name"))
-        )
-        return {"status": "agendado"}
     
-    return {"status": "atendimento_manual"}
-
+    background_tasks.add_task(
+        processar_ia_e_responder, 
+        payload["account"]["id"], id_conv, payload.get("sender", {}).get("id"), 
+        slug_unidade, limpar_nome(payload.get("sender", {}).get("name"))
+    )
+    return {"status": "agendado_nova_thread"}
+    
 @app.get("/")
 async def health(): return {"status": "Online 🚀"}
