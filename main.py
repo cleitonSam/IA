@@ -235,16 +235,41 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         {historico}
         """
 
-        response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.5-flash-lite", # Modelo ideal de custo/benefício
-            messages=[
-                {"role": "system", "content": system_prompt}, 
-                {"role": "user", "content": conteudo_usuario_ia}
-            ],
-            temperature=0.7 # Temperatura ajustada para evitar repetições e focar nas regras
-        )
+      # (Abaixo das regras do System Prompt...)
         
-        resposta = response.choices[0].message.content
+        # SISTEMA DE FALLBACK (PLANO A e PLANO B)
+        modelos_para_tentar = [
+            "google/gemini-2.5-flash-lite", # Plano A: Rápido e barato
+            "google/gemini-2.5-flash"       # Plano B: Irmão maior, caso o A esteja sobrecarregado (erro 429)
+        ]
+        
+        resposta = None
+        erro_final = None
+
+        for modelo_atual in modelos_para_tentar:
+            try:
+                logger.info(f"🧠 Tentando gerar resposta com: {modelo_atual}...")
+                response = await cliente_ia.chat.completions.create(
+                    model=modelo_atual,
+                    messages=[
+                        {"role": "system", "content": system_prompt}, 
+                        {"role": "user", "content": conteudo_usuario_ia}
+                    ],
+                    temperature=0.7
+                )
+                resposta = response.choices[0].message.content
+                break # Sucesso! Sai do loop e não tenta o Plano B.
+            
+            except Exception as e:
+                erro_final = str(e)
+                logger.warning(f"⚠️ Erro no modelo {modelo_atual}: {erro_final}. Acionando próximo modelo...")
+                await asyncio.sleep(1) # Espera 1 segundo antes de tentar o Plano B
+
+        # Se todos os modelos falharem
+        if not resposta:
+            logger.error("❌ FALHA GERAL NA IA. Nenhum modelo conseguiu responder.")
+            # Resposta de emergência elegante para o cliente não ficar no vácuo
+            resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
 
         # Tratamento de Nome Oculto
         if "[NOME:" in resposta:
