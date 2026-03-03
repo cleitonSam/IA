@@ -10,6 +10,7 @@ import json
 import base64
 import tempfile
 import redis.asyncio as redis
+import asyncpg
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
@@ -22,7 +23,7 @@ logger = logging.getLogger("panobianco-ia")
 
 load_dotenv()
 
-# 🧯 7. Segurança: Validar variáveis críticas antes de subir a aplicação
+# 🧯 Segurança: Validar variáveis críticas antes de subir a aplicação
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 if not CHATWOOT_URL or not CHATWOOT_TOKEN:
@@ -36,6 +37,9 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         
 REDIS_URL = os.getenv("REDIS_URL")
 
+# Pega a URL do banco configurada no painel do Render (Environment Variables)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 # Clientes de IA
 cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
 cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -43,11 +47,14 @@ cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else Non
 # Clientes Globais de Conexão
 http_client: httpx.AsyncClient = None
 redis_client: redis.Redis = None
+db_pool: asyncpg.Pool = None
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client, redis_client
+    global http_client, redis_client, db_pool
     http_client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
+    
+    # Inicia Redis
     try:
         redis_client = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
         await redis_client.ping()
@@ -56,10 +63,23 @@ async def startup_event():
         logger.error(f"❌ Erro ao conectar no Redis: {e}")
         raise e
 
+    # Inicia PostgreSQL (Pool)
+    if DATABASE_URL:
+        try:
+            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
+        except Exception as e:
+            logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
+            # Em produção, você pode dar 'raise e' se o BD for obrigatório para o bot rodar.
+    else:
+        logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas no banco de dados.")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     await http_client.aclose()
     await redis_client.aclose()
+    if db_pool:
+        await db_pool.close()
     logger.info("🛑 Servidor desligado.")
 
 # --- BANCO DE DADOS DE UNIDADES ---
@@ -71,6 +91,61 @@ UNIDADES = {
         "link_venda": "https://evo-totem.w12app.com.br/panobiancos/282/site/oportunidade"
     }
 }
+
+# --- AUXILIARES BANCO DE DADOS (POSTGRESQL) ---
+async def bd_iniciar_conversa(conversation_id: int, unidade: str):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            INSERT INTO conversas_ia (conversation_id, unidade)
+            VALUES ($1, $2)
+            ON CONFLICT (conversation_id) DO NOTHING
+        """, conversation_id, unidade)
+    except Exception as e:
+        logger.error(f"Erro BD (iniciar_conversa): {e}")
+
+async def bd_atualizar_msg_cliente(conversation_id: int):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas_ia
+            SET mensagens_cliente = mensagens_cliente + 1,
+                updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro BD (atualizar_msg_cliente): {e}")
+
+async def bd_atualizar_msg_ia(conversation_id: int):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas_ia
+            SET mensagens_ia = mensagens_ia + 1,
+                updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro BD (atualizar_msg_ia): {e}")
+
+async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao)
+            VALUES ($1, $2, $3)
+        """, conversation_id, tipo_evento, descricao)
+
+        if tipo_evento == "interesse_detectado":
+            await db_pool.execute("""
+                UPDATE conversas_ia
+                SET interesse_detectado = TRUE,
+                    score = score + $2,
+                    updated_at = NOW()
+                WHERE conversation_id = $1
+            """, conversation_id, score_incremento)
+    except Exception as e:
+        logger.error(f"Erro BD (registrar_evento): {e}")
 
 # --- AUXILIARES E CONTEXTO ---
 def obter_contexto_tempo():
@@ -134,7 +209,7 @@ async def transcrever_audio_whisper(audio_bytes: bytes):
             tmp_path = tmp_file.name
 
         with open(tmp_path, "rb") as audio_file:
-            # 🚀 1. Timeout defensivo para o Whisper
+            # 🚀 Timeout defensivo para o Whisper
             transcription = await asyncio.wait_for(
                 cliente_whisper.audio.transcriptions.create(
                     model="whisper-1",
@@ -172,7 +247,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         if not mensagens_lista or await verificar_atendimento_manual(account_id, conversation_id):
             return
 
-        # 💣 5. Proteção contra Spam Flood
+        # 💣 Proteção contra Spam Flood
         if len(mensagens_lista) > 15:
             logger.warning(f"⚠️ Flood detectado na conversa {conversation_id}. Truncando mensagens.")
             mensagens_lista = mensagens_lista[-15:]
@@ -221,7 +296,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         precisa_saudacao = "Atendente:" not in historico[-200:]
         saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
         
-        # 🧬 6. Recupera o estado emocional do cliente
+        # 🧬 Recupera o estado emocional do cliente
         estado_cliente = await redis_client.get(f"estado:{conversation_id}") or "indefinido"
 
         system_prompt = f"""
@@ -252,7 +327,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         {historico}
         """
 
-        # 🚀 2. Estratégia de Produção: Rotação de modelo por horário
+        # 🚀 Estratégia de Produção: Rotação de modelo por horário
         hora_atual_int = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
         if 8 <= hora_atual_int <= 20:
             modelos_para_tentar = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
@@ -275,11 +350,10 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 )
                 resposta = response.choices[0].message.content
                 break 
-            
             except Exception as e:
                 erro_final = str(e)
                 logger.warning(f"⚠️ Erro no modelo {modelo_atual}: {erro_final}")
-                # 🚀 2. Fallback inteligente anti-429
+                # Fallback inteligente anti-429
                 if "429" in erro_final:
                     await asyncio.sleep(2)
                 else:
@@ -289,7 +363,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
             logger.error("❌ FALHA GERAL NA IA. Nenhum modelo conseguiu responder.")
             resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
 
-        # Tratamento de Nome Oculto
+        # ---------------- PROCESSAMENTO DE METADADOS (NOME/ESTADO) ----------------
         if "[NOME:" in resposta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
             if match:
@@ -297,15 +371,23 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await http_client.put(url_c, json={"name": limpar_nome(match.group(1))}, headers={"api_access_token": CHATWOOT_TOKEN})
                 resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
 
-        # 🧬 6. Captura e salva o Estado Emocional Oculto
         if "[ESTADO:" in resposta:
             match_estado = re.search(r"\[ESTADO:\s*(.*?)\]", resposta)
             if match_estado:
                 novo_estado = match_estado.group(1).lower().strip()
                 await redis_client.setex(f"estado:{conversation_id}", 86400, novo_estado) # Salva por 24h
+                
+                # 🐘 INTEGRAÇÃO FUNIL: Se a IA detectar interesse genuíno, injetamos no PostgreSQL!
+                if any(palavra in novo_estado for palavra in ["interessad", "quer comprar", "preço", "matricul"]):
+                    await bd_registrar_evento_funil(
+                        conversation_id, 
+                        "interesse_detectado", 
+                        f"IA mapeou intenção. Estado: {novo_estado}"
+                    )
+
                 resposta = re.sub(r"\[ESTADO:.*?\]", "", resposta).strip()
 
-        # Envio fracionado
+        # ---------------- ENVIO FRACIONADO CHATWOOT ----------------
         pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
         for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
@@ -313,7 +395,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 logger.info(f"🛑 IA interrompeu o envio na conversa {conversation_id} (Atendente assumiu).")
                 break
 
-            # ⚡ 8. Melhoria de performance no delay de digitação
+            # ⚡ Melhoria de performance no delay de digitação
             delay = min(len(p) * 0.04, 4)
             await asyncio.sleep(delay + random.uniform(0.5, 1.5))
             
@@ -328,6 +410,9 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 }
             }
             await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
+            
+            # 🐘 INTEGRAÇÃO POSTGRESQL: Incrementa mensagem enviada pela IA
+            await bd_atualizar_msg_ia(conversation_id)
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
@@ -353,6 +438,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     
     is_ai_message = content_attrs.get("ai_agent") == "Agente Red" or content_attrs.get("origin") == "ai"
 
+    # Define a unidade (slug) antecipadamente para o DB e contexto
+    labels = payload.get("conversation", {}).get("labels", [])
+    slug = next((l.lower() for l in labels if l.lower() in UNIDADES), "marajoara")
+
+    # MENSAGEM SAINDO (Atendente ou IA)
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
             return {"status": "ignorado_mensagem_da_ia"}
@@ -361,8 +451,13 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             logger.info(f"⏸️ IA pausada por 12h na conversa {id_conv} (Atendente assumiu).")
             return {"status": "ia_pausada"}
 
+    # Ignora eventos que não sejam mensagens chegando do cliente
     if message_type != "incoming":
         return {"status": "ignorado_nao_incoming"}
+
+    # 🐘 INTEGRAÇÃO POSTGRESQL: Registra a conversa e incrementa o contador do cliente
+    await bd_iniciar_conversa(id_conv, slug)
+    await bd_atualizar_msg_cliente(id_conv)
 
     if await redis_client.exists(f"pause_ia:{id_conv}"):
         logger.info(f"⏳ Mensagem ignorada na conversa {id_conv}. IA pausada.")
@@ -381,14 +476,9 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     await redis_client.expire(chave_buffet, 60)
 
     if await redis_client.set(f"lock:{id_conv}", "1", nx=True, ex=60):
-        labels = payload.get("conversation", {}).get("labels", [])
-        
-        # 🛑 4. Correção para múltiplas labels no array
-        slug = next((l.lower() for l in labels if l.lower() in UNIDADES), "marajoara")
-        
         background_tasks.add_task(
             processar_ia_e_responder,
-            payload["account"]["id"], id_conv, payload.get("sender", {}).get("id"), slug, limpar_nome(payload.get("sender", {}).get("name"))
+            payload["account"]["id"], id_conv, sender.get("id"), slug, limpar_nome(sender.get("name"))
         )
         return {"status": "processando"}
     
@@ -396,4 +486,4 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Agente Panobianco Multimodal Online e Operante! 🚀"}
+    return {"status": "🤖 Agente Panobianco e BI Operantes! 🚀"}
