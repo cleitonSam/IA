@@ -174,7 +174,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         """
 
         response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.0-flash-lite:preview-0205",
+            model="google/gemini-2.5-flash-lite",
             messages=[
                 {"role": "system", "content": system_prompt}, 
                 {"role": "user", "content": conteudo_usuario_ia} # <-- Passando a lista multimodal
