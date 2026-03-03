@@ -71,7 +71,8 @@ UNIDADES = {
 async def baixar_arquivo_chatwoot(url: str):
     """Baixa o arquivo do Chatwoot usando o token de autenticação."""
     try:
-        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN})
+        # A MUDANÇA ESTÁ AQUI: follow_redirects=True
+        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
         res.raise_for_status()
         return res.content
     except Exception as e:
