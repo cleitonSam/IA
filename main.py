@@ -10,6 +10,8 @@ import json
 import base64
 import tempfile
 import redis.asyncio as redis
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -21,20 +23,21 @@ logger = logging.getLogger("panobianco-ia")
 load_dotenv()
 app = FastAPI()
 
-# --- CONFIGURAÇÕES ---
+# --- CONFIGURAÇÕES E VARIÁVEIS DE AMBIENTE ---
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 
-# Clientes de IA Separados (OpenRouter para o Gemini, OpenAI real para o Whisper)
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # <-- NECESSÁRIO PARA O WHISPER
+# Chaves de API
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # Para o Gemini de texto/visão
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         # Para o Whisper (Áudio)
 REDIS_URL = os.getenv("REDIS_URL")
 
+# Clientes de IA
 cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
 cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# CLIENTES GLOBAIS
+# Clientes Globais de Conexão
 http_client: httpx.AsyncClient = None
 redis_client: redis.Redis = None
 
@@ -66,44 +69,23 @@ UNIDADES = {
     }
 }
 
-# --- FUNÇÕES CORE MULTIMÍDIA ---
+# --- AUXILIARES E CONTEXTO ---
 
-async def baixar_arquivo_chatwoot(url: str):
-    """Baixa o arquivo do Chatwoot usando o token de autenticação."""
-    try:
-        # A MUDANÇA ESTÁ AQUI: follow_redirects=True
-        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
-        res.raise_for_status()
-        return res.content
-    except Exception as e:
-        logger.error(f"❌ Erro ao baixar arquivo do Chatwoot: {e}")
-        return None
+def obter_contexto_tempo():
+    """Retorna a saudação correta, o dia da semana e a hora de São Paulo."""
+    fuso_sp = ZoneInfo("America/Sao_Paulo")
+    agora = datetime.now(fuso_sp)
+    hora = agora.hour
 
-async def transcrever_audio_whisper(audio_bytes: bytes):
-    """Salva o áudio temporariamente e transcreve usando o Whisper da OpenAI."""
-    if not cliente_whisper:
-        return "[Áudio recebido, mas sistema de transcrição está offline.]"
-    
-    try:
-        # Cria um arquivo temporário em disco (exigência da API do Whisper)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_path = tmp_file.name
+    if 5 <= hora < 12: saudacao = "Bom dia"
+    elif 12 <= hora < 18: saudacao = "Boa tarde"
+    else: saudacao = "Boa noite"
 
-        with open(tmp_path, "rb") as audio_file:
-            transcription = await cliente_whisper.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="pt"
-            )
-        
-        os.remove(tmp_path) # Limpa o disco
-        return transcription.text
-    except Exception as e:
-        logger.error(f"❌ Erro no Whisper: {e}")
-        return "[Erro ao transcrever o áudio do cliente.]"
+    dias_semana = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
+    dia_semana = dias_semana[agora.weekday()]
 
-# --- AUXILIARES ---
+    return saudacao, dia_semana, agora.strftime("%H:%M")
+
 async def validar_assinatura(request: Request, x_signature: str):
     if not CHATWOOT_WEBHOOK_SECRET: return
     body = await request.body()
@@ -128,17 +110,53 @@ async def obter_historico_chatwoot(account_id, conversation_id):
     url = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     try:
         res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN})
-        # 👇 Mude aqui de -15 para -40 (ou o número que achar melhor) 👇
+        # Pega as últimas 40 mensagens para uma "memória de elefante"
         msgs = sorted(res.json().get("payload", []), key=lambda x: x["id"])[-40:]
         return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m.get('content') or '[Enviou Mídia]'}" for m in msgs])
     except: return ""
 
-# --- LÓGICA DA IA (AGORA COM DOWNLOAD E TRANSCRIÇÃO REAIS) ---
+# --- FUNÇÕES CORE MULTIMÍDIA ---
+
+async def baixar_arquivo_chatwoot(url: str):
+    """Baixa o arquivo do Chatwoot seguindo redirecionamentos (302 Found)."""
+    try:
+        # follow_redirects=True resolve o problema do link privado do Chatwoot
+        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
+        res.raise_for_status()
+        return res.content
+    except Exception as e:
+        logger.error(f"❌ Erro ao baixar arquivo do Chatwoot: {e}")
+        return None
+
+async def transcrever_audio_whisper(audio_bytes: bytes):
+    """Salva o áudio temporariamente e transcreve usando o Whisper da OpenAI."""
+    if not cliente_whisper:
+        return "[Áudio recebido, mas a chave OPENAI_API_KEY não foi configurada para transcrição.]"
+    
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_path = tmp_file.name
+
+        with open(tmp_path, "rb") as audio_file:
+            transcription = await cliente_whisper.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="pt"
+            )
+        
+        os.remove(tmp_path)
+        return transcription.text
+    except Exception as e:
+        logger.error(f"❌ Erro no Whisper: {e}")
+        return "[Erro interno ao transcrever o áudio do cliente.]"
+
+# --- LÓGICA PRINCIPAL DA IA ---
 
 async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug_unidade, nome_cliente):
     chave_lock = f"lock:{conversation_id}"
     try:
-        await asyncio.sleep(12) 
+        await asyncio.sleep(12) # Tempo de buffet para acumular mensagens/mídias
         
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
@@ -167,9 +185,9 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
             bytes_audio = await baixar_arquivo_chatwoot(audio_url)
             if bytes_audio:
                 texto_transcrito = await transcrever_audio_whisper(bytes_audio)
-                textos_transcritos.append(f"[Áudio do cliente: {texto_transcrito}]")
+                textos_transcritos.append(f"[Áudio do cliente transcrito: {texto_transcrito}]")
 
-        # Junta texto digitado com texto falado
+        # Junta o texto digitado com o áudio transcrito
         texto_final = texto_usuario + "\n\n" + "\n".join(textos_transcritos)
         if texto_final.strip():
             conteudo_usuario_ia.append({"type": "text", "text": texto_final.strip()})
@@ -186,36 +204,49 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                     "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
                 })
 
+        # Prepara Contexto e Prompt
         u = UNIDADES.get(slug_unidade, UNIDADES["marajoara"])
         historico = await obter_historico_chatwoot(account_id, conversation_id)
         precisa_saudacao = "Atendente:" not in historico[-200:]
+        saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
 
         system_prompt = f"""
         Você é o Consultor de Vendas da {u['nome']}.
-        Você consegue ver imagens perfeitamente. Analise fotos (equipamentos, comprovantes) e interaja de acordo.
-        
-        CONTEXTO: Cliente: {nome_cliente} | Link: {u['link_venda']}
-        REGRAS:
-        1. SAUDAÇÃO: {'Seja amigável na primeira mensagem.' if precisa_saudacao else 'Vá direto ao ponto.'}
-        2. ESTILO: Português do dia a dia (Brasil), gírias leves. Máx 2 parágrafos curtos.
-        3. LINK: Só envie se perguntar de preços. Se já enviou, NÃO envie de novo.
-        4. NOME: Se der novo nome, use [NOME: Valor].
+        Seu objetivo: Converter curiosos em alunos matriculados de forma natural.
 
-        HISTÓRICO:
+        CONTEXTO DE TEMPO (USE SE PERGUNTAREM DE HORÁRIOS):
+        - Hoje é {dia_atual}, {hora_atual} (Horário de Brasília/SP).
+        - Horários da academia: {u['horarios']}
+
+        DADOS DA UNIDADE:
+        - Endereço: {u['endereco']}
+        - Link de Matrícula: {u['link_venda']}
+
+        REGRAS ABSOLUTAS (CUMPRA RIGOROSAMENTE):
+        1. NÃO SEJA REPETITIVO: Leia o histórico para entender o contexto, mas NUNCA repita frases, links ou informações que você (Atendente) já enviou.
+        2. FOCO NO AGORA: Responda APENAS à última mensagem do cliente. Siga a conversa pra frente.
+        3. SAUDAÇÃO: {'Use "' + saudacao_certa + '" de forma amigável no início.' if precisa_saudacao else 'NÃO diga bom dia/boa tarde/boa noite agora. Você já está conversando com ele, vá direto ao ponto.'}
+        4. LINK: Só envie o link de matrícula se o cliente falar que quer comprar/fechar. Se já estiver no histórico, NÃO envie novamente.
+        5. ESTILO HUMANO: Seja direto. Máximo de 2 parágrafos curtos. Use português do Brasil, com gírias leves de academia (ex: bora, foco).
+        6. IMAGENS E ÁUDIOS: Se receber uma foto ou transcrição de áudio, comente naturalmente sobre o que viu ou ouviu.
+        7. NOME: Cliente atual = {nome_cliente}. Se ele disser que se chama outra coisa, use [NOME: Valor].
+
+        HISTÓRICO RECENTE DA CONVERSA:
         {historico}
         """
 
         response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.5-flash-lite",
+            model="google/gemini-2.5-flash-lite", # Modelo ideal de custo/benefício
             messages=[
                 {"role": "system", "content": system_prompt}, 
                 {"role": "user", "content": conteudo_usuario_ia}
             ],
-            temperature=0.8
+            temperature=0.7 # Temperatura ajustada para evitar repetições e focar nas regras
         )
         
         resposta = response.choices[0].message.content
 
+        # Tratamento de Nome Oculto
         if "[NOME:" in resposta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
             if match:
@@ -223,7 +254,9 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await http_client.put(url_c, json={"name": limpar_nome(match.group(1))}, headers={"api_access_token": CHATWOOT_TOKEN})
                 resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
 
-        for p in [p.strip() for p in resposta.split("\n") if p.strip()]:
+        # Envio fracionado simulando digitação humana
+        pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
+        for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
             await asyncio.sleep(len(p) * 0.05 + random.uniform(1, 2))
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
@@ -234,7 +267,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
     finally:
         await redis_client.delete(chave_lock)
 
-# --- WEBHOOK ---
+# --- WEBHOOK ENDPOINT ---
 
 @app.post("/webhook")
 async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, x_chatwoot_signature: str = Header(None)):
@@ -257,6 +290,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
     await redis_client.expire(chave_buffet, 60)
 
+    # Bloqueio com Redis para evitar concorrência no mesmo webhook
     if await redis_client.set(f"lock:{id_conv}", "1", nx=True, ex=60):
         labels = payload.get("conversation", {}).get("labels", [])
         slug = labels[0].lower() if labels and labels[0].lower() in UNIDADES else "marajoara"
@@ -269,4 +303,5 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     return {"status": "acumulando_no_buffet"}
 
 @app.get("/")
-async def health(): return {"status": "Arquitetura Real Multimodal Ativada 🚀"}
+async def health(): 
+    return {"status": "🤖 Agente Panobianco Multimodal Online e Operante! 🚀"}
