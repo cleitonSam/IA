@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: panobianco-ia
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: CHATWOOT_URL
+        sync: false
+      - key: CHATWOOT_TOKEN
+        sync: false
+      - key: CHATWOOT_WEBHOOK_SECRET
+        sync: false
