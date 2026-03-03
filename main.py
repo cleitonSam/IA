@@ -70,7 +70,6 @@ async def startup_event():
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except Exception as e:
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
-            # Em produção, você pode dar 'raise e' se o BD for obrigatório para o bot rodar.
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas no banco de dados.")
 
@@ -109,8 +108,7 @@ async def bd_atualizar_msg_cliente(conversation_id: int):
     try:
         await db_pool.execute("""
             UPDATE conversas_ia
-            SET mensagens_cliente = mensagens_cliente + 1,
-                updated_at = NOW()
+            SET mensagens_cliente = mensagens_cliente + 1, updated_at = NOW()
             WHERE conversation_id = $1
         """, conversation_id)
     except Exception as e:
@@ -121,8 +119,7 @@ async def bd_atualizar_msg_ia(conversation_id: int):
     try:
         await db_pool.execute("""
             UPDATE conversas_ia
-            SET mensagens_ia = mensagens_ia + 1,
-                updated_at = NOW()
+            SET mensagens_ia = mensagens_ia + 1, updated_at = NOW()
             WHERE conversation_id = $1
         """, conversation_id)
     except Exception as e:
@@ -131,21 +128,45 @@ async def bd_atualizar_msg_ia(conversation_id: int):
 async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
     if not db_pool: return
     try:
+        # Insere na linha do tempo de eventos
         await db_pool.execute("""
             INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao)
             VALUES ($1, $2, $3)
         """, conversation_id, tipo_evento, descricao)
 
+        # Atualiza o Score na tabela principal
+        await db_pool.execute("""
+            UPDATE conversas_ia
+            SET score = score + $2, updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id, score_incremento)
+        
+        # Se for interesse, já marca a flag
         if tipo_evento == "interesse_detectado":
-            await db_pool.execute("""
-                UPDATE conversas_ia
-                SET interesse_detectado = TRUE,
-                    score = score + $2,
-                    updated_at = NOW()
-                WHERE conversation_id = $1
-            """, conversation_id, score_incremento)
+            await db_pool.execute("UPDATE conversas_ia SET interesse_detectado = TRUE WHERE conversation_id = $1", conversation_id)
+            
     except Exception as e:
         logger.error(f"Erro BD (registrar_evento): {e}")
+
+async def bd_marcar_link_enviado(conversation_id: int):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas_ia SET link_enviado = TRUE, updated_at = NOW() WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro BD (marcar_link_enviado): {e}")
+
+async def bd_finalizar_conversa(conversation_id: int):
+    if not db_pool: return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas_ia 
+            SET finalizada = TRUE, finalizada_em = NOW(), updated_at = NOW() 
+            WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro BD (finalizar_conversa): {e}")
 
 # --- AUXILIARES E CONTEXTO ---
 def obter_contexto_tempo():
@@ -195,7 +216,7 @@ async def baixar_arquivo_chatwoot(url: str):
         res.raise_for_status()
         return res.content
     except Exception as e:
-        logger.error(f"❌ Erro ao baixar arquivo do Chatwoot: {e}")
+        logger.error(f"❌ Erro ao baixar arquivo: {e}")
         return None
 
 async def transcrever_audio_whisper(audio_bytes: bytes):
@@ -209,24 +230,18 @@ async def transcrever_audio_whisper(audio_bytes: bytes):
             tmp_path = tmp_file.name
 
         with open(tmp_path, "rb") as audio_file:
-            # 🚀 Timeout defensivo para o Whisper
             transcription = await asyncio.wait_for(
                 cliente_whisper.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    language="pt"
-                ),
-                timeout=20.0
+                    model="whisper-1", file=audio_file, language="pt"
+                ), timeout=20.0
             )
         return transcription.text
     except asyncio.TimeoutError:
-        logger.warning("⏱️ Timeout no Whisper atingido.")
         return "Recebi seu áudio, mas ele está um pouquinho longo 😅 pode dar uma resumida pra mim rapidinho?"
     except Exception as e:
         logger.error(f"❌ Erro no Whisper: {e}")
         return "[Erro interno ao transcrever o áudio do cliente.]"
     finally:
-        # Garante a limpeza do arquivo mesmo se der timeout
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
@@ -237,7 +252,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         await asyncio.sleep(12) 
         
         if await redis_client.exists(f"pause_ia:{conversation_id}"):
-            logger.info(f"🛑 IA cancelou resposta pós-buffet na conversa {conversation_id} (Atendente assumiu).")
             return
         
         chave_buffet = f"buffet:{conversation_id}"
@@ -247,9 +261,7 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         if not mensagens_lista or await verificar_atendimento_manual(account_id, conversation_id):
             return
 
-        # 💣 Proteção contra Spam Flood
         if len(mensagens_lista) > 15:
-            logger.warning(f"⚠️ Flood detectado na conversa {conversation_id}. Truncando mensagens.")
             mensagens_lista = mensagens_lista[-15:]
 
         textos, imagens, audios = [], [], []
@@ -266,7 +278,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         texto_usuario = " ".join(textos).strip()
         conteudo_usuario_ia = []
         
-        # Processamento de Áudio
         textos_transcritos = []
         for audio_url in audios:
             bytes_audio = await baixar_arquivo_chatwoot(audio_url)
@@ -280,7 +291,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         else:
             conteudo_usuario_ia.append({"type": "text", "text": "[O cliente enviou apenas imagem]"})
 
-        # Processamento de Imagens
         for img_url in imagens:
             bytes_img = await baixar_arquivo_chatwoot(img_url)
             if bytes_img:
@@ -290,13 +300,11 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                     "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
                 })
 
-        # Contexto e Estado Emocional
         u = UNIDADES.get(slug_unidade, UNIDADES["marajoara"])
         historico = await obter_historico_chatwoot(account_id, conversation_id)
         precisa_saudacao = "Atendente:" not in historico[-200:]
         saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
         
-        # 🧬 Recupera o estado emocional do cliente
         estado_cliente = await redis_client.get(f"estado:{conversation_id}") or "indefinido"
 
         system_prompt = f"""
@@ -321,13 +329,12 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         6. IMAGENS/ÁUDIOS: Comente naturalmente sobre o que viu ou ouviu.
         7. NOME: Cliente atual = {nome_cliente}. Para corrigir, use [NOME: Valor].
         8. FECHAMENTO: SEMPRE faça uma pergunta no final se o cliente não estiver 100% decidido. (Aumenta conversão!)
-        9. EMOCIONAL: Se notar mudança clara no humor do cliente (ex: interessado, irritado, indeciso), adicione no final da sua resposta a tag [ESTADO: emocao].
+        9. EMOCIONAL (OBRIGATÓRIO): No final de TODAS as suas respostas, você DEVE incluir a tag [ESTADO: sentimento]. Exemplo: [ESTADO: curioso], [ESTADO: interessado], [ESTADO: achou caro].
 
         HISTÓRICO:
         {historico}
         """
 
-        # 🚀 Estratégia de Produção: Rotação de modelo por horário
         hora_atual_int = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
         if 8 <= hora_atual_int <= 20:
             modelos_para_tentar = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
@@ -339,7 +346,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
 
         for modelo_atual in modelos_para_tentar:
             try:
-                logger.info(f"🧠 Tentando gerar resposta com: {modelo_atual}...")
                 response = await cliente_ia.chat.completions.create(
                     model=modelo_atual,
                     messages=[
@@ -352,18 +358,15 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 break 
             except Exception as e:
                 erro_final = str(e)
-                logger.warning(f"⚠️ Erro no modelo {modelo_atual}: {erro_final}")
-                # Fallback inteligente anti-429
                 if "429" in erro_final:
                     await asyncio.sleep(2)
                 else:
                     await asyncio.sleep(1)
 
         if not resposta:
-            logger.error("❌ FALHA GERAL NA IA. Nenhum modelo conseguiu responder.")
             resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
 
-        # ---------------- PROCESSAMENTO DE METADADOS (NOME/ESTADO) ----------------
+        # ---------------- PROCESSAMENTO DE METADADOS (NOME/ESTADO/LINK) ----------------
         if "[NOME:" in resposta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
             if match:
@@ -371,31 +374,37 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await http_client.put(url_c, json={"name": limpar_nome(match.group(1))}, headers={"api_access_token": CHATWOOT_TOKEN})
                 resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
 
+        # Detecção de Link de Venda Enviado
+        if u['link_venda'] in resposta:
+            await bd_registrar_evento_funil(
+                conversation_id, 
+                "link_enviado", 
+                "A IA enviou o link de matrícula para o cliente.",
+                score_incremento=15
+            )
+            await bd_marcar_link_enviado(conversation_id)
+
+        # Mapeamento do Estado Emocional (agora OBRIGATÓRIO na regra 9)
         if "[ESTADO:" in resposta:
             match_estado = re.search(r"\[ESTADO:\s*(.*?)\]", resposta)
             if match_estado:
                 novo_estado = match_estado.group(1).lower().strip()
-                await redis_client.setex(f"estado:{conversation_id}", 86400, novo_estado) # Salva por 24h
+                await redis_client.setex(f"estado:{conversation_id}", 86400, novo_estado)
                 
-                # 🐘 INTEGRAÇÃO FUNIL: Se a IA detectar interesse genuíno, injetamos no PostgreSQL!
-                if any(palavra in novo_estado for palavra in ["interessad", "quer comprar", "preço", "matricul"]):
+                if any(palavra in novo_estado for palavra in ["interessad", "quer comprar", "preço", "matricul", "fechar"]):
                     await bd_registrar_evento_funil(
                         conversation_id, 
                         "interesse_detectado", 
                         f"IA mapeou intenção. Estado: {novo_estado}"
                     )
-
                 resposta = re.sub(r"\[ESTADO:.*?\]", "", resposta).strip()
 
         # ---------------- ENVIO FRACIONADO CHATWOOT ----------------
         pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
         for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
-            if await redis_client.exists(f"pause_ia:{conversation_id}"):
-                logger.info(f"🛑 IA interrompeu o envio na conversa {conversation_id} (Atendente assumiu).")
-                break
+            if await redis_client.exists(f"pause_ia:{conversation_id}"): break
 
-            # ⚡ Melhoria de performance no delay de digitação
             delay = min(len(p) * 0.04, 4)
             await asyncio.sleep(delay + random.uniform(0.5, 1.5))
             
@@ -410,14 +419,13 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 }
             }
             await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
-            
-            # 🐘 INTEGRAÇÃO POSTGRESQL: Incrementa mensagem enviada pela IA
             await bd_atualizar_msg_ia(conversation_id)
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
     finally:
         await redis_client.delete(chave_lock)
+
 
 # --- WEBHOOK ENDPOINT ---
 @app.post("/webhook")
@@ -426,19 +434,29 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     payload = await request.json()
     
     event = payload.get("event")
-    message_type = payload.get("message_type")
-    id_conv = payload.get("conversation", {}).get("id")
+    id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
 
+    # ---------------- CAPTURA O FIM DA CONVERSA ----------------
+    if event == "conversation_updated":
+        status_conversa = payload.get("status") or payload.get("conversation", {}).get("status")
+        if status_conversa == "resolved":
+            logger.info(f"🏁 Conversa {id_conv} resolvida. Limpando memória da IA.")
+            await bd_finalizar_conversa(id_conv)
+            await redis_client.delete(f"pause_ia:{id_conv}")
+            await redis_client.delete(f"estado:{id_conv}")
+            return {"status": "conversa_encerrada_registrada"}
+        return {"status": "conversa_atualizada_ignorada"}
+
+    # Se não for mensagem nova, ignora o resto
     if event != "message_created":
         return {"status": "ignorado"}
 
+    message_type = payload.get("message_type")
     sender = payload.get("sender", {})
     sender_type = sender.get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    
     is_ai_message = content_attrs.get("ai_agent") == "Agente Red" or content_attrs.get("origin") == "ai"
 
-    # Define a unidade (slug) antecipadamente para o DB e contexto
     labels = payload.get("conversation", {}).get("labels", [])
     slug = next((l.lower() for l in labels if l.lower() in UNIDADES), "marajoara")
 
@@ -448,19 +466,16 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             return {"status": "ignorado_mensagem_da_ia"}
         else:
             await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
-            logger.info(f"⏸️ IA pausada por 12h na conversa {id_conv} (Atendente assumiu).")
             return {"status": "ia_pausada"}
 
-    # Ignora eventos que não sejam mensagens chegando do cliente
     if message_type != "incoming":
         return {"status": "ignorado_nao_incoming"}
 
-    # 🐘 INTEGRAÇÃO POSTGRESQL: Registra a conversa e incrementa o contador do cliente
+    # 🐘 INTEGRAÇÃO POSTGRESQL: Registra conversa e atualiza contagem de mensagens do cliente
     await bd_iniciar_conversa(id_conv, slug)
     await bd_atualizar_msg_cliente(id_conv)
 
     if await redis_client.exists(f"pause_ia:{id_conv}"):
-        logger.info(f"⏳ Mensagem ignorada na conversa {id_conv}. IA pausada.")
         return {"status": "ignorado_ia_pausada"}
 
     conteudo_texto = payload.get("content", "")
@@ -483,6 +498,15 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
         return {"status": "processando"}
     
     return {"status": "acumulando_no_buffet"}
+
+# --- ROTA DE DESBLOQUEIO MANUAL DE EMERGÊNCIA ---
+@app.get("/desbloquear/{conversation_id}")
+async def desbloquear_ia(conversation_id: int):
+    chave = f"pause_ia:{conversation_id}"
+    resultado = await redis_client.delete(chave)
+    if resultado:
+        return {"status": "sucesso", "mensagem": f"✅ IA reativada com sucesso para a conversa {conversation_id}!"}
+    return {"status": "aviso", "mensagem": f"A conversa {conversation_id} já não estava pausada ou não existe."}
 
 @app.get("/")
 async def health(): 
