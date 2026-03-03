@@ -120,7 +120,6 @@ async def obter_historico_chatwoot(account_id, conversation_id):
 async def baixar_arquivo_chatwoot(url: str):
     """Baixa o arquivo do Chatwoot seguindo redirecionamentos (302 Found)."""
     try:
-        # follow_redirects=True resolve o problema do link privado do Chatwoot
         res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
         res.raise_for_status()
         return res.content
@@ -157,6 +156,11 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
     chave_lock = f"lock:{conversation_id}"
     try:
         await asyncio.sleep(12) # Tempo de buffet para acumular mensagens/mídias
+        
+        # 🛑 TRAVA EXTRA: Verifica se o atendente assumiu ENQUANTO a IA estava no "sleep" do buffet
+        if await redis_client.exists(f"pause_ia:{conversation_id}"):
+            logger.info(f"🛑 IA cancelou resposta pós-buffet na conversa {conversation_id} (Atendente assumiu).")
+            return
         
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
@@ -235,8 +239,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         {historico}
         """
 
-      # (Abaixo das regras do System Prompt...)
-        
         # SISTEMA DE FALLBACK (PLANO A e PLANO B)
         modelos_para_tentar = [
             "google/gemini-2.5-flash-lite", # Plano A: Rápido e barato
@@ -268,7 +270,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         # Se todos os modelos falharem
         if not resposta:
             logger.error("❌ FALHA GERAL NA IA. Nenhum modelo conseguiu responder.")
-            # Resposta de emergência elegante para o cliente não ficar no vácuo
             resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
 
         # Tratamento de Nome Oculto
@@ -283,6 +284,11 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
         for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
+            # 🛑 MAIS UMA TRAVA: Verifica se o atendente assumiu ENQUANTO a IA digitava as mensagens fracionadas
+            if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                logger.info(f"🛑 IA interrompeu o envio na conversa {conversation_id} (Atendente assumiu).")
+                break
+
             await asyncio.sleep(len(p) * 0.05 + random.uniform(1, 2))
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
             await http_client.post(url_m, json={"content": p, "message_type": "outgoing"}, headers={"api_access_token": CHATWOOT_TOKEN})
@@ -299,14 +305,37 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     await validar_assinatura(request, x_chatwoot_signature)
     payload = await request.json()
     
-    if payload.get("event") != "message_created" or payload.get("message_type") != "incoming":
+    event = payload.get("event")
+    message_type = payload.get("message_type")
+    id_conv = payload.get("conversation", {}).get("id")
+
+    # Verifica se é o evento de nova mensagem
+    if event != "message_created":
         return {"status": "ignorado"}
 
-    id_conv = payload.get("conversation", {}).get("id")
-    conteudo_texto = payload.get("content", "")
+    # 1. ATENDENTE HUMANO (USER) ASSUMIU/RESPONDEU
+    sender = payload.get("sender", {})
+    sender_type = sender.get("type", "").lower()
     
+    if message_type == "outgoing" and sender_type == "user":
+        # Pausa a IA para esta conversa por 12 horas (43200 segundos)
+        await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+        logger.info(f"⏸️ IA pausada por 12h na conversa {id_conv} (Atendente assumiu).")
+        return {"status": "ia_pausada"}
+
+    # 2. SE NÃO FOR MENSAGEM DO CLIENTE (INCOMING), IGNORA
+    if message_type != "incoming":
+        return {"status": "ignorado_nao_incoming"}
+
+    # 3. VERIFICA SE A IA ESTÁ PAUSADA PARA ESTA CONVERSA
+    if await redis_client.exists(f"pause_ia:{id_conv}"):
+        logger.info(f"⏳ Mensagem do cliente ignorada na conversa {id_conv}. IA está pausada.")
+        return {"status": "ignorado_ia_pausada"}
+
+    conteudo_texto = payload.get("content", "")
     anexos = payload.get("attachments", [])
     arquivos_encontrados = []
+    
     for a in anexos:
         tipo = "image" if "image" in str(a.get("file_type", "")) else "audio" if "audio" in str(a.get("file_type", "")) else "documento"
         arquivos_encontrados.append({"url": a.get("data_url"), "type": tipo})
