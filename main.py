@@ -1,4 +1,5 @@
 import os
+import io
 import asyncio
 import random
 import re
@@ -8,15 +9,17 @@ import logging
 import httpx
 import json
 import base64
-import tempfile
 import uuid
-import redis.asyncio as redis
-import asyncpg
-from datetime import datetime
+import time
+import zlib
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+import redis.asyncio as redis
+import asyncpg
+from tenacity import retry, wait_exponential, stop_after_attempt
 
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -48,6 +51,12 @@ http_client: httpx.AsyncClient = None
 redis_client: redis.Redis = None
 db_pool: asyncpg.Pool = None
 
+# --- CONTROLE DE CONCORRÊNCIA ---
+# Semáforo para limitar concorrência no Whisper (Evitar Throttling)
+whisper_semaphore = asyncio.Semaphore(5)
+# Semáforo para o LLM (Evitar estourar Rate Limit e CPU)
+llm_semaphore = asyncio.Semaphore(15)
+
 # Script LUA para deletar o Lock de forma atômica
 LUA_RELEASE_LOCK = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -78,6 +87,9 @@ async def startup_event():
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
+    
+    # Iniciar worker de follow-up em background
+    asyncio.create_task(worker_followup())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -86,6 +98,89 @@ async def shutdown_event():
     if db_pool: await db_pool.close()
     logger.info("🛑 Servidor desligado.")
 
+# --- UTILITÁRIOS DE COMPRESSÃO (REDIS) ---
+def comprimir_texto(texto: str) -> str:
+    """Comprime texto para economizar memória no Redis."""
+    if not texto: return ""
+    dados = zlib.compress(texto.encode('utf-8'))
+    return base64.b64encode(dados).decode('utf-8')
+
+def descomprimir_texto(texto_comprimido: str) -> str:
+    """Descomprime texto vindo do Redis."""
+    if not texto_comprimido: return ""
+    try:
+        dados = base64.b64decode(texto_comprimido)
+        return zlib.decompress(dados).decode('utf-8')
+    except:
+        return texto_comprimido # Fallback se não estiver comprimido
+
+# --- RENOVAÇÃO DE LOCK (WATCHDOG) ---
+async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
+    """Renova o TTL do lock periodicamente enquanto o processamento ocorre."""
+    try:
+        while True:
+            await asyncio.sleep(intervalo)
+            # Só renova se o valor ainda for o mesmo
+            res = await redis_client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], 60) else return 0 end",
+                1, chave, valor
+            )
+            if not res: break
+            logger.debug(f"🔄 Lock {chave} renovado.")
+    except asyncio.CancelledError:
+        pass
+
+# --- SISTEMA DE FOLLOW-UP ---
+async def agendar_followup(conversation_id: int, account_id: int, slug: str, horas: int = 24):
+    if not db_pool: return
+    data_execucao = datetime.now() + timedelta(hours=horas)
+    try:
+        await db_pool.execute("DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", conversation_id)
+        await db_pool.execute(
+            "INSERT INTO followups (conversation_id, account_id, slug_unidade, agendado_para) VALUES ($1, $2, $3, $4)",
+            conversation_id, account_id, slug, data_execucao
+        )
+        logger.info(f"📅 Follow-up agendado para conv {conversation_id} em {horas}h.")
+    except Exception as e:
+        logger.error(f"Erro ao agendar follow-up: {e}")
+
+async def worker_followup():
+    logger.info("🤖 Worker de Follow-up iniciado.")
+    while True:
+        await asyncio.sleep(300) # Verifica a cada 5 minutos
+        if not db_pool: continue
+        
+        try:
+            agora = datetime.now()
+            pendentes = await db_pool.fetch(
+                "SELECT * FROM followups WHERE status = 'pendente' AND agendado_para <= $1 LIMIT 10", agora
+            )
+            
+            for f in pendentes:
+                is_manual = await redis_client.get(f"atend_manual:{f['conversation_id']}")
+                is_paused = await redis_client.get(f"pause_ia:{f['conversation_id']}")
+                
+                if is_manual == "1" or is_paused == "1":
+                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                    continue
+
+                msg_followup = "Oi! Passando para saber se ficou alguma dúvida sobre o que conversamos? 😊"
+                
+                url_m = f"{CHATWOOT_URL}/api/v1/accounts/{f['account_id']}/conversations/{f['conversation_id']}/messages"
+                res = await http_client.post(url_m, json={
+                    "content": msg_followup,
+                    "message_type": "outgoing",
+                    "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+                }, headers={"api_access_token": CHATWOOT_TOKEN})
+                
+                if res.status_code < 300:
+                    await db_pool.execute("UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id'])
+                    logger.info(f"✅ Follow-up enviado para conv {f['conversation_id']}")
+                else:
+                    await db_pool.execute("UPDATE followups SET status = 'erro', erro_log = $2 WHERE id = $1", f['id'], res.text)
+
+        except Exception as e:
+            logger.error(f"Erro no worker de follow-up: {e}")
 
 # --- BACKGROUND JOBS (TIMEOUTS) ---
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
@@ -171,339 +266,213 @@ async def carregar_personalidade(slug: str):
         logger.error(f"Erro ao carregar personalidade ({slug}): {e}")
         return {}
 
-# --- AUXILIARES BANCO DE DADOS (MÉTRICAS E FUNIL) ---
+# --- AUXILIARES BANCO DE DADOS (COM RETRY AUTOMÁTICO - TENACITY) ---
+def log_db_error(retry_state):
+    logger.error(f"Erro BD após {retry_state.attempt_number} tentativas: {retry_state.outcome.exception()}")
+    return None
+
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_iniciar_conversa(conversation_id: int, unidade: str):
     if not db_pool: return
-    try:
-        await db_pool.execute("INSERT INTO conversas_ia (conversation_id, unidade) VALUES ($1, $2) ON CONFLICT (conversation_id) DO NOTHING", conversation_id, unidade)
-    except Exception as e:
-        logger.error(f"Erro BD (iniciar_conversa): {e}")
+    await db_pool.execute("INSERT INTO conversas_ia (conversation_id, unidade) VALUES ($1, $2) ON CONFLICT (conversation_id) DO NOTHING", conversation_id, unidade)
 
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_salvar_mensagem_local(conversation_id: int, role: str, content: str):
-    """Persiste mensagens localmente para eliminar dependência do Chatwoot no futuro."""
     if not db_pool: return
-    try:
-        await db_pool.execute(
-            "INSERT INTO mensagens_local (conversation_id, role, content) VALUES ($1, $2, $3)",
-            conversation_id, role, content
-        )
-    except Exception as e:
-        logger.error(f"Erro BD (salvar_mensagem_local): {e}")
+    await db_pool.execute("INSERT INTO mensagens_local (conversation_id, role, content) VALUES ($1, $2, $3)", conversation_id, role, content)
 
 async def bd_obter_historico_local(conversation_id: int, limit: int = 40):
-    """Obtém histórico local. Redução drástica de latência vs API Chatwoot."""
     if not db_pool: return None
     try:
         rows = await db_pool.fetch(
             "SELECT role, content FROM mensagens_local WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2",
             conversation_id, limit
         )
-        # Inverte para ordem cronológica
         msgs = reversed(rows)
         return "\n".join([f"{'Cliente' if r['role'] == 'user' else 'Atendente'}: {r['content']}" for r in msgs])
     except Exception as e:
         logger.error(f"Erro BD (obter_historico_local): {e}")
         return None
 
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_cliente(conversation_id: int):
     if not db_pool: return
-    try:
-        await db_pool.execute("UPDATE conversas_ia SET mensagens_cliente = mensagens_cliente + 1, updated_at = NOW() WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (atualizar_msg_cliente): {e}")
+    await db_pool.execute("UPDATE conversas_ia SET mensagens_cliente = mensagens_cliente + 1, updated_at = NOW() WHERE conversation_id = $1", conversation_id)
 
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_ia(conversation_id: int):
     if not db_pool: return
-    try:
-        await db_pool.execute("UPDATE conversas_ia SET mensagens_ia = mensagens_ia + 1, updated_at = NOW() WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (atualizar_msg_ia): {e}")
+    await db_pool.execute("UPDATE conversas_ia SET mensagens_ia = mensagens_ia + 1, updated_at = NOW() WHERE conversation_id = $1", conversation_id)
 
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_primeira_resposta(conversation_id: int):
     if not db_pool: return
-    try:
-        existe_primeira_resposta = await db_pool.fetchval("SELECT primeira_resposta_em FROM conversas_ia WHERE conversation_id = $1", conversation_id)
-        if not existe_primeira_resposta:
-            await db_pool.execute("UPDATE conversas_ia SET primeira_resposta_em = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (registrar_primeira_resposta): {e}")
+    existe_primeira_resposta = await db_pool.fetchval("SELECT primeira_resposta_em FROM conversas_ia WHERE conversation_id = $1", conversation_id)
+    if not existe_primeira_resposta:
+        await db_pool.execute("UPDATE conversas_ia SET primeira_resposta_em = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
 
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
     if not db_pool: return
-    try:
-        if tipo_evento == "interesse_detectado":
-            existe = await db_pool.fetchval("SELECT 1 FROM eventos_conversa WHERE conversation_id = $1 AND tipo_evento = $2", conversation_id, tipo_evento)
-            if existe: return
+    if tipo_evento == "interesse_detectado":
+        existe = await db_pool.fetchval("SELECT 1 FROM eventos_conversa WHERE conversation_id = $1 AND tipo_evento = $2", conversation_id, tipo_evento)
+        if existe: return
 
-        await db_pool.execute("INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao) VALUES ($1, $2, $3)", conversation_id, tipo_evento, descricao)
-        
-        # Nota: Futuramente mover score para cálculo em VIEW materializada se houver write contention
-        await db_pool.execute("UPDATE conversas_ia SET score = score + $2, updated_at = NOW() WHERE conversation_id = $1", conversation_id, score_incremento)
-        
-        if tipo_evento == "interesse_detectado":
-            await db_pool.execute("UPDATE conversas_ia SET interesse_detectado = TRUE WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (registrar_evento): {e}")
+    await db_pool.execute("INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao) VALUES ($1, $2, $3)", conversation_id, tipo_evento, descricao)
+    await db_pool.execute("UPDATE conversas_ia SET score = score + $2, updated_at = NOW() WHERE conversation_id = $1", conversation_id, score_incremento)
+    
+    if tipo_evento == "interesse_detectado":
+        await db_pool.execute("UPDATE conversas_ia SET interesse_detectado = TRUE WHERE conversation_id = $1", conversation_id)
 
-async def bd_marcar_link_enviado(conversation_id: int):
-    if not db_pool: return
-    try:
-        await db_pool.execute("UPDATE conversas_ia SET link_enviado = TRUE, updated_at = NOW() WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (marcar_link_enviado): {e}")
-
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_finalizar_conversa(conversation_id: int):
     if not db_pool: return
-    try:
-        await db_pool.execute("UPDATE conversas_ia SET fim = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
-    except Exception as e:
-        logger.error(f"Erro BD (finalizar_conversa): {e}")
+    await db_pool.execute("UPDATE conversas_ia SET encerrada_em = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
+    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE conversation_id = $1 AND status = 'pendente'", conversation_id)
 
-# --- AUXILIARES E CONTEXTO ---
-def obter_contexto_tempo():
-    fuso_sp = ZoneInfo("America/Sao_Paulo")
-    agora = datetime.now(fuso_sp)
-    hora = agora.hour
-    saudacao = "Bom dia" if 5 <= hora < 12 else "Boa tarde" if 12 <= hora < 18 else "Boa noite"
-    dias_semana = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
-    return saudacao, dias_semana[agora.weekday()], agora.strftime("%H:%M")
 
-async def validar_assinatura(request: Request, x_signature: str):
-    if not CHATWOOT_WEBHOOK_SECRET: return
-    body = await request.body()
-    signature = hmac.new(CHATWOOT_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, x_signature or ""):
-        raise HTTPException(status_code=401)
+# --- PROCESSAMENTO IA ---
+async def transcrever_audio(url: str):
+    """Transcreve áudio 100% em memória usando BytesIO (sem I/O de disco)."""
+    if not cliente_whisper: return "[Áudio recebido, mas Whisper não configurado]"
+    async with whisper_semaphore: 
+        try:
+            resp = await http_client.get(url)
+            audio_file = io.BytesIO(resp.content)
+            audio_file.name = "audio.ogg" # Nome virtual obrigatório para a API
+            
+            transcription = await cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file)
+            return transcription.text
+        except Exception as e:
+            logger.error(f"Erro Whisper: {e}")
+            return "[Erro ao transcrever áudio]"
 
-def limpar_nome(nome: str):
-    if not nome: return "Futuro Atleta"
-    nome_limpo = re.sub(r'[~+0-9]', '', nome).strip()
-    return nome_limpo if len(nome_limpo) > 1 else "Futuro Atleta"
+def limpar_nome(nome):
+    if not nome: return "Cliente"
+    return re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", str(nome)).strip()
 
-async def verificar_atendimento_manual(account_id, conversation_id):
-    cache_val = await redis_client.get(f"atend_manual:{conversation_id}")
-    if cache_val == "1": return True
-    if cache_val == "0": return False
-
-    url = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
-    try:
-        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN})
-        dados = res.json()
-        is_manual = dados.get("assignee_id") is not None or dados.get("status") not in ["pending", "open"]
-        await redis_client.setex(f"atend_manual:{conversation_id}", 3600, "1" if is_manual else "0")
-        return is_manual
-    except: return True
-
-async def obter_historico_chatwoot(account_id, conversation_id):
-    url = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
-    try:
-        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN})
-        msgs = sorted(res.json().get("payload", []), key=lambda x: x["id"])[-40:]
-        return "\n".join([f"{'Cliente' if m['message_type']==0 else 'Atendente'}: {m.get('content') or '[Enviou Mídia]'}" for m in msgs])
-    except: return ""
-
-# --- FUNÇÕES CORE MULTIMÍDIA ---
-async def baixar_arquivo_chatwoot(url: str):
-    try:
-        res = await http_client.get(url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
-        res.raise_for_status()
-        return res.content
-    except Exception as e:
-        logger.error(f"❌ Erro ao baixar arquivo: {e}")
-        return None
-
-async def transcrever_audio_whisper(audio_bytes: bytes):
-    """Transcreve áudio usando Whisper. Já possui timeout individual de 20s. Para alta escala, considerar fila dedicada."""
-    if not cliente_whisper: return "[Áudio recebido, mas a chave OPENAI não foi configurada.]"
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_path = tmp_file.name
-        with open(tmp_path, "rb") as audio_file:
-            transcription = await asyncio.wait_for(
-                cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file, language="pt"), timeout=20.0
-            )
-        return transcription.text
-    except asyncio.TimeoutError:
-        logger.warning("⚠️ Timeout na transcrição do Whisper. Áudio muito longo ou serviço lento.")
-        return "Recebi seu áudio, mas ele está um pouquinho longo 😅 pode dar uma resumida pra mim rapidinho?"
-    except Exception as e:
-        logger.error(f"❌ Erro no Whisper: {e}")
-        return "[Erro interno ao transcrever o áudio do cliente.]"
-    finally:
-        if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
-
-async def processar_audio_completo(audio_url: str):
-    """Baixa e transcreve o áudio em uma única task paralela. Para alta escala, considerar fila dedicada."""
-    bytes_audio = await baixar_arquivo_chatwoot(audio_url)
-    if bytes_audio:
-        texto = await transcrever_audio_whisper(bytes_audio)
-        return texto
-    return "[Falha ao baixar áudio]"
-
-# --- LÓGICA PRINCIPAL DA IA ---
-async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug_unidade, nome_cliente, lock_val):
+async def processar_ia_e_responder(account_id: int, conversation_id: int, contact_id: int, slug: str, nome_cliente: str, lock_val: str):
     chave_lock = f"lock:{conversation_id}"
+    watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
+    
     try:
-        await asyncio.sleep(12) 
-        if await redis_client.exists(f"pause_ia:{conversation_id}"): return
+        await asyncio.sleep(2) # Buffer temporal
         
         chave_buffet = f"buffet:{conversation_id}"
-        mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
+        mensagens_acumuladas = await redis_client.lrange(chave_buffet, 0, -1)
         await redis_client.delete(chave_buffet)
         
-        is_manual_atendimento = await verificar_atendimento_manual(account_id, conversation_id)
-        if not mensagens_lista or is_manual_atendimento: return
+        if not mensagens_acumuladas: return
+
+        textos = []
+        tasks_audio = []
+        for m_json in mensagens_acumuladas:
+            m = json.loads(m_json)
+            if m.get("text"): textos.append(m["text"])
+            for f in m.get("files", []):
+                if f["type"] == "audio":
+                    tasks_audio.append(transcrever_audio(f["url"]))
         
-        if len(mensagens_lista) > 15: mensagens_lista = mensagens_lista[-15:]
+        transcricoes = await asyncio.gather(*tasks_audio)
+        pergunta_final = " ".join(textos + list(transcricoes)).strip()
+        if not pergunta_final: return
 
-        textos, imagens, audios = [], [], []
-        for item in mensagens_lista:
-            try:
-                dado = json.loads(item)
-                if dado.get("text"): textos.append(dado["text"])
-                for f in dado.get("files", []):
-                    if f["type"] == "image": imagens.append(f["url"])
-                    elif f["type"] == "audio": audios.append(f["url"])
-            except:
-                textos.append(item)
+        await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final)
 
-        texto_usuario = " ".join(textos).strip()
-        conteudo_usuario_ia = []
+        # Contextos
+        unidade = await carregar_unidade(slug)
+        faq = await carregar_faq_unidade(slug)
+        pers = await carregar_personalidade(slug)
+        historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
-        # Processamento Paralelo de Áudios (v2)
-        if audios:
-            tasks_audio = [processar_audio_completo(url) for url in audios]
-            textos_transcritos_list = await asyncio.gather(*tasks_audio)
-            textos_transcritos = [t for t in textos_transcritos_list if t and not t.startswith("[Falha")] # Filtra falhas
-        else:
-            textos_transcritos = []
+        estado_raw = await redis_client.get(f"estado:{conversation_id}")
+        estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        texto_final = texto_usuario + "\n\n" + "\n".join(textos_transcritos)
-        if texto_final.strip():
-            conteudo_usuario_ia.append({"type": "text", "text": texto_final.strip()})
-            await bd_salvar_mensagem_local(conversation_id, "user", texto_final.strip())
-        else:
-            conteudo_usuario_ia.append({"type": "text", "text": "[O cliente enviou apenas imagem]"})
-
-        for img_url in imagens:
-            bytes_img = await baixar_arquivo_chatwoot(img_url)
-            if bytes_img:
-                b64_img = base64.b64encode(bytes_img).decode('utf-8')
-                conteudo_usuario_ia.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}})
-
-        u = await carregar_unidade(slug_unidade)
-        if not u:
-            logger.warning(f"⚠️ Unidade '{slug_unidade}' não encontrada. Abortando IA.")
-            return
-
-        faq_unidade = await carregar_faq_unidade(slug_unidade)
-        personalidade = await carregar_personalidade(slug_unidade)
+        # Prompt forçando JSON estruturado
+        prompt_sistema = f"""Você é {pers.get('nome_ia', 'Agente Red')}, atendente da Panobianco Academia ({unidade.get('nome', 'Unidade')}).
+        Personalidade: {pers.get('tom_voz', 'Amigável e prestativo')}.
+        Instruções: {pers.get('instrucoes_base', 'Ajude o cliente com dúvidas sobre planos e horários.')}
         
-        historico = await bd_obter_historico_local(conversation_id)
-        if not historico:
-            historico = await obter_historico_chatwoot(account_id, conversation_id)
-            
-        saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
-        estado_cliente = await redis_client.get(f"estado:{conversation_id}") or "indefinido"
+        FAQ da Unidade:
+        {faq}
 
-        system_prompt = f"""
-        Você é o Consultor de Vendas da {u['nome']}.
-
-        OBJETIVO PRINCIPAL:
-        {u.get('objetivo_primario', 'Converter curiosos em alunos matriculados')}
-
-        DADOS DA UNIDADE:
-        - Endereço: {u.get('endereco', 'Não informado')}
-        - Horários: {u.get('horarios', 'Não informado')}
-        - Link de Matrícula: {u.get('link_venda', 'Nenhum link disponível no momento.')}
-
-        PERSONALIDADE DA IA:
-        - Estilo: {personalidade.get('estilo', 'Consultiva')}
-        - Nível de Persuasão: {personalidade.get('nivel_persuasao', 5)}/10
-        - Usa gírias leves: {personalidade.get('usa_giria', True)}
-        - Intensidade Follow-up: {personalidade.get('intensidade_followup', 5)}/10
-        - Usa gatilho de escassez: {personalidade.get('gatilho_escassez', True)}
-
-        BASE DE CONHECIMENTO (FAQ):
-        {faq_unidade}
-
-        CONTEXTO ATUAL:
-        - Hoje é {dia_atual}, {hora_atual}
-        - Estado Emocional Mapeado do Cliente: {estado_cliente}
-        - Nome do Cliente: {nome_cliente}
-
-        REGRAS ABSOLUTAS:
-        1. NÃO SEJA REPETITIVO: NUNCA repita frases ou links que já estão no histórico.
-        2. FOCO NO AGORA: Responda APENAS à última mensagem.
-        3. ESTILO HUMANO: Seja direto.
-        4. LINK: Só envie se o cliente quiser comprar. Se já enviou, NÃO envie de novo.
-        5. FECHAMENTO: SEMPRE faça uma pergunta no final se o cliente não estiver 100% decidido.
-        6. EMOCIONAL (OBRIGATÓRIO): No final de TODAS as suas respostas, você DEVE incluir a tag [ESTADO: sentimento].
-
-        HISTÓRICO DA CONVERSA:
-        {historico}
+        Contexto da Unidade: {unidade.get('contexto_adicional', '')}
+        
+        Nome do Cliente: {nome_cliente}
+        Estado/Sentimento Anterior: {estado_atual}
+        
+        REGRAS:
+        1. Seja breve e use emojis moderadamente.
+        2. Se o cliente quiser saber preços, foque nos benefícios primeiro.
+        3. Se detetar interesse real, tente levar para o link de matrícula: {unidade.get('link_matricula', 'site oficial')}.
+        
+        MUITO IMPORTANTE:
+        Você deve SEMPRE responder estritamente no formato JSON válido.
+        Formato exigido:
+        {{
+            "resposta": "a sua mensagem formatada para o cliente",
+            "estado": "qual o estado atual do cliente numa única palavra (ex: neutro, interessado, irritado, matricula)"
+        }}
         """
 
-        hora_atual_int = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
-        modelos_para_tentar = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"] if 8 <= hora_atual_int <= 20 else ["google/gemini-2.5-flash-lite", "google/gemini-2.5-flash"]
+        start_time = time.time()
         
-        resposta = None
-        erro_final = None # Para capturar o último erro se todas as tentativas falharem
-
-        for modelo_atual in modelos_para_tentar:
+        # Limite de concorrência LLM
+        async with llm_semaphore:
             try:
-                # Adiciona timeout à chamada da LLM (v4)
-                response = await asyncio.wait_for(
-                    cliente_ia.chat.completions.create(
-                        model=modelo_atual,
-                        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": conteudo_usuario_ia}],
-                        temperature=0.7
-                    ),
-                    timeout=25.0 # Timeout de 25 segundos para a chamada da LLM
+                response = await cliente_ia.chat.completions.create(
+                    model="google/gemini-2.0-flash-lite-001",
+                    messages=[
+                        {"role": "system", "content": prompt_sistema},
+                        {"role": "user", "content": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"}
+                    ],
+                    temperature=0.7,
+                    timeout=25,
+                    response_format={"type": "json_object"}
                 )
-                resposta = response.choices[0].message.content
-                break 
-            except asyncio.TimeoutError:
-                erro_final = f"Timeout ({modelo_atual})"
-                logger.warning(f"⚠️ Timeout na chamada da LLM com modelo {modelo_atual}. Tentando próximo...")
-                # Não há necessidade de sleep aqui, pois o próximo modelo será tentado imediatamente
-            except Exception as e:
-                erro_final = str(e)
-                logger.error(f"❌ Erro na chamada da LLM com modelo {modelo_atual}: {e}")
-                if "429" in erro_final: await asyncio.sleep(2) # Backoff para 429
-                else: await asyncio.sleep(1) # Pequeno delay para outros erros
-
-        if not resposta:
-            logger.error(f"🚨 Todas as tentativas de LLM falharam. Último erro: {erro_final}")
-            resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
-
-        if "[NOME:" in resposta:
-            match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
-            if match:
-                url_c = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/contacts/{contact_id}"
-                await http_client.put(url_c, json={"name": limpar_nome(match.group(1))}, headers={"api_access_token": CHATWOOT_TOKEN})
-                resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
-
-        link_unidade = u.get('link_venda')
-        if link_unidade and link_unidade in resposta:
-            await bd_registrar_evento_funil(conversation_id, "link_enviado", "IA enviou o link de matrícula.", score_incremento=15)
-            await bd_marcar_link_enviado(conversation_id)
-
-        if "[ESTADO:" in resposta:
-            match_estado = re.search(r"\[ESTADO:\s*(.*?)\]", resposta)
-            if match_estado:
-                novo_estado = match_estado.group(1).lower().strip()
-                await redis_client.setex(f"estado:{conversation_id}", 86400, novo_estado)
+                resposta_bruta = response.choices[0].message.content
                 
-                if any(palavra in novo_estado for palavra in ["interessad", "quer comprar", "preço", "matricul", "fechar"]):
-                    await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA mapeou intenção. Estado: {novo_estado}")
-                resposta = re.sub(r"\[ESTADO:.*?\]", "", resposta).strip()
+            except Exception as e:
+                logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
+                response = await cliente_ia.chat.completions.create(
+                    model="google/gemini-2.0-flash-001",
+                    messages=[
+                        {"role": "system", "content": prompt_sistema},
+                        {"role": "user", "content": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"}
+                    ],
+                    temperature=0.7,
+                    response_format={"type": "json_object"}
+                )
+                resposta_bruta = response.choices[0].message.content
+        
+        latency = time.time() - start_time
+        logger.info(f"⏱️ LLM Latency: {latency:.2f}s | Conv: {conversation_id}")
 
-        await bd_salvar_mensagem_local(conversation_id, "assistant", resposta)
+        # Processar JSON da IA
+        try:
+            dados_ia = json.loads(resposta_bruta)
+            resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
+            novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
+        except json.JSONDecodeError:
+            logger.error("A IA não retornou um JSON válido.")
+            resposta_texto = resposta_bruta
+            novo_estado = estado_atual
 
-        pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
+        # Pipeline Redis
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
+            pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now().isoformat()}|{novo_estado}")
+            pipe.ltrim(f"hist_estado:{conversation_id}", 0, 10)
+            await pipe.execute()
+
+        if "interessado" in novo_estado or "matricula" in novo_estado:
+            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA detetou estado: {novo_estado}")
+
+        await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
+
+        is_manual_atendimento = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
+        pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
+        
         for i, p in enumerate(pedacos):
             if is_manual_atendimento: break
             if await redis_client.exists(f"pause_ia:{conversation_id}"): break
@@ -520,16 +489,27 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
             await bd_atualizar_msg_ia(conversation_id)
             if i == 0: 
                 await bd_registrar_primeira_resposta(conversation_id)
+        
+        if not is_manual_atendimento:
+            await agendar_followup(conversation_id, account_id, slug, horas=24)
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
     finally:
+        watchdog.cancel()
         try:
             await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
         except Exception as lock_err:
-            logger.error(f"Erro ao liberar o lock da conversa {conversation_id}: {lock_err}")
+            logger.error(f"Erro ao libertar o lock da conversa {conversation_id}: {lock_err}")
 
 # --- WEBHOOK ENDPOINT ---
+async def validar_assinatura(request: Request, signature: str):
+    if not CHATWOOT_WEBHOOK_SECRET: return
+    body = await request.body()
+    expected = hmac.new(CHATWOOT_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature or "", expected):
+        raise HTTPException(status_code=401, detail="Assinatura inválida")
+
 @app.post("/webhook")
 async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, x_chatwoot_signature: str = Header(None)):
     await validar_assinatura(request, x_chatwoot_signature)
@@ -539,7 +519,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
 
-    # --- 1. RATE LIMIT INTERNO (v3) ---
+    # Rate Limit Interno
     rate_key = f"rate:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1: await redis_client.expire(rate_key, 10)
@@ -645,6 +625,8 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message: return {"status": "ignorado_mensagem_ia"}
         await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+        if db_pool:
+            await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE conversation_id = $1 AND status = 'pendente'", id_conv)
         return {"status": "ia_pausada"}
 
     if message_type != "incoming": return {"status": "ignorado_nao_incoming"}
