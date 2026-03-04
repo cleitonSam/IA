@@ -23,7 +23,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("panobianco-ia")
+logger = logging.getLogger("motor-saas-ia")
 
 load_dotenv()
 
@@ -52,12 +52,9 @@ redis_client: redis.Redis = None
 db_pool: asyncpg.Pool = None
 
 # --- CONTROLE DE CONCORRÊNCIA ---
-# Semáforo para limitar concorrência no Whisper (Evitar Throttling)
 whisper_semaphore = asyncio.Semaphore(5)
-# Semáforo para o LLM (Evitar estourar Rate Limit e CPU)
 llm_semaphore = asyncio.Semaphore(15)
 
-# Script LUA para deletar o Lock de forma atômica
 LUA_RELEASE_LOCK = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
     return redis.call("del", KEYS[1])
@@ -88,7 +85,6 @@ async def startup_event():
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
     
-    # Iniciar worker de follow-up em background
     asyncio.create_task(worker_followup())
 
 @app.on_event("shutdown")
@@ -122,7 +118,6 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
                 1, chave, valor
             )
             if not res: break
-            logger.debug(f"🔄 Lock {chave} renovado.")
     except asyncio.CancelledError:
         pass
 
@@ -166,7 +161,7 @@ async def worker_followup():
                 res = await http_client.post(url_m, json={
                     "content": msg_followup,
                     "message_type": "outgoing",
-                    "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+                    "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                 }, headers={"api_access_token": CHATWOOT_TOKEN})
                 
                 if res.status_code < 300:
@@ -181,7 +176,6 @@ async def worker_followup():
 # --- BACKGROUND JOBS (TIMEOUTS) ---
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await asyncio.sleep(120) 
-    
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"): return
     if await redis_client.exists(f"unidade_escolhida:{conversation_id}"): return
 
@@ -189,19 +183,17 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await http_client.post(url_m, json={
         "content": "Só confirmando 🙂 qual unidade você deseja?",
         "message_type": "outgoing",
-        "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+        "content_attributes": {"origin": "ai", "ai_agent": "Assistente", "ignore_webhook": True}
     }, headers={"api_access_token": CHATWOOT_TOKEN})
 
     await asyncio.sleep(480) 
-    
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"): return
     if await redis_client.exists(f"unidade_escolhida:{conversation_id}"): return
 
     await redis_client.delete(f"esperando_unidade:{conversation_id}")
     url_c = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": CHATWOOT_TOKEN})
-    logger.info(f"⏳ Conversa {conversation_id} fechada por inatividade na escolha da unidade.")
-
+    logger.info(f"⏳ Conversa {conversation_id} fechada por inatividade.")
 
 # --- FUNÇÕES DE BUSCA DINÂMICA (SAAS) ---
 async def listar_unidades_ativas():
@@ -214,7 +206,7 @@ async def listar_unidades_ativas():
         return []
 
 async def carregar_unidade(slug: str):
-    if not db_pool: return None
+    if not db_pool: return {}
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
     if cache: return json.loads(cache)
@@ -225,10 +217,10 @@ async def carregar_unidade(slug: str):
             dados = dict(row)
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
             return dados
-        return None
+        return {}
     except Exception as e:
         logger.error(f"Erro ao carregar unidade ({slug}): {e}")
-        return None
+        return {}
 
 async def carregar_faq_unidade(slug: str):
     if not db_pool: return ""
@@ -303,8 +295,8 @@ async def bd_atualizar_msg_ia(conversation_id: int):
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_primeira_resposta(conversation_id: int):
     if not db_pool: return
-    existe_primeira_resposta = await db_pool.fetchval("SELECT primeira_resposta_em FROM conversas_ia WHERE conversation_id = $1", conversation_id)
-    if not existe_primeira_resposta:
+    existe = await db_pool.fetchval("SELECT primeira_resposta_em FROM conversas_ia WHERE conversation_id = $1", conversation_id)
+    if not existe:
         await db_pool.execute("UPDATE conversas_ia SET primeira_resposta_em = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
@@ -326,25 +318,20 @@ async def bd_finalizar_conversa(conversation_id: int):
     await db_pool.execute("UPDATE conversas_ia SET encerrada_em = NOW(), updated_at = NOW() WHERE conversation_id = $1", conversation_id)
     await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE conversation_id = $1 AND status = 'pendente'", conversation_id)
 
-
-# --- PROCESSAMENTO IA ---
+# --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
     """Transcreve áudio 100% em memória lidando com redirecionamentos."""
     if not cliente_whisper: return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore: 
         try:
-            # Siga o redirecionamento (302 Found) do Chatwoot
             resp = await http_client.get(url, follow_redirects=True)
-            
             audio_file = io.BytesIO(resp.content)
             
-            # Extrai a extensão da URL de forma segura
             extensao = url.split('?')[0].split('.')[-1]
             if extensao.lower() not in ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']:
-                extensao = 'ogg' # Fallback caso a URL não tenha uma extensão clara
+                extensao = 'ogg'
                 
             audio_file.name = f"audio.{extensao}" 
-            
             transcription = await cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file)
             return transcription.text
         except Exception as e:
@@ -384,38 +371,57 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final)
 
         # Contextos
-        unidade = await carregar_unidade(slug)
-        faq = await carregar_faq_unidade(slug)
-        pers = await carregar_personalidade(slug)
+        unidade = await carregar_unidade(slug) or {}
+        faq = await carregar_faq_unidade(slug) or ""
+        pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        # Prompt forçando JSON estruturado
-        prompt_sistema = f"""Você é {pers.get('nome_ia', 'Agente Red')}, atendente da Panobianco Academia ({unidade.get('nome', 'Unidade')}).
-        Personalidade: {pers.get('tom_voz', 'Amigável e prestativo')}.
-        Instruções: {pers.get('instrucoes_base', 'Ajude o cliente com dúvidas sobre planos e horários.')}
+        # --- 1. EXTRAÇÃO DINÂMICA DE CONTEXTO (ENTERPRISE SAAS) ---
+        nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
+        nome_unidade = unidade.get('nome') or 'Unidade Matriz'
+        link_principal = unidade.get('link_matricula') or 'nosso site oficial'
+        contexto_extra = unidade.get('contexto_adicional') or 'Sem contexto adicional configurado.'
         
-        FAQ da Unidade:
-        {faq}
+        nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+        tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
+        
+        instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
+        instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
+        
+        regras_padrao = "1. Seja breve e objetivo.\n2. Forneça respostas diretas baseadas no FAQ."
+        regras_atendimento = pers.get('regras_atendimento') or regras_padrao
 
-        Contexto da Unidade: {unidade.get('contexto_adicional', '')}
+        # --- 2. MONTAGEM DO PROMPT REUTILIZÁVEL ---
+        prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
+        Personalidade e Tom de Voz: {tom_voz}
         
+        INSTRUÇÕES GERAIS:
+        {instrucoes_base}
+        
+        REGRAS DE ATENDIMENTO (Siga estritamente):
+        {regras_atendimento}
+        * Se o cliente demonstrar intenção clara de compra ou conversão (matrícula/agendamento), direcione para o link principal: {link_principal}.
+        
+        FAQ DA UNIDADE ({nome_unidade}):
+        {faq if faq else 'Nenhum FAQ cadastrado para esta unidade.'}
+
+        CONTEXTO DE NEGÓCIO: 
+        {contexto_extra}
+        
+        DADOS DO ATENDIMENTO ATUAL:
         Nome do Cliente: {nome_cliente}
         Estado/Sentimento Anterior: {estado_atual}
         
-        REGRAS:
-        1. Seja breve e use emojis moderadamente.
-        2. Se o cliente quiser saber preços, foque nos benefícios primeiro.
-        3. Se detetar interesse real, tente levar para o link de matrícula: {unidade.get('link_matricula', 'site oficial')}.
-        
-        MUITO IMPORTANTE:
-        Você deve SEMPRE responder estritamente no formato JSON válido.
+        ---
+        MUITO IMPORTANTE (CONTRATO DE SISTEMA):
+        Você deve SEMPRE responder estritamente no formato JSON válido, sem markdown em volta.
         Formato exigido:
         {{
-            "resposta": "a sua mensagem formatada para o cliente",
-            "estado": "qual o estado atual do cliente numa única palavra (ex: neutro, interessado, irritado, matricula)"
+            "resposta": "a sua mensagem final formatada para o cliente",
+            "estado": "qual o estado atual do cliente numa única palavra (ex: neutro, interessado, irritado, conversao)"
         }}
         """
 
@@ -469,7 +475,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             pipe.ltrim(f"hist_estado:{conversation_id}", 0, 10)
             await pipe.execute()
 
-        if "interessado" in novo_estado or "matricula" in novo_estado:
+        if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
             await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA detetou estado: {novo_estado}")
 
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
@@ -487,7 +493,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
             payload_msg = {
                 "content": p, "message_type": "outgoing",
-                "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+                "content_attributes": {"origin": "ai", "ai_agent": nome_ia, "ignore_webhook": True}
             }
             await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
             await bd_atualizar_msg_ia(conversation_id)
@@ -554,7 +560,9 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     sender = payload.get("sender", {})
     sender_type = sender.get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    is_ai_message = content_attrs.get("ai_agent") == "Agente Red" or content_attrs.get("origin") == "ai"
+    
+    # Identifica dinamicamente se a mensagem veio da IA usando a flag 'origin'
+    is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
 
     labels = payload.get("conversation", {}).get("labels", [])
@@ -599,20 +607,20 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     await http_client.post(url_m, json={
                         "content": f"Perfeito! Você escolheu a unidade {unidade_selecionada['nome']} 🙌\n\nComo posso te ajudar hoje?",
                         "message_type": "outgoing",
-                        "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+                        "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                     }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "unidade_definida"}
                 else:
                     return {"status": "aguardando_unidade_valida"}
             else:
                 nomes_unidades = "\n".join([f"- {u['nome']}" for u in unidades_ativas])
-                mensagem = f"Olá! 😊\n\nTemos mais de uma unidade disponível.\n\nQual delas você gostaria de falar?\n\n{nomes_unidades}\n\nMe diga o nome da unidade 👇"
+                mensagem = f"Olá! 😊\n\nTemos as seguintes unidades disponíveis.\n\nQual delas você gostaria de falar?\n\n{nomes_unidades}\n\nMe diga o nome da unidade 👇"
                 
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                 await http_client.post(url_m, json={
                     "content": mensagem,
                     "message_type": "outgoing",
-                    "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
+                    "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                 }, headers={"api_access_token": CHATWOOT_TOKEN})
                 
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
