@@ -205,8 +205,6 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": CHATWOOT_TOKEN})
 
 # --- FUNÇÕES DE BUSCA DINÂMICA (SAAS) ---
-
-# ⚡ OTIMIZAÇÃO: 1000x menos queries no banco usando Redis Cache
 async def listar_unidades_ativas():
     if not db_pool: return []
     try:
@@ -214,13 +212,21 @@ async def listar_unidades_ativas():
         if cache:
             return json.loads(cache)
 
-        rows = await db_pool.fetch("SELECT slug, nome, palavras_chave, cidade, bairro FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
+        # ⚡ Correção 1: Removido "bairro" que não existia na tabela, mantido "cidade"
+        rows = await db_pool.fetch("SELECT slug, nome, palavras_chave, cidade FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
         data = [dict(r) for r in rows]
 
         await redis_client.setex("cfg:unidades_lista", 300, json.dumps(data))
         return data
     except Exception as e:
         logger.error(f"Erro ao listar unidades: {e}")
+        # ⚡ Correção 2: Fallback seguro caso dê erro na query
+        if db_pool:
+            try:
+                rows_fallback = await db_pool.fetch("SELECT slug, nome FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
+                return [dict(r) for r in rows_fallback]
+            except Exception as fb_err:
+                logger.error(f"Erro crítico no fallback de unidades: {fb_err}")
         return []
 
 # =========================================
@@ -230,32 +236,31 @@ async def buscar_unidade_na_pergunta(texto: str):
     unidades = await listar_unidades_ativas()
     texto_lower = texto.lower()
     
-    # 1. Busca rápida e exata (Nome, Bairro, Cidade, Palavras-Chave)
+    # ⚡ Correção 3: Router simplificado e mais poderoso
     for u in unidades:
         nome = (u.get("nome") or "").lower()
-        bairro = (u.get("bairro") or "").lower()
         cidade = (u.get("cidade") or "").lower()
         
-        if nome and nome in texto_lower: return u["slug"]
-        if bairro and bairro in texto_lower: return u["slug"]
-        if cidade and cidade in texto_lower and ("unidade" in texto_lower or "academia" in texto_lower): return u["slug"]
+        if nome and nome in texto_lower: 
+            return u["slug"]
+            
+        if cidade and cidade in texto_lower: 
+            return u["slug"]
             
         if u.get("palavras_chave"):
             palavras = [p.strip().lower() for p in u["palavras_chave"].split(",")]
             if any(pk in texto_lower for pk in palavras):
                 return u["slug"]
                 
-    # 2. Busca por similaridade / Fuzzy Match (Nível Produção)
+    # Busca por similaridade / Fuzzy Match (Nível Produção mantido)
     melhor_slug = None
     maior_score = 0
     
     for u in unidades:
         score_nome = similar(texto_lower, u.get("nome", ""))
-        score_bairro = similar(texto_lower, u.get("bairro", ""))
-        score_atual = max(score_nome, score_bairro)
         
-        if score_atual > maior_score:
-            maior_score = score_atual
+        if score_nome > maior_score:
+            maior_score = score_nome
             melhor_slug = u["slug"]
             
     # Trava de segurança: 70% de similaridade
@@ -455,7 +460,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         
         # ⚡ FAST-PATH BLINDADO E PROTEGIDO
         if unidade and not imagens_urls: 
-            if re.search(r"(endere[cç]o|onde fica|localiza[cç][aã]o|fica onde|qual o local|como chego)", texto_lower_fast):
+            if re.search(r"(endere[cç]o|ender[cç]o|enderco|local|localiza[cç][aã]o|fica onde|onde fica|como chego|qual o local)", texto_lower_fast):
                 if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
                     fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
             
@@ -471,7 +476,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
                     fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
 
-        # --- CACHE SEMÂNTICO (Fallback em MD5 enquanto o PGVector não chega) ---
+        # --- CACHE SEMÂNTICO MD5 ---
         hash_pergunta = hashlib.md5(pergunta_final.lower().encode('utf-8')).hexdigest()
         chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
         resposta_cacheada = await redis_client.get(chave_cache_ia)
@@ -491,6 +496,10 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             # --- 🤖 FLUXO IA ---
             faq = await carregar_faq_unidade(slug) or ""
             historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
+            
+            # ⚡ Injeção Dinâmica: IA ganha visão de todas as unidades ativas
+            todas_unidades = await listar_unidades_ativas()
+            lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
             
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
@@ -542,6 +551,9 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade atual: {nome_unidade}).
             Personalidade e Tom de Voz: {tom_voz}
             {aviso_mudanca}
+            
+            UNIDADES DISPONÍVEIS NA REDE:
+            {lista_unidades_nomes}
             
             INSTRUÇÕES GERAIS:
             {instrucoes_base}
@@ -612,7 +624,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
                 
                 if not imagens_urls:
-                    await redis_client.setex(chave_cache_ia, 3600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
+                    await redis_client.setex(chave_cache_ia, 600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
             except json.JSONDecodeError:
                 resposta_texto = resposta_bruta
                 novo_estado = estado_atual
@@ -725,12 +737,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {slug}", score_incremento=3)
                 
             else:
-                # 💬 Menu Totalmente Humanizado (Sem lista numerada engessada)
                 cfg = await carregar_configuracao_global()
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
                 
-                # Gera lista: • Nome (Bairro) ou apenas • Nome
-                nomes_unidades = "\n".join([f"• {u['nome']}" + (f" ({u['bairro']})" if u.get('bairro') else "") for u in unidades_ativas])
+                # Menu Humanizado apontando pra Cidade caso exista
+                nomes_unidades = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
                 
                 mensagem = f"""{boas_vindas}
 
@@ -739,7 +750,7 @@ Qual unidade você quer falar?
 
 {nomes_unidades}
 
-Se preferir, pode me dizer o nome ou o bairro também."""
+Se preferir, pode me dizer o nome ou a cidade também."""
                 
                 await enviar_mensagem_chatwoot(account_id, id_conv, mensagem)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
