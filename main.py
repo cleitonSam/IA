@@ -230,13 +230,16 @@ async def carregar_unidade(slug: str):
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
     if cache:
+        logger.info(f"⚡ [CACHE REDIS] Unidade '{slug}' carregada da memória.")
         return json.loads(cache)
     try:
         row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
         if row:
             dados = dict(row)
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
+            logger.info(f"🐘 [POSTGRES] Unidade '{slug}' carregada direto do banco.")
             return dados
+        logger.warning(f"⚠️ [ALERTA] Unidade '{slug}' NÃO ENCONTRADA no banco ou ativa=FALSE!")
         return {}
     except Exception as e:
         logger.error(f"Erro BD ao carregar unidade '{slug}': {e}")
@@ -284,30 +287,21 @@ async def carregar_configuracao_global():
 
 # --- IA: CLASSIFICADOR DE UNIDADE (Zero-Shot) ---
 async def ia_detectar_unidade(mensagem_cliente: str, unidades: list) -> str:
-    """Usa o LLM super rápido para ver se o cliente já falou qual unidade quer de cara."""
     lista_nomes = "\n".join([f"- {u['nome']} (slug: {u['slug']})" for u in unidades])
-    prompt = f"""
-    Você é um classificador de intenção. 
-    Sua missão é descobrir se o cliente citou o nome de uma das unidades abaixo na mensagem dele.
-    
+    prompt = f"""Você é um classificador de intenção. Sua missão é descobrir se o cliente citou o nome de uma das unidades abaixo.
     UNIDADES:
     {lista_nomes}
-    
     MENSAGEM DO CLIENTE: "{mensagem_cliente}"
-    
-    Se ele citou uma unidade de forma clara, retorne APENAS o 'slug' exato da unidade, nada mais.
-    Se não citou nenhuma ou não está claro, retorne a palavra: NULL
+    Se ele citou, retorne APENAS o 'slug' exato da unidade. Se não, retorne: NULL
     """
     try:
         response = await cliente_ia.chat.completions.create(
             model="google/gemini-2.5-flash-lite", 
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=10
+            temperature=0.0, max_tokens=10
         )
         resultado = response.choices[0].message.content.strip()
-        if resultado != "NULL":
-            return resultado
+        if resultado != "NULL": return resultado
     except Exception: pass
     return None
 
@@ -419,32 +413,42 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         unidade = await carregar_unidade(slug) or {}
         
-        # --- NOVO LOG DE RAIO-X PROFUNDO ---
-        logger.info(f"📦 Dados carregados da unidade:\n{json.dumps(unidade, indent=2, ensure_ascii=False)}")
-        
-        faq = await carregar_faq_unidade(slug) or ""
-        pers = await carregar_personalidade(slug) or {}
-        historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
+        # Correção JSON de data e proteção de log
+        logger.info(f"📦 Dados carregados da unidade:\n{json.dumps(unidade, indent=2, ensure_ascii=False, default=str)}")
         
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
         
-        # --- ARQUITETURA FAST-PATH (Bypass LLM) ---
         texto_lower_fast = pergunta_final.lower()
         fast_reply = None
         
-        palavras_endereco = ["endereço", "endereco", "onde fica", "localização", "onde é", "qual o endereço"]
-        if any(p in texto_lower_fast for p in palavras_endereco) and len(texto_lower_fast) < 60:
-            end_banco = unidade.get('endereco')
-            if end_banco and str(end_banco).strip().lower() not in ['não informado', 'nao informado', 'none', '']:
-                fast_reply = f"📍 O nosso endereço é: {end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
+        # 🚨 TRAVA DE SEGURANÇA: Unidade Vazia
+        if not unidade:
+            logger.error(f"❌ Unidade '{slug}' retornou vazia! Abortando processamento de IA para evitar alucinações.")
+            fast_reply = "Desculpe, estou com dificuldade para acessar os dados da unidade no momento. Aguarde um instante que um atendente humano já vai te ajudar."
+            
+        # ⚡ FAST-PATH (Bypass LLM) - Só roda se texto for curto e tiver unidade
+        elif len(texto_lower_fast) < 80:
+            if re.search(r"\b(endere[cç]o|onde fica|localiza[cç][aã]o|fica onde|qual o local)\b", texto_lower_fast):
+                end_banco = unidade.get('endereco')
+                if end_banco and str(end_banco).strip().lower() not in ['não informado', 'nao informado', 'none', '']:
+                    fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
+            
+            elif re.search(r"\b(hor[aá]rio|funcionamento|abre|fecha|que horas)\b", texto_lower_fast):
+                hor_banco = unidade.get('horario_funcionamento')
+                if hor_banco and str(hor_banco).strip().lower() not in ['não informado', 'nao informado', 'none', '']:
+                    fast_reply = f"🕒 Nosso horário de funcionamento é:\n{hor_banco}\n\nSe quiser, posso te ajudar com planos e valores também!"
 
         if fast_reply:
-            logger.info("⚡ Fast-Path Ativado! Respondendo sem usar IA (Latência: 0.02s)")
+            logger.info("⚡ Fast-Path Ativado! Respondendo de forma determinística (sem IA).")
             resposta_texto = fast_reply
             novo_estado = estado_atual
         else:
             # --- FLUXO NORMAL DA IA ---
+            faq = await carregar_faq_unidade(slug) or ""
+            pers = await carregar_personalidade(slug) or {}
+            historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
+            
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
             link_principal = unidade.get('link_matricula') or 'nosso site oficial'
@@ -589,7 +593,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             await pipe.execute()
 
         if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
-            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"Detetou estado: {novo_estado}")
+            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA detetou estado: {novo_estado}")
 
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
@@ -661,7 +665,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     slug = next((str(l).lower().strip() for l in labels if l), None) or await redis_client.get(f"unidade_escolhida:{id_conv}")
 
     # ========================================================
-    # 🧠 ROTEAMENTO DINÂMICO DE UNIDADE (IA + MENU + FUZZY)
+    # 🧠 ROTEAMENTO DINÂMICO DE UNIDADE (Rápido -> IA -> Menu)
     # ========================================================
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas()
@@ -673,31 +677,38 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
         elif len(unidades_ativas) == 1:
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-            # Fluxo continua normalmente para baixo, deixando a IA responder a mensagem
             
         else:
             texto_cliente = conteudo_texto.lower().strip()
             unidade_selecionada = None
             
-            # --- 1. DETECÇÃO INTELIGENTE POR IA (Zero-Shot) ---
-            slug_detectado_ia = await ia_detectar_unidade(texto_cliente, unidades_ativas)
-            if slug_detectado_ia:
-                for u in unidades_ativas:
-                    if u["slug"] == slug_detectado_ia:
-                        unidade_selecionada = u
-                        logger.info(f"🤖 IA classificou o cliente automaticamente para a unidade: {slug_detectado_ia}")
-                        break
+            # --- 1. DETECÇÃO SUPER RÁPIDA (String Match - Custo $0) ---
+            for u in unidades_ativas:
+                if u["nome"].lower() in texto_cliente:
+                    unidade_selecionada = u
+                    logger.info(f"⚡ Detecção rápida! Cliente citou a unidade: {u['nome']}")
+                    break
+            
+            # --- 2. DETECÇÃO INTELIGENTE POR IA (Se a rápida falhar) ---
+            if not unidade_selecionada:
+                slug_detectado_ia = await ia_detectar_unidade(texto_cliente, unidades_ativas)
+                if slug_detectado_ia:
+                    for u in unidades_ativas:
+                        if u["slug"] == slug_detectado_ia:
+                            unidade_selecionada = u
+                            logger.info(f"🤖 IA classificou o cliente automaticamente para a unidade: {slug_detectado_ia}")
+                            break
             
             esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
             
             if esperando_unidade or unidade_selecionada:
-                # --- 2. Tenta identificar se o cliente mandou um Número (1, 2, 3...) ---
+                # --- 3. Tenta identificar se o cliente mandou um Número (1, 2, 3...) ---
                 if not unidade_selecionada and texto_cliente.isdigit():
                     idx = int(texto_cliente) - 1
                     if 0 <= idx < len(unidades_ativas):
                         unidade_selecionada = unidades_ativas[idx]
                 
-                # --- 3. Tenta identificar por Fuzzy Matching (Similaridade de Nome) ---
+                # --- 4. Tenta identificar por Fuzzy Matching ---
                 if not unidade_selecionada:
                     melhor_score = 0
                     for u in unidades_ativas:
@@ -723,8 +734,8 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     await bd_iniciar_conversa(id_conv, slug)
                     await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {unidade_selecionada['nome']}", score_incremento=3)
                     
-                    logger.info(f"✅ Unidade definida ({slug}). Repassando a pergunta do cliente para a IA/Buffet...")
-                    # NÃO TEM MAIS O RETURN AQUI! O código segue para baixo para processar a pergunta.
+                    logger.info(f"✅ Unidade definida ({slug}). Repassando a pergunta do cliente para processamento...")
+                    # SEM RETURN AQUI! Deixa o código descer para a IA ler a pergunta original.
                 
                 # ❌ FALHA: Mostra a lista novamente pedindo correção
                 else:
