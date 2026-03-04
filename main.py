@@ -100,27 +100,23 @@ async def shutdown_event():
 
 # --- UTILITÁRIOS DE COMPRESSÃO (REDIS) ---
 def comprimir_texto(texto: str) -> str:
-    """Comprime texto para economizar memória no Redis."""
     if not texto: return ""
     dados = zlib.compress(texto.encode('utf-8'))
     return base64.b64encode(dados).decode('utf-8')
 
 def descomprimir_texto(texto_comprimido: str) -> str:
-    """Descomprime texto vindo do Redis."""
     if not texto_comprimido: return ""
     try:
         dados = base64.b64decode(texto_comprimido)
         return zlib.decompress(dados).decode('utf-8')
     except:
-        return texto_comprimido # Fallback se não estiver comprimido
+        return texto_comprimido 
 
 # --- RENOVAÇÃO DE LOCK (WATCHDOG) ---
 async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
-    """Renova o TTL do lock periodicamente enquanto o processamento ocorre."""
     try:
         while True:
             await asyncio.sleep(intervalo)
-            # Só renova se o valor ainda for o mesmo
             res = await redis_client.eval(
                 "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], 60) else return 0 end",
                 1, chave, valor
@@ -147,7 +143,7 @@ async def agendar_followup(conversation_id: int, account_id: int, slug: str, hor
 async def worker_followup():
     logger.info("🤖 Worker de Follow-up iniciado.")
     while True:
-        await asyncio.sleep(300) # Verifica a cada 5 minutos
+        await asyncio.sleep(300) 
         if not db_pool: continue
         
         try:
@@ -333,13 +329,21 @@ async def bd_finalizar_conversa(conversation_id: int):
 
 # --- PROCESSAMENTO IA ---
 async def transcrever_audio(url: str):
-    """Transcreve áudio 100% em memória usando BytesIO (sem I/O de disco)."""
+    """Transcreve áudio 100% em memória lidando com redirecionamentos."""
     if not cliente_whisper: return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore: 
         try:
-            resp = await http_client.get(url)
+            # Siga o redirecionamento (302 Found) do Chatwoot
+            resp = await http_client.get(url, follow_redirects=True)
+            
             audio_file = io.BytesIO(resp.content)
-            audio_file.name = "audio.ogg" # Nome virtual obrigatório para a API
+            
+            # Extrai a extensão da URL de forma segura
+            extensao = url.split('?')[0].split('.')[-1]
+            if extensao.lower() not in ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']:
+                extensao = 'ogg' # Fallback caso a URL não tenha uma extensão clara
+                
+            audio_file.name = f"audio.{extensao}" 
             
             transcription = await cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file)
             return transcription.text
