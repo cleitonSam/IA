@@ -6,3 +6,4 @@ openai
 gunicorn
 redis
 asyncpg
+tenacity
