@@ -127,13 +127,11 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str):
         return
 
     try:
-        # 1. Apaga followups pendentes antigos dessa conversa (reseta o cronômetro)
         await db_pool.execute(
             "DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", 
             conversation_id
         )
 
-        # 2. Busca a régua de relacionamento configurada para a unidade
         templates = await db_pool.fetch("""
             SELECT *
             FROM followup_templates
@@ -142,9 +140,8 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str):
             ORDER BY ordem
         """, slug)
 
-        agora = datetime.now()
+        agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
 
-        # 3. Agenda todos os passos
         for t in templates:
             agendar = agora + timedelta(minutes=t["delay_minutos"])
 
@@ -169,12 +166,12 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str):
 async def worker_followup():
     logger.info("🤖 Worker de Follow-up Enterprise iniciado.")
     while True:
-        await asyncio.sleep(60) # Acelerado para 1 minuto para pegar delays curtos (ex: 5 min)
+        await asyncio.sleep(30) # Aceleração para processar follow-ups rapidamente
         if not db_pool: continue
         
         try:
-            agora = datetime.now()
-            # Puxa os followups que já deram o tempo
+            agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            
             pendentes = await db_pool.fetch("""
                 SELECT *
                 FROM followups
@@ -192,7 +189,6 @@ async def worker_followup():
                     await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                     continue
 
-                # IMPEDE FOLLOWUP SE O CLIENTE RESPONDEU NOS ÚLTIMOS 5 MINUTOS
                 respondeu = await db_pool.fetchval("""
                     SELECT 1
                     FROM mensagens_local
@@ -206,7 +202,6 @@ async def worker_followup():
                     logger.info(f"🚫 Followup cancelado para conv {f['conversation_id']} (Cliente já respondeu).")
                     continue
 
-                # BUSCA A MENSAGEM DINÂMICA DO TEMPLATE
                 template = await db_pool.fetchrow("""
                     SELECT mensagem
                     FROM followup_templates
@@ -219,7 +214,6 @@ async def worker_followup():
 
                 msg_followup = template["mensagem"]
                 
-                # ENVIA A MENSAGEM
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{f['account_id']}/conversations/{f['conversation_id']}/messages"
                 res = await http_client.post(url_m, json={
                     "content": msg_followup,
@@ -332,7 +326,7 @@ async def bd_salvar_mensagem_local(conversation_id: int, role: str, content: str
     if not db_pool: return
     await db_pool.execute("INSERT INTO mensagens_local (conversation_id, role, content) VALUES ($1, $2, $3)", conversation_id, role, content)
 
-async def bd_obter_historico_local(conversation_id: int, limit: int = 40):
+async def bd_obter_historico_local(conversation_id: int, limit: int = 30): # Otimizado para 30 mensagens
     if not db_pool: return None
     try:
         rows = await db_pool.fetch(
@@ -572,8 +566,9 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
-            pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now().isoformat()}|{novo_estado}")
+            pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}")
             pipe.ltrim(f"hist_estado:{conversation_id}", 0, 10)
+            pipe.expire(f"hist_estado:{conversation_id}", 86400) # TTL Adicionado
             await pipe.execute()
 
         if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
@@ -602,7 +597,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 await bd_registrar_primeira_resposta(conversation_id)
         
         if not is_manual_atendimento:
-            await agendar_followups(conversation_id, account_id, slug) # <--- AQUI ESTÁ A NOVA CHAMADA
+            await agendar_followups(conversation_id, account_id, slug)
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
