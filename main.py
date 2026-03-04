@@ -12,7 +12,7 @@ import base64
 import uuid
 import time
 import zlib
-from difflib import SequenceMatcher
+import unicodedata
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
@@ -21,6 +21,9 @@ from openai import AsyncOpenAI
 import redis.asyncio as redis
 import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt
+
+# ⚡ A Mágica do NLP de Alta Performance
+from rapidfuzz import fuzz
 
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -96,6 +99,11 @@ async def shutdown_event():
     logger.info("🛑 Servidor desligado.")
 
 # --- UTILITÁRIOS ---
+def normalizar(texto: str) -> str:
+    """Remove acentos e converte para minúsculas"""
+    if not texto: return ""
+    return unicodedata.normalize("NFD", str(texto).lower()).encode("ascii", "ignore").decode("utf-8")
+
 def comprimir_texto(texto: str) -> str:
     if not texto: return ""
     dados = zlib.compress(texto.encode('utf-8'))
@@ -108,9 +116,6 @@ def descomprimir_texto(texto_comprimido: str) -> str:
         return zlib.decompress(dados).decode('utf-8')
     except:
         return texto_comprimido 
-
-def similar(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def limpar_nome(nome):
     if not nome: return "Cliente"
@@ -212,7 +217,6 @@ async def listar_unidades_ativas():
         if cache:
             return json.loads(cache)
 
-        # ⚡ Correção 1: Removido "bairro" que não existia na tabela, mantido "cidade"
         rows = await db_pool.fetch("SELECT slug, nome, palavras_chave, cidade FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
         data = [dict(r) for r in rows]
 
@@ -220,7 +224,6 @@ async def listar_unidades_ativas():
         return data
     except Exception as e:
         logger.error(f"Erro ao listar unidades: {e}")
-        # ⚡ Correção 2: Fallback seguro caso dê erro na query
         if db_pool:
             try:
                 rows_fallback = await db_pool.fetch("SELECT slug, nome FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
@@ -230,41 +233,44 @@ async def listar_unidades_ativas():
         return []
 
 # =========================================
-# 🧠 ROUTER INTELIGENTE DE UNIDADES
+# 🧠 ROUTER INTELIGENTE DE UNIDADES (c/ RapidFuzz)
 # =========================================
 async def buscar_unidade_na_pergunta(texto: str):
     unidades = await listar_unidades_ativas()
-    texto_lower = texto.lower()
+    texto_norm = normalizar(texto)
     
-    # ⚡ Correção 3: Router simplificado e mais poderoso
+    # 1. Busca rápida e exata
     for u in unidades:
-        nome = (u.get("nome") or "").lower()
-        cidade = (u.get("cidade") or "").lower()
+        nome = normalizar(u.get("nome", ""))
+        cidade = normalizar(u.get("cidade", ""))
         
-        if nome and nome in texto_lower: 
+        if nome and nome in texto_norm: 
             return u["slug"]
             
-        if cidade and cidade in texto_lower: 
+        if cidade and cidade in texto_norm: 
             return u["slug"]
             
         if u.get("palavras_chave"):
-            palavras = [p.strip().lower() for p in u["palavras_chave"].split(",")]
-            if any(pk in texto_lower for pk in palavras):
+            palavras = [normalizar(p.strip()) for p in u["palavras_chave"].split(",")]
+            if any(pk in texto_norm for pk in palavras):
                 return u["slug"]
                 
-    # Busca por similaridade / Fuzzy Match (Nível Produção mantido)
+    # 2. Busca por similaridade robusta (Fuzzy Match c/ RapidFuzz)
     melhor_slug = None
     maior_score = 0
     
     for u in unidades:
-        score_nome = similar(texto_lower, u.get("nome", ""))
+        nome_norm = normalizar(u.get("nome", ""))
+        
+        # ⚡ Ajuste 8: partial_ratio encontra o nome no MEIO da frase
+        score_nome = fuzz.partial_ratio(nome_norm, texto_norm) if nome_norm else 0
         
         if score_nome > maior_score:
             maior_score = score_nome
             melhor_slug = u["slug"]
             
-    # Trava de segurança: 70% de similaridade
-    if maior_score > 0.70:
+    # Trava de segurança: 80% (RapidFuzz vai de 0 a 100)
+    if maior_score > 80:
         return melhor_slug
         
     return None
@@ -400,7 +406,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
     try:
         await asyncio.sleep(2) 
         
-        # Leitura atômica do buffer
         chave_buffet = f"buffet:{conversation_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.lrange(chave_buffet, 0, -1)
@@ -423,14 +428,12 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         pergunta_final = " ".join(textos + list(transcricoes)).strip()
         if not pergunta_final and not imagens_urls: return
 
-        # =========================================
-        # 🔄 MUDANÇA DE CONTEXTO EM TEMPO REAL
-        # =========================================
+        # 🔄 RECHECAGEM DE CONTEXTO
         slug_detectado = await buscar_unidade_na_pergunta(pergunta_final)
         mudou_unidade = False
         
         if slug_detectado and slug_detectado != slug:
-            logger.info(f"🔄 Cliente mudou contexto de {slug} para unidade: {slug_detectado}")
+            logger.info(f"🔄 IA mudou contexto de {slug} para unidade: {slug_detectado}")
             slug = slug_detectado
             mudou_unidade = True
             await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
@@ -438,7 +441,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final if pergunta_final else "[Enviou uma imagem]")
 
-        # Carrega a unidade atualizada
         unidade = await carregar_unidade(slug) or {}
         pers = await carregar_personalidade(slug) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
@@ -446,12 +448,10 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
         
-        texto_lower_fast = pergunta_final.lower()
+        texto_norm_fast = normalizar(pergunta_final)
         fast_reply = None
         
-        # =========================================
-        # 🛡️ EXTRAÇÃO SEGURA DE VARIÁVEIS (Evita UnboundLocalError)
-        # =========================================
+        # 🛡️ EXTRAÇÃO SEGURA DE VARIÁVEIS
         end_banco = unidade.get('endereco') or unidade.get('location') or unidade.get('localizacao')
         hor_banco = unidade.get('horario_funcionamento') or unidade.get('horarios')
         pre_banco = unidade.get('valor_planos') or unidade.get('planos')
@@ -459,25 +459,31 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
         # ⚡ FAST-PATH BLINDADO E PROTEGIDO
-        if unidade and not imagens_urls: 
-            if re.search(r"(endere[cç]o|ender[cç]o|enderco|local|localiza[cç][aã]o|fica onde|onde fica|como chego|qual o local)", texto_lower_fast):
-                if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
+        if not imagens_urls: 
+            if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
+                todas_ativas = await listar_unidades_ativas()
+                lista_str = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
+                fast_reply = f"🏢 Nós temos as seguintes unidades disponíveis:\n\n{lista_str}\n\nQual delas você quer conhecer melhor?"
             
-            elif re.search(r"(hor[aá]rio|funcionamento|abre|fecha|que horas|t[aá] aberto)", texto_lower_fast):
-                if hor_banco and str(hor_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = f"🕒 Nosso horário de funcionamento é:\n{hor_banco}\n\nSe quiser, posso te ajudar com planos e valores também!"
+            elif unidade:
+                if re.search(r"(endereco|enderco|local|localizacao|fica onde|onde fica|como chego|qual o local)", texto_norm_fast):
+                    if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
+                        fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
+                
+                elif re.search(r"(horario|funcionamento|abre|fecha|que horas|ta aberto)", texto_norm_fast):
+                    if hor_banco and str(hor_banco).strip().lower() not in ['não informado', 'none', '']:
+                        fast_reply = f"🕒 Nosso horário de funcionamento é:\n{hor_banco}\n\nSe quiser, posso te ajudar com planos e valores também!"
 
-            elif re.search(r"(pre[cç]o|valor|quanto custa|mensalidade|planos|promo[cç][aã]o)", texto_lower_fast):
-                if pre_banco and str(pre_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = f"💰 Sobre nossos planos:\n{pre_banco}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_mat}"
+                elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
+                    if pre_banco and str(pre_banco).strip().lower() not in ['não informado', 'none', '']:
+                        fast_reply = f"💰 Sobre nossos planos:\n{pre_banco}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_mat}"
 
-            elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_lower_fast):
-                if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
+                elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
+                    if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
+                        fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
 
         # --- CACHE SEMÂNTICO MD5 ---
-        hash_pergunta = hashlib.md5(pergunta_final.lower().encode('utf-8')).hexdigest()
+        hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
         chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
         resposta_cacheada = await redis_client.get(chave_cache_ia)
 
@@ -497,7 +503,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             faq = await carregar_faq_unidade(slug) or ""
             historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
             
-            # ⚡ Injeção Dinâmica: IA ganha visão de todas as unidades ativas
             todas_unidades = await listar_unidades_ativas()
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
             
@@ -708,11 +713,25 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     conteudo_texto = payload.get("content", "")
 
     labels = payload.get("conversation", {}).get("labels", [])
-    slug = next((str(l).lower().strip() for l in labels if l), None) or await redis_client.get(f"unidade_escolhida:{id_conv}")
+    
+    # 🔄 Inversão de Prioridade: Redis (vontade do cliente) vence a Label
+    slug_label = next((str(l).lower().strip() for l in labels if l), None)
+    slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
+    slug = slug_redis or slug_label
+
+    # 🛡️ Proteção de Escopo
+    slug_detectado = None
 
     # ========================================================
-    # 🧠 ROTEAMENTO DINÂMICO E MENU HUMANIZADO
+    # 🧠 INTERCEPTADOR DE CONTEXTO E ROTEAMENTO INICIAL
     # ========================================================
+    if message_type == "incoming" and conteudo_texto:
+        slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto)
+        if slug_detectado and slug_detectado != slug:
+            logger.info(f"🔄 Webhook interceptou mudança de contexto para: {slug_detectado}")
+            slug = slug_detectado
+            await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas()
         
@@ -724,10 +743,13 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
             
         else:
-            texto_cliente = conteudo_texto.lower().strip()
+            texto_cliente = normalizar(conteudo_texto).strip()
             
-            # Tenta achar via Router Inteligente
-            slug_detectado = await buscar_unidade_na_pergunta(texto_cliente)
+            # Se for um número solto (escolha do Menu via número)
+            if not slug_detectado and texto_cliente.isdigit():
+                idx = int(texto_cliente) - 1
+                if 0 <= idx < len(unidades_ativas):
+                    slug_detectado = unidades_ativas[idx]["slug"]
                         
             if slug_detectado:
                 slug = slug_detectado
@@ -740,7 +762,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 cfg = await carregar_configuracao_global()
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
                 
-                # Menu Humanizado apontando pra Cidade caso exista
                 nomes_unidades = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
                 
                 mensagem = f"""{boas_vindas}
@@ -783,7 +804,7 @@ Se preferir, pode me dizer o nome ou a cidade também."""
     await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
     await redis_client.expire(chave_buffet, 60)
 
-    # Lock estendido de 60 para 180 (Proteção arquitetural contra Race Condition)
+    # Lock estendido de 60 para 180
     lock_val = str(uuid.uuid4())
     if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=180):
         background_tasks.add_task(processar_ia_e_responder, account_id, id_conv, payload.get("sender", {}).get("id"), slug, limpar_nome(payload.get("sender", {}).get("name")), lock_val)
@@ -799,4 +820,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack c/ Cache Inteligente e Menu Humano! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack c/ RapidFuzz NLP! 🚀"}
