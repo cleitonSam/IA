@@ -12,6 +12,7 @@ import base64
 import uuid
 import time
 import zlib
+from difflib import SequenceMatcher # NOVO: Para busca Fuzzy
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
@@ -94,7 +95,7 @@ async def shutdown_event():
     if db_pool: await db_pool.close()
     logger.info("🛑 Servidor desligado.")
 
-# --- UTILITÁRIOS DE COMPRESSÃO (REDIS) ---
+# --- UTILITÁRIOS DE COMPRESSÃO E FUZZY MATCHING ---
 def comprimir_texto(texto: str) -> str:
     if not texto: return ""
     dados = zlib.compress(texto.encode('utf-8'))
@@ -107,6 +108,10 @@ def descomprimir_texto(texto_comprimido: str) -> str:
         return zlib.decompress(dados).decode('utf-8')
     except:
         return texto_comprimido 
+
+# Função de similaridade para detectar nomes digitados errados (Fuzzy Search)
+def similar(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
 
 # --- RENOVAÇÃO DE LOCK (WATCHDOG) ---
 async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
@@ -123,44 +128,22 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
 
 # --- SISTEMA DE FOLLOW-UP DINÂMICO (TEMPLATES) ---
 async def agendar_followups(conversation_id: int, account_id: int, slug: str):
-    if not db_pool:
-        return
+    if not db_pool: return
 
     try:
-        await db_pool.execute(
-            "DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", 
-            conversation_id
-        )
-
-        templates = await db_pool.fetch("""
-            SELECT *
-            FROM followup_templates
-            WHERE slug_unidade = $1
-            AND ativo = TRUE
-            ORDER BY ordem
-        """, slug)
-
+        await db_pool.execute("DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", conversation_id)
+        templates = await db_pool.fetch("SELECT * FROM followup_templates WHERE slug_unidade = $1 AND ativo = TRUE ORDER BY ordem", slug)
         agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
 
         for t in templates:
             agendar = agora + timedelta(minutes=t["delay_minutos"])
-
             await db_pool.execute("""
-                INSERT INTO followups
-                (conversation_id, account_id, slug_unidade, template_id, ordem, agendado_para, status)
+                INSERT INTO followups (conversation_id, account_id, slug_unidade, template_id, ordem, agendado_para, status)
                 VALUES ($1,$2,$3,$4,$5,$6,'pendente')
-            """,
-            conversation_id,
-            account_id,
-            slug,
-            t["id"],
-            t["ordem"],
-            agendar
-            )
+            """, conversation_id, account_id, slug, t["id"], t["ordem"], agendar)
 
         if templates:
             logger.info(f"📅 {len(templates)} followups agendados para conv {conversation_id} (Unidade: {slug})")
-
     except Exception as e:
         logger.error(f"Erro ao agendar followups: {e}")
 
@@ -172,15 +155,7 @@ async def worker_followup():
         
         try:
             agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-            
-            pendentes = await db_pool.fetch("""
-                SELECT *
-                FROM followups
-                WHERE status = 'pendente'
-                AND agendado_para <= $1
-                ORDER BY agendado_para
-                LIMIT 20
-            """, agora)
+            pendentes = await db_pool.fetch("SELECT * FROM followups WHERE status = 'pendente' AND agendado_para <= $1 ORDER BY agendado_para LIMIT 20", agora)
             
             for f in pendentes:
                 is_manual = await redis_client.get(f"atend_manual:{f['conversation_id']}")
@@ -191,11 +166,7 @@ async def worker_followup():
                     continue
 
                 respondeu = await db_pool.fetchval("""
-                    SELECT 1
-                    FROM mensagens_local
-                    WHERE conversation_id = $1
-                    AND role = 'user'
-                    AND created_at > NOW() - interval '5 minutes'
+                    SELECT 1 FROM mensagens_local WHERE conversation_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
                 """, f["conversation_id"])
 
                 if respondeu:
@@ -203,28 +174,20 @@ async def worker_followup():
                     logger.info(f"🚫 Followup cancelado para conv {f['conversation_id']} (Cliente já respondeu).")
                     continue
 
-                template = await db_pool.fetchrow("""
-                    SELECT mensagem
-                    FROM followup_templates
-                    WHERE id = $1
-                """, f["template_id"])
-
+                template = await db_pool.fetchrow("SELECT mensagem FROM followup_templates WHERE id = $1", f["template_id"])
                 if not template:
                     await db_pool.execute("UPDATE followups SET status = 'erro', erro_log = 'Template não encontrado' WHERE id = $1", f['id'])
                     continue
 
                 msg_followup = template["mensagem"]
-                
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{f['account_id']}/conversations/{f['conversation_id']}/messages"
                 res = await http_client.post(url_m, json={
-                    "content": msg_followup,
-                    "message_type": "outgoing",
+                    "content": msg_followup, "message_type": "outgoing",
                     "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                 }, headers={"api_access_token": CHATWOOT_TOKEN})
                 
                 if res.status_code < 300:
                     await db_pool.execute("UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id'])
-                    logger.info(f"✅ Follow-up ({f['ordem']}) enviado para conv {f['conversation_id']}")
                 else:
                     await db_pool.execute("UPDATE followups SET status = 'erro', erro_log = $2 WHERE id = $1", f['id'], res.text)
 
@@ -268,7 +231,6 @@ async def carregar_unidade(slug: str):
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
     if cache: return json.loads(cache)
-
     try:
         row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
         if row:
@@ -276,31 +238,25 @@ async def carregar_unidade(slug: str):
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
             return dados
         return {}
-    except Exception as e:
-        logger.error(f"Erro ao carregar unidade ({slug}): {e}")
-        return {}
+    except Exception: return {}
 
 async def carregar_faq_unidade(slug: str):
     if not db_pool: return ""
     cache_key = f"cfg:faq:{slug}"
     cache = await redis_client.get(cache_key)
     if cache: return cache
-
     try:
         rows = await db_pool.fetch("SELECT pergunta, resposta FROM faq_unidades WHERE slug_unidade = $1 AND ativo = TRUE ORDER BY prioridade DESC", slug)
         faq_formatado = "".join([f"\nPergunta: {r['pergunta']}\nResposta: {r['resposta']}\n" for r in rows]).strip()
         if faq_formatado: await redis_client.setex(cache_key, 300, faq_formatado)
         return faq_formatado
-    except Exception as e:
-        logger.error(f"Erro ao carregar FAQ ({slug}): {e}")
-        return ""
+    except Exception: return ""
 
 async def carregar_personalidade(slug: str):
     if not db_pool: return {}
     cache_key = f"cfg:pers:{slug}"
     cache = await redis_client.get(cache_key)
     if cache: return json.loads(cache)
-
     try:
         row = await db_pool.fetchrow("SELECT * FROM personalidade_ia WHERE slug_unidade = $1 LIMIT 1", slug)
         if row:
@@ -308,9 +264,7 @@ async def carregar_personalidade(slug: str):
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
             return dados
         return {}
-    except Exception as e:
-        logger.error(f"Erro ao carregar personalidade ({slug}): {e}")
-        return {}
+    except Exception: return {}
 
 # --- AUXILIARES BANCO DE DADOS ---
 def log_db_error(retry_state):
@@ -330,15 +284,10 @@ async def bd_salvar_mensagem_local(conversation_id: int, role: str, content: str
 async def bd_obter_historico_local(conversation_id: int, limit: int = 30):
     if not db_pool: return None
     try:
-        rows = await db_pool.fetch(
-            "SELECT role, content FROM mensagens_local WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2",
-            conversation_id, limit
-        )
+        rows = await db_pool.fetch("SELECT role, content FROM mensagens_local WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2", conversation_id, limit)
         msgs = reversed(rows)
         return "\n".join([f"{'Cliente' if r['role'] == 'user' else 'Atendente'}: {r['content']}" for r in msgs])
-    except Exception as e:
-        logger.error(f"Erro BD (obter_historico_local): {e}")
-        return None
+    except Exception: return None
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_cliente(conversation_id: int):
@@ -363,10 +312,8 @@ async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, desc
     if tipo_evento == "interesse_detectado":
         existe = await db_pool.fetchval("SELECT 1 FROM eventos_conversa WHERE conversation_id = $1 AND tipo_evento = $2", conversation_id, tipo_evento)
         if existe: return
-
     await db_pool.execute("INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao) VALUES ($1, $2, $3)", conversation_id, tipo_evento, descricao)
     await db_pool.execute("UPDATE conversas_ia SET score = score + $2, updated_at = NOW() WHERE conversation_id = $1", conversation_id, score_incremento)
-    
     if tipo_evento == "interesse_detectado":
         await db_pool.execute("UPDATE conversas_ia SET interesse_detectado = TRUE WHERE conversation_id = $1", conversation_id)
 
@@ -383,11 +330,9 @@ async def transcrever_audio(url: str):
         try:
             resp = await http_client.get(url, follow_redirects=True)
             audio_file = io.BytesIO(resp.content)
-            
             extensao = url.split('?')[0].split('.')[-1]
             if extensao.lower() not in ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']:
                 extensao = 'ogg'
-                
             audio_file.name = f"audio.{extensao}" 
             transcription = await cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file)
             return transcription.text
@@ -409,49 +354,32 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_acumuladas = await redis_client.lrange(chave_buffet, 0, -1)
         await redis_client.delete(chave_buffet)
-        
         if not mensagens_acumuladas: return
 
-        textos = []
-        tasks_audio = []
-        imagens_urls = [] 
+        textos, tasks_audio, imagens_urls = [], [], []
         
         for m_json in mensagens_acumuladas:
             m = json.loads(m_json)
             if m.get("text"): textos.append(m["text"])
             for f in m.get("files", []):
-                if f["type"] == "audio":
-                    tasks_audio.append(transcrever_audio(f["url"]))
-                elif f["type"] == "image":
-                    imagens_urls.append(f["url"])
+                if f["type"] == "audio": tasks_audio.append(transcrever_audio(f["url"]))
+                elif f["type"] == "image": imagens_urls.append(f["url"])
         
         transcricoes = await asyncio.gather(*tasks_audio)
         pergunta_final = " ".join(textos + list(transcricoes)).strip()
-        
         if not pergunta_final and not imagens_urls: return
 
         msg_log_local = pergunta_final if pergunta_final else "[Enviou uma imagem]"
         await bd_salvar_mensagem_local(conversation_id, "user", msg_log_local)
 
-        # ====== CARREGAMENTO DE DADOS DO BANCO ======
         unidade = await carregar_unidade(slug) or {}
         faq = await carregar_faq_unidade(slug) or ""
         pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
-        # --- DIAGNÓSTICO PROFUNDO PARA O TERMINAL ---
-        logger.info(f"🔍 [DIAGNÓSTICO] Buscando dados para o Slug: '{slug}'")
-        logger.info(f"🔍 [DIAGNÓSTICO] Unidade (BD): {unidade}")
-        logger.info(f"🔍 [DIAGNÓSTICO] Personalidade (BD): {pers}")
-        logger.info(f"🔍 [DIAGNÓSTICO] FAQ tem conteúdo? {'Sim' if faq else 'Não'}")
-
-        if not unidade:
-            logger.warning(f"⚠️ ALERTA VERMELHO: Nenhuma unidade encontrada para o slug '{slug}'. Verifique o NocoDB e a coluna 'ativa'!")
-            
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        # ====== VARIÁVEIS DINÂMICAS ======
         nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
         link_principal = unidade.get('link_matricula') or 'nosso site oficial'
@@ -462,13 +390,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         
         instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
         instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
-        
-        regras_padrao = (
-            "1. Seja breve e objetivo.\n"
-            "2. Forneça respostas diretas baseadas no FAQ.\n"
-            "3. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
-        )
-        regras_atendimento = pers.get('regras_atendimento') or regras_padrao
+        regras_atendimento = pers.get('regras_atendimento') or "1. Seja breve e objetivo.\n2. Forneça respostas diretas baseadas no FAQ.\n3. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
 
         prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
         Personalidade e Tom de Voz: {tom_voz}
@@ -508,26 +430,11 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             
         for img_url in imagens_urls:
             try:
-                resp = await http_client.get(
-                    img_url,
-                    headers={"api_access_token": CHATWOOT_TOKEN},
-                    follow_redirects=True
-                )
+                resp = await http_client.get(img_url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
                 if resp.status_code == 200:
                     img_b64 = base64.b64encode(resp.content).decode("utf-8")
-                    
-                    mime_type = "image/jpeg"
-                    if ".png" in img_url.lower(): mime_type = "image/png"
-                    elif ".webp" in img_url.lower(): mime_type = "image/webp"
-
-                    conteudo_usuario.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{img_b64}"
-                        }
-                    })
-                else:
-                    logger.error(f"Erro ao baixar imagem do Chatwoot. HTTP Status: {resp.status_code}")
+                    mime_type = "image/png" if ".png" in img_url.lower() else "image/webp" if ".webp" in img_url.lower() else "image/jpeg"
+                    conteudo_usuario.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}})
             except Exception as e:
                 logger.error(f"Erro ao baixar imagem para base64: {e}")
 
@@ -538,39 +445,25 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         async with llm_semaphore:
             try:
                 response = await cliente_ia.chat.completions.create(
-                    model=modelo_escolhido,
-                    messages=[
-                        {"role": "system", "content": prompt_sistema},
-                        {"role": "user", "content": conteudo_usuario}
-                    ],
-                    temperature=0.7,
-                    timeout=30,
-                    response_format={"type": "json_object"}
+                    model=modelo_escolhido, messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                    temperature=0.7, timeout=30, response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
-                
             except Exception as e:
                 logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
                 response = await cliente_ia.chat.completions.create(
-                    model="google/gemini-2.0-flash-001",
-                    messages=[
-                        {"role": "system", "content": prompt_sistema},
-                        {"role": "user", "content": conteudo_usuario}
-                    ],
-                    temperature=0.7,
-                    response_format={"type": "json_object"}
+                    model="google/gemini-2.0-flash-001", messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                    temperature=0.7, response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
         
-        latency = time.time() - start_time
-        logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {latency:.2f}s | Conv: {conversation_id}")
+        logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
 
         try:
             dados_ia = json.loads(resposta_bruta)
             resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
             novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
         except json.JSONDecodeError:
-            logger.error("A IA não retornou um JSON válido.")
             resposta_texto = resposta_bruta
             novo_estado = estado_atual
 
@@ -590,21 +483,13 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
         
         for i, p in enumerate(pedacos):
-            if is_manual_atendimento: break
-            if await redis_client.exists(f"pause_ia:{conversation_id}"): break
-
-            delay = min(len(p) * 0.04, 4)
-            await asyncio.sleep(delay + random.uniform(0.5, 1.5))
+            if is_manual_atendimento or await redis_client.exists(f"pause_ia:{conversation_id}"): break
+            await asyncio.sleep(min(len(p) * 0.04, 4) + random.uniform(0.5, 1.5))
             
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
-            payload_msg = {
-                "content": p, "message_type": "outgoing",
-                "content_attributes": {"origin": "ai", "ai_agent": nome_ia, "ignore_webhook": True}
-            }
-            await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
+            await http_client.post(url_m, json={"content": p, "message_type": "outgoing", "content_attributes": {"origin": "ai", "ai_agent": nome_ia, "ignore_webhook": True}}, headers={"api_access_token": CHATWOOT_TOKEN})
             await bd_atualizar_msg_ia(conversation_id)
-            if i == 0: 
-                await bd_registrar_primeira_resposta(conversation_id)
+            if i == 0: await bd_registrar_primeira_resposta(conversation_id)
         
         if not is_manual_atendimento:
             await agendar_followups(conversation_id, account_id, slug)
@@ -613,10 +498,8 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
     finally:
         watchdog.cancel()
-        try:
-            await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
-        except Exception as lock_err:
-            logger.error(f"Erro ao libertar o lock da conversa {conversation_id}: {lock_err}")
+        try: await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
+        except: pass
 
 # --- WEBHOOK ENDPOINT ---
 async def validar_assinatura(request: Request, signature: str):
@@ -635,56 +518,46 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
 
-    # Rate Limit Interno
     rate_key = f"rate:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1: await redis_client.expire(rate_key, 10)
-    if contador > 10:
-        logger.warning(f"⚠️ Rate limit atingido para conv {id_conv}")
-        return {"status": "rate_limit"}
+    if contador > 10: return {"status": "rate_limit"}
 
     conv_obj = payload.get("conversation", {}) if "conversation" in payload else payload
     if conv_obj:
-        assignee = conv_obj.get("assignee_id")
-        status_conv = conv_obj.get("status")
-        is_manual = "1" if (assignee is not None or status_conv not in ["pending", "open", None]) else "0"
+        is_manual = "1" if (conv_obj.get("assignee_id") is not None or conv_obj.get("status") not in ["pending", "open", None]) else "0"
         await redis_client.setex(f"atend_manual:{id_conv}", 86400, is_manual)
 
     if event == "conversation_updated":
-        if status_conv == "resolved":
+        if conv_obj.get("status") == "resolved":
             await bd_finalizar_conversa(id_conv)
-            await redis_client.delete(f"pause_ia:{id_conv}")
-            await redis_client.delete(f"estado:{id_conv}")
-            await redis_client.delete(f"unidade_escolhida:{id_conv}")
-            await redis_client.delete(f"esperando_unidade:{id_conv}")
-            return {"status": "conversa_encerrada_registrada"}
+            await redis_client.delete(f"pause_ia:{id_conv}", f"estado:{id_conv}", f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}")
+            return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
 
     if event != "message_created": return {"status": "ignorado"}
 
     message_type = payload.get("message_type")
-    sender = payload.get("sender", {})
-    sender_type = sender.get("type", "").lower()
+    sender_type = payload.get("sender", {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
 
     labels = payload.get("conversation", {}).get("labels", [])
-    # PROTEÇÃO: Limpa espaços invisíveis do slug
-    slug = next((str(l).lower().strip() for l in labels if l), None)
+    slug = next((str(l).lower().strip() for l in labels if l), None) or await redis_client.get(f"unidade_escolhida:{id_conv}")
 
-    if not slug:
-        slug = await redis_client.get(f"unidade_escolhida:{id_conv}")
-
+    # ========================================================
+    # 🧠 ROTEAMENTO DINÂMICO DE UNIDADE (MENU + FUZZY SEARCH)
+    # ========================================================
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas()
         
-        if len(unidades_ativas) == 0:
+        if not unidades_ativas:
             logger.error("❌ Nenhuma unidade ativa no sistema.")
             return {"status": "sem_unidades_ativas"}
             
         elif len(unidades_ativas) == 1:
+            # Pula o menu se a empresa só tem 1 unidade
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
             
@@ -692,15 +565,36 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
             
             if esperando_unidade:
-                texto_lower = conteudo_texto.lower()
+                texto_cliente = conteudo_texto.lower().strip()
                 unidade_selecionada = None
                 
-                for u in unidades_ativas:
-                    palavras = (u.get("palavras_chave") or u["nome"]).lower().split(",")
-                    if any(re.search(rf"\b{re.escape(p.strip())}\b", texto_lower) for p in palavras if p.strip()):
-                        unidade_selecionada = u
-                        break
+                # 1️⃣ Tenta identificar se o cliente mandou um Número (1, 2, 3...)
+                if texto_cliente.isdigit():
+                    idx = int(texto_cliente) - 1
+                    if 0 <= idx < len(unidades_ativas):
+                        unidade_selecionada = unidades_ativas[idx]
+                
+                # 2️⃣ Tenta identificar por Fuzzy Matching (Similaridade de Nome)
+                if not unidade_selecionada:
+                    melhor_score = 0
+                    for u in unidades_ativas:
+                        score_nome = similar(texto_cliente, u["nome"].lower())
+                        score_pk = 0
                         
+                        if u.get("palavras_chave"):
+                            pks = [p.strip().lower() for p in u["palavras_chave"].split(",")]
+                            score_pk = max([similar(texto_cliente, pk) for pk in pks] + [0])
+                            
+                        score_atual = max(score_nome, score_pk)
+                        if score_atual > melhor_score:
+                            melhor_score = score_atual
+                            unidade_selecionada = u
+
+                    # Taxa de confiança mínima (60%)
+                    if melhor_score < 0.6: 
+                        unidade_selecionada = None
+                        
+                # ✅ SUCESSO: Achou a unidade
                 if unidade_selecionada:
                     slug = unidade_selecionada["slug"]
                     await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
@@ -711,16 +605,28 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     
                     url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                     await http_client.post(url_m, json={
-                        "content": f"Perfeito! Você escolheu a unidade {unidade_selecionada['nome']} 🙌\n\nComo posso te ajudar hoje?",
+                        "content": f"Perfeito! Você escolheu a unidade **{unidade_selecionada['nome']}** 🙌\n\nComo posso te ajudar hoje?",
                         "message_type": "outgoing",
                         "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                     }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "unidade_definida"}
+                
+                # ❌ FALHA: Mostra a lista novamente pedindo correção
                 else:
+                    nomes_unidades = "\n".join([f"{i+1}. {u['nome']}" for i, u in enumerate(unidades_ativas)])
+                    mensagem = f"Ops! Não consegui identificar essa unidade. 😕\n\nPor favor, digite o **número** ou o **nome** correto:\n\n{nomes_unidades}"
+                    url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
+                    await http_client.post(url_m, json={
+                        "content": mensagem,
+                        "message_type": "outgoing",
+                        "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
+                    }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "aguardando_unidade_valida"}
+                    
             else:
-                nomes_unidades = "\n".join([f"- {u['nome']}" for u in unidades_ativas])
-                mensagem = f"Olá! 😊\n\nTemos as seguintes unidades disponíveis.\n\nQual delas você gostaria de falar?\n\n{nomes_unidades}\n\nMe diga o nome da unidade 👇"
+                # 💬 Primeira vez do cliente: Mostra o Menu Numérico
+                nomes_unidades = "\n".join([f"{i+1}. {u['nome']}" for i, u in enumerate(unidades_ativas)])
+                mensagem = f"Olá! 😊\n\nTemos várias unidades disponíveis.\n\nQual delas você gostaria de falar?\n\n{nomes_unidades}\n\nDigite o **número** ou o **nome** da unidade 👇"
                 
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                 await http_client.post(url_m, json={
@@ -733,12 +639,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv)
                 return {"status": "aguardando_escolha_unidade"}
 
-    if not slug:
-        unidades_ativas = await listar_unidades_ativas()
-        if unidades_ativas:
-            slug = unidades_ativas[0]["slug"]
-        else:
-            return {"status": "erro_sem_unidade"}
+    if not slug: return {"status": "erro_sem_unidade"}
 
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message: return {"status": "ignorado_mensagem_ia"}
@@ -755,21 +656,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     if await redis_client.exists(f"pause_ia:{id_conv}"): return {"status": "ignorado_ia_pausada"}
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
-    
     arquivos_encontrados = []
     for a in anexos:
         file_type = str(a.get("file_type", "")).lower()
-        if file_type.startswith("image") or "image" in file_type:
-            tipo = "image"
-        elif file_type.startswith("audio") or "audio" in file_type:
-            tipo = "audio"
-        else:
-            tipo = "documento"
-            
-        arquivos_encontrados.append({
-            "url": a.get("data_url"),
-            "type": tipo
-        })
+        tipo = "image" if file_type.startswith("image") or "image" in file_type else "audio" if file_type.startswith("audio") or "audio" in file_type else "documento"
+        arquivos_encontrados.append({"url": a.get("data_url"), "type": tipo})
 
     chave_buffet = f"buffet:{id_conv}"
     await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
@@ -777,9 +668,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     lock_val = str(uuid.uuid4())
     if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=60):
-        background_tasks.add_task(
-            processar_ia_e_responder, account_id, id_conv, sender.get("id"), slug, limpar_nome(sender.get("name")), lock_val
-        )
+        background_tasks.add_task(processar_ia_e_responder, account_id, id_conv, payload.get("sender", {}).get("id"), slug, limpar_nome(payload.get("sender", {}).get("name")), lock_val)
         return {"status": "processando"}
     
     return {"status": "acumulando_no_buffet"}
