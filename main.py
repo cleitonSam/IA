@@ -158,7 +158,8 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str):
             agendar
             )
 
-        logger.info(f"📅 {len(templates)} followups agendados para conv {conversation_id} (Unidade: {slug})")
+        if templates:
+            logger.info(f"📅 {len(templates)} followups agendados para conv {conversation_id} (Unidade: {slug})")
 
     except Exception as e:
         logger.error(f"Erro ao agendar followups: {e}")
@@ -166,7 +167,7 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str):
 async def worker_followup():
     logger.info("🤖 Worker de Follow-up Enterprise iniciado.")
     while True:
-        await asyncio.sleep(30) # Aceleração para processar follow-ups rapidamente
+        await asyncio.sleep(30) 
         if not db_pool: continue
         
         try:
@@ -432,14 +433,25 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         msg_log_local = pergunta_final if pergunta_final else "[Enviou uma imagem]"
         await bd_salvar_mensagem_local(conversation_id, "user", msg_log_local)
 
+        # ====== CARREGAMENTO DE DADOS DO BANCO ======
         unidade = await carregar_unidade(slug) or {}
         faq = await carregar_faq_unidade(slug) or ""
         pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
+        # --- DIAGNÓSTICO PROFUNDO PARA O TERMINAL ---
+        logger.info(f"🔍 [DIAGNÓSTICO] Buscando dados para o Slug: '{slug}'")
+        logger.info(f"🔍 [DIAGNÓSTICO] Unidade (BD): {unidade}")
+        logger.info(f"🔍 [DIAGNÓSTICO] Personalidade (BD): {pers}")
+        logger.info(f"🔍 [DIAGNÓSTICO] FAQ tem conteúdo? {'Sim' if faq else 'Não'}")
+
+        if not unidade:
+            logger.warning(f"⚠️ ALERTA VERMELHO: Nenhuma unidade encontrada para o slug '{slug}'. Verifique o NocoDB e a coluna 'ativa'!")
+            
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
+        # ====== VARIÁVEIS DINÂMICAS ======
         nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
         link_principal = unidade.get('link_matricula') or 'nosso site oficial'
@@ -520,8 +532,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 logger.error(f"Erro ao baixar imagem para base64: {e}")
 
         modelo_escolhido = "google/gemini-2.0-flash-001" if imagens_urls else "google/gemini-2.0-flash-lite-001"
-
-        logger.info(f"🧠 Enviando para IA: {len(imagens_urls)} imagens via modelo {modelo_escolhido}")
 
         start_time = time.time()
         
@@ -661,7 +671,8 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     conteudo_texto = payload.get("content", "")
 
     labels = payload.get("conversation", {}).get("labels", [])
-    slug = next((l.lower() for l in labels if l), None)
+    # PROTEÇÃO: Limpa espaços invisíveis do slug
+    slug = next((str(l).lower().strip() for l in labels if l), None)
 
     if not slug:
         slug = await redis_client.get(f"unidade_escolhida:{id_conv}")
@@ -745,8 +756,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
     
-    logger.info(f"📎 Anexos recebidos: {len(anexos)} anexos")
-
     arquivos_encontrados = []
     for a in anexos:
         file_type = str(a.get("file_type", "")).lower()
