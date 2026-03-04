@@ -357,18 +357,26 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         textos = []
         tasks_audio = []
+        imagens_urls = [] # NOVA LISTA PARA IMAGENS
+        
         for m_json in mensagens_acumuladas:
             m = json.loads(m_json)
             if m.get("text"): textos.append(m["text"])
             for f in m.get("files", []):
                 if f["type"] == "audio":
                     tasks_audio.append(transcrever_audio(f["url"]))
+                elif f["type"] == "image":
+                    imagens_urls.append(f["url"]) # CAPTURA IMAGEM
         
         transcricoes = await asyncio.gather(*tasks_audio)
         pergunta_final = " ".join(textos + list(transcricoes)).strip()
-        if not pergunta_final: return
+        
+        # Aborta se não houver texto, nem áudio transcrito e nem imagem
+        if not pergunta_final and not imagens_urls: return
 
-        await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final)
+        # Salva o log. Se só mandou imagem, avisa no log.
+        msg_log_local = pergunta_final if pergunta_final else "[Enviou uma imagem]"
+        await bd_salvar_mensagem_local(conversation_id, "user", msg_log_local)
 
         # Contextos
         unidade = await carregar_unidade(slug) or {}
@@ -391,7 +399,12 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
         instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
         
-        regras_padrao = "1. Seja breve e objetivo.\n2. Forneça respostas diretas baseadas no FAQ."
+        # NOVA REGRA FORÇANDO A BOA FORMATAÇÃO
+        regras_padrao = (
+            "1. Seja breve e objetivo.\n"
+            "2. Forneça respostas diretas baseadas no FAQ.\n"
+            "3. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
+        )
         regras_atendimento = pers.get('regras_atendimento') or regras_padrao
 
         # --- 2. MONTAGEM DO PROMPT REUTILIZÁVEL ---
@@ -425,6 +438,19 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         }}
         """
 
+        # --- 3. ESTRUTURA MULTIMODAL PARA O USUÁRIO (TEXTO + IMAGENS) ---
+        conteudo_usuario = []
+        if pergunta_final:
+            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
+        else:
+            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\n[O cliente enviou uma imagem]"})
+            
+        for img_url in imagens_urls:
+            conteudo_usuario.append({
+                "type": "image_url",
+                "image_url": {"url": img_url}
+            })
+
         start_time = time.time()
         
         # Limite de concorrência LLM
@@ -434,7 +460,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                     model="google/gemini-2.0-flash-lite-001",
                     messages=[
                         {"role": "system", "content": prompt_sistema},
-                        {"role": "user", "content": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"}
+                        {"role": "user", "content": conteudo_usuario}
                     ],
                     temperature=0.7,
                     timeout=25,
@@ -448,7 +474,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                     model="google/gemini-2.0-flash-001",
                     messages=[
                         {"role": "system", "content": prompt_sistema},
-                        {"role": "user", "content": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"}
+                        {"role": "user", "content": conteudo_usuario}
                     ],
                     temperature=0.7,
                     response_format={"type": "json_object"}
@@ -481,6 +507,8 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
         is_manual_atendimento = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
+        
+        # Mantém a quebra de mensagens (pula linha vira nova mensagem no Chatwoot)
         pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
         
         for i, p in enumerate(pedacos):
