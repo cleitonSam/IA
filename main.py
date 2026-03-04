@@ -449,13 +449,18 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                     temperature=0.7, timeout=30, response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
-            except Exception as e:
-                logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
-                response = await cliente_ia.chat.completions.create(
-                    model="google/gemini-2.0-flash-001", messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                    temperature=0.7, response_format={"type": "json_object"}
-                )
-                resposta_bruta = response.choices[0].message.content
+           except Exception as e:
+    logger.warning(f"Fallback para Gemini 2.5 Flash devido a erro: {e}")
+    response = await cliente_ia.chat.completions.create(
+        model="google/gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": prompt_sistema},
+            {"role": "user", "content": conteudo_usuario}
+        ],
+        temperature=0.7,
+        response_format={"type": "json_object"}
+    )
+    resposta_bruta = response.choices[0].message.content
         
         logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
 
