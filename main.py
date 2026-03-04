@@ -454,7 +454,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             except Exception as e:
                 logger.error(f"Erro ao baixar imagem para base64: {e}")
 
-        modelo_escolhido = "google/gemini-2.0-flash-001" if imagens_urls else "google/gemini-2.0-flash-lite-001"
+        modelo_escolhido = "google/gemini-2.5-flash-lite" if imagens_urls else "google/gemini-2.0-flash-lite-001"
 
         start_time = time.time()
         
