@@ -121,31 +121,68 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 20):
     except asyncio.CancelledError:
         pass
 
-# --- SISTEMA DE FOLLOW-UP ---
-async def agendar_followup(conversation_id: int, account_id: int, slug: str, horas: int = 24):
-    if not db_pool: return
-    data_execucao = datetime.now() + timedelta(hours=horas)
+# --- SISTEMA DE FOLLOW-UP DINÂMICO (TEMPLATES) ---
+async def agendar_followups(conversation_id: int, account_id: int, slug: str):
+    if not db_pool:
+        return
+
     try:
-        await db_pool.execute("DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", conversation_id)
+        # 1. Apaga followups pendentes antigos dessa conversa (reseta o cronômetro)
         await db_pool.execute(
-            "INSERT INTO followups (conversation_id, account_id, slug_unidade, agendado_para) VALUES ($1, $2, $3, $4)",
-            conversation_id, account_id, slug, data_execucao
+            "DELETE FROM followups WHERE conversation_id = $1 AND status = 'pendente'", 
+            conversation_id
         )
-        logger.info(f"📅 Follow-up agendado para conv {conversation_id} em {horas}h.")
+
+        # 2. Busca a régua de relacionamento configurada para a unidade
+        templates = await db_pool.fetch("""
+            SELECT *
+            FROM followup_templates
+            WHERE slug_unidade = $1
+            AND ativo = TRUE
+            ORDER BY ordem
+        """, slug)
+
+        agora = datetime.now()
+
+        # 3. Agenda todos os passos
+        for t in templates:
+            agendar = agora + timedelta(minutes=t["delay_minutos"])
+
+            await db_pool.execute("""
+                INSERT INTO followups
+                (conversation_id, account_id, slug_unidade, template_id, ordem, agendado_para, status)
+                VALUES ($1,$2,$3,$4,$5,$6,'pendente')
+            """,
+            conversation_id,
+            account_id,
+            slug,
+            t["id"],
+            t["ordem"],
+            agendar
+            )
+
+        logger.info(f"📅 {len(templates)} followups agendados para conv {conversation_id} (Unidade: {slug})")
+
     except Exception as e:
-        logger.error(f"Erro ao agendar follow-up: {e}")
+        logger.error(f"Erro ao agendar followups: {e}")
 
 async def worker_followup():
-    logger.info("🤖 Worker de Follow-up iniciado.")
+    logger.info("🤖 Worker de Follow-up Enterprise iniciado.")
     while True:
-        await asyncio.sleep(300) 
+        await asyncio.sleep(60) # Acelerado para 1 minuto para pegar delays curtos (ex: 5 min)
         if not db_pool: continue
         
         try:
             agora = datetime.now()
-            pendentes = await db_pool.fetch(
-                "SELECT * FROM followups WHERE status = 'pendente' AND agendado_para <= $1 LIMIT 10", agora
-            )
+            # Puxa os followups que já deram o tempo
+            pendentes = await db_pool.fetch("""
+                SELECT *
+                FROM followups
+                WHERE status = 'pendente'
+                AND agendado_para <= $1
+                ORDER BY agendado_para
+                LIMIT 20
+            """, agora)
             
             for f in pendentes:
                 is_manual = await redis_client.get(f"atend_manual:{f['conversation_id']}")
@@ -155,8 +192,34 @@ async def worker_followup():
                     await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                     continue
 
-                msg_followup = "Oi! Passando para saber se ficou alguma dúvida sobre o que conversamos? 😊"
+                # IMPEDE FOLLOWUP SE O CLIENTE RESPONDEU NOS ÚLTIMOS 5 MINUTOS
+                respondeu = await db_pool.fetchval("""
+                    SELECT 1
+                    FROM mensagens_local
+                    WHERE conversation_id = $1
+                    AND role = 'user'
+                    AND created_at > NOW() - interval '5 minutes'
+                """, f["conversation_id"])
+
+                if respondeu:
+                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f["id"])
+                    logger.info(f"🚫 Followup cancelado para conv {f['conversation_id']} (Cliente já respondeu).")
+                    continue
+
+                # BUSCA A MENSAGEM DINÂMICA DO TEMPLATE
+                template = await db_pool.fetchrow("""
+                    SELECT mensagem
+                    FROM followup_templates
+                    WHERE id = $1
+                """, f["template_id"])
+
+                if not template:
+                    await db_pool.execute("UPDATE followups SET status = 'erro', erro_log = 'Template não encontrado' WHERE id = $1", f['id'])
+                    continue
+
+                msg_followup = template["mensagem"]
                 
+                # ENVIA A MENSAGEM
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{f['account_id']}/conversations/{f['conversation_id']}/messages"
                 res = await http_client.post(url_m, json={
                     "content": msg_followup,
@@ -166,7 +229,7 @@ async def worker_followup():
                 
                 if res.status_code < 300:
                     await db_pool.execute("UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id'])
-                    logger.info(f"✅ Follow-up enviado para conv {f['conversation_id']}")
+                    logger.info(f"✅ Follow-up ({f['ordem']}) enviado para conv {f['conversation_id']}")
                 else:
                     await db_pool.execute("UPDATE followups SET status = 'erro', erro_log = $2 WHERE id = $1", f['id'], res.text)
 
@@ -431,7 +494,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         }}
         """
 
-        # --- PREPARAÇÃO DO CONTEÚDO MULTIMODAL (COM DOWNLOAD BASE64) ---
         conteudo_usuario = []
         if pergunta_final:
             conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
@@ -463,7 +525,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             except Exception as e:
                 logger.error(f"Erro ao baixar imagem para base64: {e}")
 
-        # --- SELEÇÃO DINÂMICA DE MODELO (VISION) ---
         modelo_escolhido = "google/gemini-2.0-flash-001" if imagens_urls else "google/gemini-2.0-flash-lite-001"
 
         logger.info(f"🧠 Enviando para IA: {len(imagens_urls)} imagens via modelo {modelo_escolhido}")
@@ -541,7 +602,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 await bd_registrar_primeira_resposta(conversation_id)
         
         if not is_manual_atendimento:
-            await agendar_followup(conversation_id, account_id, slug, horas=24)
+            await agendar_followups(conversation_id, account_id, slug) # <--- AQUI ESTÁ A NOVA CHAMADA
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
@@ -687,7 +748,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     if await redis_client.exists(f"pause_ia:{id_conv}"): return {"status": "ignorado_ia_pausada"}
 
-    # --- EXTRAÇÃO SEGURA DE ANEXOS ---
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
     
     logger.info(f"📎 Anexos recebidos: {len(anexos)} anexos")
