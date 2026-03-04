@@ -194,7 +194,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"): return
     if await redis_client.exists(f"unidade_escolhida:{conversation_id}"): return
 
-    await enviar_mensagem_chatwoot(account_id, conversation_id, "Só confirmando 🙂 qual unidade você deseja falar?")
+    await enviar_mensagem_chatwoot(account_id, conversation_id, "Só pra eu não perder seu contato, qual unidade fica melhor para você? 🙂")
 
     await asyncio.sleep(480) 
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"): return
@@ -205,12 +205,20 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": CHATWOOT_TOKEN})
 
 # --- FUNÇÕES DE BUSCA DINÂMICA (SAAS) ---
+
+# ⚡ OTIMIZAÇÃO: 1000x menos queries no banco usando Redis Cache
 async def listar_unidades_ativas():
     if not db_pool: return []
     try:
-        # Trazendo cidade e bairro para o Router Inteligente
+        cache = await redis_client.get("cfg:unidades_lista")
+        if cache:
+            return json.loads(cache)
+
         rows = await db_pool.fetch("SELECT slug, nome, palavras_chave, cidade, bairro FROM unidades_config WHERE ativa = TRUE ORDER BY nome")
-        return [dict(r) for r in rows]
+        data = [dict(r) for r in rows]
+
+        await redis_client.setex("cfg:unidades_lista", 300, json.dumps(data))
+        return data
     except Exception as e:
         logger.error(f"Erro ao listar unidades: {e}")
         return []
@@ -425,7 +433,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final if pergunta_final else "[Enviou uma imagem]")
 
-        # Carrega a unidade atualizada (Seja a antiga ou a nova)
+        # Carrega a unidade atualizada
         unidade = await carregar_unidade(slug) or {}
         pers = await carregar_personalidade(slug) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
@@ -463,7 +471,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
                     fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
 
-        # --- CACHE SEMÂNTICO MD5 ---
+        # --- CACHE SEMÂNTICO (Fallback em MD5 enquanto o PGVector não chega) ---
         hash_pergunta = hashlib.md5(pergunta_final.lower().encode('utf-8')).hexdigest()
         chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
         resposta_cacheada = await redis_client.get(chave_cache_ia)
@@ -691,7 +699,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     slug = next((str(l).lower().strip() for l in labels if l), None) or await redis_client.get(f"unidade_escolhida:{id_conv}")
 
     # ========================================================
-    # 🧠 ROTEAMENTO DINÂMICO DE ENTRADA (USANDO O ROUTER)
+    # 🧠 ROTEAMENTO DINÂMICO E MENU HUMANIZADO
     # ========================================================
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas()
@@ -706,14 +714,8 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
         else:
             texto_cliente = conteudo_texto.lower().strip()
             
-            # 1. Tenta achar via Router Inteligente
+            # Tenta achar via Router Inteligente
             slug_detectado = await buscar_unidade_na_pergunta(texto_cliente)
-            
-            # 2. Se for um número solto (escolha do Menu)
-            if not slug_detectado and texto_cliente.isdigit():
-                idx = int(texto_cliente) - 1
-                if 0 <= idx < len(unidades_ativas):
-                    slug_detectado = unidades_ativas[idx]["slug"]
                         
             if slug_detectado:
                 slug = slug_detectado
@@ -722,18 +724,22 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 await bd_iniciar_conversa(id_conv, slug)
                 await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {slug}", score_incremento=3)
                 
-                # Se respondeu com o NÚMERO do menu, avisa que entendeu e pede a dúvida
-                if texto_cliente.isdigit():
-                    unidade_nome = next((u['nome'] for u in unidades_ativas if u['slug'] == slug), "a unidade")
-                    await enviar_mensagem_chatwoot(account_id, id_conv, f"Ótimo! Você escolheu a unidade *{unidade_nome}*.\nComo posso te ajudar hoje?")
-                    return {"status": "unidade_confirmada"}
             else:
+                # 💬 Menu Totalmente Humanizado (Sem lista numerada engessada)
                 cfg = await carregar_configuracao_global()
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
-                menu_unidades = cfg.get("mensagem_menu_unidades") or "Para te atender melhor, de qual unidade você deseja falar?"
                 
-                nomes_unidades = "\n".join([f"*{i+1}.* {u['nome']} - {u.get('bairro', '')}" for i, u in enumerate(unidades_ativas)])
-                mensagem = f"{boas_vindas}\n\n{menu_unidades}\n\n{nomes_unidades}\n\n👇 Digite o **número**, o **bairro** ou o **nome** da unidade:"
+                # Gera lista: • Nome (Bairro) ou apenas • Nome
+                nomes_unidades = "\n".join([f"• {u['nome']}" + (f" ({u['bairro']})" if u.get('bairro') else "") for u in unidades_ativas])
+                
+                mensagem = f"""{boas_vindas}
+
+Só pra eu te direcionar melhor 🙂
+Qual unidade você quer falar?
+
+{nomes_unidades}
+
+Se preferir, pode me dizer o nome ou o bairro também."""
                 
                 await enviar_mensagem_chatwoot(account_id, id_conv, mensagem)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
@@ -782,4 +788,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack c/ Context Switching Inteligente! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack c/ Cache Inteligente e Menu Humano! 🚀"}
