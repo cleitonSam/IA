@@ -230,14 +230,12 @@ async def carregar_unidade(slug: str):
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
     if cache:
-        logger.info(f"⚡ [CACHE REDIS] Unidade '{slug}' carregada da memória.")
         return json.loads(cache)
     try:
         row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
         if row:
             dados = dict(row)
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
-            logger.info(f"🐘 [POSTGRES] Unidade '{slug}' carregada direto do banco.")
             return dados
         logger.warning(f"⚠️ [ALERTA] Unidade '{slug}' NÃO ENCONTRADA no banco ou ativa=FALSE!")
         return {}
@@ -413,7 +411,10 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         unidade = await carregar_unidade(slug) or {}
         
-        # --- LOGS CLAROS DE RASTREIO ---
+        # --- CARREGAMENTO DE VARIÁVEIS (Movidor para Cima - Correção do Escopo) ---
+        pers = await carregar_personalidade(slug) or {}
+        nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+        
         logger.info(f"🔎 Pergunta analisada no Buffet: '{pergunta_final}'")
         logger.info(f"📦 Dados carregados da unidade:\n{json.dumps(unidade, indent=2, ensure_ascii=False, default=str)}")
         
@@ -423,20 +424,19 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         texto_lower_fast = pergunta_final.lower()
         fast_reply = None
         
-        # --- 🚨 MAPEAMENTO BLINDADO DE CAMPOS DO BANCO ---
         end_banco = unidade.get('endereco') or unidade.get('location')
         hor_banco = unidade.get('horario_funcionamento') or unidade.get('horarios')
         
         logger.info(f"📍 Endereço mapeado para Fast-Path: {end_banco}")
         logger.info(f"🕒 Horário mapeado para Fast-Path: {hor_banco}")
         
-        # --- 🚨 TRAVA DE SEGURANÇA: Unidade Vazia ---
+        # 🚨 TRAVA DE SEGURANÇA
         if not unidade:
             logger.error(f"❌ Unidade '{slug}' não carregou corretamente. Abortando IA para evitar alucinações.")
             fast_reply = "Desculpe, estou com dificuldade para acessar os dados da unidade no momento. Um instante por favor."
             
-        # --- ⚡ FAST-PATH (Bypass LLM via Regex Avançado) ---
-        elif len(texto_lower_fast) < 80: # Só aplica fast-path se a pergunta for direta e curta
+        # ⚡ FAST-PATH
+        elif len(texto_lower_fast) < 80: 
             if re.search(r"\b(endere[cç]o|onde fica|localiza[cç][aã]o|fica onde|qual o local)\b", texto_lower_fast):
                 if end_banco and str(end_banco).strip().lower() not in ['não informado', 'nao informado', 'none', '']:
                     fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
@@ -450,9 +450,8 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             resposta_texto = fast_reply
             novo_estado = estado_atual
         else:
-            # --- 🤖 FLUXO NORMAL DA IA (PROMPT MASTER) ---
+            # --- 🤖 FLUXO NORMAL DA IA ---
             faq = await carregar_faq_unidade(slug) or ""
-            pers = await carregar_personalidade(slug) or {}
             historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
             
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
@@ -501,7 +500,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             Contexto adicional: {unidade.get('contexto_adicional') or 'não informado'}
             """
             
-            nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
             tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
             instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
             instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
@@ -590,7 +588,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 resposta_texto = resposta_bruta
                 novo_estado = estado_atual
 
-        # --- APLICAÇÃO DE DADOS (COMUM AO IA E AO FAST-PATH) ---
+        # --- APLICAÇÃO DE DADOS ---
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}")
@@ -606,6 +604,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         is_manual_atendimento = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
         pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
         
+        # --- ENVIO DA MENSAGEM (Onde estava o erro de escopo) ---
         for i, p in enumerate(pedacos):
             if is_manual_atendimento or await redis_client.exists(f"pause_ia:{conversation_id}"): break
             await asyncio.sleep(min(len(p) * 0.04, 4) + random.uniform(0.5, 1.5))
@@ -683,20 +682,17 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
         elif len(unidades_ativas) == 1:
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-            # Fluxo desce para processar a pergunta normalmente
             
         else:
             texto_cliente = conteudo_texto.lower().strip()
             unidade_selecionada = None
             
-            # --- 1. DETECÇÃO SUPER RÁPIDA (String Match) ---
             for u in unidades_ativas:
                 if u["nome"].lower() in texto_cliente:
                     unidade_selecionada = u
                     logger.info(f"⚡ Detecção rápida! Cliente citou a unidade: {u['nome']}")
                     break
             
-            # --- 2. DETECÇÃO INTELIGENTE POR IA ---
             if not unidade_selecionada:
                 slug_detectado_ia = await ia_detectar_unidade(texto_cliente, unidades_ativas)
                 if slug_detectado_ia:
@@ -709,13 +705,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
             
             if esperando_unidade or unidade_selecionada:
-                # --- 3. Tenta identificar por Número ---
                 if not unidade_selecionada and texto_cliente.isdigit():
                     idx = int(texto_cliente) - 1
                     if 0 <= idx < len(unidades_ativas):
                         unidade_selecionada = unidades_ativas[idx]
                 
-                # --- 4. Tenta identificar por Fuzzy Matching ---
                 if not unidade_selecionada:
                     melhor_score = 0
                     for u in unidades_ativas:
@@ -728,21 +722,17 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                         if score_atual > melhor_score:
                             melhor_score = score_atual
                             unidade_selecionada = u
+
                     if melhor_score < 0.6: 
                         unidade_selecionada = None
                         
-                # ✅ SUCESSO: Achou a unidade
                 if unidade_selecionada:
                     slug = unidade_selecionada["slug"]
                     await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                     await redis_client.delete(f"esperando_unidade:{id_conv}")
                     await bd_iniciar_conversa(id_conv, slug)
                     await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {unidade_selecionada['nome']}", score_incremento=3)
-                    
                     logger.info(f"✅ Unidade definida ({slug}). Reprocessando pergunta original do cliente...")
-                    # ⚠️ SEM RETURN! O fluxo continua e a pergunta vai pro Buffet para a IA/Fast-Path ler.
-                
-                # ❌ FALHA: Mostra a lista pedindo correção
                 else:
                     cfg = await carregar_configuracao_global()
                     texto_erro = cfg.get("mensagem_erro_unidade") or "Ops! Não consegui identificar essa unidade. 😕 Por favor, digite o número ou o nome correto:"
@@ -757,7 +747,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     return {"status": "aguardando_unidade_valida"}
                     
             else:
-                # 💬 PRIMEIRA VEZ: Mostra Menu
                 cfg = await carregar_configuracao_global()
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
                 menu_unidades = cfg.get("mensagem_menu_unidades") or "Temos as seguintes unidades disponíveis. Qual delas você gostaria de falar?"
