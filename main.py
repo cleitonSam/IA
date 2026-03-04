@@ -176,7 +176,7 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
             ORDER BY t.unidade_id NULLS LAST, t.ordem
         """, empresa_id, slug)
 
-        agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
         for t in templates:
             agendado_para = agora + timedelta(minutes=t["delay_minutos"])
             # Inserir followup
@@ -200,8 +200,9 @@ async def worker_followup():
         if not db_pool:
             continue
         try:
-            agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-            # Buscar follow-ups pendentes com agendamento <= agora
+            # Usar datetime sem timezone para compatibilidade com o campo agendado_para (timestamp)
+            agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
+            
             pendentes = await db_pool.fetch("""
                 SELECT f.*, c.conversation_id, c.account_id, u.slug
                 FROM followups f
