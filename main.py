@@ -12,7 +12,7 @@ import base64
 import uuid
 import time
 import zlib
-from difflib import SequenceMatcher # NOVO: Para busca Fuzzy
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
@@ -109,7 +109,6 @@ def descomprimir_texto(texto_comprimido: str) -> str:
     except:
         return texto_comprimido 
 
-# Função de similaridade para detectar nomes digitados errados (Fuzzy Search)
 def similar(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
@@ -265,6 +264,23 @@ async def carregar_personalidade(slug: str):
             return dados
         return {}
     except Exception: return {}
+
+async def carregar_configuracao_global():
+    """Carrega as mensagens de boas-vindas e menus do sistema."""
+    if not db_pool: return {}
+    cache_key = "cfg:global"
+    cache = await redis_client.get(cache_key)
+    if cache: return json.loads(cache)
+    try:
+        row = await db_pool.fetchrow("SELECT * FROM configuracoes_gerais ORDER BY id ASC LIMIT 1")
+        if row:
+            dados = dict(row)
+            await redis_client.setex(cache_key, 3600, json.dumps(dados, default=str)) 
+            return dados
+        return {}
+    except Exception as e:
+        logger.error(f"Erro ao carregar configuracoes globais: {e}")
+        return {}
 
 # --- AUXILIARES BANCO DE DADOS ---
 def log_db_error(retry_state):
@@ -444,23 +460,26 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         
         async with llm_semaphore:
             try:
+                # ====== BLOCO CORRIGIDO DE INDENTAÇÃO ======
                 response = await cliente_ia.chat.completions.create(
-                    model=modelo_escolhido, messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                    model=modelo_escolhido, 
+                    messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
                     temperature=0.7, timeout=30, response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
-           except Exception as e:
-    logger.warning(f"Fallback para Gemini 2.5 Flash devido a erro: {e}")
-    response = await cliente_ia.chat.completions.create(
-        model="google/gemini-2.5-flash",
-        messages=[
-            {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": conteudo_usuario}
-        ],
-        temperature=0.7,
-        response_format={"type": "json_object"}
-    )
-    resposta_bruta = response.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"Fallback para Gemini 2.5 Flash devido a erro: {e}")
+                response = await cliente_ia.chat.completions.create(
+                    model="google/gemini-2.5-flash",
+                    messages=[
+                        {"role": "system", "content": prompt_sistema},
+                        {"role": "user", "content": conteudo_usuario}
+                    ],
+                    temperature=0.7,
+                    response_format={"type": "json_object"}
+                )
+                resposta_bruta = response.choices[0].message.content
+                # ============================================
         
         logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
 
@@ -616,10 +635,14 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "unidade_definida"}
                 
-                # ❌ FALHA: Mostra a lista novamente pedindo correção
+                # ❌ FALHA: Mostra a lista novamente pedindo correção (Puxando do Banco)
                 else:
+                    cfg = await carregar_configuracao_global()
+                    texto_erro = cfg.get("mensagem_erro_unidade") or "Ops! Não consegui identificar essa unidade. 😕 Por favor, digite o número ou o nome correto:"
+                    
                     nomes_unidades = "\n".join([f"{i+1}. {u['nome']}" for i, u in enumerate(unidades_ativas)])
-                    mensagem = f"Ops! Não consegui identificar essa unidade. 😕\n\nPor favor, digite o **número** ou o **nome** correto:\n\n{nomes_unidades}"
+                    mensagem = f"{texto_erro}\n\n{nomes_unidades}"
+                    
                     url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                     await http_client.post(url_m, json={
                         "content": mensagem,
@@ -629,9 +652,13 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     return {"status": "aguardando_unidade_valida"}
                     
             else:
-                # 💬 Primeira vez do cliente: Mostra o Menu Numérico
+                # 💬 Primeira vez do cliente: Mostra o Menu Numérico (Puxando do Banco)
+                cfg = await carregar_configuracao_global()
+                boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
+                menu_unidades = cfg.get("mensagem_menu_unidades") or "Temos as seguintes unidades disponíveis. Qual delas você gostaria de falar?"
+                
                 nomes_unidades = "\n".join([f"{i+1}. {u['nome']}" for i, u in enumerate(unidades_ativas)])
-                mensagem = f"Olá! 😊\n\nTemos várias unidades disponíveis.\n\nQual delas você gostaria de falar?\n\n{nomes_unidades}\n\nDigite o **número** ou o **nome** da unidade 👇"
+                mensagem = f"{boas_vindas}\n\n{menu_unidades}\n\n{nomes_unidades}\n\n👇 Digite o **número** ou o **nome** da unidade:"
                 
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                 await http_client.post(url_m, json={
