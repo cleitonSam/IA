@@ -203,7 +203,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await http_client.post(url_m, json={
         "content": "Só confirmando 🙂 qual unidade você deseja?",
         "message_type": "outgoing",
-        "content_attributes": {"origin": "ai", "ai_agent": "Assistente", "ignore_webhook": True}
+        "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
     }, headers={"api_access_token": CHATWOOT_TOKEN})
 
     await asyncio.sleep(480) 
@@ -229,15 +229,21 @@ async def carregar_unidade(slug: str):
     if not db_pool: return {}
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
-    if cache: return json.loads(cache)
+    if cache:
+        logger.info(f"⚡ [CACHE REDIS] Unidade '{slug}' carregada da memória.")
+        return json.loads(cache)
     try:
         row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
         if row:
             dados = dict(row)
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
+            logger.info(f"🐘 [POSTGRES] Unidade '{slug}' carregada direto do banco.")
             return dados
+        logger.warning(f"⚠️ [ALERTA] Unidade '{slug}' NÃO ENCONTRADA no banco ou ativa=FALSE!")
         return {}
-    except Exception: return {}
+    except Exception as e:
+        logger.error(f"Erro BD ao carregar unidade '{slug}': {e}")
+        return {}
 
 async def carregar_faq_unidade(slug: str):
     if not db_pool: return ""
@@ -277,9 +283,7 @@ async def carregar_configuracao_global():
             await redis_client.setex(cache_key, 3600, json.dumps(dados, default=str)) 
             return dados
         return {}
-    except Exception as e:
-        logger.error(f"Erro ao carregar configuracoes globais: {e}")
-        return {}
+    except Exception: return {}
 
 # --- IA: CLASSIFICADOR DE UNIDADE (Zero-Shot) ---
 async def ia_detectar_unidade(mensagem_cliente: str, unidades: list) -> str:
@@ -299,7 +303,7 @@ async def ia_detectar_unidade(mensagem_cliente: str, unidades: list) -> str:
     """
     try:
         response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.0-flash-lite-001",
+            model="google/gemini-2.5-flash-lite", # Usando modelo rápido mais atualizado
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=10
@@ -421,57 +425,54 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
-        logger.info(f"🔍 [DIAGNÓSTICO] Buscando dados para o Slug: '{slug}'")
-
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        # ====== VARIÁVEIS DINÂMICAS ======
+        # ====== VARIÁVEIS DINÂMICAS E MASTER CONTEXT ======
         nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
         link_principal = unidade.get('link_matricula') or 'nosso site oficial'
         
-        # --- BLOCO DE DADOS ESTRUTURADOS (MASTER CONTEXT) ---
         dados_unidade = f"""
         DADOS COMPLETOS DA UNIDADE
-        Nome da unidade: {unidade.get('nome','não informado')}
-        Empresa: {unidade.get('nome_empresa','não informado')}
+        Nome da unidade: {unidade.get('nome') or 'não informado'}
+        Empresa: {unidade.get('nome_empresa') or 'não informado'}
 
-        Endereço: {unidade.get('endereco','não informado')}
-        Cidade/Estado: {unidade.get('cidade','não informado')} / {unidade.get('estado','não informado')}
-        CEP: {unidade.get('cep','não informado')}
+        Endereço: {unidade.get('endereco') or 'não informado'}
+        Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
+        CEP: {unidade.get('cep') or 'não informado'}
 
-        Telefone: {unidade.get('telefone','não informado')}
-        WhatsApp: {unidade.get('whatsapp','não informado')}
-        Email: {unidade.get('email','não informado')}
+        Telefone: {unidade.get('telefone') or 'não informado'}
+        WhatsApp: {unidade.get('whatsapp') or 'não informado'}
+        Email: {unidade.get('email') or 'não informado'}
 
-        Horário de funcionamento: {unidade.get('horario_funcionamento','não informado')}
-        Horário sábado: {unidade.get('horario_sabado','não informado')}
-        Horário domingo/feriado: {unidade.get('horario_domingo','não informado')}
+        Horário de funcionamento: {unidade.get('horario_funcionamento') or 'não informado'}
+        Horário sábado: {unidade.get('horario_sabado') or 'não informado'}
+        Horário domingo/feriado: {unidade.get('horario_domingo') or 'não informado'}
 
-        Link de matrícula: {unidade.get('link_matricula','não informado')}
-        Link do site: {unidade.get('site','não informado')}
-        Instagram: {unidade.get('instagram','não informado')}
+        Link de matrícula: {unidade.get('link_matricula') or 'não informado'}
+        Link do site: {unidade.get('site') or 'não informado'}
+        Instagram: {unidade.get('instagram') or 'não informado'}
 
-        Modalidades disponíveis: {unidade.get('modalidades','não informado')}
-        Planos disponíveis: {unidade.get('planos','não informado')}
-        Valor médio dos planos: {unidade.get('valor_planos','não informado')}
+        Modalidades disponíveis: {unidade.get('modalidades') or 'não informado'}
+        Planos disponíveis: {unidade.get('planos') or 'não informado'}
+        Valor médio dos planos: {unidade.get('valor_planos') or 'não informado'}
 
-        Possui estacionamento: {unidade.get('estacionamento','não informado')}
-        Possui vestiário: {unidade.get('vestiario','não informado')}
-        Possui chuveiro: {unidade.get('chuveiro','não informado')}
-        Possui armários: {unidade.get('armarios','não informado')}
+        Possui estacionamento: {unidade.get('estacionamento') or 'não informado'}
+        Possui vestiário: {unidade.get('vestiario') or 'não informado'}
+        Possui chuveiro: {unidade.get('chuveiro') or 'não informado'}
+        Possui armários: {unidade.get('armarios') or 'não informado'}
 
-        Possui avaliação física: {unidade.get('avaliacao_fisica','não informado')}
-        Possui personal trainer: {unidade.get('personal_trainer','não informado')}
-        Possui aula experimental: {unidade.get('aula_experimental','não informado')}
+        Possui avaliação física: {unidade.get('avaliacao_fisica') or 'não informado'}
+        Possui personal trainer: {unidade.get('personal_trainer') or 'não informado'}
+        Possui aula experimental: {unidade.get('aula_experimental') or 'não informado'}
 
-        Formas de pagamento aceitas: {unidade.get('formas_pagamento','não informado')}
-        Aceita Gympass: {unidade.get('gympass','não informado')}
-        Aceita TotalPass: {unidade.get('totalpass','não informado')}
+        Formas de pagamento aceitas: {unidade.get('formas_pagamento') or 'não informado'}
+        Aceita Gympass: {unidade.get('gympass') or 'não informado'}
+        Aceita TotalPass: {unidade.get('totalpass') or 'não informado'}
 
-        Descrição da unidade: {unidade.get('descricao','não informado')}
-        Contexto adicional: {unidade.get('contexto_adicional','não informado')}
+        Descrição da unidade: {unidade.get('descricao') or 'não informado'}
+        Contexto adicional: {unidade.get('contexto_adicional') or 'não informado'}
         """
         
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
@@ -532,7 +533,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             except Exception as e:
                 logger.error(f"Erro ao baixar imagem para base64: {e}")
 
-        modelo_escolhido = "google/gemini-2.5-flash-lite" if imagens_urls else "google/gemini-2.0-flash-lite-001"
+        modelo_escolhido = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
 
         start_time = time.time()
         
@@ -545,7 +546,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 )
                 resposta_bruta = response.choices[0].message.content
             except Exception as e:
-                logger.warning(f"Fallback para Gemini 2.5 Flash devido a erro: {e}")
+                logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
                 response = await cliente_ia.chat.completions.create(
                     model="google/gemini-2.5-flash",
                     messages=[
@@ -657,6 +658,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             return {"status": "sem_unidades_ativas"}
             
         elif len(unidades_ativas) == 1:
+            # Pula o menu se a empresa só tem 1 unidade
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
             
