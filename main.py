@@ -147,12 +147,13 @@ async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, conten
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers)
         resp.raise_for_status()
+        logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
         return resp
     except Exception as e:
         logger.error(f"Erro ao enviar mensagem para Chatwoot: {e}")
         return None
 
-# --- BACKGROUND JOBS & FOLLOW-UP (ATUALIZADO) ---
+# --- BACKGROUND JOBS & FOLLOW-UP ---
 async def agendar_followups(conversation_id: int, account_id: int, slug: str, empresa_id: int = EMPRESA_ID_PADRAO):
     """Agenda follow-ups para a conversa com base nos templates da unidade (ou gerais da empresa)."""
     if not db_pool:
@@ -190,6 +191,7 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
                     $4, $5, $6, $7, $8, 'pendente'
                 )
             """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para)
+        logger.info(f"📅 {len(templates)} follow-ups agendados para conversa {conversation_id}")
     except Exception as e:
         logger.error(f"Erro ao agendar followups: {e}")
 
@@ -200,7 +202,6 @@ async def worker_followup():
         if not db_pool:
             continue
         try:
-            # Usar datetime sem timezone para compatibilidade com o campo agendado_para (timestamp)
             agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
             
             pendentes = await db_pool.fetch("""
@@ -257,7 +258,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     url_c = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": CHATWOOT_TOKEN})
 
-# --- FUNÇÕES DE BUSCA DINÂMICA (ATUALIZADAS PARA AS NOVAS TABELAS) ---
+# --- FUNÇÕES DE BUSCA DINÂMICA ---
 async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Dict[str, Any]]:
     """Retorna todas as unidades ativas de uma empresa, com cache Redis."""
     if not db_pool:
@@ -301,6 +302,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         rows = await db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
         await redis_client.setex(cache_key, 300, json.dumps(data, default=str))
+        logger.info(f"📦 {len(data)} unidades carregadas do banco")
         return data
     except Exception as e:
         logger.error(f"Erro ao listar unidades: {e}")
@@ -352,7 +354,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int = EMPRESA_ID_PA
             maior_score = score
             melhor_slug = u['slug']
 
-    if maior_score > 70:  # Threshold
+    if maior_score > 70:
         return melhor_slug
 
     return None
@@ -379,7 +381,6 @@ async def carregar_unidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO) -> Di
         row = await db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
-            # Converter tipos especiais para serialização JSON
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
             return dados
         return {}
@@ -467,7 +468,7 @@ async def carregar_configuracao_global(empresa_id: int = EMPRESA_ID_PADRAO) -> D
         logger.error(f"Erro ao carregar config global: {e}")
         return {}
 
-# --- AUXILIARES BANCO DE DADOS (BI E FUNIL) ATUALIZADOS ---
+# --- AUXILIARES BANCO DE DADOS (COM LOGS DE ERRO) ---
 def log_db_error(retry_state):
     logger.error(f"Erro BD após {retry_state.attempt_number} tentativas: {retry_state.outcome.exception()}")
     return None
@@ -477,39 +478,47 @@ async def bd_iniciar_conversa(conversation_id: int, slug: str, account_id: int, 
     """Registra o início de uma conversa na tabela conversas."""
     if not db_pool:
         return
-    # Primeiro, obter o ID da unidade
-    unidade = await db_pool.fetchrow("SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id)
-    if not unidade:
-        logger.error(f"Unidade {slug} não encontrada para empresa {empresa_id}")
-        return
-    unidade_id = unidade['id']
+    try:
+        # Primeiro, obter o ID da unidade
+        unidade = await db_pool.fetchrow("SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id)
+        if not unidade:
+            logger.error(f"Unidade {slug} não encontrada para empresa {empresa_id}")
+            return
+        unidade_id = unidade['id']
 
-    await db_pool.execute("""
-        INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, primeira_mensagem, status)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa')
-        ON CONFLICT (conversation_id) DO UPDATE SET
-            contato_nome = EXCLUDED.contato_nome,
-            unidade_id = EXCLUDED.unidade_id,
-            status = 'ativa',
-            updated_at = NOW()
-    """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id)
+        await db_pool.execute("""
+            INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, primeira_mensagem, status)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa')
+            ON CONFLICT (conversation_id) DO UPDATE SET
+                contato_nome = EXCLUDED.contato_nome,
+                unidade_id = EXCLUDED.unidade_id,
+                status = 'ativa',
+                updated_at = NOW()
+        """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id)
+        logger.info(f"✅ Conversa {conversation_id} iniciada/atualizada no banco")
+    except Exception as e:
+        logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {e}")
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_salvar_mensagem_local(conversation_id: int, role: str, content: str, tipo: str = 'texto', url_midia: str = None):
     """Salva uma mensagem na tabela mensagens."""
     if not db_pool:
         return
-    # Obter conversa_id interno
-    conversa = await db_pool.fetchrow("SELECT id FROM conversas WHERE conversation_id = $1", conversation_id)
-    if not conversa:
-        logger.warning(f"Conversa {conversation_id} não encontrada para salvar mensagem")
-        return
-    conversa_id = conversa['id']
+    try:
+        # Obter conversa_id interno
+        conversa = await db_pool.fetchrow("SELECT id FROM conversas WHERE conversation_id = $1", conversation_id)
+        if not conversa:
+            logger.warning(f"Conversa {conversation_id} não encontrada para salvar mensagem")
+            return
+        conversa_id = conversa['id']
 
-    await db_pool.execute("""
-        INSERT INTO mensagens (conversa_id, role, tipo, conteudo, url_midia, created_at)
-        VALUES ($1, $2, $3, $4, $5, NOW())
-    """, conversa_id, role, tipo, content, url_midia)
+        await db_pool.execute("""
+            INSERT INTO mensagens (conversa_id, role, tipo, conteudo, url_midia, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+        """, conversa_id, role, tipo, content, url_midia)
+        logger.info(f"💬 Mensagem {role} salva para conversa {conversation_id}")
+    except Exception as e:
+        logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
 
 async def bd_obter_historico_local(conversation_id: int, limit: int = 30) -> Optional[str]:
     """Retorna o histórico formatado das últimas mensagens da conversa."""
@@ -537,83 +546,98 @@ async def bd_obter_historico_local(conversation_id: int, limit: int = 30) -> Opt
 async def bd_atualizar_msg_cliente(conversation_id: int):
     if not db_pool:
         return
-    await db_pool.execute("""
-        UPDATE conversas 
-        SET total_mensagens_cliente = total_mensagens_cliente + 1, ultima_mensagem = NOW(), updated_at = NOW()
-        WHERE conversation_id = $1
-    """, conversation_id)
+    try:
+        await db_pool.execute("""
+            UPDATE conversas 
+            SET total_mensagens_cliente = total_mensagens_cliente + 1, ultima_mensagem = NOW(), updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro ao atualizar msg cliente {conversation_id}: {e}")
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_ia(conversation_id: int):
     if not db_pool:
         return
-    await db_pool.execute("""
-        UPDATE conversas 
-        SET total_mensagens_ia = total_mensagens_ia + 1, ultima_mensagem = NOW(), updated_at = NOW()
-        WHERE conversation_id = $1
-    """, conversation_id)
+    try:
+        await db_pool.execute("""
+            UPDATE conversas 
+            SET total_mensagens_ia = total_mensagens_ia + 1, ultima_mensagem = NOW(), updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro ao atualizar msg ia {conversation_id}: {e}")
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_primeira_resposta(conversation_id: int):
     if not db_pool:
         return
-    await db_pool.execute("""
-        UPDATE conversas 
-        SET primeira_resposta_em = NOW(), updated_at = NOW()
-        WHERE conversation_id = $1 AND primeira_resposta_em IS NULL
-    """, conversation_id)
+    try:
+        await db_pool.execute("""
+            UPDATE conversas 
+            SET primeira_resposta_em = NOW(), updated_at = NOW()
+            WHERE conversation_id = $1 AND primeira_resposta_em IS NULL
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro ao registrar primeira resposta {conversation_id}: {e}")
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
     if not db_pool:
         return
-    # Obter conversa_id
-    conversa = await db_pool.fetchrow("SELECT id FROM conversas WHERE conversation_id = $1", conversation_id)
-    if not conversa:
-        return
-    conversa_id = conversa['id']
-
-    if tipo_evento == "interesse_detectado":
-        existe = await db_pool.fetchval("""
-            SELECT 1 FROM eventos_funil 
-            WHERE conversa_id = $1 AND tipo_evento = $2
-        """, conversa_id, tipo_evento)
-        if existe:
+    try:
+        # Obter conversa_id
+        conversa = await db_pool.fetchrow("SELECT id FROM conversas WHERE conversation_id = $1", conversation_id)
+        if not conversa:
             return
+        conversa_id = conversa['id']
 
-    await db_pool.execute("""
-        INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
-        VALUES ($1, $2, $3, $4, NOW())
-    """, conversa_id, tipo_evento, descricao, score_incremento)
+        if tipo_evento == "interesse_detectado":
+            existe = await db_pool.fetchval("""
+                SELECT 1 FROM eventos_funil 
+                WHERE conversa_id = $1 AND tipo_evento = $2
+            """, conversa_id, tipo_evento)
+            if existe:
+                return
 
-    await db_pool.execute("""
-        UPDATE conversas 
-        SET score_interesse = score_interesse + $2, updated_at = NOW()
-        WHERE id = $1
-    """, conversa_id, score_incremento)
-
-    if tipo_evento == "interesse_detectado":
         await db_pool.execute("""
-            UPDATE conversas SET lead_qualificado = TRUE WHERE id = $1
-        """, conversa_id)
+            INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
+            VALUES ($1, $2, $3, $4, NOW())
+        """, conversa_id, tipo_evento, descricao, score_incremento)
+
+        await db_pool.execute("""
+            UPDATE conversas 
+            SET score_interesse = score_interesse + $2, updated_at = NOW()
+            WHERE id = $1
+        """, conversa_id, score_incremento)
+
+        if tipo_evento == "interesse_detectado":
+            await db_pool.execute("""
+                UPDATE conversas SET lead_qualificado = TRUE WHERE id = $1
+            """, conversa_id)
+    except Exception as e:
+        logger.error(f"Erro ao registrar evento funil {conversation_id}: {e}")
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_finalizar_conversa(conversation_id: int):
     if not db_pool:
         return
-    await db_pool.execute("""
-        UPDATE conversas 
-        SET status = 'encerrada', encerrada_em = NOW(), updated_at = NOW()
-        WHERE conversation_id = $1
-    """, conversation_id)
-    # Cancelar follow-ups pendentes
-    await db_pool.execute("""
-        UPDATE followups SET status = 'cancelado'
-        WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
-          AND status = 'pendente'
-    """, conversation_id)
+    try:
+        await db_pool.execute("""
+            UPDATE conversas 
+            SET status = 'encerrada', encerrada_em = NOW(), updated_at = NOW()
+            WHERE conversation_id = $1
+        """, conversation_id)
+        # Cancelar follow-ups pendentes
+        await db_pool.execute("""
+            UPDATE followups SET status = 'cancelado'
+            WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
+              AND status = 'pendente'
+        """, conversation_id)
+    except Exception as e:
+        logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 
-# --- PROCESSAMENTO IA E ÁUDIO (ATUALIZADO PARA USAR OS NOVOS CAMPOS) ---
+# --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
     if not cliente_whisper:
         return "[Áudio recebido, mas Whisper não configurado]"
@@ -650,6 +674,8 @@ async def processar_ia_e_responder(
             resultado = await pipe.execute()
         
         mensagens_acumuladas = resultado[0]
+        logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
+        
         if not mensagens_acumuladas:
             return
 
@@ -698,30 +724,36 @@ async def processar_ia_e_responder(
         end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
         hor_banco = unidade.get('horarios')
         pre_banco = unidade.get('planos')
-        link_mat = unidade.get('link_matricula') or unidade.get('site')
+        link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
         # ⚡ FAST-PATH BLINDADO
         if not imagens_urls:
+            # Listar unidades
             if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 lista_str = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
                 fast_reply = f"🏢 Nós temos as seguintes unidades disponíveis:\n\n{lista_str}\n\nQual delas você quer conhecer melhor?"
+                logger.info(f"⚡ Fast-path: listar unidades acionado")
             
             elif unidade:
+                # Endereço
                 if re.search(r"(endereco|enderco|local|localizacao|fica onde|onde fica|como chego|qual o local)", texto_norm_fast):
                     if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
                         fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
+                        logger.info(f"⚡ Fast-path: endereço acionado")
                 
+                # Horários
                 elif re.search(r"(horario|funcionamento|abre|fecha|que horas|ta aberto)", texto_norm_fast):
                     if hor_banco:
-                        # Formatar horários de forma legível
                         if isinstance(hor_banco, dict):
                             horario_str = "\n".join([f"{dia}: {h}" for dia, h in hor_banco.items()])
                         else:
                             horario_str = str(hor_banco)
                         fast_reply = f"🕒 Nosso horário de funcionamento é:\n{horario_str}\n\nSe quiser, posso te ajudar com planos e valores também!"
+                        logger.info(f"⚡ Fast-path: horários acionado")
 
+                # Planos
                 elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
                     if pre_banco:
                         if isinstance(pre_banco, dict):
@@ -729,10 +761,13 @@ async def processar_ia_e_responder(
                         else:
                             planos_str = str(pre_banco)
                         fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_mat}"
+                        logger.info(f"⚡ Fast-path: planos acionado")
 
+                # Telefone/Contato
                 elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
                     if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
                         fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
+                        logger.info(f"⚡ Fast-path: contato acionado")
 
         # --- CACHE SEMÂNTICO MD5 ---
         hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
@@ -760,9 +795,27 @@ async def processar_ia_e_responder(
             
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
-            link_principal = unidade.get('link_matricula') or 'nosso site oficial'
+            link_principal = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
             
-            # Construir string de dados da unidade de forma dinâmica
+            # Formatar dados de horários e planos de forma legível
+            horarios_str = ""
+            if hor_banco:
+                if isinstance(hor_banco, dict):
+                    horarios_str = "\n".join([f"- {dia}: {h}" for dia, h in hor_banco.items()])
+                else:
+                    horarios_str = str(hor_banco)
+            else:
+                horarios_str = "não informado"
+                
+            planos_str = ""
+            if pre_banco:
+                if isinstance(pre_banco, dict):
+                    planos_str = "\n".join([f"- {k}: R${v.get('preco', 'consultar')} - {v.get('descricao', '')}" for k, v in pre_banco.items()])
+                else:
+                    planos_str = str(pre_banco)
+            else:
+                planos_str = "não informado"
+            
             dados_unidade = f"""
             DADOS COMPLETOS DA UNIDADE
             Nome da unidade: {unidade.get('nome') or 'não informado'}
@@ -771,12 +824,14 @@ async def processar_ia_e_responder(
             Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
             CEP: {unidade.get('cep') or 'não informado'}
             Telefone: {tel_banco or 'não informado'}
-            Horários: {json.dumps(hor_banco, ensure_ascii=False) if hor_banco else 'não informado'}
+            Horários:
+            {horarios_str}
             Link de matrícula: {link_principal}
             Link do site: {unidade.get('site') or 'não informado'}
             Instagram: {unidade.get('instagram') or 'não informado'}
             Modalidades disponíveis: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
-            Planos disponíveis: {json.dumps(pre_banco, ensure_ascii=False) if pre_banco else 'não informado'}
+            Planos disponíveis:
+            {planos_str}
             Infraestrutura: {json.dumps(unidade.get('infraestrutura', {}), ensure_ascii=False) if unidade.get('infraestrutura') else 'não informado'}
             Serviços: {json.dumps(unidade.get('servicos', {}), ensure_ascii=False) if unidade.get('servicos') else 'não informado'}
             Formas de pagamento aceitas: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('formas_pagamento') else 'não informado'}
@@ -874,6 +929,7 @@ async def processar_ia_e_responder(
                 
                 if not imagens_urls:
                     await redis_client.setex(chave_cache_ia, 600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
+                    logger.info(f"💾 Resposta em cache para {hash_pergunta}")
             except json.JSONDecodeError:
                 resposta_texto = resposta_bruta
                 novo_estado = estado_atual
@@ -918,7 +974,7 @@ async def processar_ia_e_responder(
         except:
             pass
 
-# --- WEBHOOK ENDPOINT (ATUALIZADO PARA PASSAR EMPRESA_ID) ---
+# --- WEBHOOK ENDPOINT ---
 async def validar_assinatura(request: Request, signature: str):
     if not CHATWOOT_WEBHOOK_SECRET:
         return
