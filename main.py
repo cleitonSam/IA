@@ -326,7 +326,7 @@ async def bd_salvar_mensagem_local(conversation_id: int, role: str, content: str
     if not db_pool: return
     await db_pool.execute("INSERT INTO mensagens_local (conversation_id, role, content) VALUES ($1, $2, $3)", conversation_id, role, content)
 
-async def bd_obter_historico_local(conversation_id: int, limit: int = 30): # Otimizado para 30 mensagens
+async def bd_obter_historico_local(conversation_id: int, limit: int = 30):
     if not db_pool: return None
     try:
         rows = await db_pool.fetch(
@@ -568,7 +568,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}")
             pipe.ltrim(f"hist_estado:{conversation_id}", 0, 10)
-            pipe.expire(f"hist_estado:{conversation_id}", 86400) # TTL Adicionado
+            pipe.expire(f"hist_estado:{conversation_id}", 86400)
             await pipe.execute()
 
         if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
