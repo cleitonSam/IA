@@ -203,7 +203,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int):
     await http_client.post(url_m, json={
         "content": "Só confirmando 🙂 qual unidade você deseja?",
         "message_type": "outgoing",
-        "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
+        "content_attributes": {"origin": "ai", "ai_agent": "Assistente", "ignore_webhook": True}
     }, headers={"api_access_token": CHATWOOT_TOKEN})
 
     await asyncio.sleep(480) 
@@ -230,16 +230,13 @@ async def carregar_unidade(slug: str):
     cache_key = f"cfg:unidade:{slug}"
     cache = await redis_client.get(cache_key)
     if cache:
-        logger.info(f"⚡ [CACHE REDIS] Unidade '{slug}' carregada da memória.")
         return json.loads(cache)
     try:
         row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
         if row:
             dados = dict(row)
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
-            logger.info(f"🐘 [POSTGRES] Unidade '{slug}' carregada direto do banco.")
             return dados
-        logger.warning(f"⚠️ [ALERTA] Unidade '{slug}' NÃO ENCONTRADA no banco ou ativa=FALSE!")
         return {}
     except Exception as e:
         logger.error(f"Erro BD ao carregar unidade '{slug}': {e}")
@@ -303,7 +300,7 @@ async def ia_detectar_unidade(mensagem_cliente: str, unidades: list) -> str:
     """
     try:
         response = await cliente_ia.chat.completions.create(
-            model="google/gemini-2.5-flash-lite", # Usando modelo rápido mais atualizado
+            model="google/gemini-2.5-flash-lite", 
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=10
@@ -421,153 +418,169 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         await bd_salvar_mensagem_local(conversation_id, "user", msg_log_local)
 
         unidade = await carregar_unidade(slug) or {}
+        
+        # --- NOVO LOG DE RAIO-X PROFUNDO ---
+        logger.info(f"📦 Dados carregados da unidade:\n{json.dumps(unidade, indent=2, ensure_ascii=False)}")
+        
         faq = await carregar_faq_unidade(slug) or ""
         pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
-
-        # ====== VARIÁVEIS DINÂMICAS E MASTER CONTEXT ======
-        nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
-        nome_unidade = unidade.get('nome') or 'Unidade Matriz'
-        link_principal = unidade.get('link_matricula') or 'nosso site oficial'
         
-        dados_unidade = f"""
-        DADOS COMPLETOS DA UNIDADE
-        Nome da unidade: {unidade.get('nome') or 'não informado'}
-        Empresa: {unidade.get('nome_empresa') or 'não informado'}
-
-        Endereço: {unidade.get('endereco') or 'não informado'}
-        Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
-        CEP: {unidade.get('cep') or 'não informado'}
-
-        Telefone: {unidade.get('telefone') or 'não informado'}
-        WhatsApp: {unidade.get('whatsapp') or 'não informado'}
-        Email: {unidade.get('email') or 'não informado'}
-
-        Horário de funcionamento: {unidade.get('horario_funcionamento') or 'não informado'}
-        Horário sábado: {unidade.get('horario_sabado') or 'não informado'}
-        Horário domingo/feriado: {unidade.get('horario_domingo') or 'não informado'}
-
-        Link de matrícula: {unidade.get('link_matricula') or 'não informado'}
-        Link do site: {unidade.get('site') or 'não informado'}
-        Instagram: {unidade.get('instagram') or 'não informado'}
-
-        Modalidades disponíveis: {unidade.get('modalidades') or 'não informado'}
-        Planos disponíveis: {unidade.get('planos') or 'não informado'}
-        Valor médio dos planos: {unidade.get('valor_planos') or 'não informado'}
-
-        Possui estacionamento: {unidade.get('estacionamento') or 'não informado'}
-        Possui vestiário: {unidade.get('vestiario') or 'não informado'}
-        Possui chuveiro: {unidade.get('chuveiro') or 'não informado'}
-        Possui armários: {unidade.get('armarios') or 'não informado'}
-
-        Possui avaliação física: {unidade.get('avaliacao_fisica') or 'não informado'}
-        Possui personal trainer: {unidade.get('personal_trainer') or 'não informado'}
-        Possui aula experimental: {unidade.get('aula_experimental') or 'não informado'}
-
-        Formas de pagamento aceitas: {unidade.get('formas_pagamento') or 'não informado'}
-        Aceita Gympass: {unidade.get('gympass') or 'não informado'}
-        Aceita TotalPass: {unidade.get('totalpass') or 'não informado'}
-
-        Descrição da unidade: {unidade.get('descricao') or 'não informado'}
-        Contexto adicional: {unidade.get('contexto_adicional') or 'não informado'}
-        """
+        # --- ARQUITETURA FAST-PATH (Bypass LLM) ---
+        texto_lower_fast = pergunta_final.lower()
+        fast_reply = None
         
-        nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
-        tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
-        instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
-        instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
-        
-        regras_padrao = (
-            "1. Seja breve e objetivo.\n"
-            "2. Se a informação existir nos DADOS DA UNIDADE, responda diretamente sem sugerir acessar o site ou ligar.\n"
-            "3. Forneça respostas diretas baseadas no FAQ e nos Dados da Unidade.\n"
-            "4. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
-        )
-        regras_atendimento = pers.get('regras_atendimento') or regras_padrao
+        palavras_endereco = ["endereço", "endereco", "onde fica", "localização", "onde é", "qual o endereço"]
+        if any(p in texto_lower_fast for p in palavras_endereco) and len(texto_lower_fast) < 60:
+            end_banco = unidade.get('endereco')
+            if end_banco and str(end_banco).strip().lower() not in ['não informado', 'nao informado', 'none', '']:
+                fast_reply = f"📍 O nosso endereço é: {end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
 
-        prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
-        Personalidade e Tom de Voz: {tom_voz}
-        
-        INSTRUÇÕES GERAIS:
-        {instrucoes_base}
-        
-        REGRAS DE ATENDIMENTO (Siga estritamente):
-        {regras_atendimento}
-        * Se o cliente demonstrar intenção clara de compra ou conversão (matrícula/agendamento), direcione para o link principal: {link_principal}.
-        
-        {dados_unidade}
-
-        FAQ DA UNIDADE ({nome_unidade}):
-        {faq if faq else 'Nenhum FAQ cadastrado.'}
-        
-        DADOS DO ATENDIMENTO ATUAL:
-        Nome do Cliente: {nome_cliente}
-        Estado/Sentimento Anterior: {estado_atual}
-        
-        ---
-        MUITO IMPORTANTE (CONTRATO DE SISTEMA):
-        Você deve SEMPRE responder estritamente no formato JSON válido, sem markdown em volta.
-        Formato exigido:
-        {{
-            "resposta": "a sua mensagem final formatada para o cliente",
-            "estado": "qual o estado atual do cliente numa única palavra (ex: neutro, interessado, irritado, conversao)"
-        }}
-        """
-
-        conteudo_usuario = []
-        if pergunta_final:
-            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
-        else:
-            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nO cliente enviou uma imagem. Analise a imagem e responda adequadamente ajudando-o no contexto do atendimento."})
-            
-        for img_url in imagens_urls:
-            try:
-                resp = await http_client.get(img_url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
-                if resp.status_code == 200:
-                    img_b64 = base64.b64encode(resp.content).decode("utf-8")
-                    mime_type = "image/png" if ".png" in img_url.lower() else "image/webp" if ".webp" in img_url.lower() else "image/jpeg"
-                    conteudo_usuario.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}})
-            except Exception as e:
-                logger.error(f"Erro ao baixar imagem para base64: {e}")
-
-        modelo_escolhido = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
-
-        start_time = time.time()
-        
-        async with llm_semaphore:
-            try:
-                response = await cliente_ia.chat.completions.create(
-                    model=modelo_escolhido, 
-                    messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                    temperature=0.7, timeout=30, response_format={"type": "json_object"}
-                )
-                resposta_bruta = response.choices[0].message.content
-            except Exception as e:
-                logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
-                response = await cliente_ia.chat.completions.create(
-                    model="google/gemini-2.5-flash",
-                    messages=[
-                        {"role": "system", "content": prompt_sistema},
-                        {"role": "user", "content": conteudo_usuario}
-                    ],
-                    temperature=0.7,
-                    response_format={"type": "json_object"}
-                )
-                resposta_bruta = response.choices[0].message.content
-        
-        logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
-
-        try:
-            dados_ia = json.loads(resposta_bruta)
-            resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
-            novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
-        except json.JSONDecodeError:
-            resposta_texto = resposta_bruta
+        if fast_reply:
+            logger.info("⚡ Fast-Path Ativado! Respondendo sem usar IA (Latência: 0.02s)")
+            resposta_texto = fast_reply
             novo_estado = estado_atual
+        else:
+            # --- FLUXO NORMAL DA IA ---
+            nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
+            nome_unidade = unidade.get('nome') or 'Unidade Matriz'
+            link_principal = unidade.get('link_matricula') or 'nosso site oficial'
+            
+            dados_unidade = f"""
+            DADOS COMPLETOS DA UNIDADE
+            Nome da unidade: {unidade.get('nome') or 'não informado'}
+            Empresa: {unidade.get('nome_empresa') or 'não informado'}
 
+            Endereço: {unidade.get('endereco') or 'não informado'}
+            Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
+            CEP: {unidade.get('cep') or 'não informado'}
+
+            Telefone: {unidade.get('telefone') or 'não informado'}
+            WhatsApp: {unidade.get('whatsapp') or 'não informado'}
+            Email: {unidade.get('email') or 'não informado'}
+
+            Horário de funcionamento: {unidade.get('horario_funcionamento') or 'não informado'}
+            Horário sábado: {unidade.get('horario_sabado') or 'não informado'}
+            Horário domingo/feriado: {unidade.get('horario_domingo') or 'não informado'}
+
+            Link de matrícula: {unidade.get('link_matricula') or 'não informado'}
+            Link do site: {unidade.get('site') or 'não informado'}
+            Instagram: {unidade.get('instagram') or 'não informado'}
+
+            Modalidades disponíveis: {unidade.get('modalidades') or 'não informado'}
+            Planos disponíveis: {unidade.get('planos') or 'não informado'}
+            Valor médio dos planos: {unidade.get('valor_planos') or 'não informado'}
+
+            Possui estacionamento: {unidade.get('estacionamento') or 'não informado'}
+            Possui vestiário: {unidade.get('vestiario') or 'não informado'}
+            Possui chuveiro: {unidade.get('chuveiro') or 'não informado'}
+            Possui armários: {unidade.get('armarios') or 'não informado'}
+
+            Possui avaliação física: {unidade.get('avaliacao_fisica') or 'não informado'}
+            Possui personal trainer: {unidade.get('personal_trainer') or 'não informado'}
+            Possui aula experimental: {unidade.get('aula_experimental') or 'não informado'}
+
+            Formas de pagamento aceitas: {unidade.get('formas_pagamento') or 'não informado'}
+            Aceita Gympass: {unidade.get('gympass') or 'não informado'}
+            Aceita TotalPass: {unidade.get('totalpass') or 'não informado'}
+
+            Descrição da unidade: {unidade.get('descricao') or 'não informado'}
+            Contexto adicional: {unidade.get('contexto_adicional') or 'não informado'}
+            """
+            
+            nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+            tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
+            instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
+            instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
+            
+            regras_padrao = (
+                "1. Seja breve e objetivo.\n"
+                "2. Se a informação existir nos DADOS DA UNIDADE, responda diretamente sem sugerir acessar o site ou ligar.\n"
+                "3. Forneça respostas diretas baseadas no FAQ e nos Dados da Unidade.\n"
+                "4. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
+            )
+            regras_atendimento = pers.get('regras_atendimento') or regras_padrao
+
+            prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
+            Personalidade e Tom de Voz: {tom_voz}
+            
+            INSTRUÇÕES GERAIS:
+            {instrucoes_base}
+            
+            REGRAS DE ATENDIMENTO (Siga estritamente):
+            {regras_atendimento}
+            * Se o cliente demonstrar intenção clara de compra ou conversão (matrícula/agendamento), direcione para o link principal: {link_principal}.
+            
+            {dados_unidade}
+
+            FAQ DA UNIDADE ({nome_unidade}):
+            {faq if faq else 'Nenhum FAQ cadastrado.'}
+            
+            DADOS DO ATENDIMENTO ATUAL:
+            Nome do Cliente: {nome_cliente}
+            Estado/Sentimento Anterior: {estado_atual}
+            
+            ---
+            MUITO IMPORTANTE (CONTRATO DE SISTEMA):
+            Você deve SEMPRE responder estritamente no formato JSON válido, sem markdown em volta.
+            Formato exigido:
+            {{
+                "resposta": "a sua mensagem final formatada para o cliente",
+                "estado": "qual o estado atual do cliente numa única palavra (ex: neutro, interessado, irritado, conversao)"
+            }}
+            """
+
+            conteudo_usuario = []
+            if pergunta_final:
+                conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
+            else:
+                conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nO cliente enviou uma imagem. Analise a imagem e responda adequadamente ajudando-o no contexto do atendimento."})
+                
+            for img_url in imagens_urls:
+                try:
+                    resp = await http_client.get(img_url, headers={"api_access_token": CHATWOOT_TOKEN}, follow_redirects=True)
+                    if resp.status_code == 200:
+                        img_b64 = base64.b64encode(resp.content).decode("utf-8")
+                        mime_type = "image/png" if ".png" in img_url.lower() else "image/webp" if ".webp" in img_url.lower() else "image/jpeg"
+                        conteudo_usuario.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}})
+                except Exception as e:
+                    logger.error(f"Erro ao baixar imagem para base64: {e}")
+
+            modelo_escolhido = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+
+            start_time = time.time()
+            
+            async with llm_semaphore:
+                try:
+                    response = await cliente_ia.chat.completions.create(
+                        model=modelo_escolhido, 
+                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                        temperature=0.7, timeout=30, response_format={"type": "json_object"}
+                    )
+                    resposta_bruta = response.choices[0].message.content
+                except Exception as e:
+                    logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
+                    response = await cliente_ia.chat.completions.create(
+                        model="google/gemini-2.5-flash",
+                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                        temperature=0.7, response_format={"type": "json_object"}
+                    )
+                    resposta_bruta = response.choices[0].message.content
+            
+            logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
+
+            try:
+                dados_ia = json.loads(resposta_bruta)
+                resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
+                novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
+            except json.JSONDecodeError:
+                resposta_texto = resposta_bruta
+                novo_estado = estado_atual
+
+        # --- APLICAÇÃO DE DADOS (COMUM AO IA E AO FAST-PATH) ---
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}")
@@ -576,7 +589,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             await pipe.execute()
 
         if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
-            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA detetou estado: {novo_estado}")
+            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"Detetou estado: {novo_estado}")
 
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
@@ -658,9 +671,9 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             return {"status": "sem_unidades_ativas"}
             
         elif len(unidades_ativas) == 1:
-            # Pula o menu se a empresa só tem 1 unidade
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+            # Fluxo continua normalmente para baixo, deixando a IA responder a mensagem
             
         else:
             texto_cliente = conteudo_texto.lower().strip()
@@ -707,17 +720,11 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     slug = unidade_selecionada["slug"]
                     await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                     await redis_client.delete(f"esperando_unidade:{id_conv}")
-                    
                     await bd_iniciar_conversa(id_conv, slug)
                     await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {unidade_selecionada['nome']}", score_incremento=3)
                     
-                    url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
-                    await http_client.post(url_m, json={
-                        "content": f"Perfeito! Identificamos a unidade **{unidade_selecionada['nome']}** 🙌\n\nComo posso te ajudar hoje?",
-                        "message_type": "outgoing",
-                        "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
-                    }, headers={"api_access_token": CHATWOOT_TOKEN})
-                    return {"status": "unidade_definida"}
+                    logger.info(f"✅ Unidade definida ({slug}). Repassando a pergunta do cliente para a IA/Buffet...")
+                    # NÃO TEM MAIS O RETURN AQUI! O código segue para baixo para processar a pergunta.
                 
                 # ❌ FALHA: Mostra a lista novamente pedindo correção
                 else:
