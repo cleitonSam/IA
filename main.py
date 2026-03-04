@@ -254,7 +254,7 @@ async def carregar_personalidade(slug: str):
         logger.error(f"Erro ao carregar personalidade ({slug}): {e}")
         return {}
 
-# --- AUXILIARES BANCO DE DADOS (COM RETRY AUTOMÁTICO - TENACITY) ---
+# --- AUXILIARES BANCO DE DADOS ---
 def log_db_error(retry_state):
     logger.error(f"Erro BD após {retry_state.attempt_number} tentativas: {retry_state.outcome.exception()}")
     return None
@@ -320,7 +320,6 @@ async def bd_finalizar_conversa(conversation_id: int):
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
-    """Transcreve áudio 100% em memória lidando com redirecionamentos."""
     if not cliente_whisper: return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore: 
         try:
@@ -347,7 +346,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
     
     try:
-        await asyncio.sleep(2) # Buffer temporal
+        await asyncio.sleep(2) 
         
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_acumuladas = await redis_client.lrange(chave_buffet, 0, -1)
@@ -357,7 +356,7 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
 
         textos = []
         tasks_audio = []
-        imagens_urls = [] # NOVA LISTA PARA IMAGENS
+        imagens_urls = [] 
         
         for m_json in mensagens_acumuladas:
             m = json.loads(m_json)
@@ -366,19 +365,16 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 if f["type"] == "audio":
                     tasks_audio.append(transcrever_audio(f["url"]))
                 elif f["type"] == "image":
-                    imagens_urls.append(f["url"]) # CAPTURA IMAGEM
+                    imagens_urls.append(f["url"])
         
         transcricoes = await asyncio.gather(*tasks_audio)
         pergunta_final = " ".join(textos + list(transcricoes)).strip()
         
-        # Aborta se não houver texto, nem áudio transcrito e nem imagem
         if not pergunta_final and not imagens_urls: return
 
-        # Salva o log. Se só mandou imagem, avisa no log.
         msg_log_local = pergunta_final if pergunta_final else "[Enviou uma imagem]"
         await bd_salvar_mensagem_local(conversation_id, "user", msg_log_local)
 
-        # Contextos
         unidade = await carregar_unidade(slug) or {}
         faq = await carregar_faq_unidade(slug) or ""
         pers = await carregar_personalidade(slug) or {}
@@ -387,7 +383,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        # --- 1. EXTRAÇÃO DINÂMICA DE CONTEXTO (ENTERPRISE SAAS) ---
         nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
         link_principal = unidade.get('link_matricula') or 'nosso site oficial'
@@ -399,7 +394,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
         instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
         
-        # NOVA REGRA FORÇANDO A BOA FORMATAÇÃO
         regras_padrao = (
             "1. Seja breve e objetivo.\n"
             "2. Forneça respostas diretas baseadas no FAQ.\n"
@@ -407,7 +401,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         )
         regras_atendimento = pers.get('regras_atendimento') or regras_padrao
 
-        # --- 2. MONTAGEM DO PROMPT REUTILIZÁVEL ---
         prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
         Personalidade e Tom de Voz: {tom_voz}
         
@@ -438,32 +431,55 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         }}
         """
 
-        # --- 3. ESTRUTURA MULTIMODAL PARA O USUÁRIO (TEXTO + IMAGENS) ---
+        # --- PREPARAÇÃO DO CONTEÚDO MULTIMODAL (COM DOWNLOAD BASE64) ---
         conteudo_usuario = []
         if pergunta_final:
             conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
         else:
-            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\n[O cliente enviou uma imagem]"})
+            conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nO cliente enviou uma imagem. Analise a imagem e responda adequadamente ajudando-o no contexto do atendimento."})
             
         for img_url in imagens_urls:
-            conteudo_usuario.append({
-                "type": "image_url",
-                "image_url": {"url": img_url}
-            })
+            try:
+                resp = await http_client.get(
+                    img_url,
+                    headers={"api_access_token": CHATWOOT_TOKEN},
+                    follow_redirects=True
+                )
+                if resp.status_code == 200:
+                    img_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    
+                    mime_type = "image/jpeg"
+                    if ".png" in img_url.lower(): mime_type = "image/png"
+                    elif ".webp" in img_url.lower(): mime_type = "image/webp"
+
+                    conteudo_usuario.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{img_b64}"
+                        }
+                    })
+                else:
+                    logger.error(f"Erro ao baixar imagem do Chatwoot. HTTP Status: {resp.status_code}")
+            except Exception as e:
+                logger.error(f"Erro ao baixar imagem para base64: {e}")
+
+        # --- SELEÇÃO DINÂMICA DE MODELO (VISION) ---
+        modelo_escolhido = "google/gemini-2.0-flash-001" if imagens_urls else "google/gemini-2.0-flash-lite-001"
+
+        logger.info(f"🧠 Enviando para IA: {len(imagens_urls)} imagens via modelo {modelo_escolhido}")
 
         start_time = time.time()
         
-        # Limite de concorrência LLM
         async with llm_semaphore:
             try:
                 response = await cliente_ia.chat.completions.create(
-                    model="google/gemini-2.0-flash-lite-001",
+                    model=modelo_escolhido,
                     messages=[
                         {"role": "system", "content": prompt_sistema},
                         {"role": "user", "content": conteudo_usuario}
                     ],
                     temperature=0.7,
-                    timeout=25,
+                    timeout=30,
                     response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
@@ -482,9 +498,8 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                 resposta_bruta = response.choices[0].message.content
         
         latency = time.time() - start_time
-        logger.info(f"⏱️ LLM Latency: {latency:.2f}s | Conv: {conversation_id}")
+        logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {latency:.2f}s | Conv: {conversation_id}")
 
-        # Processar JSON da IA
         try:
             dados_ia = json.loads(resposta_bruta)
             resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
@@ -494,7 +509,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
             resposta_texto = resposta_bruta
             novo_estado = estado_atual
 
-        # Pipeline Redis
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now().isoformat()}|{novo_estado}")
@@ -507,8 +521,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
         is_manual_atendimento = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
-        
-        # Mantém a quebra de mensagens (pula linha vira nova mensagem no Chatwoot)
         pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
         
         for i, p in enumerate(pedacos):
@@ -589,7 +601,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     sender_type = sender.get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
     
-    # Identifica dinamicamente se a mensagem veio da IA usando a flag 'origin'
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
 
@@ -676,8 +687,25 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     if await redis_client.exists(f"pause_ia:{id_conv}"): return {"status": "ignorado_ia_pausada"}
 
-    anexos = payload.get("attachments", [])
-    arquivos_encontrados = [{"url": a.get("data_url"), "type": "image" if "image" in str(a.get("file_type", "")) else "audio" if "audio" in str(a.get("file_type", "")) else "documento"} for a in anexos]
+    # --- EXTRAÇÃO SEGURA DE ANEXOS ---
+    anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
+    
+    logger.info(f"📎 Anexos recebidos: {len(anexos)} anexos")
+
+    arquivos_encontrados = []
+    for a in anexos:
+        file_type = str(a.get("file_type", "")).lower()
+        if file_type.startswith("image") or "image" in file_type:
+            tipo = "image"
+        elif file_type.startswith("audio") or "audio" in file_type:
+            tipo = "audio"
+        else:
+            tipo = "documento"
+            
+        arquivos_encontrados.append({
+            "url": a.get("data_url"),
+            "type": tipo
+        })
 
     chave_buffet = f"buffet:{id_conv}"
     await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
