@@ -266,7 +266,6 @@ async def carregar_personalidade(slug: str):
     except Exception: return {}
 
 async def carregar_configuracao_global():
-    """Carrega as mensagens de boas-vindas e menus do sistema."""
     if not db_pool: return {}
     cache_key = "cfg:global"
     cache = await redis_client.get(cache_key)
@@ -281,6 +280,35 @@ async def carregar_configuracao_global():
     except Exception as e:
         logger.error(f"Erro ao carregar configuracoes globais: {e}")
         return {}
+
+# --- IA: CLASSIFICADOR DE UNIDADE (Zero-Shot) ---
+async def ia_detectar_unidade(mensagem_cliente: str, unidades: list) -> str:
+    """Usa o LLM super rápido para ver se o cliente já falou qual unidade quer de cara."""
+    lista_nomes = "\n".join([f"- {u['nome']} (slug: {u['slug']})" for u in unidades])
+    prompt = f"""
+    Você é um classificador de intenção. 
+    Sua missão é descobrir se o cliente citou o nome de uma das unidades abaixo na mensagem dele.
+    
+    UNIDADES:
+    {lista_nomes}
+    
+    MENSAGEM DO CLIENTE: "{mensagem_cliente}"
+    
+    Se ele citou uma unidade de forma clara, retorne APENAS o 'slug' exato da unidade, nada mais.
+    Se não citou nenhuma ou não está claro, retorne a palavra: NULL
+    """
+    try:
+        response = await cliente_ia.chat.completions.create(
+            model="google/gemini-2.0-flash-lite-001",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=10
+        )
+        resultado = response.choices[0].message.content.strip()
+        if resultado != "NULL":
+            return resultado
+    except Exception: pass
+    return None
 
 # --- AUXILIARES BANCO DE DADOS ---
 def log_db_error(retry_state):
@@ -393,20 +421,71 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         pers = await carregar_personalidade(slug) or {}
         historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
         
+        logger.info(f"🔍 [DIAGNÓSTICO] Buscando dados para o Slug: '{slug}'")
+
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
+        # ====== VARIÁVEIS DINÂMICAS ======
         nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
         link_principal = unidade.get('link_matricula') or 'nosso site oficial'
-        contexto_extra = unidade.get('contexto_adicional') or 'Sem contexto adicional configurado.'
+        
+        # --- BLOCO DE DADOS ESTRUTURADOS (MASTER CONTEXT) ---
+        dados_unidade = f"""
+        DADOS COMPLETOS DA UNIDADE
+        Nome da unidade: {unidade.get('nome','não informado')}
+        Empresa: {unidade.get('nome_empresa','não informado')}
+
+        Endereço: {unidade.get('endereco','não informado')}
+        Cidade/Estado: {unidade.get('cidade','não informado')} / {unidade.get('estado','não informado')}
+        CEP: {unidade.get('cep','não informado')}
+
+        Telefone: {unidade.get('telefone','não informado')}
+        WhatsApp: {unidade.get('whatsapp','não informado')}
+        Email: {unidade.get('email','não informado')}
+
+        Horário de funcionamento: {unidade.get('horario_funcionamento','não informado')}
+        Horário sábado: {unidade.get('horario_sabado','não informado')}
+        Horário domingo/feriado: {unidade.get('horario_domingo','não informado')}
+
+        Link de matrícula: {unidade.get('link_matricula','não informado')}
+        Link do site: {unidade.get('site','não informado')}
+        Instagram: {unidade.get('instagram','não informado')}
+
+        Modalidades disponíveis: {unidade.get('modalidades','não informado')}
+        Planos disponíveis: {unidade.get('planos','não informado')}
+        Valor médio dos planos: {unidade.get('valor_planos','não informado')}
+
+        Possui estacionamento: {unidade.get('estacionamento','não informado')}
+        Possui vestiário: {unidade.get('vestiario','não informado')}
+        Possui chuveiro: {unidade.get('chuveiro','não informado')}
+        Possui armários: {unidade.get('armarios','não informado')}
+
+        Possui avaliação física: {unidade.get('avaliacao_fisica','não informado')}
+        Possui personal trainer: {unidade.get('personal_trainer','não informado')}
+        Possui aula experimental: {unidade.get('aula_experimental','não informado')}
+
+        Formas de pagamento aceitas: {unidade.get('formas_pagamento','não informado')}
+        Aceita Gympass: {unidade.get('gympass','não informado')}
+        Aceita TotalPass: {unidade.get('totalpass','não informado')}
+
+        Descrição da unidade: {unidade.get('descricao','não informado')}
+        Contexto adicional: {unidade.get('contexto_adicional','não informado')}
+        """
         
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
         tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
-        
         instrucoes_padrao = f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
         instrucoes_base = pers.get('instrucoes_base') or instrucoes_padrao
-        regras_atendimento = pers.get('regras_atendimento') or "1. Seja breve e objetivo.\n2. Forneça respostas diretas baseadas no FAQ.\n3. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
+        
+        regras_padrao = (
+            "1. Seja breve e objetivo.\n"
+            "2. Se a informação existir nos DADOS DA UNIDADE, responda diretamente sem sugerir acessar o site ou ligar.\n"
+            "3. Forneça respostas diretas baseadas no FAQ e nos Dados da Unidade.\n"
+            "4. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
+        )
+        regras_atendimento = pers.get('regras_atendimento') or regras_padrao
 
         prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade: {nome_unidade}).
         Personalidade e Tom de Voz: {tom_voz}
@@ -418,11 +497,10 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         {regras_atendimento}
         * Se o cliente demonstrar intenção clara de compra ou conversão (matrícula/agendamento), direcione para o link principal: {link_principal}.
         
-        FAQ DA UNIDADE ({nome_unidade}):
-        {faq if faq else 'Nenhum FAQ cadastrado para esta unidade.'}
+        {dados_unidade}
 
-        CONTEXTO DE NEGÓCIO: 
-        {contexto_extra}
+        FAQ DA UNIDADE ({nome_unidade}):
+        {faq if faq else 'Nenhum FAQ cadastrado.'}
         
         DADOS DO ATENDIMENTO ATUAL:
         Nome do Cliente: {nome_cliente}
@@ -460,7 +538,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
         
         async with llm_semaphore:
             try:
-                # ====== BLOCO CORRIGIDO DE INDENTAÇÃO ======
                 response = await cliente_ia.chat.completions.create(
                     model=modelo_escolhido, 
                     messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
@@ -479,7 +556,6 @@ async def processar_ia_e_responder(account_id: int, conversation_id: int, contac
                     response_format={"type": "json_object"}
                 )
                 resposta_bruta = response.choices[0].message.content
-                # ============================================
         
         logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
 
@@ -571,7 +647,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     slug = next((str(l).lower().strip() for l in labels if l), None) or await redis_client.get(f"unidade_escolhida:{id_conv}")
 
     # ========================================================
-    # 🧠 ROTEAMENTO DINÂMICO DE UNIDADE (MENU + FUZZY SEARCH)
+    # 🧠 ROTEAMENTO DINÂMICO DE UNIDADE (IA + MENU + FUZZY)
     # ========================================================
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas()
@@ -581,30 +657,37 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             return {"status": "sem_unidades_ativas"}
             
         elif len(unidades_ativas) == 1:
-            # Pula o menu se a empresa só tem 1 unidade
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
             
         else:
+            texto_cliente = conteudo_texto.lower().strip()
+            unidade_selecionada = None
+            
+            # --- 1. DETECÇÃO INTELIGENTE POR IA (Zero-Shot) ---
+            slug_detectado_ia = await ia_detectar_unidade(texto_cliente, unidades_ativas)
+            if slug_detectado_ia:
+                for u in unidades_ativas:
+                    if u["slug"] == slug_detectado_ia:
+                        unidade_selecionada = u
+                        logger.info(f"🤖 IA classificou o cliente automaticamente para a unidade: {slug_detectado_ia}")
+                        break
+            
             esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
             
-            if esperando_unidade:
-                texto_cliente = conteudo_texto.lower().strip()
-                unidade_selecionada = None
-                
-                # 1️⃣ Tenta identificar se o cliente mandou um Número (1, 2, 3...)
-                if texto_cliente.isdigit():
+            if esperando_unidade or unidade_selecionada:
+                # --- 2. Tenta identificar se o cliente mandou um Número (1, 2, 3...) ---
+                if not unidade_selecionada and texto_cliente.isdigit():
                     idx = int(texto_cliente) - 1
                     if 0 <= idx < len(unidades_ativas):
                         unidade_selecionada = unidades_ativas[idx]
                 
-                # 2️⃣ Tenta identificar por Fuzzy Matching (Similaridade de Nome)
+                # --- 3. Tenta identificar por Fuzzy Matching (Similaridade de Nome) ---
                 if not unidade_selecionada:
                     melhor_score = 0
                     for u in unidades_ativas:
                         score_nome = similar(texto_cliente, u["nome"].lower())
                         score_pk = 0
-                        
                         if u.get("palavras_chave"):
                             pks = [p.strip().lower() for p in u["palavras_chave"].split(",")]
                             score_pk = max([similar(texto_cliente, pk) for pk in pks] + [0])
@@ -614,7 +697,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                             melhor_score = score_atual
                             unidade_selecionada = u
 
-                    # Taxa de confiança mínima (60%)
                     if melhor_score < 0.6: 
                         unidade_selecionada = None
                         
@@ -629,30 +711,28 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     
                     url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                     await http_client.post(url_m, json={
-                        "content": f"Perfeito! Você escolheu a unidade **{unidade_selecionada['nome']}** 🙌\n\nComo posso te ajudar hoje?",
+                        "content": f"Perfeito! Identificamos a unidade **{unidade_selecionada['nome']}** 🙌\n\nComo posso te ajudar hoje?",
                         "message_type": "outgoing",
                         "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                     }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "unidade_definida"}
                 
-                # ❌ FALHA: Mostra a lista novamente pedindo correção (Puxando do Banco)
+                # ❌ FALHA: Mostra a lista novamente pedindo correção
                 else:
                     cfg = await carregar_configuracao_global()
                     texto_erro = cfg.get("mensagem_erro_unidade") or "Ops! Não consegui identificar essa unidade. 😕 Por favor, digite o número ou o nome correto:"
-                    
                     nomes_unidades = "\n".join([f"{i+1}. {u['nome']}" for i, u in enumerate(unidades_ativas)])
                     mensagem = f"{texto_erro}\n\n{nomes_unidades}"
                     
                     url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                     await http_client.post(url_m, json={
-                        "content": mensagem,
-                        "message_type": "outgoing",
+                        "content": mensagem, "message_type": "outgoing",
                         "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                     }, headers={"api_access_token": CHATWOOT_TOKEN})
                     return {"status": "aguardando_unidade_valida"}
                     
             else:
-                # 💬 Primeira vez do cliente: Mostra o Menu Numérico (Puxando do Banco)
+                # 💬 Primeira vez do cliente: Mostra o Menu Numérico
                 cfg = await carregar_configuracao_global()
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
                 menu_unidades = cfg.get("mensagem_menu_unidades") or "Temos as seguintes unidades disponíveis. Qual delas você gostaria de falar?"
@@ -662,8 +742,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 
                 url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{id_conv}/messages"
                 await http_client.post(url_m, json={
-                    "content": mensagem,
-                    "message_type": "outgoing",
+                    "content": mensagem, "message_type": "outgoing",
                     "content_attributes": {"origin": "ai", "ai_agent": "Assistente Virtual", "ignore_webhook": True}
                 }, headers={"api_access_token": CHATWOOT_TOKEN})
                 
