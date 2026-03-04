@@ -23,11 +23,11 @@ logger = logging.getLogger("panobianco-ia")
 
 load_dotenv()
 
-# 🧯 Segurança: Validar variáveis críticas antes de subir a aplicação
+# 🧯 Segurança: Validar variáveis críticas
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 if not CHATWOOT_URL or not CHATWOOT_TOKEN:
-    raise RuntimeError("🚨 Configuração crítica ausente: CHATWOOT_URL ou CHATWOOT_TOKEN não foram definidos no .env")
+    raise RuntimeError("🚨 Configuração crítica ausente: CHATWOOT_URL ou CHATWOOT_TOKEN não definidos no .env")
 
 app = FastAPI()
 
@@ -36,8 +36,6 @@ CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         
 REDIS_URL = os.getenv("REDIS_URL")
-
-# Pega a URL do banco configurada no painel do Render (Environment Variables)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Clientes de IA
@@ -71,7 +69,7 @@ async def startup_event():
         except Exception as e:
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
     else:
-        logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas no banco de dados.")
+        logger.warning("⚠️ DATABASE_URL não definida. As métricas e configurações não serão salvas/carregadas.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -81,24 +79,68 @@ async def shutdown_event():
         await db_pool.close()
     logger.info("🛑 Servidor desligado.")
 
-# --- BANCO DE DADOS DE UNIDADES ---
-UNIDADES = {
-    "marajoara": {
-        "nome": "Panobianco Marajoara",
-        "endereco": "Rua Paulo Sérgio, 61 - Parque Marajoara - Santo André",
-        "horarios": "*Segunda a Sexta:* 05h às 23h\n*Sábado:* 08h às 17h\n*DOM:* 09h às 14h",
-        "link_venda": "https://evo-totem.w12app.com.br/panobiancos/282/site/oportunidade"
-    }
-}
+# --- FUNÇÕES DE BUSCA DINÂMICA COM CACHE REDIS (SAAS) ---
+async def carregar_unidade(slug: str):
+    if not db_pool: return None
+    
+    cache_key = f"cfg:unidade:{slug}"
+    cache = await redis_client.get(cache_key)
+    if cache: return json.loads(cache)
 
-# --- AUXILIARES BANCO DE DADOS (POSTGRESQL) ---
+    try:
+        row = await db_pool.fetchrow("SELECT * FROM unidades_config WHERE slug = $1 AND ativa = TRUE", slug)
+        if row:
+            dados = dict(row)
+            # Usa default=str para evitar erro com campos TIMESTAMP do PostgreSQL
+            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str)) 
+            return dados
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao carregar unidade ({slug}): {e}")
+        return None
+
+async def carregar_faq_unidade(slug: str):
+    if not db_pool: return ""
+    
+    cache_key = f"cfg:faq:{slug}"
+    cache = await redis_client.get(cache_key)
+    if cache: return cache
+
+    try:
+        rows = await db_pool.fetch("SELECT pergunta, resposta FROM faq_unidades WHERE slug_unidade = $1 AND ativo = TRUE ORDER BY prioridade DESC", slug)
+        faq_formatado = "".join([f"\nPergunta: {r['pergunta']}\nResposta: {r['resposta']}\n" for r in rows]).strip()
+        
+        if faq_formatado:
+            await redis_client.setex(cache_key, 300, faq_formatado)
+        return faq_formatado
+    except Exception as e:
+        logger.error(f"Erro ao carregar FAQ ({slug}): {e}")
+        return ""
+
+async def carregar_personalidade(slug: str):
+    if not db_pool: return {}
+    
+    cache_key = f"cfg:pers:{slug}"
+    cache = await redis_client.get(cache_key)
+    if cache: return json.loads(cache)
+
+    try:
+        row = await db_pool.fetchrow("SELECT * FROM personalidade_ia WHERE slug_unidade = $1 LIMIT 1", slug)
+        if row:
+            dados = dict(row)
+            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
+            return dados
+        return {}
+    except Exception as e:
+        logger.error(f"Erro ao carregar personalidade ({slug}): {e}")
+        return {}
+
+# --- AUXILIARES BANCO DE DADOS (MÉTRICAS E FUNIL) ---
 async def bd_iniciar_conversa(conversation_id: int, unidade: str):
     if not db_pool: return
     try:
         await db_pool.execute("""
-            INSERT INTO conversas_ia (conversation_id, unidade)
-            VALUES ($1, $2)
-            ON CONFLICT (conversation_id) DO NOTHING
+            INSERT INTO conversas_ia (conversation_id, unidade) VALUES ($1, $2) ON CONFLICT (conversation_id) DO NOTHING
         """, conversation_id, unidade)
     except Exception as e:
         logger.error(f"Erro BD (iniciar_conversa): {e}")
@@ -107,9 +149,7 @@ async def bd_atualizar_msg_cliente(conversation_id: int):
     if not db_pool: return
     try:
         await db_pool.execute("""
-            UPDATE conversas_ia
-            SET mensagens_cliente = mensagens_cliente + 1, updated_at = NOW()
-            WHERE conversation_id = $1
+            UPDATE conversas_ia SET mensagens_cliente = mensagens_cliente + 1, updated_at = NOW() WHERE conversation_id = $1
         """, conversation_id)
     except Exception as e:
         logger.error(f"Erro BD (atualizar_msg_cliente): {e}")
@@ -118,9 +158,7 @@ async def bd_atualizar_msg_ia(conversation_id: int):
     if not db_pool: return
     try:
         await db_pool.execute("""
-            UPDATE conversas_ia
-            SET mensagens_ia = mensagens_ia + 1, updated_at = NOW()
-            WHERE conversation_id = $1
+            UPDATE conversas_ia SET mensagens_ia = mensagens_ia + 1, updated_at = NOW() WHERE conversation_id = $1
         """, conversation_id)
     except Exception as e:
         logger.error(f"Erro BD (atualizar_msg_ia): {e}")
@@ -128,23 +166,16 @@ async def bd_atualizar_msg_ia(conversation_id: int):
 async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
     if not db_pool: return
     try:
-        # Insere na linha do tempo de eventos
         await db_pool.execute("""
-            INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao)
-            VALUES ($1, $2, $3)
+            INSERT INTO eventos_conversa (conversation_id, tipo_evento, descricao) VALUES ($1, $2, $3)
         """, conversation_id, tipo_evento, descricao)
 
-        # Atualiza o Score na tabela principal
         await db_pool.execute("""
-            UPDATE conversas_ia
-            SET score = score + $2, updated_at = NOW()
-            WHERE conversation_id = $1
+            UPDATE conversas_ia SET score = score + $2, updated_at = NOW() WHERE conversation_id = $1
         """, conversation_id, score_incremento)
         
-        # Se for interesse, já marca a flag
         if tipo_evento == "interesse_detectado":
             await db_pool.execute("UPDATE conversas_ia SET interesse_detectado = TRUE WHERE conversation_id = $1", conversation_id)
-            
     except Exception as e:
         logger.error(f"Erro BD (registrar_evento): {e}")
 
@@ -161,9 +192,7 @@ async def bd_finalizar_conversa(conversation_id: int):
     if not db_pool: return
     try:
         await db_pool.execute("""
-            UPDATE conversas_ia 
-            SET finalizada = TRUE, finalizada_em = NOW(), updated_at = NOW() 
-            WHERE conversation_id = $1
+            UPDATE conversas_ia SET finalizada = TRUE, finalizada_em = NOW(), updated_at = NOW() WHERE conversation_id = $1
         """, conversation_id)
     except Exception as e:
         logger.error(f"Erro BD (finalizar_conversa): {e}")
@@ -173,11 +202,7 @@ def obter_contexto_tempo():
     fuso_sp = ZoneInfo("America/Sao_Paulo")
     agora = datetime.now(fuso_sp)
     hora = agora.hour
-
-    if 5 <= hora < 12: saudacao = "Bom dia"
-    elif 12 <= hora < 18: saudacao = "Boa tarde"
-    else: saudacao = "Boa noite"
-
+    saudacao = "Bom dia" if 5 <= hora < 12 else "Boa tarde" if 12 <= hora < 18 else "Boa noite"
     dias_semana = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
     return saudacao, dias_semana[agora.weekday()], agora.strftime("%H:%M")
 
@@ -220,20 +245,15 @@ async def baixar_arquivo_chatwoot(url: str):
         return None
 
 async def transcrever_audio_whisper(audio_bytes: bytes):
-    if not cliente_whisper:
-        return "[Áudio recebido, mas a chave OPENAI_API_KEY não foi configurada.]"
-    
+    if not cliente_whisper: return "[Áudio recebido, mas a chave OPENAI não foi configurada.]"
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_path = tmp_file.name
-
         with open(tmp_path, "rb") as audio_file:
             transcription = await asyncio.wait_for(
-                cliente_whisper.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, language="pt"
-                ), timeout=20.0
+                cliente_whisper.audio.transcriptions.create(model="whisper-1", file=audio_file, language="pt"), timeout=20.0
             )
         return transcription.text
     except asyncio.TimeoutError:
@@ -242,8 +262,7 @@ async def transcrever_audio_whisper(audio_bytes: bytes):
         logger.error(f"❌ Erro no Whisper: {e}")
         return "[Erro interno ao transcrever o áudio do cliente.]"
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
 
 # --- LÓGICA PRINCIPAL DA IA ---
 async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug_unidade, nome_cliente):
@@ -251,18 +270,14 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
     try:
         await asyncio.sleep(12) 
         
-        if await redis_client.exists(f"pause_ia:{conversation_id}"):
-            return
+        if await redis_client.exists(f"pause_ia:{conversation_id}"): return
         
         chave_buffet = f"buffet:{conversation_id}"
         mensagens_lista = await redis_client.lrange(chave_buffet, 0, -1)
         await redis_client.delete(chave_buffet)
         
-        if not mensagens_lista or await verificar_atendimento_manual(account_id, conversation_id):
-            return
-
-        if len(mensagens_lista) > 15:
-            mensagens_lista = mensagens_lista[-15:]
+        if not mensagens_lista or await verificar_atendimento_manual(account_id, conversation_id): return
+        if len(mensagens_lista) > 15: mensagens_lista = mensagens_lista[-15:]
 
         textos, imagens, audios = [], [], []
         for item in mensagens_lista:
@@ -295,51 +310,62 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
             bytes_img = await baixar_arquivo_chatwoot(img_url)
             if bytes_img:
                 b64_img = base64.b64encode(bytes_img).decode('utf-8')
-                conteudo_usuario_ia.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
-                })
+                conteudo_usuario_ia.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}})
 
-        u = UNIDADES.get(slug_unidade, UNIDADES["marajoara"])
-        historico = await obter_historico_chatwoot(account_id, conversation_id)
-        precisa_saudacao = "Atendente:" not in historico[-200:]
-        saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
+        # --- CARREGAMENTO DINÂMICO DA UNIDADE (COM CACHE) ---
+        u = await carregar_unidade(slug_unidade)
+        if not u:
+            logger.warning(f"⚠️ Unidade '{slug_unidade}' não encontrada no banco ou está inativa. Abortando resposta.")
+            return
+
+        faq_unidade = await carregar_faq_unidade(slug_unidade)
+        personalidade = await carregar_personalidade(slug_unidade)
         
+        historico = await obter_historico_chatwoot(account_id, conversation_id)
+        saudacao_certa, dia_atual, hora_atual = obter_contexto_tempo()
         estado_cliente = await redis_client.get(f"estado:{conversation_id}") or "indefinido"
 
+        # SYSTEM PROMPT DINÂMICO
         system_prompt = f"""
         Você é o Consultor de Vendas da {u['nome']}.
-        Seu objetivo: Converter curiosos em alunos matriculados de forma natural.
 
-        CONTEXTO ATUAL:
-        - Hoje é {dia_atual}, {hora_atual} (Horário de Brasília/SP).
-        - Estado Emocional Mapeado do Cliente: {estado_cliente}
-        - Horários da academia: {u['horarios']}
+        OBJETIVO PRINCIPAL:
+        {u.get('objetivo_primario', 'Converter curiosos em alunos matriculados')}
 
         DADOS DA UNIDADE:
-        - Endereço: {u['endereco']}
-        - Link de Matrícula: {u['link_venda']}
+        - Endereço: {u.get('endereco', 'Não informado')}
+        - Horários: {u.get('horarios', 'Não informado')}
+        - Link de Matrícula: {u.get('link_venda', 'Nenhum link disponível no momento.')}
+
+        PERSONALIDADE DA IA:
+        - Estilo: {personalidade.get('estilo', 'Consultiva')}
+        - Nível de Persuasão: {personalidade.get('nivel_persuasao', 5)}/10
+        - Usa gírias leves: {personalidade.get('usa_giria', True)}
+        - Intensidade Follow-up: {personalidade.get('intensidade_followup', 5)}/10
+        - Usa gatilho de escassez: {personalidade.get('gatilho_escassez', True)}
+
+        BASE DE CONHECIMENTO (FAQ):
+        {faq_unidade}
+
+        CONTEXTO ATUAL:
+        - Hoje é {dia_atual}, {hora_atual}
+        - Estado Emocional Mapeado do Cliente: {estado_cliente}
+        - Nome do Cliente: {nome_cliente}
 
         REGRAS ABSOLUTAS:
         1. NÃO SEJA REPETITIVO: NUNCA repita frases ou links que já estão no histórico.
         2. FOCO NO AGORA: Responda APENAS à última mensagem.
-        3. SAUDAÇÃO: {'Use "' + saudacao_certa + '" no início.' if precisa_saudacao else 'Vá direto ao ponto.'}
+        3. ESTILO HUMANO: Seja direto.
         4. LINK: Só envie se o cliente quiser comprar. Se já enviou, NÃO envie de novo.
-        5. ESTILO HUMANO: Direto. 2 parágrafos curtos. Português BR com gírias leves (bora, foco).
-        6. IMAGENS/ÁUDIOS: Comente naturalmente sobre o que viu ou ouviu.
-        7. NOME: Cliente atual = {nome_cliente}. Para corrigir, use [NOME: Valor].
-        8. FECHAMENTO: SEMPRE faça uma pergunta no final se o cliente não estiver 100% decidido. (Aumenta conversão!)
-        9. EMOCIONAL (OBRIGATÓRIO): No final de TODAS as suas respostas, você DEVE incluir a tag [ESTADO: sentimento]. Exemplo: [ESTADO: curioso], [ESTADO: interessado], [ESTADO: achou caro].
+        5. FECHAMENTO: SEMPRE faça uma pergunta no final se o cliente não estiver 100% decidido.
+        6. EMOCIONAL (OBRIGATÓRIO): No final de TODAS as suas respostas, você DEVE incluir a tag [ESTADO: sentimento].
 
-        HISTÓRICO:
+        HISTÓRICO DA CONVERSA:
         {historico}
         """
 
         hora_atual_int = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
-        if 8 <= hora_atual_int <= 20:
-            modelos_para_tentar = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
-        else:
-            modelos_para_tentar = ["google/gemini-2.5-flash-lite", "google/gemini-2.5-flash"]
+        modelos_para_tentar = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"] if 8 <= hora_atual_int <= 20 else ["google/gemini-2.5-flash-lite", "google/gemini-2.5-flash"]
         
         resposta = None
         erro_final = None
@@ -358,15 +384,13 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 break 
             except Exception as e:
                 erro_final = str(e)
-                if "429" in erro_final:
-                    await asyncio.sleep(2)
-                else:
-                    await asyncio.sleep(1)
+                if "429" in erro_final: await asyncio.sleep(2)
+                else: await asyncio.sleep(1)
 
         if not resposta:
             resposta = "Desculpe, nosso sistema está um pouquinho sobrecarregado agora. 😅 Já já eu ou alguém da equipe te responde melhor, tá bom?"
 
-        # ---------------- PROCESSAMENTO DE METADADOS (NOME/ESTADO/LINK) ----------------
+        # --- PROCESSAMENTO DE METADADOS ---
         if "[NOME:" in resposta:
             match = re.search(r"\[NOME:\s*(.*?)\]", resposta)
             if match:
@@ -374,17 +398,13 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await http_client.put(url_c, json={"name": limpar_nome(match.group(1))}, headers={"api_access_token": CHATWOOT_TOKEN})
                 resposta = re.sub(r"\[NOME:.*?\]", "", resposta).strip()
 
-        # Detecção de Link de Venda Enviado
-        if u['link_venda'] in resposta:
-            await bd_registrar_evento_funil(
-                conversation_id, 
-                "link_enviado", 
-                "A IA enviou o link de matrícula para o cliente.",
-                score_incremento=15
-            )
+        # Gatilho: Link de Venda Enviado
+        link_unidade = u.get('link_venda')
+        if link_unidade and link_unidade in resposta:
+            await bd_registrar_evento_funil(conversation_id, "link_enviado", "IA enviou o link de matrícula.", score_incremento=15)
             await bd_marcar_link_enviado(conversation_id)
 
-        # Mapeamento do Estado Emocional (agora OBRIGATÓRIO na regra 9)
+        # Gatilho: Mapeamento de Estado Emocional
         if "[ESTADO:" in resposta:
             match_estado = re.search(r"\[ESTADO:\s*(.*?)\]", resposta)
             if match_estado:
@@ -392,14 +412,10 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
                 await redis_client.setex(f"estado:{conversation_id}", 86400, novo_estado)
                 
                 if any(palavra in novo_estado for palavra in ["interessad", "quer comprar", "preço", "matricul", "fechar"]):
-                    await bd_registrar_evento_funil(
-                        conversation_id, 
-                        "interesse_detectado", 
-                        f"IA mapeou intenção. Estado: {novo_estado}"
-                    )
+                    await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"IA mapeou intenção. Estado: {novo_estado}")
                 resposta = re.sub(r"\[ESTADO:.*?\]", "", resposta).strip()
 
-        # ---------------- ENVIO FRACIONADO CHATWOOT ----------------
+        # --- ENVIO PARA O CHATWOOT ---
         pedacos = [p.strip() for p in resposta.split("\n") if p.strip()]
         for p in pedacos:
             if await verificar_atendimento_manual(account_id, conversation_id): break
@@ -410,13 +426,8 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
             
             url_m = f"{CHATWOOT_URL}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
             payload_msg = {
-                "content": p, 
-                "message_type": "outgoing",
-                "content_attributes": {
-                    "origin": "ai",
-                    "ai_agent": "Agente Red",
-                    "ignore_webhook": True
-                }
+                "content": p, "message_type": "outgoing",
+                "content_attributes": {"origin": "ai", "ai_agent": "Agente Red", "ignore_webhook": True}
             }
             await http_client.post(url_m, json=payload_msg, headers={"api_access_token": CHATWOOT_TOKEN})
             await bd_atualizar_msg_ia(conversation_id)
@@ -425,7 +436,6 @@ async def processar_ia_e_responder(account_id, conversation_id, contact_id, slug
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
     finally:
         await redis_client.delete(chave_lock)
-
 
 # --- WEBHOOK ENDPOINT ---
 @app.post("/webhook")
@@ -436,20 +446,17 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
 
-    # ---------------- CAPTURA O FIM DA CONVERSA ----------------
+    # Fim da conversa
     if event == "conversation_updated":
         status_conversa = payload.get("status") or payload.get("conversation", {}).get("status")
         if status_conversa == "resolved":
-            logger.info(f"🏁 Conversa {id_conv} resolvida. Limpando memória da IA.")
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(f"pause_ia:{id_conv}")
             await redis_client.delete(f"estado:{id_conv}")
             return {"status": "conversa_encerrada_registrada"}
-        return {"status": "conversa_atualizada_ignorada"}
+        return {"status": "conversa_atualizada"}
 
-    # Se não for mensagem nova, ignora o resto
-    if event != "message_created":
-        return {"status": "ignorado"}
+    if event != "message_created": return {"status": "ignorado"}
 
     message_type = payload.get("message_type")
     sender = payload.get("sender", {})
@@ -457,34 +464,31 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     content_attrs = payload.get("content_attributes") or {}
     is_ai_message = content_attrs.get("ai_agent") == "Agente Red" or content_attrs.get("origin") == "ai"
 
+    # CAPTURA O SLUG DINÂMICO DE FORMA SEGURA
     labels = payload.get("conversation", {}).get("labels", [])
-    slug = next((l.lower() for l in labels if l.lower() in UNIDADES), "marajoara")
+    slug = next((l.lower() for l in labels if l), None)
 
-    # MENSAGEM SAINDO (Atendente ou IA)
+    if not slug:
+        logger.warning(f"⚠️ Nenhuma label encontrada na conversa {id_conv}. Usando unidade padrão 'marajoara'.")
+        slug = "marajoara"
+
+    # MENSAGEM SAINDO (Pausa IA se for humano)
     if message_type == "outgoing" and sender_type == "user":
-        if is_ai_message:
-            return {"status": "ignorado_mensagem_da_ia"}
-        else:
-            await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
-            return {"status": "ia_pausada"}
+        if is_ai_message: return {"status": "ignorado_mensagem_ia"}
+        await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+        return {"status": "ia_pausada"}
 
-    if message_type != "incoming":
-        return {"status": "ignorado_nao_incoming"}
+    if message_type != "incoming": return {"status": "ignorado_nao_incoming"}
 
-    # 🐘 INTEGRAÇÃO POSTGRESQL: Registra conversa e atualiza contagem de mensagens do cliente
+    # INTEGRAÇÃO BD (Inicia/Atualiza Cliente)
     await bd_iniciar_conversa(id_conv, slug)
     await bd_atualizar_msg_cliente(id_conv)
 
-    if await redis_client.exists(f"pause_ia:{id_conv}"):
-        return {"status": "ignorado_ia_pausada"}
+    if await redis_client.exists(f"pause_ia:{id_conv}"): return {"status": "ignorado_ia_pausada"}
 
     conteudo_texto = payload.get("content", "")
     anexos = payload.get("attachments", [])
-    arquivos_encontrados = []
-    
-    for a in anexos:
-        tipo = "image" if "image" in str(a.get("file_type", "")) else "audio" if "audio" in str(a.get("file_type", "")) else "documento"
-        arquivos_encontrados.append({"url": a.get("data_url"), "type": tipo})
+    arquivos_encontrados = [{"url": a.get("data_url"), "type": "image" if "image" in str(a.get("file_type", "")) else "audio" if "audio" in str(a.get("file_type", "")) else "documento"} for a in anexos]
 
     chave_buffet = f"buffet:{id_conv}"
     await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
@@ -492,22 +496,19 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
 
     if await redis_client.set(f"lock:{id_conv}", "1", nx=True, ex=60):
         background_tasks.add_task(
-            processar_ia_e_responder,
-            payload["account"]["id"], id_conv, sender.get("id"), slug, limpar_nome(sender.get("name"))
+            processar_ia_e_responder, payload["account"]["id"], id_conv, sender.get("id"), slug, limpar_nome(sender.get("name"))
         )
         return {"status": "processando"}
     
     return {"status": "acumulando_no_buffet"}
 
-# --- ROTA DE DESBLOQUEIO MANUAL DE EMERGÊNCIA ---
+# --- ROTAS EXTRAS ---
 @app.get("/desbloquear/{conversation_id}")
 async def desbloquear_ia(conversation_id: int):
-    chave = f"pause_ia:{conversation_id}"
-    resultado = await redis_client.delete(chave)
-    if resultado:
-        return {"status": "sucesso", "mensagem": f"✅ IA reativada com sucesso para a conversa {conversation_id}!"}
-    return {"status": "aviso", "mensagem": f"A conversa {conversation_id} já não estava pausada ou não existe."}
+    if await redis_client.delete(f"pause_ia:{conversation_id}"):
+        return {"status": "sucesso", "mensagem": f"✅ IA reativada para a conversa {conversation_id}!"}
+    return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Agente Panobianco e BI Operantes! 🚀"}
+    return {"status": "🤖 Motor SaaS Operante e Cacheado! 🚀"}
