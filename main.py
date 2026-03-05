@@ -277,16 +277,36 @@ async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
             resp.raise_for_status()
             data = resp.json()
 
+        logger.debug(f"Resposta da API Evo: {json.dumps(data)[:500]}...")
+
+        # A API pode retornar uma lista diretamente ou um objeto com campo 'data'
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict) and 'data' in data:
+            items = data['data']
+        else:
+            logger.error(f"Formato de resposta inesperado da API Evo: {type(data)}")
+            return None
+
         # Extrair informações relevantes
         planos = []
-        for item in data:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # Processa diferenciais com segurança
+            diferenciais = item.get('differentials', [])
+            if isinstance(diferenciais, list):
+                diffs = [d.get('title') for d in diferenciais if isinstance(d, dict) and d.get('title')]
+            else:
+                diffs = []
+
             plano = {
-                'nome': item.get('displayName') or item.get('nameMembership'),
+                'nome': item.get('displayName') or item.get('nameMembership', 'Plano'),
                 'valor': item.get('value'),
                 'valor_promocional': item.get('valuePromotionalPeriod'),
                 'meses_promocionais': item.get('monthsPromotionalPeriod'),
                 'descricao': item.get('description'),
-                'diferenciais': [d['title'] for d in item.get('differentials', []) if d.get('title')],
+                'diferenciais': diffs,
                 'url_venda': item.get('urlSale'),
                 'id': item.get('idMembership')
             }
@@ -1560,4 +1580,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo!"}
+    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo Corrigida!"}
