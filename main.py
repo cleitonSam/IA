@@ -370,9 +370,10 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
     logger.info(f"✅ Sincronizados {count} novos planos para empresa {empresa_id}")
     return count
 
-async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None) -> List[Dict]:
+async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sync: bool = False) -> List[Dict]:
     """
     Retorna planos ativos da empresa, ordenados por ordem e nome.
+    Se force_sync for True, tenta sincronizar da API se não houver planos no banco.
     Se unidade_id for fornecido, filtra por unidade (caso haja relação).
     """
     if not db_pool:
@@ -382,6 +383,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None) -> List[
     if cached:
         return json.loads(cached)
 
+    # Primeiro tenta buscar do banco
     query = "SELECT * FROM planos WHERE empresa_id = $1 AND ativo = true"
     params = [empresa_id]
     if unidade_id:
@@ -391,6 +393,16 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None) -> List[
 
     rows = await db_pool.fetch(query, *params)
     planos = [dict(r) for r in rows]
+
+    # Se não encontrou e force_sync for True, tenta sincronizar
+    if not planos and force_sync:
+        logger.info(f"🔄 Nenhum plano ativo no banco para empresa {empresa_id}. Tentando sincronizar da API...")
+        await sincronizar_planos_evo(empresa_id)
+        # Busca novamente após sincronização
+        rows = await db_pool.fetch(query, *params)
+        planos = [dict(r) for r in rows]
+
+    # Faz cache mesmo que vazio (por 5 minutos)
     await redis_client.setex(cache_key, 300, json.dumps(planos, default=str))
     return planos
 
@@ -425,6 +437,14 @@ async def worker_sync_planos():
                 await sincronizar_planos_evo(emp['id'])
         except Exception as e:
             logger.error(f"Erro no worker de sincronização de planos: {e}")
+
+# Endpoint para forçar sincronização manual (pode ser chamado por um cron externo)
+@app.get("/sync-planos/{empresa_id}")
+async def sync_planos_manual(empresa_id: int):
+    count = await sincronizar_planos_evo(empresa_id)
+    # Após sincronizar, limpa cache de planos ativos
+    await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
+    return {"status": "ok", "sincronizados": count}
 
 # --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT (AGORA USA INTEGRAÇÃO) ---
 async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, content: str, nome_ia: str, integracao: dict):
@@ -1159,8 +1179,8 @@ async def processar_ia_e_responder(
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
-        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco ---
-        planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'))
+        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco (com force_sync=True na primeira tentativa) ---
+        planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
             planos_str = formatar_planos_para_prompt(planos_ativos)
             # Pega o link do primeiro plano ativo ou usa o da unidade
@@ -1668,4 +1688,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Planos em Banco e Mensagens Formatadas! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack com Planos em Banco e Sincronização Imediata! 🚀"}
