@@ -445,6 +445,9 @@ async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO)
         return {}
     cache_key = f"cfg:pers:{slug}:v2"
     
+    # 🔍 LOG para debug
+    logger.info(f"🔎 Buscando personalidade para slug: {slug}, empresa: {empresa_id}")
+    
     # Tenta buscar do cache
     cache = await redis_client.get(cache_key)
     if cache:
@@ -466,6 +469,9 @@ async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO)
             LIMIT 1
         """
         row = await db_pool.fetchrow(query, slug, empresa_id)
+        # LOG do resultado da query
+        logger.info(f"🧠 Resultado do banco: {row}")
+        
         if row:
             dados = dict(row)
             logger.info(f"✅ Personalidade carregada do banco: {dados.get('nome_ia')} para unidade {slug}")
@@ -791,7 +797,12 @@ async def processar_ia_e_responder(
         await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final if pergunta_final else "[Enviou uma imagem]")
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
-        pers = await carregar_personalidade(slug, empresa_id) or {}
+        
+        # 🛡️ Carregar personalidade com proteção
+        pers = {}
+        if slug:
+            pers = await carregar_personalidade(slug, empresa_id) or {}
+        
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
         
         # Log para debug
