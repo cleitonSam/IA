@@ -936,49 +936,54 @@ async def processar_ia_e_responder(
             """
             
             tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
+            estilo = pers.get('estilo_comunicacao') or ''
+            saudacao = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia}, como posso ajudar?"
             instrucoes_base = pers.get('instrucoes_base') or f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
-            
-            regras_padrao = (
-                "1. Seja breve e objetivo.\n"
-                "2. Se a informação existir nos DADOS DA UNIDADE, responda diretamente sem sugerir acessar o site ou ligar.\n"
-                "3. Forneça respostas diretas baseadas no FAQ e nos Dados da Unidade.\n"
-                "4. Formate SEMPRE sua resposta com parágrafos curtos, tópicos/listas (se aplicável) e quebras de linha para facilitar a leitura."
-            )
-            regras_atendimento = pers.get('regras_atendimento') or regras_padrao
+            regras_atendimento = pers.get('regras_atendimento') or "Seja breve e objetivo."
 
             aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações especificamente sobre a unidade {nome_unidade}. Baseie sua próxima resposta SOMENTE nos dados abaixo e reconheça essa mudança de forma natural se necessário." if mudou_unidade else ""
 
-            prompt_sistema = f"""Você é {nome_ia}, assistente virtual da empresa {nome_empresa} (Unidade atual: {nome_unidade}).
-            Personalidade e Tom de Voz: {tom_voz}
-            {aviso_mudanca}
-            
-            UNIDADES DISPONÍVEIS NA REDE:
-            {lista_unidades_nomes}
-            
-            INSTRUÇÕES GERAIS:
-            {instrucoes_base}
-            
-            REGRAS DE ATENDIMENTO (Siga estritamente):
-            {regras_atendimento}
-            * Se o cliente demonstrar intenção clara de compra ou conversão (matrícula/agendamento), direcione para o link principal: {link_principal}.
-            
-            {dados_unidade}
+            # 🎯 NOVO PROMPT MAIS NATURAL E HUMANIZADO
+            prompt_sistema = f"""
+Seu nome é {nome_ia}.
 
-            FAQ DA UNIDADE ({nome_unidade}):
-            {faq if faq else 'Nenhum FAQ cadastrado.'}
-            
-            DADOS DO ATENDIMENTO ATUAL:
-            Nome do Cliente: {nome_cliente}
-            Estado/Sentimento Anterior: {estado_atual}
-            
-            MUITO IMPORTANTE:
-            Você deve SEMPRE responder estritamente no formato JSON válido.
-            Formato exigido:
-            {{
-                "resposta": "a sua mensagem final formatada para o cliente",
-                "estado": "qual o estado atual do cliente numa única palavra"
-            }}
-            """
+Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
+
+PERSONALIDADE
+{pers.get('personalidade','')}
+
+ESTILO DE COMUNICAÇÃO
+Tom de voz: {tom_voz}
+Estilo: {estilo}
+
+SAUDAÇÃO PADRÃO
+{saudacao}
+
+INSTRUÇÕES
+{instrucoes_base}
+
+REGRAS
+{regras_atendimento}
+
+INFORMAÇÕES DA UNIDADE
+{dados_unidade}
+
+FAQ
+{faq}
+
+IMPORTANTE:
+- Nunca diga que é um assistente virtual
+- Seu nome é sempre {nome_ia}
+- Fale como uma pessoa real
+- Seja natural e conversacional
+{aviso_mudanca}
+
+DADOS DO ATENDIMENTO ATUAL:
+Nome do Cliente: {nome_cliente}
+Estado/Sentimento Anterior: {estado_atual}
+
+Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (estado do cliente).
+"""
 
             conteudo_usuario = []
             if pergunta_final:
@@ -996,8 +1001,11 @@ async def processar_ia_e_responder(
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            modelo_escolhido = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
-
+            # 🎯 ESCOLHA DO MODELO BASEADO NA PERSONALIDADE
+            modelo_escolhido = pers.get("modelo_preferido")
+            if not modelo_escolhido:
+                modelo_escolhido = "google/gemini-2.5-flash-lite" if not imagens_urls else "google/gemini-2.5-flash"
+            
             start_time = time.time()
             async with llm_semaphore:
                 try:
@@ -1009,8 +1017,9 @@ async def processar_ia_e_responder(
                     resposta_bruta = response.choices[0].message.content
                 except Exception as e:
                     logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
+                    modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                     response = await cliente_ia.chat.completions.create(
-                        model="google/gemini-2.5-flash",
+                        model=modelo_fallback,
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
                         temperature=0.7, response_format={"type": "json_object"}
                     )
