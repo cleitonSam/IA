@@ -723,6 +723,18 @@ async def worker_metricas_diarias():
         except Exception as e:
             logger.error(f"Erro no worker de métricas diárias: {e}")
 
+# 🛠 FUNÇÃO PARA CORRIGIR JSON TRUNCADO
+def corrigir_json(texto: str) -> str:
+    """Tenta corrigir JSON que pode ter sido truncado pela IA."""
+    texto = texto.strip()
+    if not texto.startswith("{"):
+        inicio = texto.find("{")
+        if inicio != -1:
+            texto = texto[inicio:]
+    if not texto.endswith("}"):
+        texto = texto + "}"
+    return texto
+
 # --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
     if not cliente_whisper:
@@ -1012,7 +1024,9 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_escolhido, 
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                        temperature=0.7, timeout=30, response_format={"type": "json_object"}
+                        temperature=0.3,  # Reduzido para evitar respostas inconsistentes
+                        timeout=30
+                        # Removido response_format para evitar truncamento com OpenRouter
                     )
                     resposta_bruta = response.choices[0].message.content
                 except Exception as e:
@@ -1021,7 +1035,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_fallback,
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                        temperature=0.7, response_format={"type": "json_object"}
+                        temperature=0.3
                     )
                     resposta_bruta = response.choices[0].message.content
             
@@ -1034,6 +1048,9 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 resposta_bruta = re.sub(r'\s*```$', '', resposta_bruta)
                 resposta_bruta = resposta_bruta.strip()
                 logger.info("🧹 Bloco de código markdown removido do JSON")
+
+            # 🛠 CORREÇÃO DE JSON TRUNCADO
+            resposta_bruta = corrigir_json(resposta_bruta)
 
             try:
                 dados_ia = json.loads(resposta_bruta)
