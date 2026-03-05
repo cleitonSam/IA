@@ -1013,20 +1013,24 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            # 🎯 ESCOLHA DO MODELO BASEADO NA PERSONALIDADE
+            # 🎯 MODELO E TEMPERATURE VINDOS DA PERSONALIDADE
             modelo_escolhido = pers.get("modelo_preferido")
             if not modelo_escolhido:
                 modelo_escolhido = "google/gemini-2.5-flash-lite" if not imagens_urls else "google/gemini-2.5-flash"
             
+            temperature = pers.get("temperatura")
+            if temperature is None:
+                temperature = 0.7  # fallback seguro
+
             start_time = time.time()
             async with llm_semaphore:
                 try:
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_escolhido, 
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                        temperature=0.3,  # Reduzido para evitar respostas inconsistentes
+                        temperature=temperature,
                         timeout=30
-                        # Removido response_format para evitar truncamento com OpenRouter
+                        # response_format removido para evitar truncamento com OpenRouter
                     )
                     resposta_bruta = response.choices[0].message.content
                 except Exception as e:
@@ -1035,7 +1039,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_fallback,
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
-                        temperature=0.3
+                        temperature=temperature
                     )
                     resposta_bruta = response.choices[0].message.content
             
