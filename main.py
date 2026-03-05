@@ -31,20 +31,19 @@ logger = logging.getLogger("motor-saas-ia")
 
 load_dotenv()
 
-# 🧯 Variáveis de ambiente (agora apenas para fallback, mas não mais obrigatórias)
-CHATWOOT_URL = os.getenv("CHATWOOT_URL")
-CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
+# 🧯 Segurança: Validar variáveis críticas (agora apenas para fallback)
+CHATWOOT_URL = os.getenv("CHATWOOT_URL")  # fallback
+CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")  # fallback
+# Não é mais obrigatório, pois cada empresa tem sua configuração
+
+app = FastAPI()
+
+# --- CONFIGURAÇÕES E VARIÁVEIS DE AMBIENTE ---
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Se não tiver OpenRouter, não pode continuar
-if not OPENROUTER_API_KEY:
-    raise RuntimeError("🚨 OPENROUTER_API_KEY não definida no .env")
-
-app = FastAPI()
 
 # Constante de fallback (usada apenas se não encontrar empresa)
 EMPRESA_ID_PADRAO = 1  # Pode ser removida futuramente
@@ -151,11 +150,14 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
 
 # 🎯 FUNÇÃO PARA DETECTAR INTENÇÃO
 def detectar_intencao(texto: str) -> Optional[str]:
+    """Detecta a intenção principal da pergunta do usuário usando palavras-chave e fuzzy matching"""
     if not texto:
         return None
+    
     texto_norm = normalizar(texto)
     melhor_intencao = None
     melhor_score = 0
+    
     for intent, palavras in INTENCOES.items():
         for palavra in palavras:
             if palavra in texto_norm:
@@ -164,11 +166,15 @@ def detectar_intencao(texto: str) -> Optional[str]:
             if score > melhor_score and score > 80:
                 melhor_score = score
                 melhor_intencao = intent
+    
     return melhor_intencao
 
 # --- FUNÇÕES DE INTEGRAÇÃO (BUSCA POR EMPRESA) ---
 async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
-    """Retorna o ID da empresa associada ao account_id do Chatwoot."""
+    """
+    Retorna o ID da empresa associada ao account_id do Chatwoot.
+    Consulta a tabela integracoes, onde o account_id está armazenado dentro do JSON config.
+    """
     if not db_pool:
         return None
     cache_key = f"map:account:{account_id}"
@@ -177,7 +183,6 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return int(cached)
 
     try:
-        # Busca na coluna config->>'account_id' (assumindo que está salvo como string)
         query = """
             SELECT empresa_id FROM integracoes
             WHERE tipo = 'chatwoot'
@@ -196,7 +201,10 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return None
 
 async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Optional[Dict[str, Any]]:
-    """Carrega a configuração de integração ativa de uma empresa."""
+    """
+    Carrega a configuração de integração ativa de uma empresa.
+    Retorna um dicionário com os campos do JSON config (url, token, etc.).
+    """
     if not db_pool:
         return None
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
@@ -213,13 +221,10 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         """
         row = await db_pool.fetchrow(query, empresa_id, tipo)
         if row:
-            config = row['config']  # já é um dict vindo do JSONB
-            # Garantir que é dict (pode ser que venha como string se a coluna não for JSONB, mas criamos como JSONB)
-            if not isinstance(config, dict):
-                try:
-                    config = json.loads(config)
-                except:
-                    config = {}
+            config = row['config']
+            # Garantir que config é um dicionário (pode vir como string do banco)
+            if isinstance(config, str):
+                config = json.loads(config)
             await redis_client.setex(cache_key, 300, json.dumps(config))
             return config
         return None
@@ -227,8 +232,100 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         logger.error(f"Erro ao carregar integração {tipo} da empresa {empresa_id}: {e}")
         return None
 
-# --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT ---
+# --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
+async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
+    """
+    Busca os planos (memberships) da academia via API Evo.
+    Retorna uma lista de dicionários com informações resumidas dos planos.
+    """
+    if not db_pool:
+        return None
+
+    # Tenta cache no Redis
+    cache_key = f"evo:planos:{empresa_id}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        logger.info(f"📦 Planos Evo carregados do cache para empresa {empresa_id}")
+        return json.loads(cached)
+
+    # Carrega integração Evo
+    integracao = await carregar_integracao(empresa_id, 'evo')
+    if not integracao:
+        logger.info(f"ℹ️ Empresa {empresa_id} não tem integração Evo ativa")
+        return None
+
+    dns = integracao.get('dns')
+    secret_key = integracao.get('secret_key')
+    if not dns or not secret_key:
+        logger.error(f"Integração Evo da empresa {empresa_id} incompleta: DNS ou Secret Key ausentes")
+        return None
+
+    # URL base da API (pode ser configurável, mas fixa por enquanto)
+    api_base = integracao.get('api_url', 'https://evo-integracao-api.w12app.com.br/api/v2')
+    url = f"{api_base}/membership?take=100&skip=0&active=true&showAccessBranches=false&showOnlineSalesObservation=false&showActivitiesGroups=false&externalSaleAvailable=false"
+
+    # Preparar autenticação Basic
+    auth = base64.b64encode(f"{dns}:{secret_key}".encode()).decode()
+    headers = {
+        'Authorization': f'Basic {auth}',
+        'accept': 'application/json'
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Extrair informações relevantes
+        planos = []
+        for item in data:
+            plano = {
+                'nome': item.get('displayName') or item.get('nameMembership'),
+                'valor': item.get('value'),
+                'valor_promocional': item.get('valuePromotionalPeriod'),
+                'meses_promocionais': item.get('monthsPromotionalPeriod'),
+                'descricao': item.get('description'),
+                'diferenciais': [d['title'] for d in item.get('differentials', []) if d.get('title')],
+                'url_venda': item.get('urlSale'),
+                'id': item.get('idMembership')
+            }
+            planos.append(plano)
+
+        # Cache por 1 hora (3600 segundos)
+        await redis_client.setex(cache_key, 3600, json.dumps(planos, default=str))
+        logger.info(f"✅ Planos Evo carregados para empresa {empresa_id}: {len(planos)} planos")
+        return planos
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar planos Evo para empresa {empresa_id}: {e}")
+        return None
+
+def formatar_planos_para_prompt(planos: List[Dict]) -> str:
+    """Formata a lista de planos em uma string legível para o prompt da IA."""
+    if not planos:
+        return "Nenhum plano disponível no momento."
+
+    linhas = []
+    for p in planos:
+        nome = p.get('nome', 'Plano')
+        valor = p.get('valor')
+        promocao = p.get('valor_promocional')
+        meses_promo = p.get('meses_promocionais')
+        linha = f"• {nome}"
+        if valor is not None:
+            linha += f": R$ {valor:.2f}"
+        if promocao is not None and meses_promo:
+            linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao:.2f})"
+        linhas.append(linha)
+    return "\n".join(linhas)
+
+# --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT (AGORA USA INTEGRAÇÃO) ---
 async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, content: str, nome_ia: str, integracao: dict):
+    """
+    Envia uma mensagem para o Chatwoot usando a integração fornecida.
+    integracao deve conter as chaves 'url' e 'token'.
+    """
     url_base = integracao.get('url')
     token = integracao.get('token')
     if not url_base or not token:
@@ -245,7 +342,7 @@ async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, conten
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
+        logger.info(f"📤 Mensagem enviada para conversa {conversation_id} via empresa integrada")
         return resp
     except Exception as e:
         logger.error(f"Erro ao enviar mensagem para Chatwoot: {e}")
@@ -253,6 +350,7 @@ async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, conten
 
 # --- BACKGROUND JOBS & FOLLOW-UP ---
 async def agendar_followups(conversation_id: int, account_id: int, slug: str, empresa_id: int):
+    """Agenda follow-ups para a conversa (chamado apenas uma vez por conversa)."""
     if not db_pool:
         return
     try:
@@ -292,12 +390,14 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
         logger.error(f"Erro ao agendar followups: {e}")
 
 async def worker_followup():
+    """Worker que processa follow-ups agendados."""
     while True:
         await asyncio.sleep(30)
         if not db_pool:
             continue
         try:
             agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
+            
             pendentes = await db_pool.fetch("""
                 SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
                 FROM followups f
@@ -323,7 +423,7 @@ async def worker_followup():
                     await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                     continue
 
-                # Carregar integração da empresa
+                # Carregar integração da empresa para enviar a mensagem
                 integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
                 if not integracao:
                     logger.error(f"Empresa {f['empresa_id']} sem integração Chatwoot ativa, cancelando follow-up {f['id']}")
@@ -339,6 +439,7 @@ async def worker_followup():
             logger.error(f"Erro no worker de follow-up: {e}")
 
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empresa_id: int):
+    """Monitora se o cliente escolheu uma unidade após a mensagem de boas-vindas."""
     await asyncio.sleep(120)
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
         return
@@ -362,8 +463,8 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     url_c = f"{integracao['url']}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": integracao['token']})
 
-# --- FUNÇÕES DE BUSCA DINÂMICA (adaptadas para usar empresa_id) ---
-async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
+# --- FUNÇÕES DE BUSCA DINÂMICA (mantidas iguais) ---
+async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Dict[str, Any]]:
     if not db_pool:
         return []
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
@@ -431,6 +532,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
         nome_norm = normalizar(u.get('nome', ''))
         cidade_norm = normalizar(u.get('cidade', ''))
         palavras = [normalizar(p) for p in u.get('palavras_chave', [])]
+
         if nome_norm and nome_norm in texto_norm:
             return u['slug']
         if cidade_norm and cidade_norm in texto_norm:
@@ -449,6 +551,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
 
     if maior_score > 70:
         return melhor_slug
+
     return None
 
 async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
@@ -551,6 +654,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
         return {}
 
+# 🔧 FUNÇÃO CARREGAR CONFIGURAÇÃO GLOBAL (CORRIGIDA)
 async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
     if not db_pool:
         return {}
@@ -858,7 +962,7 @@ def corrigir_json(texto: str) -> str:
         texto = texto + "}"
     return texto
 
-# --- PROCESSAMENTO IA E ÁUDIO ---
+# --- PROCESSAMENTO IA E ÁUDIO (agora com integração Evo) ---
 async def transcrever_audio(url: str):
     if not cliente_whisper:
         return "[Áudio recebido, mas Whisper não configurado]"
@@ -881,7 +985,7 @@ async def processar_ia_e_responder(
     nome_cliente: str, 
     lock_val: str,
     empresa_id: int,
-    integracao: dict
+    integracao_chatwoot: dict
 ):
     chave_lock = f"lock:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
@@ -946,10 +1050,29 @@ async def processar_ia_e_responder(
         # Extrair campos da unidade
         end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
         hor_banco = unidade.get('horarios')
-        pre_banco = unidade.get('planos')
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
+        # --- INTEGRAÇÃO EVO: buscar planos reais ---
+        planos_evo = await buscar_planos_evo(empresa_id)
+        if planos_evo:
+            planos_str = formatar_planos_para_prompt(planos_evo)
+            # Pega o link do primeiro plano ou usa o da unidade
+            link_plano = planos_evo[0].get('url_venda') if planos_evo else link_mat
+            logger.info(f"📋 Usando planos da Evo para empresa {empresa_id}")
+        else:
+            # Fallback para planos cadastrados na unidade
+            pre_banco = unidade.get('planos')
+            if pre_banco:
+                if isinstance(pre_banco, dict):
+                    planos_str = "\n".join([f"• {k}: R${v.get('preco', 'consultar')} - {v.get('descricao', '')}" for k, v in pre_banco.items()])
+                else:
+                    planos_str = str(pre_banco)
+            else:
+                planos_str = "não informado"
+            link_plano = link_mat
+            logger.info(f"📋 Usando planos da unidade para empresa {empresa_id}")
+
         # ⚡ FAST-PATH
         if not imagens_urls:
             if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
@@ -974,13 +1097,9 @@ async def processar_ia_e_responder(
                         logger.info(f"⚡ Fast-path: horários acionado")
 
                 elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
-                    if pre_banco:
-                        if isinstance(pre_banco, dict):
-                            planos_str = "\n".join([f"• {k}: R${v.get('preco', 'consultar')} - {v.get('descricao', '')}" for k, v in pre_banco.items()])
-                        else:
-                            planos_str = str(pre_banco)
-                        fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_mat}"
-                        logger.info(f"⚡ Fast-path: planos acionado")
+                    if planos_str != "não informado":
+                        fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_plano}"
+                        logger.info(f"⚡ Fast-path: planos acionado (fonte: {'Evo' if planos_evo else 'unidade'})")
                         await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
 
                 elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
@@ -1022,8 +1141,8 @@ async def processar_ia_e_responder(
             
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
-            link_principal = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
             
+            # Formatar dados
             horarios_str = ""
             if hor_banco:
                 if isinstance(hor_banco, dict):
@@ -1032,15 +1151,6 @@ async def processar_ia_e_responder(
                     horarios_str = str(hor_banco)
             else:
                 horarios_str = "não informado"
-                
-            planos_str = ""
-            if pre_banco:
-                if isinstance(pre_banco, dict):
-                    planos_str = "\n".join([f"- {k}: R${v.get('preco', 'consultar')} - {v.get('descricao', '')}" for k, v in pre_banco.items()])
-                else:
-                    planos_str = str(pre_banco)
-            else:
-                planos_str = "não informado"
             
             dados_unidade = f"""
             DADOS COMPLETOS DA UNIDADE
@@ -1052,7 +1162,7 @@ async def processar_ia_e_responder(
             Telefone: {tel_banco or 'não informado'}
             Horários:
             {horarios_str}
-            Link de matrícula: {link_principal}
+            Link de matrícula: {link_plano}
             Link do site: {unidade.get('site') or 'não informado'}
             Instagram: {unidade.get('instagram') or 'não informado'}
             Modalidades disponíveis: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
@@ -1122,7 +1232,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 
             for img_url in imagens_urls:
                 try:
-                    resp = await http_client.get(img_url, headers={"api_access_token": integracao['token']}, follow_redirects=True)
+                    resp = await http_client.get(img_url, headers={"api_access_token": integracao_chatwoot['token']}, follow_redirects=True)
                     if resp.status_code == 200:
                         img_b64 = base64.b64encode(resp.content).decode("utf-8")
                         mime_type = "image/png" if ".png" in img_url.lower() else "image/webp" if ".webp" in img_url.lower() else "image/jpeg"
@@ -1180,7 +1290,8 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                     await redis_client.setex(chave_cache_ia, 600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
                     logger.info(f"💾 Resposta em cache com chave: {chave_cache_ia}")
 
-                if link_mat in resposta_texto or "matricular" in resposta_texto.lower() or "link" in resposta_texto.lower():
+                # Registrar eventos de link e telefone se detectados na resposta
+                if link_plano in resposta_texto or "matricular" in resposta_texto.lower() or "link" in resposta_texto.lower():
                     await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2)
                 
                 if tel_banco and tel_banco in resposta_texto:
@@ -1211,7 +1322,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 break
             await asyncio.sleep(min(len(p) * 0.04, 4) + random.uniform(0.5, 1.5))
             
-            await enviar_mensagem_chatwoot(account_id, conversation_id, p, nome_ia, integracao)
+            await enviar_mensagem_chatwoot(account_id, conversation_id, p, nome_ia, integracao_chatwoot)
             
             await bd_atualizar_msg_ia(conversation_id)
             if i == 0:
@@ -1226,7 +1337,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
         except:
             pass
 
-# --- WEBHOOK ENDPOINT ---
+# --- WEBHOOK ENDPOINT (MODIFICADO) ---
 async def validar_assinatura(request: Request, signature: str):
     if not CHATWOOT_WEBHOOK_SECRET:
         return
@@ -1449,4 +1560,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Integrações por Empresa! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo!"}
