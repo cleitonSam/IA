@@ -462,8 +462,6 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             await redis_client.delete(cache_key)
 
     try:
-        # NOTA: A tabela personalidade_ia deve ter uma constraint UNIQUE(empresa_id)
-        # e não possuir mais coluna unidade_id.
         query = """
             SELECT p.*
             FROM personalidade_ia p
@@ -490,6 +488,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
         return {}
 
+# 🔧 FUNÇÃO CARREGAR CONFIGURAÇÃO GLOBAL (CORRIGIDA)
 async def carregar_configuracao_global(empresa_id: int = EMPRESA_ID_PADRAO) -> Dict[str, Any]:
     if not db_pool:
         return {}
@@ -502,9 +501,25 @@ async def carregar_configuracao_global(empresa_id: int = EMPRESA_ID_PADRAO) -> D
         query = "SELECT config, nome, plano FROM empresas WHERE id = $1"
         row = await db_pool.fetchrow(query, empresa_id)
         if row:
-            config = row['config'] or {}
+            # Trata o campo config, que pode vir como dict (se JSONB) ou string
+            config_data = row['config']
+            if config_data is None:
+                config = {}
+            elif isinstance(config_data, str):
+                # Se for string, tenta parsear como JSON
+                try:
+                    config = json.loads(config_data)
+                except json.JSONDecodeError:
+                    config = {}
+            else:
+                # Já é dict (caso JSONB)
+                config = config_data
+
+            # Adiciona campos adicionais
             config['nome_empresa'] = row['nome']
             config['plano'] = row['plano']
+
+            # Salva no cache
             await redis_client.setex(cache_key, 3600, json.dumps(config, default=str))
             return config
         return {}
@@ -678,45 +693,67 @@ async def bd_finalizar_conversa(conversation_id: int):
     except Exception as e:
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 
-# --- WORKER DE MÉTRICAS DIÁRIAS (CORRIGIDO) ---
+# --- WORKER DE MÉTRICAS DIÁRIAS (VERSÃO CORRIGIDA E ROBUSTA) ---
 async def worker_metricas_diarias():
     """Worker que atualiza as métricas diárias a cada hora."""
     while True:
         await asyncio.sleep(3600)  # 1 hora
         if not db_pool:
+            logger.warning("⚠️ Pool de banco não disponível para métricas diárias")
             continue
+        
         try:
+            logger.info("🔄 Iniciando atualização das métricas diárias...")
             hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+            
+            # Buscar todas as empresas
             empresas = await db_pool.fetch("SELECT id FROM empresas")
+            if not empresas:
+                logger.info("ℹ️ Nenhuma empresa encontrada para métricas")
+                continue
+
             for emp in empresas:
                 empresa_id = emp['id']
+                # Buscar unidades da empresa
                 unidades = await db_pool.fetch("SELECT id FROM unidades WHERE empresa_id = $1", empresa_id)
+                
                 for unid in unidades:
                     unidade_id = unid['id']
                     
+                    # Total de conversas do dia (considerando data no fuso de São Paulo)
                     total_conversas = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas 
-                        WHERE empresa_id = $1 AND unidade_id = $2 AND DATE(created_at) = $3
+                        WHERE empresa_id = $1 AND unidade_id = $2 
+                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                     """, empresa_id, unidade_id, hoje)
                     
+                    # Total de mensagens de CLIENTE (role='user') do dia
                     total_mensagens = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM mensagens m
                         JOIN conversas c ON c.id = m.conversa_id
-                        WHERE c.empresa_id = $1 AND c.unidade_id = $2 AND DATE(m.created_at) = $3
+                        WHERE c.empresa_id = $1 AND c.unidade_id = $2 
+                          AND DATE(m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                           AND m.role = 'user'
                     """, empresa_id, unidade_id, hoje)
                     
+                    # Leads qualificados no dia
                     leads = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas
-                        WHERE empresa_id = $1 AND unidade_id = $2 AND lead_qualificado = true AND DATE(created_at) = $3
+                        WHERE empresa_id = $1 AND unidade_id = $2 
+                          AND lead_qualificado = true 
+                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                     """, empresa_id, unidade_id, hoje)
                     
+                    # Tempo médio de primeira resposta (em segundos)
                     tempo_medio = await db_pool.fetchval("""
                         SELECT AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))) 
                         FROM conversas
-                        WHERE empresa_id = $1 AND unidade_id = $2 AND primeira_resposta_em IS NOT NULL AND DATE(created_at) = $3
+                        WHERE empresa_id = $1 AND unidade_id = $2 
+                          AND primeira_resposta_em IS NOT NULL 
+                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                     """, empresa_id, unidade_id, hoje)
                     
+                    # Inserir ou atualizar métricas
                     await db_pool.execute("""
                         INSERT INTO metricas_diarias (empresa_id, unidade_id, data, total_conversas, total_mensagens, leads_qualificados, tempo_medio_resposta)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -727,9 +764,13 @@ async def worker_metricas_diarias():
                             tempo_medio_resposta = EXCLUDED.tempo_medio_resposta,
                             updated_at = NOW()
                     """, empresa_id, unidade_id, hoje, total_conversas, total_mensagens, leads, tempo_medio)
-            logger.info("📊 Métricas diárias atualizadas")
+                    
+                    logger.info(f"📊 Métricas atualizadas para empresa {empresa_id}, unidade {unidade_id}: "
+                                f"conversas={total_conversas}, msgs={total_mensagens}, leads={leads}, tempo={tempo_medio}")
+            
+            logger.info("✅ Métricas diárias atualizadas com sucesso")
         except Exception as e:
-            logger.error(f"Erro no worker de métricas diárias: {e}")
+            logger.error(f"❌ Erro no worker de métricas diárias: {e}", exc_info=True)
 
 # 🛠 FUNÇÃO PARA CORRIGIR JSON TRUNCADO
 def corrigir_json(texto: str) -> str:
