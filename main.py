@@ -23,6 +23,7 @@ import redis.asyncio as redis
 import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt
 from rapidfuzz import fuzz
+from decimal import Decimal  # necessário para converter Decimal do PostgreSQL
 
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -243,7 +244,9 @@ async def worker_followup():
                 JOIN conversas c ON c.id = f.conversa_id
                 JOIN unidades u ON u.id = f.unidade_id
                 WHERE f.status = 'pendente' AND f.agendado_para <= $1
+                ORDER BY f.agendado_para
                 LIMIT 20
+                FOR UPDATE SKIP LOCKED
             """, agora)
 
             for f in pendentes:
@@ -439,25 +442,21 @@ async def carregar_faq_unidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO) -
 async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO) -> Dict[str, Any]:
     """
     Carrega a personalidade da IA para a unidade, respeitando o campo 'ativo'.
-    Se estiver inativa, retorna vazio e invalida o cache.
+    Converte Decimal para float para serialização JSON.
     """
     if not db_pool:
         return {}
     cache_key = f"cfg:pers:{slug}:v2"
     
-    # 🔍 LOG para debug
     logger.info(f"🔎 Buscando personalidade para slug: {slug}, empresa: {empresa_id}")
     
-    # Tenta buscar do cache
     cache = await redis_client.get(cache_key)
     if cache:
         dados_cache = json.loads(cache)
-        # Verifica se no cache o campo ativo é True; se não, considera expirado
         if dados_cache.get('ativo') is True:
             logger.debug(f"🧠 Personalidade carregada do cache: {dados_cache.get('nome_ia')}")
             return dados_cache
         else:
-            # Se no cache estiver inativo, invalida e busca do banco
             await redis_client.delete(cache_key)
 
     try:
@@ -469,18 +468,19 @@ async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO)
             LIMIT 1
         """
         row = await db_pool.fetchrow(query, slug, empresa_id)
-        # LOG do resultado da query
         logger.info(f"🧠 Resultado do banco: {row}")
         
         if row:
             dados = dict(row)
+            # Converter Decimal para float
+            for key, value in dados.items():
+                if isinstance(value, Decimal):
+                    dados[key] = float(value)
             logger.info(f"✅ Personalidade carregada do banco: {dados.get('nome_ia')} para unidade {slug}")
-            # Só cacheia se estiver ativo
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
             return dados
         else:
             logger.info(f"ℹ️ Nenhuma personalidade ativa encontrada para unidade {slug}")
-            # Cache negativo curto para evitar repetição
             await redis_client.setex(cache_key, 60, json.dumps({}))
             return {}
     except Exception as e:
@@ -675,7 +675,7 @@ async def bd_finalizar_conversa(conversation_id: int):
     except Exception as e:
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 
-# --- WORKER DE MÉTRICAS DIÁRIAS ---
+# --- WORKER DE MÉTRICAS DIÁRIAS (CORRIGIDO) ---
 async def worker_metricas_diarias():
     """Worker que atualiza as métricas diárias a cada hora."""
     while True:
@@ -690,19 +690,28 @@ async def worker_metricas_diarias():
                 unidades = await db_pool.fetch("SELECT id FROM unidades WHERE empresa_id = $1", empresa_id)
                 for unid in unidades:
                     unidade_id = unid['id']
+                    
+                    # Total de conversas do dia (criadas no dia)
                     total_conversas = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas 
                         WHERE empresa_id = $1 AND unidade_id = $2 AND DATE(created_at) = $3
                     """, empresa_id, unidade_id, hoje)
+                    
+                    # Total de mensagens de CLIENTE (role='user') do dia
                     total_mensagens = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM mensagens m
                         JOIN conversas c ON c.id = m.conversa_id
                         WHERE c.empresa_id = $1 AND c.unidade_id = $2 AND DATE(m.created_at) = $3
+                          AND m.role = 'user'
                     """, empresa_id, unidade_id, hoje)
+                    
+                    # Leads qualificados no dia
                     leads = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas
                         WHERE empresa_id = $1 AND unidade_id = $2 AND lead_qualificado = true AND DATE(created_at) = $3
                     """, empresa_id, unidade_id, hoje)
+                    
+                    # Tempo médio de primeira resposta (em segundos)
                     tempo_medio = await db_pool.fetchval("""
                         SELECT AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))) 
                         FROM conversas
@@ -817,7 +826,6 @@ async def processar_ia_e_responder(
         
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
         
-        # Log para debug
         logger.info(f"🤖 Personalidade carregada: {pers} | Nome IA: {nome_ia}")
         
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
@@ -955,7 +963,7 @@ async def processar_ia_e_responder(
 
             aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações especificamente sobre a unidade {nome_unidade}. Baseie sua próxima resposta SOMENTE nos dados abaixo e reconheça essa mudança de forma natural se necessário." if mudou_unidade else ""
 
-            # 🎯 NOVO PROMPT MAIS NATURAL E HUMANIZADO
+            # 🎯 PROMPT HUMANIZADO
             prompt_sistema = f"""
 Seu nome é {nome_ia}.
 
@@ -1019,7 +1027,9 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 modelo_escolhido = "google/gemini-2.5-flash-lite" if not imagens_urls else "google/gemini-2.5-flash"
             
             temperature = pers.get("temperatura")
-            if temperature is None:
+            if temperature is not None:
+                temperature = float(temperature)
+            else:
                 temperature = 0.7  # fallback seguro
 
             start_time = time.time()
@@ -1204,8 +1214,22 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                     EMPRESA_ID_PADRAO
                 )
                 await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {slug}", score_incremento=3)
-                # ✅ Agendar follow-ups agora (única vez)
-                await agendar_followups(id_conv, account_id, slug, EMPRESA_ID_PADRAO)
+                
+                # 🔒 Lock para evitar duplicação de follow-ups
+                lock_key = f"agendar_lock:{id_conv}"
+                if await redis_client.set(lock_key, "1", nx=True, ex=5):
+                    try:
+                        # Verificar se já existem follow-ups pendentes
+                        existe_followup = await db_pool.fetchval("""
+                            SELECT 1 FROM followups f
+                            JOIN conversas c ON c.id = f.conversa_id
+                            WHERE c.conversation_id = $1 AND f.status = 'pendente'
+                            LIMIT 1
+                        """, id_conv)
+                        if not existe_followup:
+                            await agendar_followups(id_conv, account_id, slug, EMPRESA_ID_PADRAO)
+                    finally:
+                        await redis_client.delete(lock_key)
                 
             else:
                 cfg = await carregar_configuracao_global(EMPRESA_ID_PADRAO)
@@ -1252,19 +1276,20 @@ Se preferir, pode me dizer o nome ou a cidade também."""
         EMPRESA_ID_PADRAO
     )
     
-    # Verificar se já existem follow-ups agendados para esta conversa
-    existe_followup = False
-    if db_pool:
-        existe_followup = await db_pool.fetchval("""
-            SELECT 1 FROM followups f
-            JOIN conversas c ON c.id = f.conversa_id
-            WHERE c.conversation_id = $1 AND f.status = 'pendente'
-            LIMIT 1
-        """, id_conv)
-    
-    if not existe_followup:
-        # Primeira mensagem da conversa (ou ainda sem follow-ups), agenda
-        await agendar_followups(id_conv, account_id, slug, EMPRESA_ID_PADRAO)
+    # 🔒 Lock para evitar duplicação de follow-ups (primeira mensagem)
+    lock_key = f"agendar_lock:{id_conv}"
+    if await redis_client.set(lock_key, "1", nx=True, ex=5):
+        try:
+            existe_followup = await db_pool.fetchval("""
+                SELECT 1 FROM followups f
+                JOIN conversas c ON c.id = f.conversa_id
+                WHERE c.conversation_id = $1 AND f.status = 'pendente'
+                LIMIT 1
+            """, id_conv)
+            if not existe_followup:
+                await agendar_followups(id_conv, account_id, slug, EMPRESA_ID_PADRAO)
+        finally:
+            await redis_client.delete(lock_key)
     
     await bd_atualizar_msg_cliente(id_conv)
 
@@ -1306,4 +1331,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Personalidade Ativa! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack com Personalidade Ativa e Métricas Corrigidas! 🚀"}
