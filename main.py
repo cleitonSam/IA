@@ -31,19 +31,20 @@ logger = logging.getLogger("motor-saas-ia")
 
 load_dotenv()
 
-# 🧯 Segurança: Validar variáveis críticas (agora apenas para fallback)
-CHATWOOT_URL = os.getenv("CHATWOOT_URL")  # fallback
-CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")  # fallback
-# Não é mais obrigatório, pois cada empresa tem sua configuração
-
-app = FastAPI()
-
-# --- CONFIGURAÇÕES E VARIÁVEIS DE AMBIENTE ---
+# 🧯 Variáveis de ambiente (agora apenas para fallback, mas não mais obrigatórias)
+CHATWOOT_URL = os.getenv("CHATWOOT_URL")
+CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")         
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Se não tiver OpenRouter, não pode continuar
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("🚨 OPENROUTER_API_KEY não definida no .env")
+
+app = FastAPI()
 
 # Constante de fallback (usada apenas se não encontrar empresa)
 EMPRESA_ID_PADRAO = 1  # Pode ser removida futuramente
@@ -150,14 +151,11 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
 
 # 🎯 FUNÇÃO PARA DETECTAR INTENÇÃO
 def detectar_intencao(texto: str) -> Optional[str]:
-    """Detecta a intenção principal da pergunta do usuário usando palavras-chave e fuzzy matching"""
     if not texto:
         return None
-    
     texto_norm = normalizar(texto)
     melhor_intencao = None
     melhor_score = 0
-    
     for intent, palavras in INTENCOES.items():
         for palavra in palavras:
             if palavra in texto_norm:
@@ -166,15 +164,11 @@ def detectar_intencao(texto: str) -> Optional[str]:
             if score > melhor_score and score > 80:
                 melhor_score = score
                 melhor_intencao = intent
-    
     return melhor_intencao
 
 # --- FUNÇÕES DE INTEGRAÇÃO (BUSCA POR EMPRESA) ---
 async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
-    """
-    Retorna o ID da empresa associada ao account_id do Chatwoot.
-    Consulta a tabela integracoes, onde o account_id está armazenado dentro do JSON config.
-    """
+    """Retorna o ID da empresa associada ao account_id do Chatwoot."""
     if not db_pool:
         return None
     cache_key = f"map:account:{account_id}"
@@ -202,10 +196,7 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return None
 
 async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Optional[Dict[str, Any]]:
-    """
-    Carrega a configuração de integração ativa de uma empresa.
-    Retorna um dicionário com os campos do JSON config (url, token, etc.).
-    """
+    """Carrega a configuração de integração ativa de uma empresa."""
     if not db_pool:
         return None
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
@@ -222,21 +213,22 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         """
         row = await db_pool.fetchrow(query, empresa_id, tipo)
         if row:
-            config = row['config']
-            # Se necessário, converter tipos (ex: account_id pode vir como string)
+            config = row['config']  # já é um dict vindo do JSONB
+            # Garantir que é dict (pode ser que venha como string se a coluna não for JSONB, mas criamos como JSONB)
+            if not isinstance(config, dict):
+                try:
+                    config = json.loads(config)
+                except:
+                    config = {}
             await redis_client.setex(cache_key, 300, json.dumps(config))
-            return dict(config)
+            return config
         return None
     except Exception as e:
         logger.error(f"Erro ao carregar integração {tipo} da empresa {empresa_id}: {e}")
         return None
 
-# --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT (AGORA USA INTEGRAÇÃO) ---
+# --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT ---
 async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, content: str, nome_ia: str, integracao: dict):
-    """
-    Envia uma mensagem para o Chatwoot usando a integração fornecida.
-    integracao deve conter as chaves 'url' e 'token'.
-    """
     url_base = integracao.get('url')
     token = integracao.get('token')
     if not url_base or not token:
@@ -253,7 +245,7 @@ async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, conten
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada para conversa {conversation_id} via empresa integrada")
+        logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
         return resp
     except Exception as e:
         logger.error(f"Erro ao enviar mensagem para Chatwoot: {e}")
@@ -261,7 +253,6 @@ async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, conten
 
 # --- BACKGROUND JOBS & FOLLOW-UP ---
 async def agendar_followups(conversation_id: int, account_id: int, slug: str, empresa_id: int):
-    """Agenda follow-ups para a conversa (chamado apenas uma vez por conversa)."""
     if not db_pool:
         return
     try:
@@ -301,14 +292,12 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
         logger.error(f"Erro ao agendar followups: {e}")
 
 async def worker_followup():
-    """Worker que processa follow-ups agendados."""
     while True:
         await asyncio.sleep(30)
         if not db_pool:
             continue
         try:
             agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
-            
             pendentes = await db_pool.fetch("""
                 SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
                 FROM followups f
@@ -334,7 +323,7 @@ async def worker_followup():
                     await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                     continue
 
-                # Carregar integração da empresa para enviar a mensagem
+                # Carregar integração da empresa
                 integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
                 if not integracao:
                     logger.error(f"Empresa {f['empresa_id']} sem integração Chatwoot ativa, cancelando follow-up {f['id']}")
@@ -350,7 +339,6 @@ async def worker_followup():
             logger.error(f"Erro no worker de follow-up: {e}")
 
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empresa_id: int):
-    """Monitora se o cliente escolheu uma unidade após a mensagem de boas-vindas."""
     await asyncio.sleep(120)
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
         return
@@ -374,8 +362,8 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     url_c = f"{integracao['url']}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": integracao['token']})
 
-# --- FUNÇÕES DE BUSCA DINÂMICA (mantidas iguais) ---
-async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Dict[str, Any]]:
+# --- FUNÇÕES DE BUSCA DINÂMICA (adaptadas para usar empresa_id) ---
+async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
     if not db_pool:
         return []
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
@@ -443,7 +431,6 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
         nome_norm = normalizar(u.get('nome', ''))
         cidade_norm = normalizar(u.get('cidade', ''))
         palavras = [normalizar(p) for p in u.get('palavras_chave', [])]
-
         if nome_norm and nome_norm in texto_norm:
             return u['slug']
         if cidade_norm and cidade_norm in texto_norm:
@@ -462,7 +449,6 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
 
     if maior_score > 70:
         return melhor_slug
-
     return None
 
 async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
@@ -565,7 +551,6 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
         return {}
 
-# 🔧 FUNÇÃO CARREGAR CONFIGURAÇÃO GLOBAL (CORRIGIDA)
 async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
     if not db_pool:
         return {}
@@ -873,7 +858,7 @@ def corrigir_json(texto: str) -> str:
         texto = texto + "}"
     return texto
 
-# --- PROCESSAMENTO IA E ÁUDIO (agora recebe empresa_id e integracao indiretamente) ---
+# --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
     if not cliente_whisper:
         return "[Áudio recebido, mas Whisper não configurado]"
@@ -1241,7 +1226,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
         except:
             pass
 
-# --- WEBHOOK ENDPOINT (MODIFICADO) ---
+# --- WEBHOOK ENDPOINT ---
 async def validar_assinatura(request: Request, signature: str):
     if not CHATWOOT_WEBHOOK_SECRET:
         return
