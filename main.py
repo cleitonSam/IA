@@ -13,6 +13,7 @@ import uuid
 import time
 import zlib
 import unicodedata
+from decimal import Decimal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
@@ -23,7 +24,6 @@ import redis.asyncio as redis
 import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt
 from rapidfuzz import fuzz
-from decimal import Decimal  # necessário para converter Decimal do PostgreSQL
 
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -238,6 +238,7 @@ async def worker_followup():
         try:
             agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
             
+            # Usar FOR UPDATE SKIP LOCKED para evitar que o mesmo follow-up seja processado por múltiplos workers
             pendentes = await db_pool.fetch("""
                 SELECT f.*, c.conversation_id, c.account_id, u.slug
                 FROM followups f
@@ -439,16 +440,17 @@ async def carregar_faq_unidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO) -
         logger.error(f"Erro ao carregar FAQ da unidade {slug}: {e}")
         return ""
 
-async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO) -> Dict[str, Any]:
+# 🔧 FUNÇÃO CARREGAR PERSONALIDADE (AGORA POR EMPRESA)
+async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
     """
-    Carrega a personalidade da IA para a unidade, respeitando o campo 'ativo'.
-    Converte Decimal para float para serialização JSON.
+    Carrega a personalidade da IA para a empresa.
+    Se estiver inativa, retorna vazio e invalida o cache.
     """
     if not db_pool:
         return {}
-    cache_key = f"cfg:pers:{slug}:v2"
+    cache_key = f"cfg:pers:empresa:{empresa_id}"
     
-    logger.info(f"🔎 Buscando personalidade para slug: {slug}, empresa: {empresa_id}")
+    logger.info(f"🔎 Buscando personalidade para empresa: {empresa_id}")
     
     cache = await redis_client.get(cache_key)
     if cache:
@@ -460,14 +462,15 @@ async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO)
             await redis_client.delete(cache_key)
 
     try:
+        # NOTA: A tabela personalidade_ia deve ter uma constraint UNIQUE(empresa_id)
+        # e não possuir mais coluna unidade_id.
         query = """
             SELECT p.*
             FROM personalidade_ia p
-            JOIN unidades u ON u.id = p.unidade_id
-            WHERE u.slug = $1 AND u.empresa_id = $2 AND p.ativo = true
+            WHERE p.empresa_id = $1 AND p.ativo = true
             LIMIT 1
         """
-        row = await db_pool.fetchrow(query, slug, empresa_id)
+        row = await db_pool.fetchrow(query, empresa_id)
         logger.info(f"🧠 Resultado do banco: {row}")
         
         if row:
@@ -476,15 +479,15 @@ async def carregar_personalidade(slug: str, empresa_id: int = EMPRESA_ID_PADRAO)
             for key, value in dados.items():
                 if isinstance(value, Decimal):
                     dados[key] = float(value)
-            logger.info(f"✅ Personalidade carregada do banco: {dados.get('nome_ia')} para unidade {slug}")
+            logger.info(f"✅ Personalidade carregada do banco: {dados.get('nome_ia')} para empresa {empresa_id}")
             await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
             return dados
         else:
-            logger.info(f"ℹ️ Nenhuma personalidade ativa encontrada para unidade {slug}")
+            logger.info(f"ℹ️ Nenhuma personalidade ativa encontrada para empresa {empresa_id}")
             await redis_client.setex(cache_key, 60, json.dumps({}))
             return {}
     except Exception as e:
-        logger.error(f"Erro ao carregar personalidade da unidade {slug}: {e}")
+        logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
         return {}
 
 async def carregar_configuracao_global(empresa_id: int = EMPRESA_ID_PADRAO) -> Dict[str, Any]:
@@ -691,13 +694,11 @@ async def worker_metricas_diarias():
                 for unid in unidades:
                     unidade_id = unid['id']
                     
-                    # Total de conversas do dia (criadas no dia)
                     total_conversas = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas 
                         WHERE empresa_id = $1 AND unidade_id = $2 AND DATE(created_at) = $3
                     """, empresa_id, unidade_id, hoje)
                     
-                    # Total de mensagens de CLIENTE (role='user') do dia
                     total_mensagens = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM mensagens m
                         JOIN conversas c ON c.id = m.conversa_id
@@ -705,13 +706,11 @@ async def worker_metricas_diarias():
                           AND m.role = 'user'
                     """, empresa_id, unidade_id, hoje)
                     
-                    # Leads qualificados no dia
                     leads = await db_pool.fetchval("""
                         SELECT COUNT(*) FROM conversas
                         WHERE empresa_id = $1 AND unidade_id = $2 AND lead_qualificado = true AND DATE(created_at) = $3
                     """, empresa_id, unidade_id, hoje)
                     
-                    # Tempo médio de primeira resposta (em segundos)
                     tempo_medio = await db_pool.fetchval("""
                         SELECT AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))) 
                         FROM conversas
@@ -819,13 +818,14 @@ async def processar_ia_e_responder(
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         
-        # 🛡️ Carregar personalidade com proteção
+        # 🛡️ Carregar personalidade da empresa (não mais da unidade)
         pers = {}
-        if slug:
-            pers = await carregar_personalidade(slug, empresa_id) or {}
+        if empresa_id:
+            pers = await carregar_personalidade(empresa_id) or {}
         
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
         
+        # Log para debug
         logger.info(f"🤖 Personalidade carregada: {pers} | Nome IA: {nome_ia}")
         
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
@@ -1021,7 +1021,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            # 🎯 MODELO E TEMPERATURE VINDOS DA PERSONALIDADE
+            # 🎯 MODELO E TEMPERATURE VINDOS DA PERSONALIDADE (já convertidos)
             modelo_escolhido = pers.get("modelo_preferido")
             if not modelo_escolhido:
                 modelo_escolhido = "google/gemini-2.5-flash-lite" if not imagens_urls else "google/gemini-2.5-flash"
@@ -1219,7 +1219,6 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
                 lock_key = f"agendar_lock:{id_conv}"
                 if await redis_client.set(lock_key, "1", nx=True, ex=5):
                     try:
-                        # Verificar se já existem follow-ups pendentes
                         existe_followup = await db_pool.fetchval("""
                             SELECT 1 FROM followups f
                             JOIN conversas c ON c.id = f.conversa_id
@@ -1331,4 +1330,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Personalidade Ativa e Métricas Corrigidas! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack com Personalidade por Empresa e Métricas Corrigidas! 🚀"}
