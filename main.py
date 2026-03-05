@@ -635,6 +635,7 @@ async def bd_registrar_primeira_resposta(conversation_id: int):
     except Exception as e:
         logger.error(f"Erro ao registrar primeira resposta {conversation_id}: {e}")
 
+# 🆕 FUNÇÃO REGISTRAR EVENTO DE FUNIL (ATUALIZADA PARA NOVOS TIPOS)
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, descricao: str, score_incremento: int = 5):
     if not db_pool:
@@ -646,6 +647,7 @@ async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, desc
             return
         conversa_id = conversa['id']
 
+        # Para eventos de interesse, evitamos duplicatas (como antes)
         if tipo_evento == "interesse_detectado":
             existe = await db_pool.fetchval("""
                 SELECT 1 FROM eventos_funil 
@@ -659,6 +661,7 @@ async def bd_registrar_evento_funil(conversation_id: int, tipo_evento: str, desc
             VALUES ($1, $2, $3, $4, NOW())
         """, conversa_id, tipo_evento, descricao, score_incremento)
 
+        # Atualiza score da conversa
         await db_pool.execute("""
             UPDATE conversas 
             SET score_interesse = score_interesse + $2, updated_at = NOW()
@@ -752,21 +755,50 @@ async def worker_metricas_diarias():
                           AND primeira_resposta_em IS NOT NULL 
                           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                     """, empresa_id, unidade_id, hoje)
+
+                    # 🆕 NOVAS MÉTRICAS: Solicitações de telefone e links enviados
+                    # Contar eventos de telefone (tipo_evento = 'solicitacao_telefone')
+                    total_telefone = await db_pool.fetchval("""
+                        SELECT COUNT(*) FROM eventos_funil ef
+                        JOIN conversas c ON c.id = ef.conversa_id
+                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+                          AND ef.tipo_evento = 'solicitacao_telefone'
+                          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+                    """, empresa_id, unidade_id, hoje)
+
+                    # Contar eventos de link de matrícula enviado (tipo_evento = 'link_matricula_enviado')
+                    total_links = await db_pool.fetchval("""
+                        SELECT COUNT(*) FROM eventos_funil ef
+                        JOIN conversas c ON c.id = ef.conversa_id
+                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+                          AND ef.tipo_evento = 'link_matricula_enviado'
+                          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+                    """, empresa_id, unidade_id, hoje)
                     
-                    # Inserir ou atualizar métricas
+                    # Inserir ou atualizar métricas (incluindo as novas colunas)
+                    # Nota: Certifique-se que a tabela metricas_diarias tem as colunas:
+                    # total_solicitacoes_telefone e total_links_enviados (INTEGER DEFAULT 0)
                     await db_pool.execute("""
-                        INSERT INTO metricas_diarias (empresa_id, unidade_id, data, total_conversas, total_mensagens, leads_qualificados, tempo_medio_resposta)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        INSERT INTO metricas_diarias (
+                            empresa_id, unidade_id, data, 
+                            total_conversas, total_mensagens, leads_qualificados, tempo_medio_resposta,
+                            total_solicitacoes_telefone, total_links_enviados
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
                             total_conversas = EXCLUDED.total_conversas,
                             total_mensagens = EXCLUDED.total_mensagens,
                             leads_qualificados = EXCLUDED.leads_qualificados,
                             tempo_medio_resposta = EXCLUDED.tempo_medio_resposta,
+                            total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
+                            total_links_enviados = EXCLUDED.total_links_enviados,
                             updated_at = NOW()
-                    """, empresa_id, unidade_id, hoje, total_conversas, total_mensagens, leads, tempo_medio)
+                    """, empresa_id, unidade_id, hoje, total_conversas, total_mensagens, leads, tempo_medio,
+                           total_telefone, total_links)
                     
                     logger.info(f"📊 Métricas atualizadas para empresa {empresa_id}, unidade {unidade_id}: "
-                                f"conversas={total_conversas}, msgs={total_mensagens}, leads={leads}, tempo={tempo_medio}")
+                                f"conversas={total_conversas}, msgs={total_mensagens}, leads={leads}, "
+                                f"tempo={tempo_medio}, telefone={total_telefone}, links={total_links}")
             
             logger.info("✅ Métricas diárias atualizadas com sucesso")
         except Exception as e:
@@ -913,11 +945,15 @@ async def processar_ia_e_responder(
                             planos_str = str(pre_banco)
                         fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_mat}"
                         logger.info(f"⚡ Fast-path: planos acionado")
+                        # 🆕 Registrar evento de link enviado (fast-path)
+                        await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
 
                 elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
                     if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
                         fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
                         logger.info(f"⚡ Fast-path: contato acionado")
+                        # 🆕 Registrar evento de solicitação de telefone
+                        await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "Cliente solicitou telefone", score_incremento=3)
 
         # 🎯 DETECÇÃO DE INTENÇÃO PARA CACHE
         intencao = detectar_intencao(pergunta_final)
@@ -1115,6 +1151,17 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 if not imagens_urls:
                     await redis_client.setex(chave_cache_ia, 600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
                     logger.info(f"💾 Resposta em cache com chave: {chave_cache_ia}")
+
+                # 🆕 Verificar se a resposta contém link de matrícula para registrar evento
+                if link_mat in resposta_texto or "matricular" in resposta_texto.lower() or "link" in resposta_texto.lower():
+                    await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2)
+                
+                # Verificar se a resposta contém telefone (se a pergunta era sobre telefone, já registramos no fast-path)
+                # Mas podemos também detectar no texto da IA se ela menciona o telefone
+                if tel_banco and tel_banco in resposta_texto:
+                    # Evitar registrar duplicado se já veio do fast-path
+                    # Para simplificar, vamos registrar sempre que a IA mencionar o telefone
+                    await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3)
                     
             except json.JSONDecodeError:
                 logger.error(f"❌ Erro ao decodificar JSON da IA. Resposta bruta: {resposta_bruta[:200]}...")
@@ -1371,4 +1418,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Personalidade por Empresa e Métricas Corrigidas! 🚀"}
+    return {"status": "🤖 Motor SaaS Full Stack com Métricas Completas! 🚀"}
