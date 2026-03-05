@@ -105,6 +105,7 @@ async def startup_event():
     
     asyncio.create_task(worker_followup())
     asyncio.create_task(worker_metricas_diarias())
+    asyncio.create_task(worker_sync_planos())  # Worker para sincronizar planos periodicamente
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -233,20 +234,13 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         return None
 
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
-async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
+async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
     """
-    Busca os planos (memberships) da academia via API Evo.
-    Retorna uma lista de dicionários com informações resumidas dos planos.
+    Busca os planos (memberships) da academia via API Evo diretamente.
+    Retorna uma lista de dicionários com informações dos planos.
     """
     if not db_pool:
         return None
-
-    # Tenta cache no Redis
-    cache_key = f"evo:planos:{empresa_id}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        logger.info(f"📦 Planos Evo carregados do cache para empresa {empresa_id}")
-        return json.loads(cached)
 
     # Carrega integração Evo
     integracao = await carregar_integracao(empresa_id, 'evo')
@@ -310,24 +304,95 @@ async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
                 diffs = []
 
             plano = {
+                'id': item.get('idMembership'),
                 'nome': item.get('displayName') or item.get('nameMembership', 'Plano'),
                 'valor': item.get('value'),
                 'valor_promocional': item.get('valuePromotionalPeriod'),
                 'meses_promocionais': item.get('monthsPromotionalPeriod'),
                 'descricao': item.get('description'),
                 'diferenciais': diffs,
-                'url_venda': item.get('urlSale'),
-                'id': item.get('idMembership')
+                'link_venda': item.get('urlSale'),
             }
             planos.append(plano)
 
-        await redis_client.setex(cache_key, 3600, json.dumps(planos, default=str))
-        logger.info(f"✅ Planos Evo carregados para empresa {empresa_id}: {len(planos)} planos")
         return planos
 
     except Exception as e:
-        logger.error(f"Erro ao buscar planos Evo para empresa {empresa_id}: {e}")
+        logger.error(f"Erro ao buscar planos Evo da API para empresa {empresa_id}: {e}")
         return None
+
+async def sincronizar_planos_evo(empresa_id: int) -> int:
+    """
+    Busca planos da API Evo e insere/atualiza na tabela planos.
+    Retorna o número de planos sincronizados.
+    """
+    if not db_pool:
+        return 0
+
+    planos_api = await buscar_planos_evo_da_api(empresa_id)
+    if not planos_api:
+        return 0
+
+    count = 0
+    for p in planos_api:
+        # Verifica se já existe pelo id_externo
+        existing = await db_pool.fetchval(
+            "SELECT id FROM planos WHERE empresa_id = $1 AND id_externo = $2",
+            empresa_id, p['id']
+        )
+        if existing:
+            # Atualiza
+            await db_pool.execute("""
+                UPDATE planos SET
+                    nome = $1,
+                    valor = $2,
+                    valor_promocional = $3,
+                    meses_promocionais = $4,
+                    descricao = $5,
+                    diferenciais = $6,
+                    link_venda = $7,
+                    updated_at = NOW()
+                WHERE id = $8
+            """, p['nome'], p['valor'], p['valor_promocional'], p['meses_promocionais'],
+               p['descricao'], p['diferenciais'], p['link_venda'], existing)
+        else:
+            # Insere
+            await db_pool.execute("""
+                INSERT INTO planos
+                    (empresa_id, id_externo, nome, valor, valor_promocional, meses_promocionais, descricao, diferenciais, link_venda, ativo, ordem)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 0)
+            """, empresa_id, p['id'], p['nome'], p['valor'], p['valor_promocional'], p['meses_promocionais'],
+               p['descricao'], p['diferenciais'], p['link_venda'])
+            count += 1
+
+    # Invalidar cache de planos ativos para esta empresa
+    await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
+    logger.info(f"✅ Sincronizados {count} novos planos para empresa {empresa_id}")
+    return count
+
+async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None) -> List[Dict]:
+    """
+    Retorna planos ativos da empresa, ordenados por ordem e nome.
+    Se unidade_id for fornecido, filtra por unidade (caso haja relação).
+    """
+    if not db_pool:
+        return []
+    cache_key = f"planos:ativos:{empresa_id}:{unidade_id or 'todos'}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    query = "SELECT * FROM planos WHERE empresa_id = $1 AND ativo = true"
+    params = [empresa_id]
+    if unidade_id:
+        query += " AND (unidade_id = $2 OR unidade_id IS NULL)"
+        params.append(unidade_id)
+    query += " ORDER BY ordem, nome"
+
+    rows = await db_pool.fetch(query, *params)
+    planos = [dict(r) for r in rows]
+    await redis_client.setex(cache_key, 300, json.dumps(planos, default=str))
+    return planos
 
 def formatar_planos_para_prompt(planos: List[Dict]) -> str:
     """Formata a lista de planos em uma string legível para o prompt da IA."""
@@ -347,6 +412,19 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
             linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao:.2f})"
         linhas.append(linha)
     return "\n".join(linhas)
+
+# Worker para sincronizar planos periodicamente (a cada 6 horas)
+async def worker_sync_planos():
+    while True:
+        await asyncio.sleep(21600)  # 6 horas
+        if not db_pool:
+            continue
+        try:
+            empresas = await db_pool.fetch("SELECT id FROM empresas")
+            for emp in empresas:
+                await sincronizar_planos_evo(emp['id'])
+        except Exception as e:
+            logger.error(f"Erro no worker de sincronização de planos: {e}")
 
 # --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT (AGORA USA INTEGRAÇÃO) ---
 async def enviar_mensagem_chatwoot(account_id: int, conversation_id: int, content: str, nome_ia: str, integracao: dict):
@@ -491,7 +569,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     url_c = f"{integracao['url']}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     await http_client.put(url_c, json={"status": "resolved"}, headers={"api_access_token": integracao['token']})
 
-# --- FUNÇÕES DE BUSCA DINÂMICA (mantidas iguais) ---
+# --- FUNÇÕES DE BUSCA DINÂMICA ---
 async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Dict[str, Any]]:
     if not db_pool:
         return []
@@ -990,7 +1068,7 @@ def corrigir_json(texto: str) -> str:
         texto = texto + "}"
     return texto
 
-# --- PROCESSAMENTO IA E ÁUDIO (agora com integração Evo) ---
+# --- PROCESSAMENTO IA E ÁUDIO ---
 async def transcrever_audio(url: str):
     if not cliente_whisper:
         return "[Áudio recebido, mas Whisper não configurado]"
@@ -1081,13 +1159,13 @@ async def processar_ia_e_responder(
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
-        # --- INTEGRAÇÃO EVO: buscar planos reais ---
-        planos_evo = await buscar_planos_evo(empresa_id)
-        if planos_evo:
-            planos_str = formatar_planos_para_prompt(planos_evo)
-            # Pega o link do primeiro plano ou usa o da unidade
-            link_plano = planos_evo[0].get('url_venda') if planos_evo else link_mat
-            logger.info(f"📋 Usando planos da Evo para empresa {empresa_id}")
+        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco ---
+        planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'))
+        if planos_ativos:
+            planos_str = formatar_planos_para_prompt(planos_ativos)
+            # Pega o link do primeiro plano ativo ou usa o da unidade
+            link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
+            logger.info(f"📋 Usando planos ativos do banco para empresa {empresa_id}")
         else:
             # Fallback para planos cadastrados na unidade
             pre_banco = unidade.get('planos')
@@ -1127,7 +1205,7 @@ async def processar_ia_e_responder(
                 elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
                     if planos_str != "não informado":
                         fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_plano}"
-                        logger.info(f"⚡ Fast-path: planos acionado (fonte: {'Evo' if planos_evo else 'unidade'})")
+                        logger.info(f"⚡ Fast-path: planos acionado (fonte: {'banco' if planos_ativos else 'unidade'})")
                         await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
 
                 elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
@@ -1211,6 +1289,7 @@ async def processar_ia_e_responder(
 
             aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações especificamente sobre a unidade {nome_unidade}. Baseie sua próxima resposta SOMENTE nos dados abaixo e reconheça essa mudança de forma natural se necessário." if mudou_unidade else ""
 
+            # 🎯 PROMPT HUMANIZADO COM ÊNFASE EM FORMATAÇÃO
             prompt_sistema = f"""
 Seu nome é {nome_ia}.
 
@@ -1241,8 +1320,9 @@ FAQ
 IMPORTANTE:
 - Nunca diga que é um assistente virtual
 - Seu nome é sempre {nome_ia}
-- Fale como uma pessoa real
+- Fale como uma pessoa real, use emojis moderadamente (😊 👍 🏋️‍♀️)
 - Seja natural e conversacional
+- **Formate sua resposta com parágrafos curtos, use tópicos (•) para listas e quebras de linha para facilitar a leitura**.
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO ATUAL:
@@ -1588,4 +1668,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo Corrigida!"}
+    return {"status": "🤖 Motor SaaS Full Stack com Planos em Banco e Mensagens Formatadas! 🚀"}
