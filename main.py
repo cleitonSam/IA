@@ -232,7 +232,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         logger.error(f"Erro ao carregar integração {tipo} da empresa {empresa_id}: {e}")
         return None
 
-# --- FUNÇÕES PARA INTEGRAÇÃO EVO (CORRIGIDAS) ---
+# --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
     """
     Busca os planos (memberships) da academia via API Evo.
@@ -277,20 +277,19 @@ async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
             resp.raise_for_status()
             data = resp.json()
 
-        # Log para depuração (primeiros 500 caracteres)
-        logger.debug(f"Resposta da API Evo (primeiros 500 caracteres): {json.dumps(data)[:500]}")
+        logger.debug(f"Resposta da API Evo (primeiros 500): {json.dumps(data)[:500]}")
 
         # Determinar a lista de planos
         items = None
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            # Tentar encontrar a lista em campos comuns
-            possible_keys = ['data', 'items', 'results', 'memberships', 'planos']
+            # Lista de possíveis chaves que podem conter a lista de planos
+            possible_keys = ['data', 'items', 'results', 'memberships', 'planos', 'lista', 'list']
             for key in possible_keys:
                 if key in data and isinstance(data[key], list):
                     items = data[key]
-                    logger.info(f"✅ Lista de planos encontrada na chave '{key}'")
+                    logger.info(f"✅ Lista de planos encontrada na chave '{key}' com {len(items)} itens")
                     break
             if items is None:
                 logger.error(f"Resposta da API Evo é um dict, mas não contém uma lista reconhecida. Chaves disponíveis: {list(data.keys())}")
@@ -304,7 +303,6 @@ async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            # Processa diferenciais com segurança
             diferenciais = item.get('differentials', [])
             if isinstance(diferenciais, list):
                 diffs = [d.get('title') for d in diferenciais if isinstance(d, dict) and d.get('title')]
@@ -323,7 +321,6 @@ async def buscar_planos_evo(empresa_id: int) -> Optional[List[Dict]]:
             }
             planos.append(plano)
 
-        # Cache por 1 hora (3600 segundos)
         await redis_client.setex(cache_key, 3600, json.dumps(planos, default=str))
         logger.info(f"✅ Planos Evo carregados para empresa {empresa_id}: {len(planos)} planos")
         return planos
@@ -1591,4 +1588,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health(): 
-    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo Corrigida e Multi-empresa!"}
+    return {"status": "🤖 Motor SaaS Full Stack com Integração Evo Corrigida!"}
