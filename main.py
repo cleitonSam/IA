@@ -81,6 +81,41 @@ else
 end
 """
 
+# ==================== MENSAGENS PRÉ-FORMATADAS ====================
+# Conjuntos de respostas para cada tipo de fast‑path, escolhidas aleatoriamente
+RESPOSTAS_UNIDADES = [
+    "🏢 Claro! Temos as seguintes unidades disponíveis:\n\n{lista_str}\n\nQual delas você gostaria de conhecer melhor?",
+    "Com certeza! Nossas unidades são:\n\n{lista_str}\n\nMe diga qual é a mais conveniente para você!",
+    "Aqui estão todas as nossas unidades:\n\n{lista_str}\n\nEm qual delas podemos ajudar?",
+    "Fico feliz em ajudar! Nossas academias estão localizadas em:\n\n{lista_str}\n\nQual você prefere?"
+]
+
+RESPOSTAS_ENDERECO = [
+    "📍 Ficamos aqui:\n{endereco}\n\nPosso te ajudar com mais alguma dúvida?",
+    "Nosso endereço é:\n{endereco}\n\nPrecisando de mais informações, é só falar!",
+    "Estamos localizados em:\n{endereco}\n\nSe quiser, também posso passar os horários de funcionamento."
+]
+
+RESPOSTAS_HORARIO = [
+    "🕒 Nosso horário de funcionamento é:\n{horario_str}\n\nSe quiser, posso te ajudar com planos e valores também!",
+    "Funcionamos nos seguintes horários:\n{horario_str}\n\nAlguma dúvida sobre os horários?",
+    "Horário de atendimento:\n{horario_str}\n\nEstamos prontos para te receber!"
+]
+
+RESPOSTAS_PLANOS = [
+    "💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_plano}",
+    "Temos ótimas opções para você:\n{planos_str}\n\nPara mais detalhes, acesse: {link_plano}",
+    "Confira nossos planos:\n{planos_str}\n\nA matrícula pode ser feita online pelo link: {link_plano}"
+]
+
+RESPOSTAS_CONTATO = [
+    "📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?",
+    "Pode entrar em contato conosco pelo telefone:\n{tel_banco}\n\nEstamos à disposição!",
+    "Nosso WhatsApp é:\n{tel_banco}\n\nFique à vontade para chamar!"
+]
+
+# ===================================================================
+
 @app.on_event("startup")
 async def startup_event():
     global http_client, redis_client, db_pool
@@ -445,7 +480,7 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
         except (TypeError, ValueError):
             promocao_float = None
 
-        linha = f"• {nome}"
+        linha = f"• **{nome}**"
         if valor_float is not None and valor_float > 0:
             linha += f": R$ {valor_float:.2f}"
         if promocao_float is not None and meses_promo and promocao_float > 0:
@@ -1209,40 +1244,52 @@ async def processar_ia_e_responder(
             link_plano = link_mat
             logger.info(f"📋 Usando planos da unidade para empresa {empresa_id}")
 
-        # FAST-PATH (apenas se for uma única mensagem e sem imagens)
+        # ==================== FAST-PATH MELHORADO ====================
         if not imagens_urls and len(textos) == 1:
-            if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
+            # --- Fast-path: listar unidades (regex ampliado) ---
+            if re.search(
+                r"(quais (sao as )?unidades|quantas unidades|unidades (voc[êe]s )?tem|tem outras unidades|lista de unidades|onde (voc[êe]s )?tem academia|queria saber as unidades|gostaria de saber as unidades|me (diga|informe) as unidades|quais unidades existem)",
+                texto_norm_fast, re.IGNORECASE
+            ):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
-                lista_str = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
-                fast_reply = f"🏢 Nós temos as seguintes unidades disponíveis:\n\n{lista_str}\n\nQual delas você quer conhecer melhor?"
-                logger.info(f"⚡ Fast-path: listar unidades acionado")
+                if todas_ativas:
+                    lista_str = "\n".join([f"• **{u['nome']}**" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
+                    fast_reply = random.choice(RESPOSTAS_UNIDADES).format(lista_str=lista_str)
+                    logger.info(f"⚡ Fast-path: listar unidades acionado")
+                    await bd_registrar_evento_funil(conversation_id, "consulta_unidades", "Cliente solicitou lista de unidades", score_incremento=1)
+                else:
+                    fast_reply = "No momento não há unidades cadastradas. 😕"
             
-            elif unidade:
-                if re.search(r"(endereco|enderco|local|localizacao|fica onde|onde fica|como chego|qual o local)", texto_norm_fast):
-                    if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                        fast_reply = f"📍 Nossa unidade fica em:\n{end_banco}\n\nPosso te ajudar com mais alguma dúvida?"
-                        logger.info(f"⚡ Fast-path: endereço acionado")
-                
-                elif re.search(r"(horario|funcionamento|abre|fecha|que horas|ta aberto)", texto_norm_fast):
-                    if hor_banco:
-                        if isinstance(hor_banco, dict):
-                            horario_str = "\n".join([f"{dia}: {h}" for dia, h in hor_banco.items()])
-                        else:
-                            horario_str = str(hor_banco)
-                        fast_reply = f"🕒 Nosso horário de funcionamento é:\n{horario_str}\n\nSe quiser, posso te ajudar com planos e valores também!"
-                        logger.info(f"⚡ Fast-path: horários acionado")
+            # --- Fast-path: endereço ---
+            elif unidade and re.search(r"(endereco|enderco|local|localizacao|fica onde|onde fica|como chego|qual o local)", texto_norm_fast):
+                if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
+                    fast_reply = random.choice(RESPOSTAS_ENDERECO).format(endereco=end_banco)
+                    logger.info(f"⚡ Fast-path: endereço acionado")
+            
+            # --- Fast-path: horários ---
+            elif unidade and re.search(r"(horario|funcionamento|abre|fecha|que horas|ta aberto)", texto_norm_fast):
+                if hor_banco:
+                    if isinstance(hor_banco, dict):
+                        horario_str = "\n".join([f"• {dia}: {h}" for dia, h in hor_banco.items()])
+                    else:
+                        horario_str = str(hor_banco)
+                    fast_reply = random.choice(RESPOSTAS_HORARIO).format(horario_str=horario_str)
+                    logger.info(f"⚡ Fast-path: horários acionado")
 
-                elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
-                    if planos_str != "não informado":
-                        fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_plano}"
-                        logger.info(f"⚡ Fast-path: planos acionado")
-                        await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
+            # --- Fast-path: planos ---
+            elif unidade and re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
+                if planos_str != "não informado":
+                    fast_reply = random.choice(RESPOSTAS_PLANOS).format(planos_str=planos_str, link_plano=link_plano)
+                    logger.info(f"⚡ Fast-path: planos acionado")
+                    await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
 
-                elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
-                    if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                        fast_reply = f"📞 Claro! Nosso número de contato é:\n{tel_banco}\n\nPosso ajudar com mais algo?"
-                        logger.info(f"⚡ Fast-path: contato acionado")
-                        await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "Cliente solicitou telefone", score_incremento=3)
+            # --- Fast-path: contato ---
+            elif unidade and re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
+                if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
+                    fast_reply = random.choice(RESPOSTAS_CONTATO).format(tel_banco=tel_banco)
+                    logger.info(f"⚡ Fast-path: contato acionado")
+                    await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "Cliente solicitou telefone", score_incremento=3)
+        # =============================================================
 
         # CACHE DE INTENÇÃO
         intencao = detectar_intencao(primeira_mensagem) if primeira_mensagem else None
@@ -1587,7 +1634,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
             else:
                 cfg = await carregar_configuracao_global(empresa_id)
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
-                nomes = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
+                nomes = "\n".join([f"• **{u['nome']}**" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
                 msg = f"{boas_vindas}\n\nSó pra eu te direcionar melhor 🙂\nQual unidade você quer falar?\n\n{nomes}\n\nSe preferir, pode me dizer o nome ou a cidade também."
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
@@ -1655,4 +1702,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health():
-    return {"status": "🤖 Motor SaaS Full Stack com Planos e Links Individuais!"}
+    return {"status": "🤖 Motor SaaS Full Stack com Planos, Links Individuais e Fast‑Path de Unidades Ampliado!"}
