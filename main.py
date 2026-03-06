@@ -1374,6 +1374,16 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
+        # Guard: se o cliente ainda não escolheu a unidade, não processa com IA
+        # O webhook já enviou a pergunta "Em qual cidade/bairro você prefere treinar?"
+        if await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+            logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
+            # Recoloca mensagens no buffet para serem processadas quando unidade for escolhida
+            for m_json in mensagens_acumuladas:
+                await redis_client.rpush(f"buffet:{conversation_id}", m_json)
+            await redis_client.expire(f"buffet:{conversation_id}", 300)
+            return
+
         textos, tasks_audio, imagens_urls = [], [], []
 
         for m_json in mensagens_acumuladas:
@@ -1452,8 +1462,11 @@ async def processar_ia_e_responder(
 
         if not imagens_urls:
 
-            # Fast-path: saudação genérica (só quando é 1 mensagem e é saudação)
-            if len(textos) == 1 and eh_saudacao(primeira_mensagem):
+            # Fast-path: saudação genérica
+            # Ativa quando TODAS as mensagens acumuladas são saudações
+            # Ex: "Boa noite" + "Tudo bem?" enviados em sequência rápida
+            _todas_saudacoes = bool(textos) and all(eh_saudacao(t) for t in textos)
+            if _todas_saudacoes:
                 _saudacao_base = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia} 😊"
                 _nome_unidade_atual = unidade.get('nome') or ''
                 if _nome_unidade_atual and _nome_unidade_atual in _saudacao_base:
@@ -1461,11 +1474,21 @@ async def processar_ia_e_responder(
                 fast_reply = f"{_saudacao_base}\n\nComo posso te ajudar hoje? 😊"
                 logger.info("⚡ Fast-path: saudação genérica (sem mencionar unidade)")
 
-            # Fast-path: listar unidades (verifica texto combinado)
+            # Fast-path: listar unidades (regex amplo — cobre abreviações, variações e ordem das palavras)
             elif re.search(
-                r"(quais (sao as )?unidades|quantas unidades|unidades (voc[êe]s )?tem|tem outras unidades"
-                r"|lista de unidades|onde (voc[êe]s )?tem academia|queria saber as unidades"
-                r"|gostaria de saber as unidades|me (diga|informe) as unidades|quais unidades existem)",
+                r"(quais.{0,10}unidades"           # quais as unidades / quais são as unidades
+                r"|quantas.{0,10}unidades"         # quantas unidades
+                r"|tem.{0,15}unidades"             # tem mais unidades / tem outras unidades / vcs tem unidades
+                r"|unidades.{0,10}tem"             # unidades que tem
+                r"|mais.{0,10}unidades"            # mais unidades
+                r"|outras.{0,10}unidades"          # outras unidades
+                r"|lista.{0,10}unidades"           # lista de unidades
+                r"|onde.{0,10}academia"            # onde tem academia
+                r"|saber.{0,10}unidades"           # queria saber as unidades
+                r"|todas.{0,10}unidades"           # todas as unidades
+                r"|unidades.{0,10}existem"         # quais unidades existem
+                r"|unidades.{0,10}disponiveis"     # unidades disponíveis
+                r"|unidades.{0,10}abertas)",       # unidades abertas
                 texto_combinado_norm, re.IGNORECASE
             ):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
@@ -1638,6 +1661,8 @@ REGRA CRÍTICA — ANTI-ALUCINAÇÃO (OBRIGATÓRIO, NUNCA IGNORE):
 - Use EXCLUSIVAMENTE as informações presentes em DADOS COMPLETOS DA UNIDADE acima.
 - Se um campo estiver como "não informado" ou ausente, diga que não tem essa informação no momento.
 - NUNCA invente, suponha ou complete endereços, telefones, horários ou qualquer dado.
+- NUNCA diga que a empresa tem "apenas uma unidade" ou invente o número de unidades — você não tem essa informação completa.
+- Se o cliente perguntar sobre outras unidades, diga que pode verificar e peça para ele informar cidade/bairro de interesse.
 - Se o cliente perguntar algo que não está nos dados, diga: "Não tenho essa informação agora, mas posso verificar para você!" ou similar.
 - Em saudações (boa tarde, oi, etc.), NÃO mencione o nome da unidade — apenas se apresente e pergunte como pode ajudar.
 - Quando o cliente perguntar seu nome ("qual é o seu nome?", "como você se chama?"), responda APENAS com seu nome. Não diga "aqui na [unidade]" ou "da [empresa]".
@@ -1904,12 +1929,23 @@ async def chatwoot_webhook(
         ) else "0"
         await redis_client.setex(f"atend_manual:{id_conv}", 86400, is_manual)
 
+    if event == "conversation_created":
+        # Nova conversa — garante que não há estado antigo no Redis (ex: conversas reutilizadas em testes)
+        await redis_client.delete(
+            f"pause_ia:{id_conv}", f"estado:{id_conv}",
+            f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+            f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
+        )
+        logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
+        return {"status": "conversa_criada"}
+
     if event == "conversation_updated":
         if conv_obj.get("status") == "resolved":
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
                 f"pause_ia:{id_conv}", f"estado:{id_conv}",
-                f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}"
+                f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+                f"atend_manual:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
