@@ -44,6 +44,24 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 EMPRESA_ID_PADRAO = 1
 
+# 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura sem intenção real
+SAUDACOES = {
+    "oi", "ola", "olá", "hey", "boa", "salve", "eai", "e ai",
+    "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom",
+    "como vai", "oi tudo", "ola tudo", "oii", "oiii", "opa"
+}
+
+def eh_saudacao(texto: str) -> bool:
+    """Retorna True se a mensagem for apenas uma saudação genérica (sem intenção real)."""
+    if not texto:
+        return False
+    norm = normalizar(texto).strip()
+    palavras = norm.split()
+    # Mensagem curta (até 5 palavras) que começa ou contém saudação
+    if len(palavras) <= 5:
+        return any(s in norm for s in SAUDACOES)
+    return False
+
 # 🎯 MAPEAMENTO DE INTENÇÕES PARA CACHE SEMÂNTICO
 INTENCOES = {
     "preco": ["preco", "preço", "valor", "quanto custa", "mensalidade", "planos", "promoção", "promocao", "valores", "custa"],
@@ -207,12 +225,13 @@ def limpar_markdown(texto: str) -> str:
 def formatar_planos_bonito(planos: List[Dict]) -> str:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
-    Usa emojis, asterisco simples (negrito WhatsApp) e URLs planas.
+    Retorna UMA string única (sem \n\n entre planos) para ser enviada como uma só mensagem.
     """
     if not planos:
         return "Não temos planos disponíveis no momento. 😕"
 
-    linhas = ["💪 *Confira nossos planos:*\n"]
+    SEPARADOR = "\n─────────────────\n"
+    blocos = []
 
     for p in planos:
         nome = p.get('nome', 'Plano')
@@ -234,26 +253,32 @@ def formatar_planos_bonito(planos: List[Dict]) -> str:
         meses_promo = p.get('meses_promocionais')
         diferenciais = p.get('diferenciais') or []
 
-        bloco = [f"🏅 *{nome}*"]
+        linhas = [f"🏅 *{nome}*"]
 
         if valor_float and valor_float > 0:
-            bloco.append(f"💰 R$ {valor_float:.2f}/mês")
+            linhas.append(f"💰 R$ {valor_float:.2f}/mês")
 
         if promo_float and meses_promo and promo_float > 0:
-            bloco.append(f"⚡ Promoção: {meses_promo} mês(es) por R$ {promo_float:.2f}")
+            linhas.append(f"⚡ Promoção: {meses_promo}x R$ {promo_float:.2f}")
 
         if diferenciais:
-            diffs = " · ".join(diferenciais) if isinstance(diferenciais, list) else str(diferenciais)
-            bloco.append(f"✨ {diffs}")
+            if isinstance(diferenciais, list):
+                # Quebra diferenciais longos em linhas de até 3 itens
+                chunks = [diferenciais[i:i+3] for i in range(0, len(diferenciais), 3)]
+                for chunk in chunks:
+                    linhas.append(f"✨ {' · '.join(chunk)}")
+            else:
+                linhas.append(f"✨ {diferenciais}")
 
-        bloco.append(f"🔗 {link}")
+        linhas.append(f"🔗 {link}")
+        blocos.append("\n".join(linhas))
 
-        linhas.append("\n".join(bloco))
-
-    if len(linhas) == 1:
+    if not blocos:
         return "Não temos planos disponíveis no momento. 😕"
 
-    return "\n\n".join(linhas)
+    cabecalho = "💪 *Nossos Planos*"
+    rodape = "\nQuer saber mais sobre algum plano? É só perguntar! 😊"
+    return cabecalho + "\n" + SEPARADOR.join(blocos) + rodape
 
 
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
@@ -1315,8 +1340,8 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda acúmulo de mensagens
-        await asyncio.sleep(3)
+        # ⏱️ Aguarda 6s para acumular mensagens enviadas em sequência rápida
+        await asyncio.sleep(6)
 
         chave_buffet = f"buffet:{conversation_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -1405,6 +1430,16 @@ async def processar_ia_e_responder(
         # ==================== FAST-PATH ====================
 
         if not imagens_urls and len(textos) == 1:
+
+            # Fast-path: saudação genérica — responde sem mencionar unidade específica
+            if eh_saudacao(primeira_mensagem):
+                _saudacao_base = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia} 😊"
+                # Remove menção ao nome da unidade da saudação personalizada
+                _nome_unidade_atual = unidade.get('nome') or ''
+                if _nome_unidade_atual and _nome_unidade_atual in _saudacao_base:
+                    _saudacao_base = _saudacao_base.replace(_nome_unidade_atual, nome_ia)
+                fast_reply = f"{_saudacao_base}\n\nComo posso te ajudar hoje? 😊"
+                logger.info("⚡ Fast-path: saudação genérica (sem mencionar unidade)")
 
             # Fast-path: listar unidades
             if re.search(
@@ -1574,6 +1609,13 @@ FAQ
 HISTÓRICO DA CONVERSA
 {historico}
 
+REGRA CRÍTICA — ANTI-ALUCINAÇÃO (OBRIGATÓRIO, NUNCA IGNORE):
+- Use EXCLUSIVAMENTE as informações presentes em DADOS COMPLETOS DA UNIDADE acima.
+- Se um campo estiver como "não informado" ou ausente, diga que não tem essa informação no momento.
+- NUNCA invente, suponha ou complete endereços, telefones, horários ou qualquer dado.
+- Se o cliente perguntar algo que não está nos dados, diga: "Não tenho essa informação agora, mas posso verificar para você!" ou similar.
+- Em saudações (boa tarde, oi, etc.), NÃO mencione o nome da unidade — apenas se apresente e pergunte como pode ajudar.
+
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 - Fale como uma pessoa real, nunca mencione ser IA ou assistente virtual
 - Use emojis com moderação (😊 💪 ✅)
@@ -1695,31 +1737,69 @@ Responda APENAS em JSON válido com os campos:
 
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
-        # --- Enviar resposta: divide por parágrafo (linha em branco), não por linha ---
         is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
 
-        # Divide por parágrafo (dupla quebra de linha) para preservar formatação
-        paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
-
-        # Se não houver parágrafos duplos, envia a mensagem inteira de uma vez
-        if not paragrafos:
-            paragrafos = [resposta_texto.strip()]
-
-        for i, paragrafo in enumerate(paragrafos):
-            if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
-                break
-
-            # Delay proporcional ao tamanho do parágrafo (simula digitação humana)
-            delay = min(len(paragrafo) * 0.035, 5) + random.uniform(0.3, 1.0)
+        if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
+            pass  # IA pausada, não envia
+        elif fast_reply:
+            # Fast-path: envia a resposta INTEIRA como UMA mensagem (planos, endereço, etc.)
+            delay = min(len(resposta_texto) * 0.02, 3) + random.uniform(0.3, 0.8)
             await asyncio.sleep(delay)
-
             await enviar_mensagem_chatwoot(
-                account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
+                account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot
             )
             await bd_atualizar_msg_ia(conversation_id)
+            await bd_registrar_primeira_resposta(conversation_id)
+        else:
+            # Resposta da IA: divide por parágrafo duplo para simular digitação humana
+            paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
+            if not paragrafos:
+                paragrafos = [resposta_texto.strip()]
 
-            if i == 0:
-                await bd_registrar_primeira_resposta(conversation_id)
+            for i, paragrafo in enumerate(paragrafos):
+                if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                    break
+
+                delay = min(len(paragrafo) * 0.035, 5) + random.uniform(0.3, 1.0)
+                await asyncio.sleep(delay)
+
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
+                )
+                await bd_atualizar_msg_ia(conversation_id)
+
+                if i == 0:
+                    await bd_registrar_primeira_resposta(conversation_id)
+
+        # 🔄 DRAIN LOOP — processa mensagens que chegaram DURANTE o processamento da IA
+        # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
+        _drain_tentativas = 0
+        while _drain_tentativas < 2:
+            await asyncio.sleep(2)
+            mensagens_pendentes = await redis_client.lrange(chave_buffet, 0, -1)
+            if not mensagens_pendentes:
+                break
+            # Há mensagens novas — consome e repassa para o mesmo fluxo
+            async with redis_client.pipeline(transaction=True) as pipe:
+                pipe.lrange(chave_buffet, 0, -1)
+                pipe.delete(chave_buffet)
+                res_drain = await pipe.execute()
+            msgs_drain = res_drain[0]
+            if not msgs_drain:
+                break
+            logger.info(f"🔄 Drain: {len(msgs_drain)} mensagens extras para conv {conversation_id}")
+            textos_drain = [json.loads(m).get("text", "") for m in msgs_drain if json.loads(m).get("text")]
+            for txt in textos_drain:
+                await bd_salvar_mensagem_local(conversation_id, "user", txt)
+            # Passa essas mensagens para outro ciclo de processamento reutilizando o mesmo lock
+            for m_json in msgs_drain:
+                await redis_client.rpush(f"buffet_drain:{conversation_id}", m_json)
+            await redis_client.expire(f"buffet_drain:{conversation_id}", 120)
+            # Coloca de volta no buffet para ser pego pelo próximo webhook (lock será liberado logo)
+            for m_json in msgs_drain:
+                await redis_client.rpush(chave_buffet, m_json)
+            await redis_client.expire(chave_buffet, 60)
+            _drain_tentativas += 1
 
     except Exception as e:
         logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
@@ -1729,6 +1809,19 @@ Responda APENAS em JSON válido com os campos:
             await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
         except Exception:
             pass
+        # Após liberar o lock, se ainda há mensagens no buffet, agenda novo processamento
+        try:
+            restantes = await redis_client.lrange(chave_buffet, 0, -1)
+            if restantes:
+                logger.info(f"📬 {len(restantes)} mensagens no buffet após processamento — reagendando conv {conversation_id}")
+                novo_lock_val = str(uuid.uuid4())
+                if await redis_client.set(chave_lock, novo_lock_val, nx=True, ex=180):
+                    asyncio.create_task(processar_ia_e_responder(
+                        account_id, conversation_id, contact_id, slug,
+                        nome_cliente, novo_lock_val, empresa_id, integracao_chatwoot
+                    ))
+        except Exception as e_drain:
+            logger.error(f"Erro no drain pós-processamento: {e_drain}")
 
 
 # --- WEBHOOK ENDPOINT ---
