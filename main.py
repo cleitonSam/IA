@@ -1118,7 +1118,8 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
     
     try:
-        await asyncio.sleep(2) 
+        # ⏱️ Aumenta o tempo de espera para acumular mais mensagens
+        await asyncio.sleep(3) 
         
         chave_buffet = f"buffet:{conversation_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -1145,12 +1146,19 @@ async def processar_ia_e_responder(
                     imagens_urls.append(f["url"])
         
         transcricoes = await asyncio.gather(*tasks_audio)
-        pergunta_final = " ".join(textos + list(transcricoes)).strip()
-        if not pergunta_final and not imagens_urls:
-            return
-
-        # 🔄 RECHECAGEM DE CONTEXTO
-        slug_detectado = await buscar_unidade_na_pergunta(pergunta_final, empresa_id)
+        
+        # Cria uma lista numerada de mensagens para o prompt
+        mensagens_lista = []
+        for i, txt in enumerate(textos, 1):
+            mensagens_lista.append(f"{i}. {txt}")
+        for i, transc in enumerate(transcricoes, len(textos)+1):
+            mensagens_lista.append(f"{i}. [Áudio transcrito] {transc}")
+        
+        mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
+        
+        # 🔄 RECHECAGEM DE CONTEXTO (usar a primeira mensagem para detectar unidade, mas manter todas no histórico)
+        primeira_mensagem = textos[0] if textos else ""
+        slug_detectado = await buscar_unidade_na_pergunta(primeira_mensagem, empresa_id) if primeira_mensagem else None
         mudou_unidade = False
         
         if slug_detectado and slug_detectado != slug:
@@ -1160,7 +1168,11 @@ async def processar_ia_e_responder(
             await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
             await bd_registrar_evento_funil(conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1)
 
-        await bd_salvar_mensagem_local(conversation_id, "user", pergunta_final if pergunta_final else "[Enviou uma imagem]")
+        # Salvar todas as mensagens do usuário
+        for txt in textos:
+            await bd_salvar_mensagem_local(conversation_id, "user", txt)
+        for transc in transcricoes:
+            await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
@@ -1169,7 +1181,7 @@ async def processar_ia_e_responder(
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
         
-        texto_norm_fast = normalizar(pergunta_final)
+        texto_norm_fast = normalizar(primeira_mensagem)  # Fast-path apenas na primeira mensagem
         fast_reply = None
         
         # Extrair campos da unidade
@@ -1182,7 +1194,6 @@ async def processar_ia_e_responder(
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
             planos_str = formatar_planos_para_prompt(planos_ativos)
-            # Lista de links para incluir no contexto
             links_dos_planos = "\n".join([f"- {p['nome']}: {p['link_venda']}" for p in planos_ativos if p.get('link_venda')])
             link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
             logger.info(f"📋 Usando planos ativos do banco para empresa {empresa_id}")
@@ -1192,8 +1203,8 @@ async def processar_ia_e_responder(
             link_plano = link_mat
             logger.info(f"📋 Usando planos da unidade para empresa {empresa_id}")
 
-        # ⚡ FAST-PATH
-        if not imagens_urls:
+        # ⚡ FAST-PATH (só se for uma única mensagem e sem imagens)
+        if not imagens_urls and len(textos) == 1:
             if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 lista_str = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
@@ -1227,8 +1238,8 @@ async def processar_ia_e_responder(
                         logger.info(f"⚡ Fast-path: contato acionado")
                         await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "Cliente solicitou telefone", score_incremento=3)
 
-        # 🎯 DETECÇÃO DE INTENÇÃO PARA CACHE
-        intencao = detectar_intencao(pergunta_final)
+        # 🎯 DETECÇÃO DE INTENÇÃO PARA CACHE (usar a primeira mensagem para definir intenção)
+        intencao = detectar_intencao(primeira_mensagem) if primeira_mensagem else None
         
         if intencao:
             chave_cache_ia = f"cache:intent:{slug}:{intencao}"
@@ -1326,7 +1337,7 @@ async def processar_ia_e_responder(
 
             aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações especificamente sobre a unidade {nome_unidade}. Baseie sua próxima resposta SOMENTE nos dados abaixo e reconheça essa mudança de forma natural se necessário." if mudou_unidade else ""
 
-            # 🎯 PROMPT HUMANIZADO COM ÊNFASE EM FORMATAÇÃO
+            # 🎯 PROMPT HUMANIZADO COM MENSAGENS NUMERADAS
             prompt_sistema = f"""
 Seu nome é {nome_ia}.
 
@@ -1367,15 +1378,15 @@ DADOS DO ATENDIMENTO ATUAL:
 Nome do Cliente: {nome_cliente}
 Estado/Sentimento Anterior: {estado_atual}
 
+MENSAGENS DO CLIENTE (na ordem):
+{mensagens_formatadas}
+
 Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (estado do cliente).
 """
 
             conteudo_usuario = []
-            if pergunta_final:
-                conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nCliente diz: {pergunta_final}"})
-            else:
-                conteudo_usuario.append({"type": "text", "text": f"Histórico:\n{historico}\n\nO cliente enviou uma imagem. Analise-a."})
-                
+            # Não precisamos passar as mensagens novamente, já estão no prompt_sistema
+            # Mas se houver imagens, ainda precisamos enviá-las
             for img_url in imagens_urls:
                 try:
                     resp = await http_client.get(img_url, headers={"api_access_token": integracao_chatwoot['token']}, follow_redirects=True)
@@ -1401,7 +1412,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 try:
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_escolhido, 
-                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}],
                         temperature=temperature,
                         timeout=30
                     )
@@ -1411,7 +1422,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                     modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_fallback,
-                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario}],
+                        messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}],
                         temperature=temperature
                     )
                     resposta_bruta = response.choices[0].message.content
