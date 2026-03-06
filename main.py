@@ -84,10 +84,10 @@ end
 # ==================== MENSAGENS PRÉ-FORMATADAS ====================
 # Conjuntos de respostas para cada tipo de fast‑path, escolhidas aleatoriamente
 RESPOSTAS_UNIDADES = [
-    "🏢 Claro! Temos as seguintes unidades disponíveis:\n\n{lista_str}\n\nQual delas você gostaria de conhecer melhor?",
-    "Com certeza! Nossas unidades são:\n\n{lista_str}\n\nMe diga qual é a mais conveniente para você!",
-    "Aqui estão todas as nossas unidades:\n\n{lista_str}\n\nEm qual delas podemos ajudar?",
-    "Fico feliz em ajudar! Nossas academias estão localizadas em:\n\n{lista_str}\n\nQual você prefere?"
+    "🏢 Temos {total} unidades disponíveis:\n\n{lista_str}\n\nQual delas você gostaria de conhecer melhor?",
+    "Claro! Nossas {total} unidades são:\n\n{lista_str}\n\nMe diga qual é a mais conveniente para você!",
+    "Aqui estão todas as nossas {total} unidades:\n\n{lista_str}\n\nEm qual delas podemos ajudar?",
+    "Fico feliz em ajudar! Nossas academias (um total de {total}) estão localizadas em:\n\n{lista_str}\n\nQual você prefere?"
 ]
 
 RESPOSTAS_ENDERECO = [
@@ -452,7 +452,8 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
 def formatar_planos_para_prompt(planos: List[Dict]) -> str:
     """
     Formata a lista de planos em uma string legível para o prompt da IA.
-    Inclui nome, valor e promoção. Os links são tratados separadamente.
+    Inclui nome, valor, promoção e diferenciais.
+    Os links são tratados separadamente.
     """
     if not planos:
         return "Nenhum plano disponível no momento."
@@ -463,6 +464,7 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
         valor = p.get('valor')
         promocao = p.get('valor_promocional')
         meses_promo = p.get('meses_promocionais')
+        diferenciais = p.get('diferenciais', [])
         link = p.get('link_venda', '')
 
         # Ignorar planos sem link (já filtrados)
@@ -485,6 +487,10 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
             linha += f": R$ {valor_float:.2f}"
         if promocao_float is not None and meses_promo and promocao_float > 0:
             linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao_float:.2f})"
+        if diferenciais:
+            # Converte a lista em uma string legível
+            diffs_str = ", ".join(diferenciais)
+            linha += f"\n  ✨ Diferenciais: {diffs_str}"
         linhas.append(linha)
 
     return "\n".join(linhas) if linhas else "Nenhum plano disponível no momento."
@@ -1253,8 +1259,9 @@ async def processar_ia_e_responder(
             ):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 if todas_ativas:
+                    total = len(todas_ativas)
                     lista_str = "\n".join([f"• **{u['nome']}**" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in todas_ativas])
-                    fast_reply = random.choice(RESPOSTAS_UNIDADES).format(lista_str=lista_str)
+                    fast_reply = random.choice(RESPOSTAS_UNIDADES).format(total=total, lista_str=lista_str)
                     logger.info(f"⚡ Fast-path: listar unidades acionado")
                     await bd_registrar_evento_funil(conversation_id, "consulta_unidades", "Cliente solicitou lista de unidades", score_incremento=1)
                 else:
@@ -1276,7 +1283,7 @@ async def processar_ia_e_responder(
                     fast_reply = random.choice(RESPOSTAS_HORARIO).format(horario_str=horario_str)
                     logger.info(f"⚡ Fast-path: horários acionado")
 
-            # --- Fast-path: planos ---
+            # --- Fast-path: planos (agora inclui diferenciais) ---
             elif unidade and re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
                 if planos_str != "não informado":
                     fast_reply = random.choice(RESPOSTAS_PLANOS).format(planos_str=planos_str, link_plano=link_plano)
@@ -1334,7 +1341,7 @@ async def processar_ia_e_responder(
             else:
                 horarios_str = "não informado"
             
-            # Detalhes dos planos com links
+            # Detalhes dos planos com links e diferenciais
             planos_detalhados = ""
             if planos_ativos:
                 for p in planos_ativos:
@@ -1342,12 +1349,16 @@ async def processar_ia_e_responder(
                     valor = p.get('valor')
                     promocao = p.get('valor_promocional')
                     meses = p.get('meses_promocionais')
+                    diferenciais = p.get('diferenciais', [])
                     link = p.get('link_venda')
                     linha = f"- **{nome}**"
                     if valor:
                         linha += f": R$ {float(valor):.2f}"
                     if promocao and meses:
                         linha += f" (promoção: {meses} mês(es) por R$ {float(promocao):.2f})"
+                    if diferenciais:
+                        diffs_str = ", ".join(diferenciais)
+                        linha += f"\n  ✨ Diferenciais: {diffs_str}"
                     if link:
                         linha += f"\n  Link: {link}"
                     planos_detalhados += linha + "\n"
@@ -1422,6 +1433,7 @@ IMPORTANTE:
 - Seja natural e conversacional
 - **Formate sua resposta com parágrafos curtos, use tópicos (•) para listas e quebras de linha.**
 - Quando o cliente perguntar sobre um plano específico, forneça o link correspondente.
+- **Não se apresente novamente se já houver histórico de conversa.**
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO ATUAL:
@@ -1702,4 +1714,4 @@ async def desbloquear_ia(conversation_id: int):
 
 @app.get("/")
 async def health():
-    return {"status": "🤖 Motor SaaS Full Stack com Planos, Links Individuais e Fast‑Path de Unidades Ampliado!"}
+    return {"status": "🤖 Motor SaaS Full Stack com Planos, Links Individuais, Diferenciais e Fast‑Path de Unidades Ampliado!"}
