@@ -335,6 +335,13 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
 
     count = 0
     for p in planos_api:
+        # Ignorar planos sem valor e sem link
+        tem_valor = (p.get('valor') is not None and p['valor'] > 0) or (p.get('valor_promocional') is not None and p['valor_promocional'] > 0)
+        if not tem_valor:
+            continue
+        if not p.get('link_venda'):
+            continue
+
         # Verifica se já existe pelo id_externo
         existing = await db_pool.fetchval(
             "SELECT id FROM planos WHERE empresa_id = $1 AND id_externo = $2",
@@ -383,8 +390,13 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
     if cached:
         return json.loads(cached)
 
-    # Primeiro tenta buscar do banco
-    query = "SELECT * FROM planos WHERE empresa_id = $1 AND ativo = true"
+    # Primeiro tenta buscar do banco (apenas planos com valor > 0 e link não vazio)
+    query = """
+        SELECT * FROM planos 
+        WHERE empresa_id = $1 AND ativo = true 
+          AND (valor > 0 OR valor_promocional > 0)
+          AND link_venda IS NOT NULL AND link_venda != ''
+    """
     params = [empresa_id]
     if unidade_id:
         query += " AND (unidade_id = $2 OR unidade_id IS NULL)"
@@ -417,13 +429,31 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
         valor = p.get('valor')
         promocao = p.get('valor_promocional')
         meses_promo = p.get('meses_promocionais')
+        link = p.get('link_venda', '')
+
+        # Ignorar planos com valor <= 0 ou link vazio (já filtrados, mas por segurança)
+        if (valor is None or valor <= 0) and (promocao is None or promocao <= 0):
+            continue
+        if not link or link.strip() == '':
+            continue
+
         linha = f"• {nome}"
-        if valor is not None:
-            linha += f": R$ {valor:.2f}"
-        if promocao is not None and meses_promo:
-            linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao:.2f})"
+        if valor is not None and valor > 0:
+            try:
+                valor_float = float(valor)
+                linha += f": R$ {valor_float:.2f}"
+            except (TypeError, ValueError):
+                # Se não conseguir converter, exibe como está
+                linha += f": R$ {valor}"
+        if promocao is not None and meses_promo and promocao > 0:
+            try:
+                promocao_float = float(promocao)
+                linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao_float:.2f})"
+            except (TypeError, ValueError):
+                linha += f" (promoção: {meses_promo} mês(es) por R$ {promocao})"
         linhas.append(linha)
-    return "\n".join(linhas)
+
+    return "\n".join(linhas) if linhas else "Nenhum plano disponível no momento."
 
 # Worker para sincronizar planos periodicamente (a cada 6 horas)
 async def worker_sync_planos():
@@ -1179,7 +1209,7 @@ async def processar_ia_e_responder(
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
-        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco (com force_sync=True na primeira tentativa) ---
+        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco (com force_sync=True) ---
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
             planos_str = formatar_planos_para_prompt(planos_ativos)
