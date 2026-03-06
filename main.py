@@ -605,6 +605,29 @@ async def sync_planos_manual(empresa_id: int):
 
 # --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT ---
 
+async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0):
+    """
+    Ativa o indicador 'digitando...' no Chatwoot durante o tempo especificado.
+    Usa o endpoint de typing status da API do Chatwoot.
+    """
+    url_base = integracao.get('url')
+    token = integracao.get('token')
+    if not url_base or not token:
+        return
+
+    url_typing = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/typing_status"
+    headers = {"api_access_token": token}
+
+    try:
+        # Liga o "digitando..."
+        await http_client.post(url_typing, json={"typing_status": "on"}, headers=headers)
+        await asyncio.sleep(max(0.5, min(segundos, 6.0)))  # entre 0.5s e 6s
+        # Desliga o "digitando..."
+        await http_client.post(url_typing, json={"typing_status": "off"}, headers=headers)
+    except Exception as e:
+        logger.debug(f"Typing indicator indisponível: {e}")  # Não crítico
+
+
 async def enviar_mensagem_chatwoot(
     account_id: int,
     conversation_id: int,
@@ -829,9 +852,9 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
     if not db_pool or not texto:
         return None
 
-    # Textos muito curtos (saudações, etc.) não devem acionar detecção de unidade
-    palavras = texto.strip().split()
-    if len(palavras) < 2:
+    # Ignora saudações genéricas (oi, boa tarde, etc.) — mas NÃO ignora nomes de cidades/bairros
+    # com uma só palavra como "Itaquera", "Morumbi", "Paulista", etc.
+    if eh_saudacao(texto):
         return None
 
     # 1. Tenta função SQL customizada (mais precisa)
@@ -1428,25 +1451,26 @@ async def processar_ia_e_responder(
             link_plano = link_mat
 
         # ==================== FAST-PATH ====================
+        # Texto combinado de TODAS as mensagens acumuladas para detectar intenção
+        texto_combinado_norm = normalizar(" ".join(textos))
 
-        if not imagens_urls and len(textos) == 1:
+        if not imagens_urls:
 
-            # Fast-path: saudação genérica — responde sem mencionar unidade específica
-            if eh_saudacao(primeira_mensagem):
+            # Fast-path: saudação genérica (só quando é 1 mensagem e é saudação)
+            if len(textos) == 1 and eh_saudacao(primeira_mensagem):
                 _saudacao_base = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia} 😊"
-                # Remove menção ao nome da unidade da saudação personalizada
                 _nome_unidade_atual = unidade.get('nome') or ''
                 if _nome_unidade_atual and _nome_unidade_atual in _saudacao_base:
                     _saudacao_base = _saudacao_base.replace(_nome_unidade_atual, nome_ia)
                 fast_reply = f"{_saudacao_base}\n\nComo posso te ajudar hoje? 😊"
                 logger.info("⚡ Fast-path: saudação genérica (sem mencionar unidade)")
 
-            # Fast-path: listar unidades
-            if re.search(
+            # Fast-path: listar unidades (verifica texto combinado)
+            elif re.search(
                 r"(quais (sao as )?unidades|quantas unidades|unidades (voc[êe]s )?tem|tem outras unidades"
                 r"|lista de unidades|onde (voc[êe]s )?tem academia|queria saber as unidades"
                 r"|gostaria de saber as unidades|me (diga|informe) as unidades|quais unidades existem)",
-                texto_norm_fast, re.IGNORECASE
+                texto_combinado_norm, re.IGNORECASE
             ):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 if todas_ativas:
@@ -1465,17 +1489,33 @@ async def processar_ia_e_responder(
                 else:
                     fast_reply = "No momento não há unidades cadastradas. 😕"
 
-            # Fast-path: endereço
+            # Fast-path: planos — detecta intenção em QUALQUER das mensagens acumuladas
+            # (resolve o caso de múltiplas mensagens: "Itaquera / Queria saber os planos / É benéfico")
             elif unidade and re.search(
-                r"(endereco|enderco|local|localizacao|fica onde|onde fica|como chego|qual o local)",
-                texto_norm_fast
+                r"(preco|valor|quanto custa|mensalidade|planos?|promocao|beneficio|benefícios|"
+                r"quais sao os planos|me fala os planos|tem planos|ver planos)",
+                texto_combinado_norm
+            ):
+                if planos_ativos:
+                    fast_reply = formatar_planos_bonito(planos_ativos)
+                    await bd_registrar_evento_funil(
+                        conversation_id, "link_matricula_enviado",
+                        "Link enviado via fast-path", score_incremento=2
+                    )
+                    logger.info("⚡ Fast-path: planos (multi-mensagem)")
+
+            # Fast-path: endereço (texto combinado)
+            elif unidade and re.search(
+                r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
+                texto_combinado_norm
             ):
                 if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
                     fast_reply = random.choice(RESPOSTAS_ENDERECO).format(endereco=end_banco)
 
-            # Fast-path: horários
+            # Fast-path: horários (texto combinado)
             elif unidade and re.search(
-                r"(horario|funcionamento|abre|fecha|que horas|ta aberto)", texto_norm_fast
+                r"(horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
+                texto_combinado_norm
             ):
                 if hor_banco:
                     if isinstance(hor_banco, dict):
@@ -1484,21 +1524,10 @@ async def processar_ia_e_responder(
                         horario_str = str(hor_banco)
                     fast_reply = random.choice(RESPOSTAS_HORARIO).format(horario_str=horario_str)
 
-            # Fast-path: planos — usa formatar_planos_bonito para visual bonito
+            # Fast-path: contato (texto combinado)
             elif unidade and re.search(
-                r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast
-            ):
-                if planos_ativos:
-                    fast_reply = formatar_planos_bonito(planos_ativos)
-                    fast_reply += "\n\nQuer saber mais sobre algum plano específico? 😊"
-                    await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado",
-                        "Link enviado via fast-path", score_incremento=2
-                    )
-
-            # Fast-path: contato
-            elif unidade and re.search(
-                r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast
+                r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
+                texto_combinado_norm
             ):
                 if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
                     fast_reply = random.choice(RESPOSTAS_CONTATO).format(tel_banco=tel_banco)
@@ -1615,6 +1644,8 @@ REGRA CRÍTICA — ANTI-ALUCINAÇÃO (OBRIGATÓRIO, NUNCA IGNORE):
 - NUNCA invente, suponha ou complete endereços, telefones, horários ou qualquer dado.
 - Se o cliente perguntar algo que não está nos dados, diga: "Não tenho essa informação agora, mas posso verificar para você!" ou similar.
 - Em saudações (boa tarde, oi, etc.), NÃO mencione o nome da unidade — apenas se apresente e pergunte como pode ajudar.
+- Quando o cliente perguntar seu nome ("qual é o seu nome?", "como você se chama?"), responda APENAS com seu nome. Não diga "aqui na [unidade]" ou "da [empresa]".
+- NUNCA diga "Smart Fit Morumbi" ou qualquer nome de unidade em respostas pessoais sobre você mesmo.
 
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 - Fale como uma pessoa real, nunca mencione ser IA ou assistente virtual
@@ -1743,8 +1774,8 @@ Responda APENAS em JSON válido com os campos:
             pass  # IA pausada, não envia
         elif fast_reply:
             # Fast-path: envia a resposta INTEIRA como UMA mensagem (planos, endereço, etc.)
-            delay = min(len(resposta_texto) * 0.02, 3) + random.uniform(0.3, 0.8)
-            await asyncio.sleep(delay)
+            typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
+            await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
             await enviar_mensagem_chatwoot(
                 account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot
             )
@@ -1760,8 +1791,9 @@ Responda APENAS em JSON válido com os campos:
                 if await redis_client.exists(f"pause_ia:{conversation_id}"):
                     break
 
-                delay = min(len(paragrafo) * 0.035, 5) + random.uniform(0.3, 1.0)
-                await asyncio.sleep(delay)
+                # Simula digitação proporcional ao tamanho do parágrafo
+                typing_time = min(len(paragrafo) * 0.03, 5.0) + random.uniform(0.3, 1.0)
+                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
 
                 await enviar_mensagem_chatwoot(
                     account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
