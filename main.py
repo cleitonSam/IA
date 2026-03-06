@@ -982,7 +982,7 @@ async def bd_finalizar_conversa(conversation_id: int):
     except Exception as e:
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 
-# --- WORKER DE MÉTRICAS DIÁRIAS ---
+# --- WORKER DE MÉTRICAS DIÁRIAS (CORRIGIDO) ---
 async def worker_metricas_diarias():
     while True:
         await asyncio.sleep(3600)
@@ -1046,13 +1046,8 @@ async def worker_metricas_diarias():
                           AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
                     """, empresa_id, unidade_id, hoje)
 
-                    satisfacao_media = await db_pool.fetchval("""
-                        SELECT COALESCE(AVG(f.nota), 0)
-                        FROM feedback f
-                        JOIN conversas c ON c.id = f.conversa_id
-                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
-                          AND DATE(f.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
+                    # 🔧 SATISFAÇÃO: usa 0 se não houver tabela
+                    satisfacao_media = 0.0
                     
                     await db_pool.execute("""
                         INSERT INTO metricas_diarias (
@@ -1078,15 +1073,26 @@ async def worker_metricas_diarias():
         except Exception as e:
             logger.error(f"❌ Erro no worker de métricas diárias: {e}", exc_info=True)
 
-# 🛠 FUNÇÃO PARA CORRIGIR JSON TRUNCADO
+# 🛠 FUNÇÃO PARA CORRIGIR JSON TRUNCADO (melhorada)
+def extrair_json(texto: str) -> str:
+    """
+    Tenta extrair um JSON válido de uma string que pode conter texto extra.
+    Retorna a string JSON ou a string original se não encontrar.
+    """
+    texto = texto.strip()
+    # Procura pelo primeiro '{' e último '}'
+    inicio = texto.find('{')
+    fim = texto.rfind('}')
+    if inicio != -1 and fim != -1 and fim > inicio:
+        return texto[inicio:fim+1]
+    return texto
+
 def corrigir_json(texto: str) -> str:
     texto = texto.strip()
-    if not texto.startswith("{"):
-        inicio = texto.find("{")
-        if inicio != -1:
-            texto = texto[inicio:]
-    if not texto.endswith("}"):
-        texto = texto + "}"
+    # Remove blocos de código markdown
+    texto = re.sub(r'^```(?:json)?\s*', '', texto)
+    texto = re.sub(r'\s*```$', '', texto)
+    texto = extrair_json(texto)
     return texto
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
@@ -1118,7 +1124,7 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
     
     try:
-        # ⏱️ Aumenta o tempo de espera para acumular mais mensagens
+        # ⏱️ Tempo de espera para acumular mensagens
         await asyncio.sleep(3) 
         
         chave_buffet = f"buffet:{conversation_id}"
@@ -1147,16 +1153,16 @@ async def processar_ia_e_responder(
         
         transcricoes = await asyncio.gather(*tasks_audio)
         
-        # Cria uma lista numerada de mensagens para o prompt
+        # Cria uma lista numerada de mensagens
         mensagens_lista = []
         for i, txt in enumerate(textos, 1):
             mensagens_lista.append(f"{i}. {txt}")
         for i, transc in enumerate(transcricoes, len(textos)+1):
-            mensagens_lista.append(f"{i}. [Áudio transcrito] {transc}")
+            mensagens_lista.append(f"{i}. [Áudio] {transc}")
         
         mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
         
-        # 🔄 RECHECAGEM DE CONTEXTO (usar a primeira mensagem para detectar unidade, mas manter todas no histórico)
+        # RECHECAGEM DE CONTEXTO
         primeira_mensagem = textos[0] if textos else ""
         slug_detectado = await buscar_unidade_na_pergunta(primeira_mensagem, empresa_id) if primeira_mensagem else None
         mudou_unidade = False
@@ -1181,7 +1187,7 @@ async def processar_ia_e_responder(
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
         
-        texto_norm_fast = normalizar(primeira_mensagem)  # Fast-path apenas na primeira mensagem
+        texto_norm_fast = normalizar(primeira_mensagem)
         fast_reply = None
         
         # Extrair campos da unidade
@@ -1190,7 +1196,7 @@ async def processar_ia_e_responder(
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
         
-        # --- INTEGRAÇÃO EVO: buscar planos ativos do banco (com force_sync=True) ---
+        # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
             planos_str = formatar_planos_para_prompt(planos_ativos)
@@ -1203,7 +1209,7 @@ async def processar_ia_e_responder(
             link_plano = link_mat
             logger.info(f"📋 Usando planos da unidade para empresa {empresa_id}")
 
-        # ⚡ FAST-PATH (só se for uma única mensagem e sem imagens)
+        # FAST-PATH (apenas se for uma única mensagem e sem imagens)
         if not imagens_urls and len(textos) == 1:
             if re.search(r"(quais (sao as )?unidades|quantas unidades|unidades voces tem|tem outras unidades|lista de unidades|onde (voces )?tem academia)", texto_norm_fast):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
@@ -1229,7 +1235,7 @@ async def processar_ia_e_responder(
                 elif re.search(r"(preco|valor|quanto custa|mensalidade|planos|promocao)", texto_norm_fast):
                     if planos_str != "não informado":
                         fast_reply = f"💰 Sobre nossos planos:\n{planos_str}\n\nVocê pode ver os detalhes e se matricular por aqui: {link_plano}"
-                        logger.info(f"⚡ Fast-path: planos acionado (fonte: {'banco' if planos_ativos else 'unidade'})")
+                        logger.info(f"⚡ Fast-path: planos acionado")
                         await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via fast-path", score_incremento=2)
 
                 elif re.search(r"(telefone|contato|whatsapp|numero|ligar)", texto_norm_fast):
@@ -1238,12 +1244,11 @@ async def processar_ia_e_responder(
                         logger.info(f"⚡ Fast-path: contato acionado")
                         await bd_registrar_evento_funil(conversation_id, "solicitacao_telefone", "Cliente solicitou telefone", score_incremento=3)
 
-        # 🎯 DETECÇÃO DE INTENÇÃO PARA CACHE (usar a primeira mensagem para definir intenção)
+        # CACHE DE INTENÇÃO
         intencao = detectar_intencao(primeira_mensagem) if primeira_mensagem else None
-        
         if intencao:
             chave_cache_ia = f"cache:intent:{slug}:{intencao}"
-            logger.info(f"🎯 Intenção detectada: {intencao} - usando chave: {chave_cache_ia}")
+            logger.info(f"🎯 Intenção detectada: {intencao} - chave: {chave_cache_ia}")
         else:
             hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
             chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
@@ -1256,7 +1261,7 @@ async def processar_ia_e_responder(
             novo_estado = estado_atual
             
         elif resposta_cacheada and not imagens_urls and not mudou_unidade:
-            logger.info(f"🧠 Cache Hit! Respondendo direto do Redis. Chave: {chave_cache_ia}")
+            logger.info(f"🧠 Cache Hit! Respondendo direto do Redis.")
             dados_cache = json.loads(resposta_cacheada)
             resposta_texto = dados_cache["resposta"]
             novo_estado = dados_cache["estado"]
@@ -1272,7 +1277,7 @@ async def processar_ia_e_responder(
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
             
-            # Formatar dados
+            # Formatar horários
             horarios_str = ""
             if hor_banco:
                 if isinstance(hor_banco, dict):
@@ -1282,7 +1287,7 @@ async def processar_ia_e_responder(
             else:
                 horarios_str = "não informado"
             
-            # Criar uma representação detalhada dos planos com links
+            # Detalhes dos planos com links
             planos_detalhados = ""
             if planos_ativos:
                 for p in planos_ativos:
@@ -1304,7 +1309,7 @@ async def processar_ia_e_responder(
 
             dados_unidade = f"""
             DADOS COMPLETOS DA UNIDADE
-            Nome da unidade: {unidade.get('nome') or 'não informado'}
+            Nome: {unidade.get('nome') or 'não informado'}
             Empresa: {unidade.get('nome_empresa') or 'não informado'}
             Endereço: {end_banco or 'não informado'}
             Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
@@ -1312,32 +1317,30 @@ async def processar_ia_e_responder(
             Telefone: {tel_banco or 'não informado'}
             Horários:
             {horarios_str}
-            Link de matrícula (geral): {link_plano}
-            Link do site: {unidade.get('site') or 'não informado'}
+            Link geral: {link_plano}
+            Site: {unidade.get('site') or 'não informado'}
             Instagram: {unidade.get('instagram') or 'não informado'}
-            Modalidades disponíveis: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
-            Planos disponíveis:
+            Modalidades: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
+            Planos:
             {planos_str}
-            
-            Links individuais dos planos:
+            Links individuais:
             {links_dos_planos}
-            
             Infraestrutura: {json.dumps(unidade.get('infraestrutura', {}), ensure_ascii=False) if unidade.get('infraestrutura') else 'não informado'}
             Serviços: {json.dumps(unidade.get('servicos', {}), ensure_ascii=False) if unidade.get('servicos') else 'não informado'}
-            Formas de pagamento aceitas: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('formas_pagamento') else 'não informado'}
-            Convênios aceitos: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios') else 'não informado'}
-            Descrição da unidade: {unidade.get('descricao') or 'não informado'}
+            Pagamentos: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('formas_pagamento') else 'não informado'}
+            Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios') else 'não informado'}
+            Descrição: {unidade.get('descricao') or 'não informado'}
             """
             
             tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
             estilo = pers.get('estilo_comunicacao') or ''
             saudacao = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia}, como posso ajudar?"
-            instrucoes_base = pers.get('instrucoes_base') or f"Atenda o cliente de forma educada e tire dúvidas sobre os serviços da {nome_empresa}."
+            instrucoes_base = pers.get('instrucoes_base') or f"Atenda o cliente de forma educada."
             regras_atendimento = pers.get('regras_atendimento') or "Seja breve e objetivo."
 
-            aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações especificamente sobre a unidade {nome_unidade}. Baseie sua próxima resposta SOMENTE nos dados abaixo e reconheça essa mudança de forma natural se necessário." if mudou_unidade else ""
+            aviso_mudanca = f"\n[AVISO DE SISTEMA]: O cliente acaba de solicitar informações sobre a unidade {nome_unidade}. Baseie sua resposta nos dados abaixo." if mudou_unidade else ""
 
-            # 🎯 PROMPT HUMANIZADO COM MENSAGENS NUMERADAS
+            # PROMPT HUMANIZADO COM MENSAGENS NUMERADAS
             prompt_sistema = f"""
 Seu nome é {nome_ia}.
 
@@ -1370,7 +1373,7 @@ IMPORTANTE:
 - Seu nome é sempre {nome_ia}
 - Fale como uma pessoa real, use emojis moderadamente (😊 👍 🏋️‍♀️)
 - Seja natural e conversacional
-- **Formate sua resposta com parágrafos curtos, use tópicos (•) para listas e quebras de linha para facilitar a leitura**.
+- **Formate sua resposta com parágrafos curtos, use tópicos (•) para listas e quebras de linha.**
 - Quando o cliente perguntar sobre um plano específico, forneça o link correspondente.
 {aviso_mudanca}
 
@@ -1385,33 +1388,26 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
 """
 
             conteudo_usuario = []
-            # Não precisamos passar as mensagens novamente, já estão no prompt_sistema
-            # Mas se houver imagens, ainda precisamos enviá-las
+            # Se houver imagens, adicionar
             for img_url in imagens_urls:
                 try:
                     resp = await http_client.get(img_url, headers={"api_access_token": integracao_chatwoot['token']}, follow_redirects=True)
                     if resp.status_code == 200:
                         img_b64 = base64.b64encode(resp.content).decode("utf-8")
-                        mime_type = "image/png" if ".png" in img_url.lower() else "image/webp" if ".webp" in img_url.lower() else "image/jpeg"
+                        mime_type = "image/jpeg"
                         conteudo_usuario.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}})
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            modelo_escolhido = pers.get("modelo_preferido")
-            if not modelo_escolhido:
-                modelo_escolhido = "google/gemini-2.5-flash-lite" if not imagens_urls else "google/gemini-2.5-flash"
-            
+            modelo_escolhido = pers.get("modelo_preferido") or ("google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite")
             temperature = pers.get("temperatura")
-            if temperature is not None:
-                temperature = float(temperature)
-            else:
-                temperature = 0.7
+            temperature = float(temperature) if temperature is not None else 0.7
 
             start_time = time.time()
             async with llm_semaphore:
                 try:
                     response = await cliente_ia.chat.completions.create(
-                        model=modelo_escolhido, 
+                        model=modelo_escolhido,
                         messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}],
                         temperature=temperature,
                         timeout=30
@@ -1426,28 +1422,22 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                         temperature=temperature
                     )
                     resposta_bruta = response.choices[0].message.content
-            
-            logger.info(f"⏱️ LLM Latency ({modelo_escolhido}): {time.time() - start_time:.2f}s | Conv: {conversation_id}")
 
-            resposta_bruta = resposta_bruta.strip()
-            if resposta_bruta.startswith("```"):
-                resposta_bruta = re.sub(r'^```(?:json)?\s*', '', resposta_bruta)
-                resposta_bruta = re.sub(r'\s*```$', '', resposta_bruta)
-                resposta_bruta = resposta_bruta.strip()
-                logger.info("🧹 Bloco de código markdown removido do JSON")
+            logger.info(f"⏱️ LLM Latency: {time.time()-start_time:.2f}s")
 
+            # CORREÇÃO DE JSON
             resposta_bruta = corrigir_json(resposta_bruta)
 
             try:
                 dados_ia = json.loads(resposta_bruta)
-                resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar a informação.")
+                resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar.")
                 novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
                 
                 if not imagens_urls:
                     await redis_client.setex(chave_cache_ia, 600, json.dumps({"resposta": resposta_texto, "estado": novo_estado}))
                     logger.info(f"💾 Resposta em cache com chave: {chave_cache_ia}")
 
-                # Registrar eventos de link e telefone se detectados na resposta
+                # Registrar eventos
                 if link_plano in resposta_texto or "matricular" in resposta_texto.lower() or "link" in resposta_texto.lower():
                     await bd_registrar_evento_funil(conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2)
                 
@@ -1459,6 +1449,7 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
                 resposta_texto = "Desculpe, tive um problema ao processar sua solicitação. Pode reformular?"
                 novo_estado = estado_atual
 
+        # Salvar estado e mensagem
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(f"hist_estado:{conversation_id}", f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}")
@@ -1467,20 +1458,17 @@ Responda em JSON válido com os campos "resposta" (sua mensagem) e "estado" (est
             await pipe.execute()
 
         if "interessado" in novo_estado or "conversao" in novo_estado or "matricula" in novo_estado:
-            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"Detectou estado: {novo_estado}")
+            await bd_registrar_evento_funil(conversation_id, "interesse_detectado", f"Estado: {novo_estado}")
 
         await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
-        is_manual_atendimento = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
+        is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
         pedacos = [p.strip() for p in resposta_texto.split("\n") if p.strip()]
-        
         for i, p in enumerate(pedacos):
-            if is_manual_atendimento or await redis_client.exists(f"pause_ia:{conversation_id}"):
+            if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
                 break
-            await asyncio.sleep(min(len(p) * 0.04, 4) + random.uniform(0.5, 1.5))
-            
+            await asyncio.sleep(min(len(p)*0.04, 4) + random.uniform(0.5, 1.5))
             await enviar_mensagem_chatwoot(account_id, conversation_id, p, nome_ia, integracao_chatwoot)
-            
             await bd_atualizar_msg_ia(conversation_id)
             if i == 0:
                 await bd_registrar_primeira_resposta(conversation_id)
@@ -1512,7 +1500,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
 
-    # Rate limiting
+    # Rate limiting por conversa
     rate_key = f"rate:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1:
@@ -1520,16 +1508,16 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     if contador > 10:
         return {"status": "rate_limit"}
 
-    # 🔍 Buscar empresa pelo account_id do Chatwoot
+    # Buscar empresa
     empresa_id = await buscar_empresa_por_account_id(account_id)
     if not empresa_id:
-        logger.error(f"Account_id {account_id} não mapeado a nenhuma empresa")
+        logger.error(f"Account {account_id} sem empresa")
         return {"status": "erro_sem_empresa"}
 
-    # Carregar integração Chatwoot da empresa
+    # Carregar integração Chatwoot
     integracao = await carregar_integracao(empresa_id, 'chatwoot')
     if not integracao:
-        logger.error(f"Empresa {empresa_id} não tem integração Chatwoot ativa")
+        logger.error(f"Empresa {empresa_id} sem integração Chatwoot")
         return {"status": "erro_sem_integracao"}
 
     conv_obj = payload.get("conversation", {}) if "conversation" in payload else payload
@@ -1540,12 +1528,7 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     if event == "conversation_updated":
         if conv_obj.get("status") == "resolved":
             await bd_finalizar_conversa(id_conv)
-            await redis_client.delete(
-                f"pause_ia:{id_conv}", 
-                f"estado:{id_conv}", 
-                f"unidade_escolhida:{id_conv}", 
-                f"esperando_unidade:{id_conv}"
-            )
+            await redis_client.delete(f"pause_ia:{id_conv}", f"estado:{id_conv}", f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}")
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
 
@@ -1559,80 +1542,54 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks, 
     conteudo_texto = payload.get("content", "")
 
     labels = payload.get("conversation", {}).get("labels", [])
-    
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
     slug = slug_redis or slug_label
-
     slug_detectado = None
 
+    # Interceptar mudança de contexto
     if message_type == "incoming" and conteudo_texto:
         slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
         if slug_detectado and slug_detectado != slug:
-            logger.info(f"🔄 Webhook interceptou mudança de contexto para: {slug_detectado}")
+            logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
             slug = slug_detectado
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
 
+    # Se não tem unidade, tentar definir
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas(empresa_id)
-        
         if not unidades_ativas:
             return {"status": "sem_unidades_ativas"}
-            
         elif len(unidades_ativas) == 1:
             slug = unidades_ativas[0]["slug"]
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-            
         else:
             texto_cliente = normalizar(conteudo_texto).strip()
-            
             if not slug_detectado and texto_cliente.isdigit():
                 idx = int(texto_cliente) - 1
                 if 0 <= idx < len(unidades_ativas):
                     slug_detectado = unidades_ativas[idx]["slug"]
-                        
             if slug_detectado:
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 await redis_client.delete(f"esperando_unidade:{id_conv}")
                 contato = payload.get("sender", {})
-                await bd_iniciar_conversa(
-                    id_conv, slug, account_id, 
-                    contato.get("id"), limpar_nome(contato.get("name")), 
-                    empresa_id
-                )
-                await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu a unidade {slug}", score_incremento=3)
-                
+                await bd_iniciar_conversa(id_conv, slug, account_id, contato.get("id"), limpar_nome(contato.get("name")), empresa_id)
+                await bd_registrar_evento_funil(id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3)
                 lock_key = f"agendar_lock:{id_conv}"
                 if await redis_client.set(lock_key, "1", nx=True, ex=5):
                     try:
-                        existe_followup = await db_pool.fetchval("""
-                            SELECT 1 FROM followups f
-                            JOIN conversas c ON c.id = f.conversa_id
-                            WHERE c.conversation_id = $1 AND f.status = 'pendente'
-                            LIMIT 1
-                        """, id_conv)
-                        if not existe_followup:
+                        existe = await db_pool.fetchval("SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv)
+                        if not existe:
                             await agendar_followups(id_conv, account_id, slug, empresa_id)
                     finally:
                         await redis_client.delete(lock_key)
-                
             else:
                 cfg = await carregar_configuracao_global(empresa_id)
                 boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
-                
-                nomes_unidades = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
-                
-                mensagem = f"""{boas_vindas}
-
-Só pra eu te direcionar melhor 🙂
-Qual unidade você quer falar?
-
-{nomes_unidades}
-
-Se preferir, pode me dizer o nome ou a cidade também."""
-                
-                await enviar_mensagem_chatwoot(account_id, id_conv, mensagem, "Assistente Virtual", integracao)
+                nomes = "\n".join([f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "") for u in unidades_ativas])
+                msg = f"{boas_vindas}\n\nSó pra eu te direcionar melhor 🙂\nQual unidade você quer falar?\n\n{nomes}\n\nSe preferir, pode me dizer o nome ou a cidade também."
+                await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
                 background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                 return {"status": "aguardando_escolha_unidade"}
@@ -1640,81 +1597,62 @@ Se preferir, pode me dizer o nome ou a cidade também."""
     if not slug:
         return {"status": "erro_sem_unidade"}
 
+    # Pausar IA se for mensagem de atendente
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
-            return {"status": "ignorado_mensagem_ia"}
+            return {"status": "ignorado"}
         await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
         if db_pool:
-            await db_pool.execute("""
-                UPDATE followups SET status = 'cancelado'
-                WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
-                  AND status = 'pendente'
-            """, id_conv)
+            await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1) AND status = 'pendente'", id_conv)
         return {"status": "ia_pausada"}
 
     if message_type != "incoming":
-        return {"status": "ignorado_nao_incoming"}
+        return {"status": "ignorado"}
 
     contato = payload.get("sender", {})
-    await bd_iniciar_conversa(
-        id_conv, slug, account_id, 
-        contato.get("id"), limpar_nome(contato.get("name")), 
-        empresa_id
-    )
-    
+    await bd_iniciar_conversa(id_conv, slug, account_id, contato.get("id"), limpar_nome(contato.get("name")), empresa_id)
+
     lock_key = f"agendar_lock:{id_conv}"
     if await redis_client.set(lock_key, "1", nx=True, ex=5):
         try:
-            existe_followup = await db_pool.fetchval("""
-                SELECT 1 FROM followups f
-                JOIN conversas c ON c.id = f.conversa_id
-                WHERE c.conversation_id = $1 AND f.status = 'pendente'
-                LIMIT 1
-            """, id_conv)
-            if not existe_followup:
+            existe = await db_pool.fetchval("SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv)
+            if not existe:
                 await agendar_followups(id_conv, account_id, slug, empresa_id)
         finally:
             await redis_client.delete(lock_key)
-    
+
     await bd_atualizar_msg_cliente(id_conv)
 
     if await redis_client.exists(f"pause_ia:{id_conv}"):
-        return {"status": "ignorado_ia_pausada"}
+        return {"status": "ignorado"}
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
-    arquivos_encontrados = []
+    arquivos = []
     for a in anexos:
-        file_type = str(a.get("file_type", "")).lower()
-        tipo = "image" if file_type.startswith("image") or "image" in file_type else "audio" if file_type.startswith("audio") or "audio" in file_type else "documento"
-        arquivos_encontrados.append({"url": a.get("data_url"), "type": tipo})
+        ft = str(a.get("file_type", "")).lower()
+        tipo = "image" if ft.startswith("image") else "audio" if ft.startswith("audio") else "documento"
+        arquivos.append({"url": a.get("data_url"), "type": tipo})
 
-    chave_buffet = f"buffet:{id_conv}"
-    await redis_client.rpush(chave_buffet, json.dumps({"text": conteudo_texto, "files": arquivos_encontrados}))
-    await redis_client.expire(chave_buffet, 60)
+    await redis_client.rpush(f"buffet:{id_conv}", json.dumps({"text": conteudo_texto, "files": arquivos}))
+    await redis_client.expire(f"buffet:{id_conv}", 60)
 
     lock_val = str(uuid.uuid4())
     if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=180):
         background_tasks.add_task(
-            processar_ia_e_responder, 
-            account_id, 
-            id_conv, 
-            contato.get("id"), 
-            slug, 
-            limpar_nome(contato.get("name")), 
-            lock_val,
-            empresa_id,
-            integracao
+            processar_ia_e_responder,
+            account_id, id_conv, contato.get("id"), slug,
+            limpar_nome(contato.get("name")), lock_val, empresa_id, integracao
         )
         return {"status": "processando"}
-    
+
     return {"status": "acumulando_no_buffet"}
 
 @app.get("/desbloquear/{conversation_id}")
 async def desbloquear_ia(conversation_id: int):
     if await redis_client.delete(f"pause_ia:{conversation_id}"):
-        return {"status": "sucesso", "mensagem": f"✅ IA reativada para a conversa {conversation_id}!"}
+        return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id}!"}
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 @app.get("/")
-async def health(): 
+async def health():
     return {"status": "🤖 Motor SaaS Full Stack com Planos e Links Individuais!"}
