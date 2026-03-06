@@ -28,6 +28,10 @@ from rapidfuzz import fuzz
 # --- CONFIGURAÇÃO DE LOG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("motor-saas-ia")
+# Suprime logs verbosos de bibliotecas externas
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 load_dotenv()
 
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
@@ -607,25 +611,11 @@ async def sync_planos_manual(empresa_id: int):
 
 async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0):
     """
-    Ativa o indicador 'digitando...' no Chatwoot durante o tempo especificado.
-    Usa o endpoint de typing status da API do Chatwoot.
+    Simula tempo de digitação humana com um simples sleep.
+    O endpoint REST de typing status do Chatwoot requer WebSocket (ActionCable),
+    não funciona via API token — usamos apenas o delay para naturalidade.
     """
-    url_base = integracao.get('url')
-    token = integracao.get('token')
-    if not url_base or not token:
-        return
-
-    url_typing = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/typing_status"
-    headers = {"api_access_token": token}
-
-    try:
-        # Liga o "digitando..."
-        await http_client.post(url_typing, json={"typing_status": "on"}, headers=headers)
-        await asyncio.sleep(max(0.5, min(segundos, 6.0)))  # entre 0.5s e 6s
-        # Desliga o "digitando..."
-        await http_client.post(url_typing, json={"typing_status": "off"}, headers=headers)
-    except Exception as e:
-        logger.debug(f"Typing indicator indisponível: {e}")  # Não crítico
+    await asyncio.sleep(max(0.5, min(segundos, 6.0)))
 
 
 async def enviar_mensagem_chatwoot(
@@ -771,9 +761,10 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     if not integracao:
         return
 
+    # Lembrete amigável — pergunta de novo sem listar todas as unidades
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
-        "Só pra eu não perder seu contato, qual unidade fica melhor para você? 🙂",
+        "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
         "Assistente Virtual", integracao
     )
 
@@ -783,12 +774,16 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     if await redis_client.exists(f"unidade_escolhida:{conversation_id}"):
         return
 
+    # Sem resposta após 8 min — encerra conversa
     await redis_client.delete(f"esperando_unidade:{conversation_id}")
     url_c = f"{integracao['url']}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
-    await http_client.put(
-        url_c, json={"status": "resolved"},
-        headers={"api_access_token": integracao['token']}
-    )
+    try:
+        await http_client.put(
+            url_c, json={"status": "resolved"},
+            headers={"api_access_token": integracao['token']}
+        )
+    except Exception as e:
+        logger.warning(f"Erro ao encerrar conversa {conversation_id}: {e}")
 
 
 # --- FUNÇÕES DE BUSCA DINÂMICA ---
@@ -886,7 +881,8 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
         if any(p and len(p) > 3 and p in texto_norm for p in palavras_chave):
             return u['slug']
 
-    # 3. Fuzzy matching conservador (threshold 85 para evitar matches aleatórios)
+    # 3. Fuzzy matching conservador
+    # Threshold 90 para ambientes com muitas unidades (evita falsos positivos)
     melhor_slug = None
     maior_score = 0
     for u in unidades:
@@ -898,7 +894,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
             maior_score = score
             melhor_slug = u['slug']
 
-    if maior_score >= 85:
+    if maior_score >= 90:
         return melhor_slug
 
     return None
@@ -1931,14 +1927,20 @@ async def chatwoot_webhook(
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
     slug = slug_redis or slug_label
     slug_detectado = None
+    esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
 
-    # Detecta mudança de contexto de unidade na mensagem
-    if message_type == "incoming" and conteudo_texto:
+    # Detecta unidade na mensagem APENAS em dois cenários:
+    # 1) Já existe um slug definido (cliente quer trocar de unidade)
+    # 2) Cliente está no fluxo de escolha de unidade (esperando_unidade=1)
+    # NUNCA roda na primeira mensagem sem contexto — evita falsos positivos com 30 unidades
+    if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
         slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
         if slug_detectado and slug_detectado != slug:
             logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
             slug = slug_detectado
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+            if esperando_unidade:
+                await redis_client.delete(f"esperando_unidade:{id_conv}")
 
     # Sem unidade ainda — tenta definir
     if not slug and message_type == "incoming":
@@ -1952,14 +1954,17 @@ async def chatwoot_webhook(
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
 
         else:
-            # Múltiplas unidades — tenta identificar pelo texto ou número digitado
+            # Múltiplas unidades — fluxo inteligente de identificação
             texto_cliente = normalizar(conteudo_texto).strip()
+
+            # Tenta por número digitado (ex: "1", "2")
             if not slug_detectado and texto_cliente.isdigit():
                 idx = int(texto_cliente) - 1
                 if 0 <= idx < len(unidades_ativas):
                     slug_detectado = unidades_ativas[idx]["slug"]
 
             if slug_detectado:
+                # Unidade identificada — confirma e prossegue
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 await redis_client.delete(f"esperando_unidade:{id_conv}")
@@ -1983,19 +1988,28 @@ async def chatwoot_webhook(
                     finally:
                         await redis_client.delete(lock_key)
             else:
-                # Pede ao cliente que escolha a unidade
+                # Unidade não identificada — pergunta cidade/bairro de forma inteligente
+                # NÃO lista todas as 30 unidades (péssimo UX) — filtra por cidade
                 cfg = await carregar_configuracao_global(empresa_id)
-                boas_vindas = cfg.get("mensagem_boas_vindas") or "Olá! 😊 Seja bem-vindo."
-                nomes = "\n".join([
-                    f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "")
-                    for u in unidades_ativas
-                ])
+                nome_empresa = cfg.get('nome_empresa') or 'nossa academia'
+                boas_vindas = cfg.get("mensagem_boas_vindas") or f"Olá! 😊 Seja bem-vindo à {nome_empresa}!"
+
+                # Monta dica de cidades únicas (até 8 para não poluir)
+                cidades_unicas = sorted(set(
+                    u['cidade'] for u in unidades_ativas if u.get('cidade')
+                ))
+                if len(cidades_unicas) <= 8:
+                    hint = "\n\n📍 Estamos em: " + " • ".join(cidades_unicas)
+                elif len(cidades_unicas) <= 20:
+                    hint = f"\n\n📍 Presentes em {len(cidades_unicas)} cidades"
+                else:
+                    hint = f"\n\n📍 {len(unidades_ativas)} unidades disponíveis"
+
                 msg = (
                     f"{boas_vindas}\n\n"
-                    "Só pra eu te direcionar melhor 🙂\n"
-                    "Qual unidade você quer falar?\n\n"
-                    f"{nomes}\n\n"
-                    "Se preferir, pode me dizer o nome ou a cidade também."
+                    "Para te direcionar ao atendimento certo 🎯\n\n"
+                    "Em qual *cidade* ou *bairro* você está ou prefere treinar?"
+                    f"{hint}"
                 )
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
