@@ -8,3 +8,5 @@ redis
 asyncpg
 tenacity
 rapidfuzz
+prometheus-client
+loguru
