@@ -17,7 +17,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException
+from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import redis.asyncio as redis
@@ -25,13 +25,51 @@ import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt
 from rapidfuzz import fuzz
 
-# --- CONFIGURAÇÃO DE LOG ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("motor-saas-ia")
-# Suprime logs verbosos de bibliotecas externas
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
+# --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
+try:
+    from loguru import logger as _loguru_logger
+    import sys as _sys
+    _loguru_logger.remove()
+    _loguru_logger.add(
+        _sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
+        level="INFO",
+        colorize=True
+    )
+    logger = _loguru_logger
+    # Suprime logs de bibliotecas externas via logging padrão
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+except ImportError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s"
+    )
+    logger = logging.getLogger("motor-saas-ia")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
+# --- PROMETHEUS METRICS (opcional — instale prometheus-client para ativar) ---
+try:
+    from prometheus_client import (
+        Counter, Histogram, Gauge,
+        generate_latest, CONTENT_TYPE_LATEST
+    )
+    _PROMETHEUS_OK = True
+
+    METRIC_WEBHOOKS_TOTAL  = Counter("saas_webhooks_total",  "Total de webhooks recebidos", ["event"])
+    METRIC_IA_LATENCY      = Histogram("saas_ia_latency_seconds", "Latência do LLM em segundos",
+                                        buckets=[0.5, 1, 2, 5, 10, 30])
+    METRIC_FAST_PATH_TOTAL = Counter("saas_fast_path_total", "Respostas via fast-path", ["tipo"])
+    METRIC_ERROS_TOTAL     = Counter("saas_erros_total",     "Erros críticos por tipo", ["tipo"])
+    METRIC_CONVERSAS_ATIVAS = Gauge("saas_conversas_ativas", "Conversas ativas no Redis")
+    METRIC_PLANOS_ENVIADOS  = Counter("saas_planos_enviados_total", "Planos enviados ao cliente")
+    METRIC_ALUNO_DETECTADO  = Counter("saas_tipo_cliente_total", "Tipo de cliente detectado", ["tipo"])
+except ImportError:
+    _PROMETHEUS_OK = False
+
 load_dotenv()
 
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
@@ -65,6 +103,40 @@ def eh_saudacao(texto: str) -> bool:
     if len(palavras) <= 5:
         return any(s in norm for s in SAUDACOES)
     return False
+
+
+# 🏋️ PALAVRAS-CHAVE DE TIPO DE CLIENTE — detecta aluno atual ou usuário de convênio
+ALUNO_KEYWORDS = [
+    "sou aluno", "ja sou aluno", "já sou aluno", "sou cliente", "sou membro",
+    "meu contrato", "minha matricula", "minha matrícula", "meu plano atual",
+    "cancelar meu", "congelar minha", "pausar minha", "segunda via",
+    "boleto atrasado", "fatura", "renovar meu", "transferir minha",
+    "mudei de unidade", "troca de unidade", "problema com",
+    "atendimento ao cliente", "suporte", "reclamacao", "reclamação",
+]
+
+GYMPASS_KEYWORDS = [
+    "gympass", "totalpass", "wellhub", "sesi", "sesc",
+    "convenio", "convênio", "beneficio corporativo", "benefício corporativo",
+    "pelo app", "pelo aplicativo", "app parceiro", "parceria empresa",
+    "plano empresarial", "beneficio da empresa", "benefício da empresa",
+]
+
+
+def detectar_tipo_cliente(texto: str) -> Optional[str]:
+    """
+    Detecta se o cliente já é aluno (suporte/cancelamento/dúvidas)
+    ou usa convênio/gympass (roteamento diferente).
+    Retorna: 'aluno' | 'gympass' | None
+    """
+    if not texto:
+        return None
+    norm = normalizar(texto)
+    if any(k in norm for k in [normalizar(k) for k in GYMPASS_KEYWORDS]):
+        return "gympass"
+    if any(k in norm for k in [normalizar(k) for k in ALUNO_KEYWORDS]):
+        return "aluno"
+    return None
 
 # 🎯 MAPEAMENTO DE INTENÇÕES PARA CACHE SEMÂNTICO
 INTENCOES = {
@@ -141,14 +213,21 @@ async def startup_event():
         redis_client = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
         await redis_client.ping()
         logger.info("🚀 Conexão com Redis estabelecida com sucesso!")
-    except Exception as e:
+    except redis.RedisError as e:
         logger.error(f"❌ Erro ao conectar no Redis: {e}")
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Erro inesperado ao conectar no Redis: {e}")
         raise e
 
     if DATABASE_URL:
         try:
             db_pool = await asyncpg.create_pool(DATABASE_URL)
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
+        except asyncpg.PostgresConnectionStatusError as e:
+            logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
+        except asyncpg.CannotConnectNowError as e:
+            logger.error(f"❌ PostgreSQL não está aceitando conexões: {e}")
         except Exception as e:
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
     else:
@@ -349,8 +428,13 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
             await redis_client.setex(cache_key, 3600, str(empresa_id))
             return empresa_id
         return None
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PostgreSQL ao buscar empresa por account_id {account_id}: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="db_empresa_lookup").inc()
+        return None
     except Exception as e:
-        logger.error(f"Erro ao buscar empresa por account_id {account_id}: {e}")
+        logger.error(f"Erro inesperado ao buscar empresa por account_id {account_id}: {e}")
         return None
 
 
@@ -381,8 +465,14 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
             await redis_client.setex(cache_key, 300, json.dumps(config))
             return config
         return None
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PostgreSQL ao carregar integração {tipo} da empresa {empresa_id}: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON inválido na integração {tipo} da empresa {empresa_id}: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Erro ao carregar integração {tipo} da empresa {empresa_id}: {e}")
+        logger.error(f"Erro inesperado ao carregar integração {tipo} da empresa {empresa_id}: {e}")
         return None
 
 
@@ -651,8 +741,25 @@ async def enviar_mensagem_chatwoot(
         resp.raise_for_status()
         logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
         return resp
+    except httpx.TimeoutException as e:
+        logger.error(f"⏱️ Timeout ao enviar mensagem para conversa {conversation_id}: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_timeout").inc()
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP {e.response.status_code} ao enviar para conversa {conversation_id}: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_http_error").inc()
+        return None
+    except httpx.ConnectError as e:
+        logger.error(f"🔌 Conexão falhou ao enviar para conversa {conversation_id}: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_connect_error").inc()
+        return None
     except Exception as e:
-        logger.error(f"Erro ao enviar mensagem para Chatwoot: {e}")
+        logger.error(f"Erro inesperado ao enviar mensagem para Chatwoot: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_unknown").inc()
         return None
 
 
@@ -832,46 +939,55 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         data = [dict(r) for r in rows]
         await redis_client.setex(cache_key, 300, json.dumps(data, default=str))
         return data
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PostgreSQL ao listar unidades para empresa {empresa_id}: {e}")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="db_unidades_lista").inc()
+        return []
     except Exception as e:
-        logger.error(f"Erro ao listar unidades: {e}")
+        logger.error(f"Erro inesperado ao listar unidades: {e}")
         return []
 
 
 async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
-
-    IMPORTANTE: só retorna resultado se houver correspondência forte e clara.
-    Threshold do fuzzy aumentado para 85 para evitar falsos positivos.
+    Estratégia em 4 camadas:
+      1. Função SQL customizada (se existir)
+      2. Correspondência exata/parcial em nome, cidade, bairro e palavras-chave
+      3. Correspondência por partes (tokens) — suporta nomes compostos e abreviações
+      4. Fuzzy matching conservador (threshold 90)
     """
     if not db_pool or not texto:
         return None
 
-    # Ignora saudações genéricas (oi, boa tarde, etc.) — mas NÃO ignora nomes de cidades/bairros
-    # com uma só palavra como "Itaquera", "Morumbi", "Paulista", etc.
+    # Ignora saudações genéricas mas NÃO ignora nomes de bairros de 1 palavra (Itaquera, Paulista...)
     if eh_saudacao(texto):
         return None
 
-    # 1. Tenta função SQL customizada (mais precisa)
+    # 1. Função SQL customizada (mais precisa, se disponível no banco)
     try:
         query = "SELECT unidade_slug FROM buscar_unidades_por_texto($1, $2) LIMIT 1"
         row = await db_pool.fetchrow(query, empresa_id, texto)
         if row:
             return row['unidade_slug']
-    except Exception as e:
-        logger.error(f"Erro na busca SQL de unidade: {e}")
+    except asyncpg.UndefinedFunctionError:
+        pass  # Função não existe no banco — usa fallback Python
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro SQL ao buscar unidade: {e}")
 
-    # 2. Fallback: busca por palavras-chave e nome
+    # 2. Busca por palavras-chave, nome, cidade e bairro
     unidades = await listar_unidades_ativas(empresa_id)
     texto_norm = normalizar(texto)
+    tokens_texto = set(texto_norm.split())  # tokens para matching por palavra
 
     for u in unidades:
-        nome_norm = normalizar(u.get('nome', ''))
-        cidade_norm = normalizar(u.get('cidade', ''))
-        bairro_norm = normalizar(u.get('bairro', ''))
-        palavras_chave = [normalizar(p) for p in (u.get('palavras_chave') or [])]
+        nome_norm   = normalizar(u.get('nome', ''))
+        cidade_norm = normalizar(u.get('cidade', '') or '')
+        bairro_norm = normalizar(u.get('bairro', '') or '')
+        palavras_chave = [normalizar(p) for p in (u.get('palavras_chave') or []) if p]
 
-        # Correspondência exata de nome ou cidade no texto
+        # Correspondência completa no texto
         if nome_norm and nome_norm in texto_norm:
             return u['slug']
         if cidade_norm and len(cidade_norm) > 3 and cidade_norm in texto_norm:
@@ -881,18 +997,38 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
         if any(p and len(p) > 3 and p in texto_norm for p in palavras_chave):
             return u['slug']
 
-    # 3. Fuzzy matching conservador
-    # Threshold 90 para ambientes com muitas unidades (evita falsos positivos)
+        # Matching por tokens — suporta "morumbi" encontrar "Smart Fit – Morumbi"
+        # ou "sp" / "sao paulo" encontrar qualquer cidade de SP
+        tokens_nome    = set(nome_norm.split())
+        tokens_cidade  = set(cidade_norm.split()) if cidade_norm else set()
+        tokens_bairro  = set(bairro_norm.split()) if bairro_norm else set()
+
+        # Interseção de tokens significativos (ignora palavras curtas < 4 chars)
+        _sig = lambda ts: {t for t in ts if len(t) >= 4}
+        if _sig(tokens_texto) & _sig(tokens_cidade):
+            return u['slug']
+        if _sig(tokens_texto) & _sig(tokens_bairro):
+            return u['slug']
+
+        # Verifica se alguma palavra-chave é um token presente no texto
+        for p in palavras_chave:
+            tokens_pchave = set(p.split())
+            if _sig(tokens_texto) & _sig(tokens_pchave):
+                return u['slug']
+
+    # 3. Fuzzy matching conservador — threshold 90 para evitar falsos positivos
     melhor_slug = None
     maior_score = 0
     for u in unidades:
-        nome_norm = normalizar(u.get('nome', ''))
-        if not nome_norm:
-            continue
-        score = fuzz.partial_ratio(nome_norm, texto_norm)
-        if score > maior_score:
-            maior_score = score
-            melhor_slug = u['slug']
+        nome_norm   = normalizar(u.get('nome', ''))
+        cidade_norm = normalizar(u.get('cidade', '') or '')
+        bairro_norm = normalizar(u.get('bairro', '') or '')
+
+        for campo in filter(None, [nome_norm, cidade_norm, bairro_norm]):
+            score = fuzz.partial_ratio(campo, texto_norm)
+            if score > maior_score:
+                maior_score = score
+                melhor_slug = u['slug']
 
     if maior_score >= 90:
         return melhor_slug
@@ -1340,8 +1476,20 @@ async def transcrever_audio(url: str):
                 model="whisper-1", file=audio_file
             )
             return transcription.text
+        except httpx.TimeoutException as e:
+            logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
+            if _PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_timeout").inc()
+            return "[Erro ao baixar áudio: timeout]"
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
+            if _PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_http").inc()
+            return "[Erro ao baixar áudio]"
         except Exception as e:
             logger.error(f"Erro Whisper: {e}")
+            if _PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
             return "[Erro ao transcrever áudio]"
 
 
@@ -1433,7 +1581,7 @@ async def processar_ia_e_responder(
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
-        texto_norm_fast = normalizar(primeira_mensagem)
+        texto_norm_fast = normalizar(primeira_mensagem or "")
         fast_reply = None
 
         # Campos da unidade
@@ -1462,11 +1610,44 @@ async def processar_ia_e_responder(
 
         if not imagens_urls:
 
+            # Fast-path: detecta tipo de cliente (aluno/gympass) para roteamento correto
+            # Roda em todas as mensagens acumuladas para maior cobertura
+            _tipo_cliente = None
+            for _t in textos:
+                _tipo_cliente = detectar_tipo_cliente(_t)
+                if _tipo_cliente:
+                    break
+            if not _tipo_cliente:
+                _tipo_cliente = detectar_tipo_cliente(texto_combinado_norm)
+
+            if _tipo_cliente == "gympass":
+                if _PROMETHEUS_OK:
+                    METRIC_ALUNO_DETECTADO.labels(tipo="gympass").inc()
+                fast_reply = (
+                    "💚 Que ótimo! Aceitamos *Gympass / TotalPass / Wellhub* e outros convênios.\n\n"
+                    "Para garantir o melhor atendimento, me conta:\n\n"
+                    "• Qual é o seu convênio?\n"
+                    "• Em qual cidade ou bairro você prefere treinar?\n\n"
+                    "Assim te direciono para a unidade certa 🏋️"
+                )
+                logger.info("⚡ Fast-path: cliente gympass/convênio detectado")
+            elif _tipo_cliente == "aluno":
+                if _PROMETHEUS_OK:
+                    METRIC_ALUNO_DETECTADO.labels(tipo="aluno").inc()
+                tel_suporte = (tel_banco or "nosso WhatsApp") if unidade else "nosso suporte"
+                fast_reply = (
+                    f"Olá! Vi que você já é aluno(a) 😊\n\n"
+                    "Para questões relacionadas ao seu contrato, cancelamento, congelamento "
+                    "ou financeiro, o melhor canal é falar diretamente com a nossa equipe:\n\n"
+                    f"📞 {tel_suporte}\n\n"
+                    "Posso ajudar com alguma outra dúvida? 💪"
+                )
+                logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
+
             # Fast-path: saudação genérica
             # Ativa quando TODAS as mensagens acumuladas são saudações
             # Ex: "Boa noite" + "Tudo bem?" enviados em sequência rápida
-            _todas_saudacoes = bool(textos) and all(eh_saudacao(t) for t in textos)
-            if _todas_saudacoes:
+            elif all(eh_saudacao(t) for t in textos) and textos:
                 _saudacao_base = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia} 😊"
                 _nome_unidade_atual = unidade.get('nome') or ''
                 if _nome_unidade_atual and _nome_unidade_atual in _saudacao_base:
@@ -1509,14 +1690,24 @@ async def processar_ia_e_responder(
                     fast_reply = "No momento não há unidades cadastradas. 😕"
 
             # Fast-path: planos — detecta intenção em QUALQUER das mensagens acumuladas
-            # (resolve o caso de múltiplas mensagens: "Itaquera / Queria saber os planos / É benéfico")
-            elif unidade and re.search(
-                r"(preco|valor|quanto custa|mensalidade|planos?|promocao|beneficio|benefícios|"
-                r"quais sao os planos|me fala os planos|tem planos|ver planos)",
+            # Regex amplo para cobrir: "quais são os planos", "me fala o valor", "tem promoção",
+            # "quero me matricular", "como faço para assinar", etc.
+            elif re.search(
+                r"(preco|valor(es)?|quanto (custa|cobra|fica)"
+                r"|mensalidade|planos?|promocao|promoç"
+                r"|beneficio|benefícios|benefíci"
+                r"|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?"
+                r"|tem planos?|ver planos?|quero (assinar|contratar|me matricular)"
+                r"|como (faço|faz|funciona).{0,10}(matric|assinar|contratar)"
+                r"|quanto (é|e|custa|vale) o plano"
+                r"|opcoes.{0,10}planos?|opções.{0,10}planos?)",
                 texto_combinado_norm
             ):
                 if planos_ativos:
                     fast_reply = formatar_planos_bonito(planos_ativos)
+                    if _PROMETHEUS_OK:
+                        METRIC_PLANOS_ENVIADOS.inc()
+                        METRIC_FAST_PATH_TOTAL.labels(tipo="planos").inc()
                     await bd_registrar_evento_funil(
                         conversation_id, "link_matricula_enviado",
                         "Link enviado via fast-path", score_incremento=2
@@ -1728,6 +1919,8 @@ Responda APENAS em JSON válido com os campos:
                     resposta_bruta = response.choices[0].message.content
                 except Exception as e:
                     logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
+                    if _PROMETHEUS_OK:
+                        METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
                     modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                     response = await cliente_ia.chat.completions.create(
                         model=modelo_fallback,
@@ -1739,7 +1932,10 @@ Responda APENAS em JSON válido com os campos:
                     )
                     resposta_bruta = response.choices[0].message.content
 
-            logger.info(f"⏱️ LLM Latency: {time.time() - start_time:.2f}s")
+            _latencia = time.time() - start_time
+            logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
+            if _PROMETHEUS_OK:
+                METRIC_IA_LATENCY.observe(_latencia)
 
             resposta_bruta = corrigir_json(resposta_bruta)
 
@@ -1750,6 +1946,17 @@ Responda APENAS em JSON válido com os campos:
 
                 # Garante que não há markdown na resposta da IA
                 resposta_texto = limpar_markdown(resposta_texto)
+
+                # 🔧 Pós-processamento: se a IA gerou uma resposta com múltiplos planos
+                # (detectado por 2+ ocorrências de "R$" ou links de matrícula), substitui pela
+                # versão bem formatada — evita mensagens separadas por \n\n (fragmentação)
+                _qtd_precos = resposta_texto.count("R$")
+                _qtd_links  = resposta_texto.count("http")
+                if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
+                    logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando")
+                    resposta_texto = formatar_planos_bonito(planos_ativos)
+                    if _PROMETHEUS_OK:
+                        METRIC_PLANOS_ENVIADOS.inc()
 
                 if not imagens_urls:
                     await redis_client.setex(
@@ -1900,6 +2107,9 @@ async def chatwoot_webhook(
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
+
+    if _PROMETHEUS_OK:
+        METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
 
     # Rate limiting por conversa
     rate_key = f"rate:{id_conv}"
@@ -2126,8 +2336,54 @@ async def desbloquear_ia(conversation_id: int):
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 
+@app.get("/metrics")
+async def metrics_endpoint():
+    """
+    Expõe métricas no formato Prometheus para scraping.
+    Requer: pip install prometheus-client
+    Integra com Grafana, Datadog, etc.
+    """
+    if not _PROMETHEUS_OK:
+        return {
+            "erro": "prometheus-client não instalado",
+            "instrucao": "Execute: pip install prometheus-client"
+        }
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+@app.get("/status")
+async def status_endpoint():
+    """Retorna status detalhado dos serviços."""
+    redis_ok = False
+    db_ok = False
+    try:
+        await redis_client.ping()
+        redis_ok = True
+    except Exception:
+        pass
+    try:
+        if db_pool:
+            await db_pool.fetchval("SELECT 1")
+            db_ok = True
+    except Exception:
+        pass
+    return {
+        "status": "online",
+        "redis": "✅ conectado" if redis_ok else "❌ offline",
+        "postgres": "✅ conectado" if db_ok else "❌ offline",
+        "prometheus": "✅ ativo" if _PROMETHEUS_OK else "⚠️ não instalado",
+        "versao": "2.5.0",
+    }
+
+
 @app.get("/")
 async def health():
     return {
-        "status": "🤖 Motor SaaS IA — Planos bonitos, links planos, unidades corretas, formatação perfeita!"
+        "status": (
+            "🤖 Motor SaaS IA v2.5 — Planos bonitos, aluno/gympass detectado, "
+            "busca cidade/bairro aprimorada, métricas Prometheus, loguru!"
+        )
     }
