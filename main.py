@@ -77,6 +77,153 @@ CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 
 app = FastAPI()
 
+# ── Middleware de Rate Limit Global ──────────────────────────────────────────
+# Bloqueia IPs e empresas que abusem do endpoint /webhook
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """
+    Rate limiting em duas camadas:
+      1. Por IP  — máx 60 req/minuto   (anti-spam / DDoS básico)
+      2. Por empresa — máx 300 req/minuto (anti-loop de webhook)
+    Apenas para o endpoint /webhook. Outros endpoints passam livre.
+    """
+    if request.url.path != "/webhook" or redis_client is None:
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+
+    # 1. Rate limit por IP
+    ip_key     = f"rl:ip:{client_ip}"
+    ip_count   = await redis_client.incr(ip_key)
+    if ip_count == 1:
+        await redis_client.expire(ip_key, 60)
+    if ip_count > 60:
+        logger.warning(f"🚫 Rate limit por IP: {client_ip} ({ip_count} req/min)")
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="rate_limit_ip").inc()
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "rate_limit_ip"}, status_code=429)
+
+    # 2. Rate limit por empresa (lido do payload — extrai account_id sem ler 2x o body)
+    try:
+        body = await request.body()
+        _payload = json.loads(body)
+        _account_id = _payload.get("account", {}).get("id")
+        if _account_id:
+            emp_key   = f"rl:account:{_account_id}"
+            emp_count = await redis_client.incr(emp_key)
+            if emp_count == 1:
+                await redis_client.expire(emp_key, 60)
+            if emp_count > 300:
+                logger.warning(f"🚫 Rate limit por conta: account_id={_account_id} ({emp_count} req/min)")
+                if _PROMETHEUS_OK:
+                    METRIC_ERROS_TOTAL.labels(tipo="rate_limit_account").inc()
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"status": "rate_limit_account"}, status_code=429)
+        # Recria o request com o body já lido (FastAPI consome o stream uma vez)
+        from starlette.datastructures import Headers
+        from starlette.requests import Request as StarletteRequest
+        scope = request.scope
+        scope["_body"] = body
+    except Exception:
+        pass
+
+    return await call_next(request)
+
+# ============================================================
+# ⚡ CIRCUIT BREAKER — protege contra queda do OpenRouter/LLM
+# Estado salvo no Redis: CLOSED (normal) | OPEN (bloqueado) | HALF_OPEN (testando)
+# ============================================================
+class CircuitBreaker:
+    """
+    Circuit Breaker para chamadas ao LLM.
+    - CLOSED: operação normal
+    - OPEN: muitas falhas → bloqueia por `recovery_timeout` segundos
+    - HALF_OPEN: após recovery, testa 1 chamada para ver se voltou
+
+    Todos os estados persistem no Redis — funciona com múltiplos workers.
+    """
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 60,
+        success_threshold: int = 2,
+    ):
+        self.name             = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout  = recovery_timeout
+        self.success_threshold = success_threshold
+
+    def _keys(self):
+        return (
+            f"cb:{self.name}:state",
+            f"cb:{self.name}:failures",
+            f"cb:{self.name}:successes",
+            f"cb:{self.name}:opened_at",
+        )
+
+    async def get_state(self) -> str:
+        k_state, _, _, k_opened = self._keys()
+        state = await redis_client.get(k_state) or "CLOSED"
+        if state == "OPEN":
+            opened_at = await redis_client.get(k_opened)
+            if opened_at and (time.time() - float(opened_at)) > self.recovery_timeout:
+                await redis_client.set(k_state, "HALF_OPEN")
+                return "HALF_OPEN"
+        return state
+
+    async def record_success(self):
+        k_state, k_fail, k_succ, _ = self._keys()
+        state = await self.get_state()
+        if state == "HALF_OPEN":
+            succs = await redis_client.incr(k_succ)
+            if succs >= self.success_threshold:
+                await redis_client.mset({k_state: "CLOSED", k_fail: 0, k_succ: 0})
+                logger.info(f"✅ CircuitBreaker [{self.name}] → CLOSED (recuperado)")
+        else:
+            await redis_client.set(k_fail, 0)
+
+    async def record_failure(self):
+        k_state, k_fail, k_succ, k_opened = self._keys()
+        state = await self.get_state()
+        if state == "HALF_OPEN":
+            # Voltou a falhar em teste — reabre
+            await redis_client.mset({
+                k_state: "OPEN",
+                k_succ:  0,
+                k_opened: str(time.time()),
+            })
+            logger.warning(f"⚡ CircuitBreaker [{self.name}] → OPEN novamente (falha em HALF_OPEN)")
+        else:
+            fails = await redis_client.incr(k_fail)
+            if not await redis_client.ttl(k_fail):
+                await redis_client.expire(k_fail, 120)
+            if fails >= self.failure_threshold:
+                await redis_client.mset({
+                    k_state:  "OPEN",
+                    k_opened: str(time.time()),
+                    k_succ:   0,
+                })
+                logger.error(
+                    f"🔴 CircuitBreaker [{self.name}] → OPEN "
+                    f"({fails} falhas em 120s)"
+                )
+                if _PROMETHEUS_OK:
+                    METRIC_ERROS_TOTAL.labels(tipo="circuit_breaker_open").inc()
+
+    async def is_allowed(self) -> bool:
+        state = await self.get_state()
+        if state == "CLOSED":
+            return True
+        if state == "HALF_OPEN":
+            return True   # permite 1 chamada de teste
+        # OPEN — verifica se recovery_timeout já passou
+        return False
+
+# Instância global
+cb_llm = CircuitBreaker(name="openrouter", failure_threshold=5, recovery_timeout=60)
+
 # --- CONFIGURAÇÕES E VARIÁVEIS DE AMBIENTE ---
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -86,11 +233,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 EMPRESA_ID_PADRAO = 1
 
-# 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura sem intenção real
+# 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura OU small talk sem intenção real
+# Inclui respostas de follow-up ("tudo sim", "por aí?") para não disparar vendas acidentalmente
 SAUDACOES = {
+    # Abertura
     "oi", "ola", "olá", "hey", "boa", "salve", "eai", "e ai",
     "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom",
-    "como vai", "oi tudo", "ola tudo", "oii", "oiii", "opa"
+    "como vai", "oi tudo", "ola tudo", "oii", "oiii", "opa",
+    # Follow-up de small talk (resposta à saudação da IA)
+    "tudo sim", "tudo certo", "tudo otimo", "tudo ótimo", "tudo ok",
+    "por ai", "por aí", "e por ai", "e por aí", "e voce", "e você", "e vc",
+    "bem obrigado", "bem sim", "tudo tranquilo", "tranquilo", "aqui tudo",
+    "muito bem", "que bom", "que otimo", "que ótimo", "que bom mesmo",
+    "obrigado", "obg", "valeu", "brigado", "grato",
+    "otimo", "ótimo", "perfeito", "maravilha", "show",
+    "ok ok", "beleza", "blz", "sim sim", "claro", "certo",
 }
 
 def eh_saudacao(texto: str) -> bool:
@@ -106,14 +263,18 @@ def eh_saudacao(texto: str) -> bool:
 
 
 def saudacao_por_horario() -> str:
-    """Retorna 'Bom dia', 'Boa tarde' ou 'Boa noite' baseado no horário de São Paulo."""
+    """
+    Retorna 'Bom dia', 'Boa tarde' ou 'Boa noite' baseado no horário de São Paulo.
+    Faixas:  6h–11h59 → Bom dia | 12h–17h59 → Boa tarde | 18h–5h59 → Boa noite
+    Madrugada (0h–5h) também recebe 'Boa noite'.
+    """
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     hora = agora.hour
-    if hora < 12:
+    if 6 <= hora < 12:
         return "Bom dia"
-    elif hora < 18:
+    elif 12 <= hora < 18:
         return "Boa tarde"
-    else:
+    else:  # 18h–23h e 0h–5h (madrugada)
         return "Boa noite"
 
 
@@ -153,6 +314,14 @@ def horario_hoje_formatado(horarios: Any) -> Optional[str]:
         "feriados": [],  # tratado separadamente
     }
 
+    # Se vier como string JSON (ex: asyncpg retorna JSONB como texto), converte para dict
+    if isinstance(horarios, str):
+        try:
+            horarios = json.loads(horarios)
+        except (json.JSONDecodeError, ValueError):
+            # String simples (ex: "06:00-23:00") — retorna diretamente
+            return horarios if len(horarios) < 50 else None
+
     if isinstance(horarios, dict):
         # 1. Tenta chave específica do dia
         possiveis = DIAS_MAP.get(dia_semana_idx, [])
@@ -161,16 +330,12 @@ def horario_hoje_formatado(horarios: Any) -> Optional[str]:
                 if normalizar(key_orig).strip() == normalizar(chave).strip():
                     return str(valor)
 
-        # 2. Tenta chaves agrupadas ("seg a sex", etc.)
+        # 2. Tenta chaves agrupadas ("seg a sex", "dias uteis", etc.)
         for chave_agrupada, dias_range in AGRUPADOS.items():
             if dia_semana_idx in dias_range:
                 for key_orig, valor in horarios.items():
                     if normalizar(chave_agrupada) in normalizar(key_orig):
                         return str(valor)
-
-    elif isinstance(horarios, str):
-        # Se for string simples, retorna como está
-        return horarios
 
     return None
 
@@ -498,6 +663,99 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
 
 
 # 🎯 FUNÇÃO PARA DETECTAR INTENÇÃO
+# ── Cache Semântico por Embedding (RAG Lite) ─────────────────────────────────
+# Permite cachear respostas baseadas em similaridade semântica, não só hash exato.
+# Requer: pip install sentence-transformers  (opcional — fallback para hash md5)
+try:
+    from sentence_transformers import SentenceTransformer as _ST
+    import numpy as _np
+    _embed_model = _ST("all-MiniLM-L6-v2")  # modelo leve ~22MB
+    _EMBED_OK = True
+    logger.info("✅ Sentence Transformers carregado — cache semântico ativo")
+except ImportError:
+    _EMBED_OK = False
+
+
+def _cosine_sim(a: list, b: list) -> float:
+    """Similaridade de cosseno entre dois vetores."""
+    if not _EMBED_OK:
+        return 0.0
+    va = _np.array(a, dtype="float32")
+    vb = _np.array(b, dtype="float32")
+    norm = (_np.linalg.norm(va) * _np.linalg.norm(vb))
+    return float(_np.dot(va, vb) / norm) if norm > 0 else 0.0
+
+
+async def buscar_cache_semantico(
+    texto: str,
+    slug: str,
+    threshold: float = 0.88
+) -> Optional[Dict]:
+    """
+    Busca no Redis por uma resposta cacheada semanticamente similar à pergunta.
+    Funciona em 2 modos:
+      - Com sentence-transformers: usa embedding + cosine similarity (preciso)
+      - Sem: fallback para cache por hash md5 (exato)
+    Retorna dict {"resposta": ..., "estado": ...} ou None.
+    """
+    if not _EMBED_OK:
+        return None  # sem embeddings, usa hash normal
+
+    try:
+        emb_query = _embed_model.encode(texto).tolist()
+        # Busca todas as chaves de embedding para este slug (até 200)
+        pattern = f"semcache:{slug}:*"
+        keys = await redis_client.keys(pattern)
+        if not keys:
+            return None
+
+        melhor_score = 0.0
+        melhor_key   = None
+        for k in keys[:200]:  # limita busca
+            emb_str = await redis_client.hget(k, "embedding")
+            if not emb_str:
+                continue
+            emb_cached = json.loads(emb_str)
+            score = _cosine_sim(emb_query, emb_cached)
+            if score > melhor_score:
+                melhor_score = score
+                melhor_key   = k
+
+        if melhor_score >= threshold and melhor_key:
+            resposta_str = await redis_client.hget(melhor_key, "resposta")
+            if resposta_str:
+                logger.info(f"🧠 Cache semântico HIT (sim={melhor_score:.3f}) para '{texto[:40]}'")
+                return json.loads(resposta_str)
+    except Exception as e:
+        logger.warning(f"Cache semântico erro: {e}")
+    return None
+
+
+async def salvar_cache_semantico(
+    texto: str,
+    slug: str,
+    dados: Dict,
+    ttl: int = 3600
+):
+    """
+    Salva embedding + resposta no Redis para uso futuro no cache semântico.
+    Chave: semcache:{slug}:{md5(texto)}
+    """
+    if not _EMBED_OK:
+        return
+    try:
+        emb = _embed_model.encode(texto).tolist()
+        chave = f"semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
+        await redis_client.hset(chave, mapping={
+            "embedding": json.dumps(emb),
+            "resposta":  json.dumps(dados),
+            "texto":     texto[:200],
+        })
+        await redis_client.expire(chave, ttl)
+    except Exception as e:
+        logger.warning(f"Erro ao salvar cache semântico: {e}")
+
+
 def detectar_intencao(texto: str) -> Optional[str]:
     """Detecta a intenção principal da pergunta do usuário usando palavras-chave e fuzzy matching"""
     if not texto:
@@ -1776,36 +2034,81 @@ async def processar_ia_e_responder(
                 )
                 logger.info(f"⚡ Fast-path: saudação humanizada para {nome_cliente}")
 
-            # Fast-path: listar unidades (regex amplo — cobre abreviações, variações e ordem das palavras)
+            # Fast-path: listar unidades
+            # Regex cobre singular E plural + com ou sem cidade na pergunta
             elif re.search(
-                r"(quais.{0,10}unidades"           # quais as unidades / quais são as unidades
-                r"|quantas.{0,10}unidades"         # quantas unidades
-                r"|tem.{0,15}unidades"             # tem mais unidades / tem outras unidades / vcs tem unidades
-                r"|unidades.{0,10}tem"             # unidades que tem
-                r"|mais.{0,10}unidades"            # mais unidades
-                r"|outras.{0,10}unidades"          # outras unidades
-                r"|lista.{0,10}unidades"           # lista de unidades
+                r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
+                r"|quantas.{0,10}unidades?"        # quantas unidades
+                r"|tem.{0,20}unidades?"            # tem unidade em SP / vcs tem unidades
+                r"|unidades?.{0,10}tem"            # unidades que tem
+                r"|mais.{0,10}unidades?"           # mais unidades
+                r"|outras.{0,10}unidades?"         # outras unidades
+                r"|lista.{0,10}unidades?"          # lista de unidades
                 r"|onde.{0,10}academia"            # onde tem academia
-                r"|saber.{0,10}unidades"           # queria saber as unidades
-                r"|todas.{0,10}unidades"           # todas as unidades
-                r"|unidades.{0,10}existem"         # quais unidades existem
-                r"|unidades.{0,10}disponiveis"     # unidades disponíveis
-                r"|unidades.{0,10}abertas)",       # unidades abertas
+                r"|academia.{0,15}(sp|sao paulo|rio|rj|mg|bh)"  # academia em SP / RJ
+                r"|saber.{0,10}unidades?"          # queria saber as unidades
+                r"|todas.{0,10}unidades?"          # todas as unidades
+                r"|unidades?.{0,10}existem"        # quais unidades existem
+                r"|unidades?.{0,10}disponiveis"    # unidades disponíveis
+                r"|unidades?.{0,10}abertas"        # unidades abertas
+                r"|unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
                 texto_combinado_norm, re.IGNORECASE
             ):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 if todas_ativas:
-                    total = len(todas_ativas)
+                    # Filtra por cidade se o cliente mencionou uma
+                    _cidade_filtro = None
+                    # 1. Verifica se alguma cidade do banco está na pergunta
+                    for _u in todas_ativas:
+                        _cid = normalizar(_u.get('cidade', '') or '')
+                        if _cid and len(_cid) > 3 and _cid in texto_combinado_norm:
+                            _cidade_filtro = _u.get('cidade')
+                            break
+                    # 2. Verifica abreviações de estado
+                    _ESTADO_MAP = {
+                        "sp": "São Paulo", "sao paulo": "São Paulo",
+                        "rj": "Rio de Janeiro", "rio": "Rio de Janeiro",
+                        "mg": "Minas Gerais", "bh": "Belo Horizonte",
+                        "brasilia": "Brasília", "campinas": "Campinas",
+                        "curitiba": "Curitiba",
+                    }
+                    if not _cidade_filtro:
+                        for _abbr, _cidade_nome in _ESTADO_MAP.items():
+                            if _abbr in texto_combinado_norm.split() or _abbr in texto_combinado_norm:
+                                _cid_norm = normalizar(_cidade_nome)
+                                _match = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '').startswith(_cid_norm[:5])]
+                                if _match:
+                                    _cidade_filtro = _match[0].get('cidade')
+                                    break
+
+                    if _cidade_filtro:
+                        _cid_norm = normalizar(_cidade_filtro)
+                        unidades_lista = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '') == _cid_norm]
+                        if not unidades_lista:
+                            unidades_lista = todas_ativas
+                    else:
+                        unidades_lista = todas_ativas
+
+                    total = len(unidades_lista)
                     lista_str = "\n".join([
-                        f"• {u['nome']}" + (f" ({u['cidade']})" if u.get('cidade') else "")
-                        for u in todas_ativas
+                        f"• {u['nome']}" + (f" — {u['cidade']}" if u.get('cidade') and not _cidade_filtro else "")
+                        for u in unidades_lista
                     ])
-                    fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
-                        total=total, lista_str=lista_str
-                    )
+
+                    if _cidade_filtro and total > 0:
+                        fast_reply = (
+                            f"📍 Temos *{total} {'unidade' if total == 1 else 'unidades'}* em {_cidade_filtro}:\n\n"
+                            f"{lista_str}\n\n"
+                            "Qual delas fica mais perto de você? 😊"
+                        )
+                    else:
+                        fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
+                            total=total, lista_str=lista_str
+                        )
                     await bd_registrar_evento_funil(
                         conversation_id, "consulta_unidades",
-                        "Cliente solicitou lista de unidades", score_incremento=1
+                        f"Cliente solicitou unidades{' em ' + _cidade_filtro if _cidade_filtro else ''}",
+                        score_incremento=1
                     )
                 else:
                     fast_reply = "No momento não há unidades cadastradas. 😕"
@@ -1879,16 +2182,26 @@ async def processar_ia_e_responder(
 
         resposta_cacheada = await redis_client.get(chave_cache_ia)
 
+        # Cache semântico (embedding) — consultado apenas se não houver cache exato
+        _cache_sem = None
+        if not resposta_cacheada and not fast_reply and not imagens_urls and not mudou_unidade and primeira_mensagem:
+            _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug)
+
         if fast_reply:
             logger.info("⚡ Fast-Path Ativado! Respondendo sem IA.")
             resposta_texto = fast_reply
             novo_estado = estado_atual
 
         elif resposta_cacheada and not imagens_urls and not mudou_unidade:
-            logger.info("🧠 Cache Hit! Respondendo direto do Redis.")
+            logger.info("🧠 Cache Hash HIT! Respondendo direto do Redis.")
             dados_cache = json.loads(resposta_cacheada)
             resposta_texto = dados_cache["resposta"]
             novo_estado = dados_cache["estado"]
+
+        elif _cache_sem and not imagens_urls and not mudou_unidade:
+            logger.info("🧬 Cache Semântico HIT! Respondendo por similaridade.")
+            resposta_texto = _cache_sem["resposta"]
+            novo_estado = _cache_sem.get("estado", estado_atual)
 
         else:
             # --- FLUXO IA ---
@@ -1931,11 +2244,57 @@ Pagamentos: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('form
 Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios') else 'não informado'}
 """
 
-            tom_voz = pers.get('tom_voz') or 'Profissional, claro e prestativo'
-            estilo = pers.get('estilo_comunicacao') or ''
-            saudacao = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia}, como posso ajudar?"
-            instrucoes_base = pers.get('instrucoes_base') or "Atenda o cliente de forma educada."
-            regras_atendimento = pers.get('regras_atendimento') or "Seja breve e objetivo."
+            # ── Campos conhecidos da personalidade_ia ──────────────────────────
+            tom_voz          = pers.get('tom_voz') or 'Profissional, claro e prestativo'
+            estilo           = pers.get('estilo_comunicacao') or ''
+            saudacao         = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia}, como posso ajudar?"
+            instrucoes_base  = pers.get('instrucoes_base') or "Atenda o cliente de forma educada."
+            regras_atend     = pers.get('regras_atendimento') or "Seja breve e objetivo."
+
+            # ── Campos extras da personalidade_ia (consumidos dinamicamente) ──
+            # Qualquer coluna presente na tabela mas não listada acima é injetada
+            # automaticamente no prompt — sem hardcode, sem brecha para falha.
+            _CAMPOS_FIXOS = {
+                'id', 'empresa_id', 'ativo', 'nome_ia', 'personalidade',
+                'tom_voz', 'estilo_comunicacao', 'saudacao_personalizada',
+                'instrucoes_base', 'regras_atendimento', 'modelo_preferido',
+                'temperatura', 'created_at', 'updated_at',
+            }
+            _LABEL_MAP = {
+                'objetivos_venda':     'OBJETIVOS DE VENDA',
+                'metas_comerciais':    'METAS COMERCIAIS',
+                'script_vendas':       'SCRIPT DE VENDAS',
+                'scripts_objecoes':    'RESPOSTAS A OBJEÇÕES',
+                'frases_fechamento':   'FRASES DE FECHAMENTO',
+                'diferenciais':        'DIFERENCIAIS DA EMPRESA',
+                'posicionamento':      'POSICIONAMENTO DE MERCADO',
+                'publico_alvo':        'PÚBLICO-ALVO',
+                'restricoes':         'RESTRIÇÕES',
+                'linguagem_proibida':  'LINGUAGEM PROIBIDA',
+                'contexto_empresa':    'CONTEXTO DA EMPRESA',
+                'contexto_extra':      'CONTEXTO EXTRA',
+                'abordagem_proativa':  'ABORDAGEM PROATIVA',
+                'idioma':              'IDIOMA',
+                'horario_ativo_inicio':'HORÁRIO ATIVO INÍCIO',
+                'horario_ativo_fim':   'HORÁRIO ATIVO FIM',
+            }
+
+            _extras_prompt = ""
+            for _campo, _valor in pers.items():
+                if _campo in _CAMPOS_FIXOS:
+                    continue
+                if not _valor:
+                    continue
+                # Converte tipos complexos (dict/list) para string legível
+                if isinstance(_valor, (dict, list)):
+                    _valor_str = json.dumps(_valor, ensure_ascii=False, indent=2)
+                else:
+                    _valor_str = str(_valor).strip()
+                if not _valor_str or _valor_str in ('null', 'None', '{}', '[]', ''):
+                    continue
+                _label = _LABEL_MAP.get(_campo, _campo.upper().replace('_', ' '))
+                _extras_prompt += f"\n{_label}\n{_valor_str}\n"
+
             aviso_mudanca = (
                 f"\n[AVISO]: O cliente perguntou sobre a unidade {nome_unidade}. "
                 "Use os dados abaixo para responder."
@@ -1945,7 +2304,7 @@ Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios')
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
 
 PERSONALIDADE
-{pers.get('personalidade', '')}
+{pers.get('personalidade', 'Atendente prestativo, simpático e focado em ajudar.')}
 
 ESTILO DE COMUNICAÇÃO
 Tom de voz: {tom_voz}
@@ -1954,12 +2313,12 @@ Estilo: {estilo}
 SAUDAÇÃO PADRÃO
 {saudacao}
 
-INSTRUÇÕES
+INSTRUÇÕES BASE
 {instrucoes_base}
 
 REGRAS DE ATENDIMENTO
-{regras_atendimento}
-
+{regras_atend}
+{_extras_prompt}
 INFORMAÇÕES DA UNIDADE
 {dados_unidade}
 
@@ -1969,37 +2328,37 @@ FAQ
 HISTÓRICO DA CONVERSA
 {historico}
 
-REGRA CRÍTICA — ANTI-ALUCINAÇÃO (OBRIGATÓRIO, NUNCA IGNORE):
-- Use EXCLUSIVAMENTE as informações presentes em DADOS COMPLETOS DA UNIDADE acima.
-- Se um campo estiver como "não informado" ou ausente, diga que não tem essa informação no momento.
-- NUNCA invente, suponha ou complete endereços, telefones, horários ou qualquer dado.
-- NUNCA diga que a empresa tem "apenas uma unidade" ou invente o número de unidades — você não tem essa informação completa.
-- Se o cliente perguntar sobre outras unidades, diga que pode verificar e peça para ele informar cidade/bairro de interesse.
-- Se o cliente perguntar algo que não está nos dados, diga: "Não tenho essa informação agora, mas posso verificar para você!" ou similar.
-- Em saudações (boa tarde, oi, etc.), NÃO mencione o nome da unidade — apenas se apresente e pergunte como pode ajudar.
-- Quando o cliente perguntar seu nome ("qual é o seu nome?", "como você se chama?"), responda APENAS com seu nome. Não diga "aqui na [unidade]" ou "da [empresa]".
+REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO E CONDUÇÃO DE CONVERSA (OBRIGATÓRIO):
+- Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
+- Se um campo estiver como "não informado", diga que não tem essa informação agora.
+- NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
+- NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
+- Em conversa casual (saudação, "tudo bem?", "por aí?"), responda de forma natural e acolhedora. NÃO empurre planos ou produtos sem que o cliente pergunte.
+- CONDUZA a conversa naturalmente em direção à venda: pergunte sobre objetivos, ajude o cliente a perceber o valor. Não seja agressivo.
+- Quando o cliente PERGUNTAR sobre planos/preços, aí sim apresente as opções.
+- Em saudações, NÃO mencione o nome da unidade — apenas se apresente.
+- Quando perguntarem seu nome, responda APENAS seu nome. Nada de "aqui na [unidade]".
 
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
-- Fale como uma pessoa real, nunca mencione ser IA ou assistente virtual
+- Fale como uma pessoa real — NUNCA mencione ser IA, robô ou assistente virtual
 - Use emojis com moderação (😊 💪 ✅)
 - Separe parágrafos com linha em branco
 - Para listas use • no início de cada item
 - NÃO use markdown: sem **, sem ##, sem [texto](url)
-- Links devem aparecer como URL plana (ex: https://exemplo.com)
+- Links: sempre URL plana (ex: https://exemplo.com)
 - Respostas curtas e diretas, sem enrolação
 - Não se apresente novamente se já houver histórico
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO:
 Cliente: {nome_cliente}
-Estado anterior: {estado_atual}
+Estado emocional anterior: {estado_atual}
 
-MENSAGENS DO CLIENTE:
+MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
-Responda APENAS em JSON válido com os campos:
-- "resposta": sua mensagem ao cliente (texto formatado conforme regras acima)
-- "estado": estado emocional atual do cliente (neutro, interessado, animado, hesitante, frustrado, conversao)
+Responda APENAS em JSON válido:
+{{"resposta": "<mensagem ao cliente>", "estado": "<neutro|interessado|animado|hesitante|frustrado|conversao>"}}
 """
 
             conteudo_usuario = []
@@ -2024,79 +2383,137 @@ Responda APENAS em JSON válido com os campos:
             )
             temperature = float(pers.get("temperatura") or 0.7)
 
-            start_time = time.time()
-            async with llm_semaphore:
-                try:
-                    response = await cliente_ia.chat.completions.create(
-                        model=modelo_escolhido,
-                        messages=[
-                            {"role": "system", "content": prompt_sistema},
-                            {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}
-                        ],
-                        temperature=temperature,
-                        timeout=30
-                    )
-                    resposta_bruta = response.choices[0].message.content
-                except Exception as e:
-                    logger.warning(f"Fallback para Gemini Flash devido a erro: {e}")
-                    if _PROMETHEUS_OK:
-                        METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
-                    modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
-                    response = await cliente_ia.chat.completions.create(
-                        model=modelo_fallback,
-                        messages=[
-                            {"role": "system", "content": prompt_sistema},
-                            {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}
-                        ],
-                        temperature=temperature
-                    )
-                    resposta_bruta = response.choices[0].message.content
-
-            _latencia = time.time() - start_time
-            logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
-            if _PROMETHEUS_OK:
-                METRIC_IA_LATENCY.observe(_latencia)
-
-            resposta_bruta = corrigir_json(resposta_bruta)
-
-            try:
-                dados_ia = json.loads(resposta_bruta)
-                resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar.")
-                novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
-
-                # Garante que não há markdown na resposta da IA
-                resposta_texto = limpar_markdown(resposta_texto)
-
-                # 🔧 Pós-processamento: se a IA gerou uma resposta com múltiplos planos
-                # (detectado por 2+ ocorrências de "R$" ou links de matrícula), substitui pela
-                # versão bem formatada — evita mensagens separadas por \n\n (fragmentação)
-                _qtd_precos = resposta_texto.count("R$")
-                _qtd_links  = resposta_texto.count("http")
-                if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
-                    logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando")
-                    resposta_texto = formatar_planos_bonito(planos_ativos)
-                    if _PROMETHEUS_OK:
-                        METRIC_PLANOS_ENVIADOS.inc()
-
-                if not imagens_urls:
-                    await redis_client.setex(
-                        chave_cache_ia, 600,
-                        json.dumps({"resposta": resposta_texto, "estado": novo_estado})
-                    )
-
-                if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
-                    await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
-                    )
-                if tel_banco and tel_banco in resposta_texto:
-                    await bd_registrar_evento_funil(
-                        conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
-                    )
-
-            except json.JSONDecodeError:
-                logger.error(f"❌ JSON inválido da IA. Bruto: {resposta_bruta[:200]}...")
-                resposta_texto = "Desculpe, tive um problema ao processar sua solicitação. Pode reformular?"
+            # ── Circuit Breaker check ─────────────────────────────────────────
+            _cb_allowed = await cb_llm.is_allowed()
+            if not _cb_allowed:
+                logger.warning(f"🔴 CircuitBreaker OPEN — usando resposta padrão para conv {conversation_id}")
+                # Resposta de fallback quando LLM está indisponível
+                _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
+                resposta_texto = (
+                    f"Olá, {_nome_cb}! 😊 Estou com uma lentidão no momento.\n\n"
+                    "Pode me repetir sua dúvida em instantes? Já vou te atender! 💪"
+                )
                 novo_estado = estado_atual
+                # Pula o bloco IA e vai direto para envio
+                goto_send = True
+            else:
+                goto_send = False
+
+            if not goto_send:
+                # ── Chamada ao LLM com timeout global + circuit breaker ───────────
+                start_time = time.time()
+
+                async def _chamar_llm(model_id: str, extra_timeout: int = 25):
+                    return await asyncio.wait_for(
+                        cliente_ia.chat.completions.create(
+                            model=model_id,
+                            messages=[
+                                {"role": "system", "content": prompt_sistema},
+                                {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}
+                            ],
+                            temperature=temperature,
+                        ),
+                        timeout=extra_timeout
+                    )
+
+                async with llm_semaphore:
+                    try:
+                        response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
+                        resposta_bruta = response.choices[0].message.content
+                        await cb_llm.record_success()
+
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⏱️ Timeout LLM (25s) — tentando fallback. Conv {conversation_id}")
+                        await cb_llm.record_failure()
+                        if _PROMETHEUS_OK:
+                            METRIC_ERROS_TOTAL.labels(tipo="llm_timeout").inc()
+                        try:
+                            modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+                            response = await _chamar_llm(modelo_fallback, extra_timeout=20)
+                            resposta_bruta = response.choices[0].message.content
+                            await cb_llm.record_success()
+                        except asyncio.TimeoutError:
+                            logger.error(f"❌ Timeout no fallback também. Conv {conversation_id}")
+                            await cb_llm.record_failure()
+                            resposta_bruta = json.dumps({
+                                "resposta": "Estou com uma lentidão agora 😕 Pode tentar novamente em instantes?",
+                                "estado": estado_atual
+                            })
+                        except Exception as e2:
+                            logger.error(f"❌ Erro no fallback: {e2}")
+                            await cb_llm.record_failure()
+                            resposta_bruta = json.dumps({
+                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "estado": estado_atual
+                            })
+
+                    except Exception as e:
+                        logger.warning(f"⚠️ Erro LLM primário ({e}) — tentando fallback")
+                        await cb_llm.record_failure()
+                        if _PROMETHEUS_OK:
+                            METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
+                        try:
+                            modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+                            response = await _chamar_llm(modelo_fallback, extra_timeout=20)
+                            resposta_bruta = response.choices[0].message.content
+                            await cb_llm.record_success()
+                        except Exception as e2:
+                            logger.error(f"❌ Fallback também falhou: {e2}")
+                            await cb_llm.record_failure()
+                            resposta_bruta = json.dumps({
+                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "estado": estado_atual
+                            })
+
+                _latencia = time.time() - start_time
+                logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
+                if _PROMETHEUS_OK:
+                    METRIC_IA_LATENCY.observe(_latencia)
+
+            if not goto_send:
+                resposta_bruta = corrigir_json(resposta_bruta)
+                try:
+                    dados_ia = json.loads(resposta_bruta)
+                    resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar.")
+                    novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
+
+                    # Garante que não há markdown na resposta da IA
+                    resposta_texto = limpar_markdown(resposta_texto)
+
+                    # 🔧 Pós-processamento: se a IA gerou uma resposta com múltiplos planos
+                    # substitui pela versão bem formatada (evita fragmentação em msgs separadas)
+                    _qtd_precos = resposta_texto.count("R$")
+                    _qtd_links  = resposta_texto.count("http")
+                    if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
+                        logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando")
+                        resposta_texto = formatar_planos_bonito(planos_ativos)
+                        if _PROMETHEUS_OK:
+                            METRIC_PLANOS_ENVIADOS.inc()
+
+                    if not imagens_urls:
+                        _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
+                        await redis_client.setex(chave_cache_ia, 600, _cache_payload)
+                        # Salva também no cache semântico (embedding) para futuras queries similares
+                        if primeira_mensagem:
+                            await salvar_cache_semantico(
+                                primeira_mensagem, slug,
+                                {"resposta": resposta_texto, "estado": novo_estado},
+                                ttl=3600
+                            )
+
+                    if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
+                        await bd_registrar_evento_funil(
+                            conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
+                        )
+                    if tel_banco and tel_banco in resposta_texto:
+                        await bd_registrar_evento_funil(
+                            conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
+                        )
+
+                except json.JSONDecodeError:
+                    logger.error(f"❌ JSON inválido da IA. Bruto: {resposta_bruta[:200]}...")
+                    resposta_texto = "Desculpe, tive um problema ao processar sua solicitação. Pode reformular?"
+                    novo_estado = estado_atual
 
         # --- Salvar estado ---
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -2232,6 +2649,7 @@ async def chatwoot_webhook(
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
 
     # Rate limiting por conversa
+    # Rate limit por conversa (anti-loop de webhook)
     rate_key = f"rate:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1:
