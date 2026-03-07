@@ -592,21 +592,48 @@ def limpar_markdown(texto: str) -> str:
 def formatar_planos_bonito(planos: List[Dict]) -> str:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
-    Retorna UMA string única (sem \n\n entre planos) para ser enviada como uma só mensagem.
+    Cada plano tem: emoji+nome, pitch, diferenciais em bullet, preço, promo, link e pergunta final.
+    Retorna UMA string única separada por linha divisória.
+
+    Formato por plano:
+        🏋️ *Plano Nome*
+
+        Pitch do plano aqui.
+
+        Você terá acesso a:
+
+        • Diferencial 1
+        • Diferencial 2
+        • Diferencial 3
+
+        Tudo isso por apenas:
+
+        💰 *R$XX,XX por mês*
+
+        ⚡ *Oferta: Xmeses por R$XX,XX/mês*   (se houver promoção)
+
+        👉 Comece agora:
+        https://link-aqui
+
+        Quer saber como funciona ou tirar alguma dúvida?
     """
     if not planos:
         return "Não temos planos disponíveis no momento. 😕"
 
-    SEPARADOR = "\n─────────────────\n"
+    # Emojis rotativos por posição para dar variedade visual
+    _EMOJIS_PLANO = ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
+
+    SEPARADOR = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n"
     blocos = []
 
-    for p in planos:
+    for idx, p in enumerate(planos):
         nome = p.get('nome', 'Plano')
-        link = p.get('link_venda', '')
+        link = p.get('link_venda', '') or ''
 
-        if not link or link.strip() == '':
-            continue
+        if not link.strip():
+            continue  # Plano sem link de matrícula não é exibido
 
+        # ── Valores ──────────────────────────────────────────────────
         try:
             valor_float = float(p['valor']) if p.get('valor') is not None else None
         except (TypeError, ValueError):
@@ -618,34 +645,82 @@ def formatar_planos_bonito(planos: List[Dict]) -> str:
             promo_float = None
 
         meses_promo = p.get('meses_promocionais')
+
+        # ── Diferenciais ─────────────────────────────────────────────
         diferenciais = p.get('diferenciais') or []
+        if isinstance(diferenciais, str):
+            # Tenta deserializar caso venha como JSON string
+            try:
+                diferenciais = json.loads(diferenciais)
+            except (json.JSONDecodeError, ValueError):
+                diferenciais = [d.strip() for d in diferenciais.split(',') if d.strip()]
+        if not isinstance(diferenciais, list):
+            diferenciais = []
 
-        linhas = [f"🏅 *{nome}*"]
+        # ── Pitch/descrição ──────────────────────────────────────────
+        pitch = (
+            p.get('descricao') or
+            p.get('pitch') or
+            p.get('slogan') or
+            "Treine com estrutura completa e total liberdade."
+        )
+        pitch = str(pitch).strip()
 
-        if valor_float and valor_float > 0:
-            linhas.append(f"💰 R$ {valor_float:.2f}/mês")
+        # ── Emoji do plano ───────────────────────────────────────────
+        emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)]
 
-        if promo_float and meses_promo and promo_float > 0:
-            linhas.append(f"⚡ Promoção: {meses_promo}x R$ {promo_float:.2f}")
+        # ── Montagem do bloco ────────────────────────────────────────
+        linhas: List[str] = []
 
+        # Cabeçalho
+        linhas.append(f"{emoji} *{nome}*")
+        linhas.append("")
+
+        # Pitch
+        linhas.append(pitch)
+        linhas.append("")
+
+        # Diferenciais
         if diferenciais:
-            if isinstance(diferenciais, list):
-                # Quebra diferenciais longos em linhas de até 3 itens
-                chunks = [diferenciais[i:i+3] for i in range(0, len(diferenciais), 3)]
-                for chunk in chunks:
-                    linhas.append(f"✨ {' · '.join(chunk)}")
-            else:
-                linhas.append(f"✨ {diferenciais}")
+            linhas.append("Você terá acesso a:")
+            linhas.append("")
+            for dif in diferenciais:
+                linhas.append(f"• {str(dif).strip()}")
+            linhas.append("")
+            linhas.append("Tudo isso por apenas:")
+            linhas.append("")
+        else:
+            linhas.append("Valor:")
+            linhas.append("")
 
-        linhas.append(f"🔗 {link}")
+        # Preço principal
+        if valor_float and valor_float > 0:
+            valor_fmt = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linhas.append(f"💰 *R${valor_fmt} por mês*")
+        else:
+            linhas.append("💰 *Consulte o valor*")
+
+        # Promoção (opcional)
+        if promo_float and promo_float > 0 and meses_promo:
+            promo_fmt = f"{promo_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linhas.append("")
+            linhas.append(f"⚡ *Oferta: {meses_promo}x R${promo_fmt}/mês*")
+
+        # Link de matrícula
+        linhas.append("")
+        linhas.append("👉 Comece agora:")
+        linhas.append(link.strip())
+        linhas.append("")
+
+        # Pergunta de fechamento
+        linhas.append("Quer saber como funciona ou tirar alguma dúvida?")
+
         blocos.append("\n".join(linhas))
 
     if not blocos:
         return "Não temos planos disponíveis no momento. 😕"
 
-    cabecalho = "💪 *Nossos Planos*"
-    rodape = "\nQuer saber mais sobre algum plano? É só perguntar! 😊"
-    return cabecalho + "\n" + SEPARADOR.join(blocos) + rodape
+    return SEPARADOR.join(blocos)
 
 
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
@@ -1731,93 +1806,295 @@ async def bd_finalizar_conversa(conversation_id: int):
 
 # --- WORKER DE MÉTRICAS DIÁRIAS ---
 
+async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> Dict:
+    """
+    Coleta TODAS as métricas para uma unidade em determinada data.
+    Retorna dict pronto para inserção em metricas_diarias.
+    Cada query usa COALESCE para nunca retornar NULL.
+    """
+    # ── Conversas ──────────────────────────────────────────────────────
+    total_conversas = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    conversas_encerradas = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND status IN ('encerrada', 'resolved', 'closed')
+          AND DATE(updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    conversas_sem_resposta = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND primeira_resposta_em IS NULL
+          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    novos_contatos = await db_pool.fetchval("""
+        SELECT COUNT(DISTINCT telefone) FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+          AND NOT EXISTS (
+              SELECT 1 FROM conversas c2
+              WHERE c2.empresa_id = $1
+                AND c2.telefone = conversas.telefone
+                AND c2.created_at < conversas.created_at
+          )
+    """, empresa_id, unidade_id, hoje) or 0
+
+    # ── Mensagens ──────────────────────────────────────────────────────
+    total_mensagens = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM mensagens m
+        JOIN conversas c ON c.id = m.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND DATE(m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+          AND m.role = 'user'
+    """, empresa_id, unidade_id, hoje) or 0
+
+    total_mensagens_ia = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM mensagens m
+        JOIN conversas c ON c.id = m.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND DATE(m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+          AND m.role = 'assistant'
+    """, empresa_id, unidade_id, hoje) or 0
+
+    # ── Leads & Conversão ──────────────────────────────────────────────
+    leads_qualificados = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND lead_qualificado = true
+          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    # taxa_conversao = leads / total_conversas (0.0 se sem conversas)
+    taxa_conversao = round(leads_qualificados / total_conversas, 4) if total_conversas > 0 else 0.0
+
+    # ── Tempo de Resposta ──────────────────────────────────────────────
+    tempo_medio_resposta = await db_pool.fetchval("""
+        SELECT COALESCE(
+            AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))),
+            0
+        )
+        FROM conversas
+        WHERE empresa_id = $1 AND unidade_id = $2
+          AND primeira_resposta_em IS NOT NULL
+          AND primeira_mensagem IS NOT NULL
+          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0.0
+
+    # ── Eventos do Funil ───────────────────────────────────────────────
+    total_solicitacoes_telefone = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM eventos_funil ef
+        JOIN conversas c ON c.id = ef.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND ef.tipo_evento = 'solicitacao_telefone'
+          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    total_links_enviados = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM eventos_funil ef
+        JOIN conversas c ON c.id = ef.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND ef.tipo_evento = 'link_matricula_enviado'
+          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    total_planos_enviados = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM eventos_funil ef
+        JOIN conversas c ON c.id = ef.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND ef.tipo_evento = 'plano_exibido'
+          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    total_matriculas = await db_pool.fetchval("""
+        SELECT COUNT(*) FROM eventos_funil ef
+        JOIN conversas c ON c.id = ef.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND ef.tipo_evento IN ('matricula_realizada', 'checkout_concluido')
+          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+    """, empresa_id, unidade_id, hoje) or 0
+
+    # ── Horário de Pico ────────────────────────────────────────────────
+    # Hora com maior volume de mensagens recebidas
+    pico_row = await db_pool.fetchrow("""
+        SELECT EXTRACT(HOUR FROM m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
+               COUNT(*) AS qtd
+        FROM mensagens m
+        JOIN conversas c ON c.id = m.conversa_id
+        WHERE c.empresa_id = $1 AND c.unidade_id = $2
+          AND m.role = 'user'
+          AND DATE(m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+        GROUP BY hora
+        ORDER BY qtd DESC
+        LIMIT 1
+    """, empresa_id, unidade_id, hoje)
+    pico_hora = int(pico_row['hora']) if pico_row else None
+
+    # ── Satisfação Média ──────────────────────────────────────────────
+    # Tenta buscar da tabela `avaliacoes` se existir; senão mantém NULL
+    satisfacao_media = None
+    try:
+        satisfacao_media = await db_pool.fetchval("""
+            SELECT COALESCE(AVG(nota), NULL)
+            FROM avaliacoes av
+            JOIN conversas c ON c.id = av.conversa_id
+            WHERE c.empresa_id = $1 AND c.unidade_id = $2
+              AND DATE(av.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+        """, empresa_id, unidade_id, hoje)
+    except Exception:
+        satisfacao_media = None  # tabela ainda não existe
+
+    # ── Tokens / Custo IA ─────────────────────────────────────────────
+    tokens_consumidos = None
+    custo_estimado_usd = None
+    try:
+        row_tokens = await db_pool.fetchrow("""
+            SELECT COALESCE(SUM(tokens_prompt + tokens_completion), 0) AS total_tokens,
+                   COALESCE(SUM(custo_usd), 0.0) AS custo
+            FROM uso_ia ui
+            JOIN conversas c ON c.id = ui.conversa_id
+            WHERE c.empresa_id = $1 AND c.unidade_id = $2
+              AND DATE(ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
+        """, empresa_id, unidade_id, hoje)
+        if row_tokens:
+            tokens_consumidos = int(row_tokens['total_tokens'])
+            custo_estimado_usd = float(row_tokens['custo'])
+    except Exception:
+        pass  # tabela uso_ia pode não existir
+
+    return {
+        "total_conversas": total_conversas,
+        "conversas_encerradas": conversas_encerradas,
+        "conversas_sem_resposta": conversas_sem_resposta,
+        "novos_contatos": novos_contatos,
+        "total_mensagens": total_mensagens,
+        "total_mensagens_ia": total_mensagens_ia,
+        "leads_qualificados": leads_qualificados,
+        "taxa_conversao": taxa_conversao,
+        "tempo_medio_resposta": float(tempo_medio_resposta),
+        "total_solicitacoes_telefone": total_solicitacoes_telefone,
+        "total_links_enviados": total_links_enviados,
+        "total_planos_enviados": total_planos_enviados,
+        "total_matriculas": total_matriculas,
+        "pico_hora": pico_hora,
+        "satisfacao_media": satisfacao_media,
+        "tokens_consumidos": tokens_consumidos,
+        "custo_estimado_usd": custo_estimado_usd,
+    }
+
+
 async def worker_metricas_diarias():
+    """
+    Worker que roda a cada hora e persiste todas as métricas diárias.
+    Usa ON CONFLICT para atualizar registros existentes (idempotente).
+    Colunas opcionais (satisfacao_media, tokens, custo) são ignoradas com
+    graceful fallback se a coluna ainda não existir no banco.
+    """
     while True:
         await asyncio.sleep(3600)
         if not db_pool:
             continue
         try:
             hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-            empresas = await db_pool.fetch("SELECT id FROM empresas")
+            empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
 
+            total_unidades = 0
             for emp in empresas:
                 empresa_id = emp['id']
-                unidades = await db_pool.fetch("SELECT id FROM unidades WHERE empresa_id = $1", empresa_id)
+                unidades = await db_pool.fetch(
+                    "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                    empresa_id
+                )
 
                 for unid in unidades:
                     unidade_id = unid['id']
+                    total_unidades += 1
 
-                    total_conversas = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM conversas
-                        WHERE empresa_id = $1 AND unidade_id = $2
-                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
+                    m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
 
-                    total_mensagens = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM mensagens m
-                        JOIN conversas c ON c.id = m.conversa_id
-                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
-                          AND DATE(m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                          AND m.role = 'user'
-                    """, empresa_id, unidade_id, hoje)
-
-                    leads = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM conversas
-                        WHERE empresa_id = $1 AND unidade_id = $2
-                          AND lead_qualificado = true
-                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
-
-                    tempo_medio = await db_pool.fetchval("""
-                        SELECT COALESCE(
-                            AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))),
-                            0
-                        )
-                        FROM conversas
-                        WHERE empresa_id = $1 AND unidade_id = $2
-                          AND primeira_resposta_em IS NOT NULL
-                          AND primeira_mensagem IS NOT NULL
-                          AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
-
-                    total_telefone = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM eventos_funil ef
-                        JOIN conversas c ON c.id = ef.conversa_id
-                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
-                          AND ef.tipo_evento = 'solicitacao_telefone'
-                          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
-
-                    total_links = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM eventos_funil ef
-                        JOIN conversas c ON c.id = ef.conversa_id
-                        WHERE c.empresa_id = $1 AND c.unidade_id = $2
-                          AND ef.tipo_evento = 'link_matricula_enviado'
-                          AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
-                    """, empresa_id, unidade_id, hoje)
-
+                    # ── Upsert principal (colunas garantidas) ─────────────
                     await db_pool.execute("""
                         INSERT INTO metricas_diarias (
                             empresa_id, unidade_id, data,
-                            total_conversas, total_mensagens, leads_qualificados,
-                            tempo_medio_resposta, total_solicitacoes_telefone,
-                            total_links_enviados, satisfacao_media
+                            total_conversas, conversas_encerradas, conversas_sem_resposta,
+                            novos_contatos,
+                            total_mensagens, total_mensagens_ia,
+                            leads_qualificados, taxa_conversao,
+                            tempo_medio_resposta,
+                            total_solicitacoes_telefone, total_links_enviados,
+                            total_planos_enviados, total_matriculas,
+                            pico_hora,
+                            satisfacao_media,
+                            updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0.0)
+                        VALUES (
+                            $1, $2, $3,
+                            $4, $5, $6,
+                            $7,
+                            $8, $9,
+                            $10, $11,
+                            $12,
+                            $13, $14,
+                            $15, $16,
+                            $17,
+                            $18,
+                            NOW()
+                        )
                         ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
-                            total_conversas = EXCLUDED.total_conversas,
-                            total_mensagens = EXCLUDED.total_mensagens,
-                            leads_qualificados = EXCLUDED.leads_qualificados,
-                            tempo_medio_resposta = EXCLUDED.tempo_medio_resposta,
+                            total_conversas            = EXCLUDED.total_conversas,
+                            conversas_encerradas       = EXCLUDED.conversas_encerradas,
+                            conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
+                            novos_contatos             = EXCLUDED.novos_contatos,
+                            total_mensagens            = EXCLUDED.total_mensagens,
+                            total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
+                            leads_qualificados         = EXCLUDED.leads_qualificados,
+                            taxa_conversao             = EXCLUDED.taxa_conversao,
+                            tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
                             total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
-                            total_links_enviados = EXCLUDED.total_links_enviados,
-                            updated_at = NOW()
-                    """, empresa_id, unidade_id, hoje, total_conversas, total_mensagens,
-                           leads, tempo_medio, total_telefone, total_links)
+                            total_links_enviados       = EXCLUDED.total_links_enviados,
+                            total_planos_enviados      = EXCLUDED.total_planos_enviados,
+                            total_matriculas           = EXCLUDED.total_matriculas,
+                            pico_hora                  = EXCLUDED.pico_hora,
+                            satisfacao_media           = EXCLUDED.satisfacao_media,
+                            updated_at                 = NOW()
+                    """,
+                        empresa_id, unidade_id, hoje,
+                        m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
+                        m["novos_contatos"],
+                        m["total_mensagens"], m["total_mensagens_ia"],
+                        m["leads_qualificados"], m["taxa_conversao"],
+                        m["tempo_medio_resposta"],
+                        m["total_solicitacoes_telefone"], m["total_links_enviados"],
+                        m["total_planos_enviados"], m["total_matriculas"],
+                        m["pico_hora"],
+                        m["satisfacao_media"],
+                    )
 
-            logger.info("✅ Métricas diárias atualizadas")
+                    # ── Colunas opcionais (tokens/custo) — graceful fallback ──
+                    if m["tokens_consumidos"] is not None:
+                        try:
+                            await db_pool.execute("""
+                                UPDATE metricas_diarias
+                                SET tokens_consumidos  = $4,
+                                    custo_estimado_usd = $5,
+                                    updated_at         = NOW()
+                                WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
+                            """, empresa_id, unidade_id, hoje,
+                                m["tokens_consumidos"], m["custo_estimado_usd"])
+                        except Exception:
+                            pass  # colunas ainda não existem no banco
+
+            logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
+
+        except asyncpg.PostgresError as e:
+            logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
         except Exception as e:
-            logger.error(f"❌ Erro no worker de métricas diárias: {e}", exc_info=True)
+            logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
 
 
 # --- UTILITÁRIOS DE JSON ---
@@ -2925,6 +3202,118 @@ async def metrics_endpoint():
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST
     )
+
+
+@app.get("/metricas/diagnostico")
+async def metricas_diagnostico(
+    empresa_id: Optional[int] = None,
+    data: Optional[str] = None,
+    dias: int = 7
+):
+    """
+    Diagnóstico das métricas diárias — mostra colunas preenchidas e zeradas.
+
+    Query params:
+      - empresa_id: filtra por empresa (opcional)
+      - data: data específica YYYY-MM-DD (opcional, default = hoje)
+      - dias: quantos dias históricos retornar (default = 7)
+
+    Útil para verificar se o worker_metricas_diarias está populando todas as colunas.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Banco de dados indisponível")
+
+    try:
+        hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+        data_ref = datetime.strptime(data, "%Y-%m-%d").date() if data else hoje
+
+        # ── Colunas esperadas na tabela ───────────────────────────────
+        colunas_esperadas = [
+            "total_conversas", "conversas_encerradas", "conversas_sem_resposta",
+            "novos_contatos", "total_mensagens", "total_mensagens_ia",
+            "leads_qualificados", "taxa_conversao", "tempo_medio_resposta",
+            "total_solicitacoes_telefone", "total_links_enviados",
+            "total_planos_enviados", "total_matriculas",
+            "pico_hora", "satisfacao_media",
+            "tokens_consumidos", "custo_estimado_usd",
+        ]
+
+        # ── Colunas reais no banco ────────────────────────────────────
+        colunas_banco = await db_pool.fetch("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'metricas_diarias'
+              AND table_schema = 'public'
+            ORDER BY ordinal_position
+        """)
+        cols_banco = [r['column_name'] for r in colunas_banco]
+
+        colunas_presentes = [c for c in colunas_esperadas if c in cols_banco]
+        colunas_ausentes  = [c for c in colunas_esperadas if c not in cols_banco]
+
+        # ── Registros dos últimos N dias ──────────────────────────────
+        filtro_empresa = "AND empresa_id = $2" if empresa_id else ""
+        params_base = [dias]
+        if empresa_id:
+            params_base.append(empresa_id)
+
+        registros = await db_pool.fetch(f"""
+            SELECT *
+            FROM metricas_diarias
+            WHERE data >= (CURRENT_DATE - ($1 || ' days')::interval)::date
+            {filtro_empresa}
+            ORDER BY data DESC, empresa_id, unidade_id
+            LIMIT 200
+        """, *params_base)
+
+        # ── Estatísticas de preenchimento ─────────────────────────────
+        total_registros = len(registros)
+        stats_colunas = {}
+        for col in colunas_presentes:
+            if total_registros == 0:
+                stats_colunas[col] = {"preenchidos": 0, "nulos": 0, "percentual": 0.0}
+            else:
+                preenchidos = sum(1 for r in registros if r[col] is not None and r[col] != 0)
+                nulos = sum(1 for r in registros if r[col] is None)
+                stats_colunas[col] = {
+                    "preenchidos": preenchidos,
+                    "nulos": nulos,
+                    "percentual": round(preenchidos / total_registros * 100, 1),
+                }
+
+        # ── Última execução do worker ─────────────────────────────────
+        ultima_atualizacao = await db_pool.fetchval("""
+            SELECT MAX(updated_at) FROM metricas_diarias
+        """)
+
+        return {
+            "diagnostico": {
+                "referencia_date": str(data_ref),
+                "periodo_dias": dias,
+                "total_registros_encontrados": total_registros,
+                "ultima_atualizacao_worker": str(ultima_atualizacao) if ultima_atualizacao else None,
+            },
+            "colunas": {
+                "presentes_no_banco": colunas_presentes,
+                "ausentes_no_banco": colunas_ausentes,
+                "todas_no_schema": cols_banco,
+            },
+            "preenchimento_por_coluna": stats_colunas,
+            "alertas": [
+                f"⚠️ Coluna '{c}' não existe no banco — rode a migration de ALTER TABLE"
+                for c in colunas_ausentes
+            ] + [
+                f"📉 Coluna '{c}' está {s['percentual']}% preenchida nos últimos {dias} dias"
+                for c, s in stats_colunas.items()
+                if s["percentual"] < 50 and total_registros > 0
+            ],
+        }
+
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Erro PostgreSQL: {e}")
+    except Exception as e:
+        logger.error(f"❌ /metricas/diagnostico erro: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/status")
