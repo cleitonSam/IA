@@ -2764,6 +2764,7 @@ Responda APENAS em JSON válido:
                     if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
                         logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando")
                         resposta_texto = formatar_planos_bonito(planos_ativos)
+                        fast_reply = True   # ← garante envio como bloco único (não divide em parágrafos)
                         if _PROMETHEUS_OK:
                             METRIC_PLANOS_ENVIADOS.inc()
 
@@ -2825,7 +2826,12 @@ Responda APENAS em JSON válido:
             await bd_registrar_primeira_resposta(conversation_id)
         else:
             # Resposta da IA: divide por parágrafo duplo para simular digitação humana
-            paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
+            # ⚠️ Blocos de plano (contêm "👉 Comece agora:" ou separador "━") nunca são divididos
+            _e_bloco_plano = "👉 Comece agora:" in resposta_texto or "━━━" in resposta_texto
+            if _e_bloco_plano:
+                paragrafos = [resposta_texto.strip()]
+            else:
+                paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
             if not paragrafos:
                 paragrafos = [resposta_texto.strip()]
 
