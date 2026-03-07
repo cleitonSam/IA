@@ -105,6 +105,125 @@ def eh_saudacao(texto: str) -> bool:
     return False
 
 
+def saudacao_por_horario() -> str:
+    """Retorna 'Bom dia', 'Boa tarde' ou 'Boa noite' baseado no horário de São Paulo."""
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    hora = agora.hour
+    if hora < 12:
+        return "Bom dia"
+    elif hora < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
+
+
+def horario_hoje_formatado(horarios: Any) -> Optional[str]:
+    """
+    Retorna o horário de funcionamento de HOJE (baseado no dia da semana em SP).
+    Suporta dict com chaves como "segunda", "seg", "segunda-feira", etc.
+    Retorna None se não encontrar.
+    """
+    if not horarios:
+        return None
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    dia_semana_idx = agora.weekday()  # 0=segunda, 6=domingo
+
+    # Mapeamento de dia da semana para possíveis chaves no dict de horários
+    DIAS_MAP = {
+        0: ["segunda", "seg", "segunda-feira", "mon", "segunda feira"],
+        1: ["terca", "ter", "terça", "terca-feira", "terça-feira", "tue", "terca feira"],
+        2: ["quarta", "qua", "quarta-feira", "wed", "quarta feira"],
+        3: ["quinta", "qui", "quinta-feira", "thu", "quinta feira"],
+        4: ["sexta", "sex", "sexta-feira", "fri", "sexta feira"],
+        5: ["sabado", "sab", "sábado", "sat"],
+        6: ["domingo", "dom", "sun"],
+    }
+
+    # Também tenta "seg a sex" / "segunda a sexta" / "dias uteis" para dias 0-4
+    AGRUPADOS = {
+        "seg a sex": range(0, 5),
+        "segunda a sexta": range(0, 5),
+        "dias uteis": range(0, 5),
+        "dias úteis": range(0, 5),
+        "sab e dom": range(5, 7),
+        "sabado e domingo": range(5, 7),
+        "sábado e domingo": range(5, 7),
+        "fim de semana": range(5, 7),
+        "feriados": [],  # tratado separadamente
+    }
+
+    if isinstance(horarios, dict):
+        # 1. Tenta chave específica do dia
+        possiveis = DIAS_MAP.get(dia_semana_idx, [])
+        for chave in possiveis:
+            for key_orig, valor in horarios.items():
+                if normalizar(key_orig).strip() == normalizar(chave).strip():
+                    return str(valor)
+
+        # 2. Tenta chaves agrupadas ("seg a sex", etc.)
+        for chave_agrupada, dias_range in AGRUPADOS.items():
+            if dia_semana_idx in dias_range:
+                for key_orig, valor in horarios.items():
+                    if normalizar(chave_agrupada) in normalizar(key_orig):
+                        return str(valor)
+
+    elif isinstance(horarios, str):
+        # Se for string simples, retorna como está
+        return horarios
+
+    return None
+
+
+def montar_saudacao_humanizada(
+    nome_cliente: str,
+    nome_ia: str,
+    pers: dict,
+    unidade: dict,
+    hor_banco: Any,
+) -> str:
+    """
+    Monta uma saudação super humanizada:
+    - Usa o nome do cliente se disponível
+    - Deseja bom dia/boa tarde/boa noite pelo horário de SP
+    - Menciona horário de HOJE se disponível no banco
+    - Tom quente e acolhedor
+    """
+    cumprimento = saudacao_por_horario()
+    nome_limpo = limpar_nome(nome_cliente) if nome_cliente else ""
+
+    # Monta a primeira linha: cumprimento + nome
+    if nome_limpo and nome_limpo.lower() not in ("cliente", "contato", "visitante", ""):
+        primeiro_nome = nome_limpo.split()[0].capitalize()
+        linha1 = f"{cumprimento}, {primeiro_nome}! 😊"
+    else:
+        linha1 = f"{cumprimento}! 😊"
+
+    # Apresentação do assistente
+    linha2 = f"Eu sou {'a' if nome_ia and nome_ia[-1].lower() == 'a' else 'o'} {nome_ia}, tudo bem?"
+
+    # Horário de hoje (se disponível no banco)
+    horario_hoje = horario_hoje_formatado(hor_banco)
+    if horario_hoje:
+        agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        NOMES_DIA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+        nome_dia = NOMES_DIA[agora.weekday()]
+        linha3 = f"Hoje ({nome_dia}) estamos funcionando das {horario_hoje} 💪"
+    else:
+        linha3 = ""
+
+    # Pergunta final
+    linha4 = "Como posso te ajudar?"
+
+    # Monta mensagem
+    partes = [linha1, linha2]
+    if linha3:
+        partes.append(linha3)
+    partes.append(linha4)
+
+    return "\n\n".join(partes)
+
+
 # 🏋️ PALAVRAS-CHAVE DE TIPO DE CLIENTE — detecta aluno atual ou usuário de convênio
 ALUNO_KEYWORDS = [
     "sou aluno", "ja sou aluno", "já sou aluno", "sou cliente", "sou membro",
@@ -1644,16 +1763,18 @@ async def processar_ia_e_responder(
                 )
                 logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
 
-            # Fast-path: saudação genérica
+            # Fast-path: saudação humanizada
             # Ativa quando TODAS as mensagens acumuladas são saudações
             # Ex: "Boa noite" + "Tudo bem?" enviados em sequência rápida
             elif all(eh_saudacao(t) for t in textos) and textos:
-                _saudacao_base = pers.get('saudacao_personalizada') or f"Olá! Sou {nome_ia} 😊"
-                _nome_unidade_atual = unidade.get('nome') or ''
-                if _nome_unidade_atual and _nome_unidade_atual in _saudacao_base:
-                    _saudacao_base = _saudacao_base.replace(_nome_unidade_atual, nome_ia)
-                fast_reply = f"{_saudacao_base}\n\nComo posso te ajudar hoje? 😊"
-                logger.info("⚡ Fast-path: saudação genérica (sem mencionar unidade)")
+                fast_reply = montar_saudacao_humanizada(
+                    nome_cliente=nome_cliente,
+                    nome_ia=nome_ia,
+                    pers=pers,
+                    unidade=unidade,
+                    hor_banco=hor_banco,
+                )
+                logger.info(f"⚡ Fast-path: saudação humanizada para {nome_cliente}")
 
             # Fast-path: listar unidades (regex amplo — cobre abreviações, variações e ordem das palavras)
             elif re.search(
@@ -1857,7 +1978,6 @@ REGRA CRÍTICA — ANTI-ALUCINAÇÃO (OBRIGATÓRIO, NUNCA IGNORE):
 - Se o cliente perguntar algo que não está nos dados, diga: "Não tenho essa informação agora, mas posso verificar para você!" ou similar.
 - Em saudações (boa tarde, oi, etc.), NÃO mencione o nome da unidade — apenas se apresente e pergunte como pode ajudar.
 - Quando o cliente perguntar seu nome ("qual é o seu nome?", "como você se chama?"), responda APENAS com seu nome. Não diga "aqui na [unidade]" ou "da [empresa]".
-- NUNCA diga "Smart Fit Morumbi" ou qualquer nome de unidade em respostas pessoais sobre você mesmo.
 
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 - Fale como uma pessoa real, nunca mencione ser IA ou assistente virtual
@@ -2210,18 +2330,45 @@ async def chatwoot_webhook(
                     slug_detectado = unidades_ativas[idx]["slug"]
 
             if slug_detectado:
-                # Unidade identificada — confirma e prossegue
+                # Unidade identificada — confirma com mensagem humanizada e prossegue
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 await redis_client.delete(f"esperando_unidade:{id_conv}")
                 contato = payload.get("sender", {})
+                _nome_contato = limpar_nome(contato.get("name"))
                 await bd_iniciar_conversa(
                     id_conv, slug, account_id,
-                    contato.get("id"), limpar_nome(contato.get("name")), empresa_id
+                    contato.get("id"), _nome_contato, empresa_id
                 )
                 await bd_registrar_evento_funil(
                     id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
                 )
+
+                # Envia confirmação humanizada com dados da unidade
+                _unid_dados = await carregar_unidade(slug, empresa_id) or {}
+                _nome_unid = _unid_dados.get('nome') or slug
+                _end_unid = _unid_dados.get('endereco_completo') or _unid_dados.get('endereco') or ''
+                _hor_unid = _unid_dados.get('horarios')
+                _pers_temp = await carregar_personalidade(empresa_id) or {}
+                _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
+
+                _cumpr = saudacao_por_horario()
+                _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
+                _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
+
+                _horario_hoje = horario_hoje_formatado(_hor_unid)
+                _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
+
+                _msg_confirmacao = (
+                    f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
+                    f"{_linha_end}{_linha_horario}"
+                    f"\n\nComo posso te ajudar? 😊"
+                )
+                await enviar_mensagem_chatwoot(
+                    account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
+                )
+
                 lock_key = f"agendar_lock:{id_conv}"
                 if await redis_client.set(lock_key, "1", nx=True, ex=5):
                     try:
@@ -2234,11 +2381,18 @@ async def chatwoot_webhook(
                     finally:
                         await redis_client.delete(lock_key)
             else:
-                # Unidade não identificada — pergunta cidade/bairro de forma inteligente
-                # NÃO lista todas as 30 unidades (péssimo UX) — filtra por cidade
+                # Unidade não identificada — pergunta cidade/bairro de forma humanizada
                 cfg = await carregar_configuracao_global(empresa_id)
                 nome_empresa = cfg.get('nome_empresa') or 'nossa academia'
-                boas_vindas = cfg.get("mensagem_boas_vindas") or f"Olá! 😊 Seja bem-vindo à {nome_empresa}!"
+                _pers_bv = await carregar_personalidade(empresa_id) or {}
+                _nome_ia_bv = _pers_bv.get('nome_ia') or 'Assistente Virtual'
+
+                # Saudação personalizada com nome e horário
+                _cumpr_bv = saudacao_por_horario()
+                _contato_bv = payload.get("sender", {})
+                _nome_bv = limpar_nome(_contato_bv.get("name"))
+                _primeiro_bv = _nome_bv.split()[0].capitalize() if _nome_bv and _nome_bv.lower() not in ("cliente", "contato", "") else ""
+                _saud_bv = f"{_cumpr_bv}, {_primeiro_bv}!" if _primeiro_bv else f"{_cumpr_bv}!"
 
                 # Monta dica de cidades únicas (até 8 para não poluir)
                 cidades_unicas = sorted(set(
@@ -2252,9 +2406,10 @@ async def chatwoot_webhook(
                     hint = f"\n\n📍 {len(unidades_ativas)} unidades disponíveis"
 
                 msg = (
-                    f"{boas_vindas}\n\n"
-                    "Para te direcionar ao atendimento certo 🎯\n\n"
-                    "Em qual *cidade* ou *bairro* você está ou prefere treinar?"
+                    f"{_saud_bv} Eu sou {'a' if _nome_ia_bv[-1:].lower() == 'a' else 'o'} {_nome_ia_bv} "
+                    f"da {nome_empresa}, tudo bem? 😊\n\n"
+                    "Para te direcionar ao melhor atendimento, me conta:\n\n"
+                    "Em qual *cidade* ou *bairro* você prefere treinar? 🎯"
                     f"{hint}"
                 )
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
