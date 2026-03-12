@@ -459,10 +459,10 @@ end
 # Removido ** (markdown duplo) — WhatsApp usa *asterisco simples* para negrito
 
 RESPOSTAS_UNIDADES = [
-    "🏢 Temos {total} unidades disponíveis:\n\n{lista_str}\n\nQual delas você gostaria de conhecer melhor?",
-    "Claro! Nossas {total} unidades são:\n\n{lista_str}\n\nMe diga qual é a mais conveniente para você!",
-    "Aqui estão todas as nossas {total} unidades:\n\n{lista_str}\n\nEm qual delas podemos ajudar?",
-    "Fico feliz em ajudar! Nossas academias ({total} no total) estão localizadas em:\n\n{lista_str}\n\nQual você prefere?"
+    "🏢 Temos {total} unidades:\n\n{lista_str}\n\nQual delas fica mais perto de você?",
+    "Claro! Nossas unidades são:\n\n{lista_str}\n\nQual é a mais conveniente pra você?",
+    "Aqui estão nossas {total} unidades:\n\n{lista_str}\n\nEm qual posso te ajudar?",
+    "Temos {total} unidades disponíveis:\n\n{lista_str}\n\nQual prefere?",
 ]
 
 RESPOSTAS_ENDERECO = [
@@ -589,11 +589,10 @@ def limpar_markdown(texto: str) -> str:
     return texto
 
 
-def formatar_planos_bonito(planos: List[Dict]) -> str:
+def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
-    Cada plano tem: emoji+nome, pitch, diferenciais em bullet, preço, promo, link e pergunta final.
-    Retorna UMA string única separada por linha divisória.
+    Retorna uma LISTA de strings — cada item = uma mensagem separada no chat.
 
     Formato por plano:
         🏋️ *Plano Nome*
@@ -618,13 +617,12 @@ def formatar_planos_bonito(planos: List[Dict]) -> str:
         Quer saber como funciona ou tirar alguma dúvida?
     """
     if not planos:
-        return "Não temos planos disponíveis no momento. 😕"
+        return ["Não temos planos disponíveis no momento. 😕"]
 
     # Emojis rotativos por posição para dar variedade visual
     _EMOJIS_PLANO = ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
 
-    SEPARADOR = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n"
-    blocos = []
+    blocos: List[str] = []
 
     for idx, p in enumerate(planos):
         nome = p.get('nome', 'Plano')
@@ -718,9 +716,10 @@ def formatar_planos_bonito(planos: List[Dict]) -> str:
         blocos.append("\n".join(linhas))
 
     if not blocos:
-        return "Não temos planos disponíveis no momento. 😕"
+        return ["Não temos planos disponíveis no momento. 😕"]
 
-    return SEPARADOR.join(blocos)
+    # Cada bloco = mensagem separada (sem divisor entre eles)
+    return blocos
 
 
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
@@ -1519,35 +1518,63 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
 
 
 async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
+    """
+    Carrega as perguntas frequentes da unidade e retorna formatadas para o prompt da IA.
+    Tenta duas queries: com prioridade+visualizacoes, e fallback sem visualizacoes
+    (caso a coluna ainda não exista no banco).
+    Loga aviso quando FAQ está vazio para facilitar diagnóstico.
+    """
     if not db_pool:
         return ""
 
-    cache_key = f"cfg:faq:{slug}:v2"
+    cache_key = f"cfg:faq:{slug}:v3"
     cache = await redis_client.get(cache_key)
     if cache:
         return cache
 
+    rows = []
     try:
-        query = """
+        # Query principal — com prioridade e visualizacoes
+        rows = await db_pool.fetch("""
             SELECT f.pergunta, f.resposta
             FROM faq f
             JOIN unidades u ON u.id = f.unidade_id
             WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
-            ORDER BY f.prioridade DESC, f.visualizacoes DESC
-        """
-        rows = await db_pool.fetch(query, slug, empresa_id)
-        if not rows:
+            ORDER BY f.prioridade DESC NULLS LAST, f.visualizacoes DESC NULLS LAST
+            LIMIT 30
+        """, slug, empresa_id)
+    except asyncpg.UndefinedColumnError:
+        # Fallback: sem a coluna visualizacoes
+        try:
+            rows = await db_pool.fetch("""
+                SELECT f.pergunta, f.resposta
+                FROM faq f
+                JOIN unidades u ON u.id = f.unidade_id
+                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                ORDER BY f.prioridade DESC NULLS LAST
+                LIMIT 30
+            """, slug, empresa_id)
+        except asyncpg.UndefinedTableError:
+            logger.warning(f"⚠️ Tabela 'faq' não existe no banco — FAQ desativado para {slug}")
             return ""
-
-        faq_formatado = "\n".join([
-            f"Pergunta: {r['pergunta']}\nResposta: {r['resposta']}"
-            for r in rows
-        ])
-        await redis_client.setex(cache_key, 300, faq_formatado)
-        return faq_formatado
-    except Exception as e:
-        logger.error(f"Erro ao carregar FAQ da unidade {slug}: {e}")
+    except asyncpg.UndefinedTableError:
+        logger.warning(f"⚠️ Tabela 'faq' não existe no banco — crie com CREATE TABLE faq (...)")
         return ""
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PostgreSQL ao carregar FAQ de {slug}: {e}")
+        return ""
+
+    if not rows:
+        logger.warning(f"⚠️ FAQ vazio para slug='{slug}' empresa_id={empresa_id} — verifique ativo=true e unidade_id")
+        return ""
+
+    faq_formatado = "\n\n".join([
+        f"P: {r['pergunta']}\nR: {r['resposta']}"
+        for r in rows
+    ])
+    await redis_client.setex(cache_key, 300, faq_formatado)
+    logger.info(f"✅ FAQ carregado: {len(rows)} perguntas para {slug}")
+    return faq_formatado
 
 
 async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
@@ -2236,7 +2263,8 @@ async def processar_ia_e_responder(
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
         texto_norm_fast = normalizar(primeira_mensagem or "")
-        fast_reply = None
+        fast_reply = None          # str  — mensagem única
+        fast_reply_lista = None   # List[str] — múltiplas mensagens (ex: planos)
 
         # Campos da unidade
         end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
@@ -2302,14 +2330,32 @@ async def processar_ia_e_responder(
             # Ativa quando TODAS as mensagens acumuladas são saudações
             # Ex: "Boa noite" + "Tudo bem?" enviados em sequência rápida
             elif all(eh_saudacao(t) for t in textos) and textos:
-                fast_reply = montar_saudacao_humanizada(
-                    nome_cliente=nome_cliente,
-                    nome_ia=nome_ia,
-                    pers=pers,
-                    unidade=unidade,
-                    hor_banco=hor_banco,
-                )
-                logger.info(f"⚡ Fast-path: saudação humanizada para {nome_cliente}")
+                # Verifica se já houve troca de mensagens (histórico existente)
+                _qtd_ia_anterior = 0
+                try:
+                    _qtd_ia_anterior = await db_pool.fetchval("""
+                        SELECT COUNT(*) FROM mensagens m
+                        JOIN conversas c ON c.id = m.conversa_id
+                        WHERE c.conversation_id = $1 AND m.role = 'assistant'
+                    """, conversation_id) or 0
+                except Exception:
+                    pass
+
+                if _qtd_ia_anterior > 0:
+                    # Conversa já existente — resposta curta, sem reapresentação
+                    _cumprimento_breve = saudacao_por_horario()
+                    fast_reply = f"{_cumprimento_breve}! 😊 Como posso ajudar?"
+                    logger.info(f"⚡ Fast-path: saudação curta (histórico existente) para {nome_cliente}")
+                else:
+                    # Primeiro contato — saudação completa com nome, horário e horas abertas
+                    fast_reply = montar_saudacao_humanizada(
+                        nome_cliente=nome_cliente,
+                        nome_ia=nome_ia,
+                        pers=pers,
+                        unidade=unidade,
+                        hor_banco=hor_banco,
+                    )
+                    logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
 
             # Fast-path: listar unidades
             # Regex cobre singular E plural + com ou sem cidade na pergunta
@@ -2367,10 +2413,8 @@ async def processar_ia_e_responder(
                         unidades_lista = todas_ativas
 
                     total = len(unidades_lista)
-                    lista_str = "\n".join([
-                        f"• {u['nome']}" + (f" — {u['cidade']}" if u.get('cidade') and not _cidade_filtro else "")
-                        for u in unidades_lista
-                    ])
+                    # Só o nome — cidade não é exibida (evita repetição e poluição)
+                    lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
 
                     if _cidade_filtro and total > 0:
                         fast_reply = (
@@ -2405,7 +2449,7 @@ async def processar_ia_e_responder(
                 texto_combinado_norm
             ):
                 if planos_ativos:
-                    fast_reply = formatar_planos_bonito(planos_ativos)
+                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
                     if _PROMETHEUS_OK:
                         METRIC_PLANOS_ENVIADOS.inc()
                         METRIC_FAST_PATH_TOTAL.labels(tipo="planos").inc()
@@ -2413,7 +2457,7 @@ async def processar_ia_e_responder(
                         conversation_id, "link_matricula_enviado",
                         "Link enviado via fast-path", score_incremento=2
                     )
-                    logger.info("⚡ Fast-path: planos (multi-mensagem)")
+                    logger.info(f"⚡ Fast-path: {len(fast_reply_lista)} plano(s) — enviando como mensagens separadas")
 
             # Fast-path: endereço (texto combinado)
             elif unidade and re.search(
@@ -2599,7 +2643,7 @@ REGRAS DE ATENDIMENTO
 INFORMAÇÕES DA UNIDADE
 {dados_unidade}
 
-FAQ
+FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
 
 HISTÓRICO DA CONVERSA
@@ -2615,6 +2659,7 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO E CONDUÇÃO DE CONVERSA (OBRIGATÓRIO):
 - Quando o cliente PERGUNTAR sobre planos/preços, aí sim apresente as opções.
 - Em saudações, NÃO mencione o nome da unidade — apenas se apresente.
 - Quando perguntarem seu nome, responda APENAS seu nome. Nada de "aqui na [unidade]".
+- Se a pergunta do cliente bater com algum item do FAQ acima, USE exatamente aquela resposta.
 
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 - Fale como uma pessoa real — NUNCA mencione ser IA, robô ou assistente virtual
@@ -2625,6 +2670,8 @@ FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 - Links: sempre URL plana (ex: https://exemplo.com)
 - Respostas curtas e diretas, sem enrolação
 - Não se apresente novamente se já houver histórico
+- NUNCA repita o nome do cliente dentro da mesma resposta — use no máximo uma vez, só na saudação inicial
+- NUNCA comece respostas de acompanhamento com "Olá, [nome]!" — já cumprimentou antes
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO:
@@ -2762,9 +2809,9 @@ Responda APENAS em JSON válido:
                     _qtd_precos = resposta_texto.count("R$")
                     _qtd_links  = resposta_texto.count("http")
                     if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
-                        logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando")
-                        resposta_texto = formatar_planos_bonito(planos_ativos)
-                        fast_reply = True   # ← garante envio como bloco único (não divide em parágrafos)
+                        logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando em msgs separadas")
+                        fast_reply_lista = formatar_planos_bonito(planos_ativos)
+                        resposta_texto = ""   # descarta resposta original da IA
                         if _PROMETHEUS_OK:
                             METRIC_PLANOS_ENVIADOS.inc()
 
@@ -2815,8 +2862,27 @@ Responda APENAS em JSON válido:
 
         if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
             pass  # IA pausada, não envia
+
+        elif fast_reply_lista:
+            # ── Planos: cada item da lista = 1 mensagem separada ──────────────
+            for i, bloco_plano in enumerate(fast_reply_lista):
+                if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                    break
+                if not bloco_plano.strip():
+                    continue
+                typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
+                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot
+                )
+                await bd_atualizar_msg_ia(conversation_id)
+                if i == 0:
+                    await bd_registrar_primeira_resposta(conversation_id)
+
         elif fast_reply:
-            # Fast-path: envia a resposta INTEIRA como UMA mensagem (planos, endereço, etc.)
+            # ── Fast-path: envia UMA mensagem (saudação, endereço, horário, etc.) ──
+            if not resposta_texto:
+                resposta_texto = fast_reply if isinstance(fast_reply, str) else ""
             typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
             await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
             await enviar_mensagem_chatwoot(
@@ -2824,32 +2890,30 @@ Responda APENAS em JSON válido:
             )
             await bd_atualizar_msg_ia(conversation_id)
             await bd_registrar_primeira_resposta(conversation_id)
+
         else:
-            # Resposta da IA: divide por parágrafo duplo para simular digitação humana
-            # ⚠️ Blocos de plano (contêm "👉 Comece agora:" ou separador "━") nunca são divididos
-            _e_bloco_plano = "👉 Comece agora:" in resposta_texto or "━━━" in resposta_texto
-            if _e_bloco_plano:
-                paragrafos = [resposta_texto.strip()]
+            # ── Resposta da IA: divide por parágrafo duplo para simular digitação ──
+            if not resposta_texto or not resposta_texto.strip():
+                pass  # nada para enviar
             else:
                 paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
-            if not paragrafos:
-                paragrafos = [resposta_texto.strip()]
+                if not paragrafos:
+                    paragrafos = [resposta_texto.strip()]
 
-            for i, paragrafo in enumerate(paragrafos):
-                if await redis_client.exists(f"pause_ia:{conversation_id}"):
-                    break
+                for i, paragrafo in enumerate(paragrafos):
+                    if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                        break
 
-                # Simula digitação proporcional ao tamanho do parágrafo
-                typing_time = min(len(paragrafo) * 0.03, 5.0) + random.uniform(0.3, 1.0)
-                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+                    typing_time = min(len(paragrafo) * 0.03, 5.0) + random.uniform(0.3, 1.0)
+                    await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
 
-                await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
-                )
-                await bd_atualizar_msg_ia(conversation_id)
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
+                    )
+                    await bd_atualizar_msg_ia(conversation_id)
 
-                if i == 0:
-                    await bd_registrar_primeira_resposta(conversation_id)
+                    if i == 0:
+                        await bd_registrar_primeira_resposta(conversation_id)
 
         # 🔄 DRAIN LOOP — processa mensagens que chegaram DURANTE o processamento da IA
         # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
