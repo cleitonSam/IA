@@ -2533,22 +2533,9 @@ async def processar_ia_e_responder(
                     )
                     logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
 
-            # Fast-path: FAQ — busca resposta do banco e passa ao LLM para humanizar
-            # O LLM usa a resposta do FAQ como base mas constrói uma mensagem natural
-            elif slug and len(textos) == 1:
-                _faq_resposta = await buscar_resposta_faq(textos[0], slug, empresa_id)
-                if _faq_resposta:
-                    contexto_precarregado = (
-                        f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
-                        "(Use essa resposta como base — pode reformular de forma natural, "
-                        "mas não altere informações factuais nem adicione dados inexistentes.)"
-                    )
-                    logger.info(f"⚡ Fast-path: FAQ encontrado, LLM vai humanizar para conv {conversation_id}")
-                    if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
-                        METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
-
-            # Fast-path: listar unidades
-            # Funciona mesmo com múltiplas mensagens — listar unidades é sempre seguro
+            # Fast-path: listar unidades (prioridade ANTES do FAQ)
+            # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
+            # Funciona mesmo com múltiplas mensagens acumuladas
             elif re.search(
                 r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
                 r"|quantas.{0,10}unidades?"        # quantas unidades
@@ -2606,20 +2593,38 @@ async def processar_ia_e_responder(
                     # Só o nome — cidade não é exibida (evita repetição e poluição)
                     lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
 
-                    _prefixo_geo = f" em {_cidade_filtro}" if _cidade_filtro else ""
-                    contexto_precarregado = (
-                        f"Unidades da rede{_prefixo_geo} ({total} no total):\n{lista_str}\n\n"
-                        "(Liste essas unidades de forma natural e convide o cliente a escolher "
-                        "a mais próxima ou perguntar sobre uma delas.)"
-                    )
-                    logger.info(f"⚡ Fast-path: {total} unidade(s) pré-carregada(s), LLM vai humanizar")
+                    if _cidade_filtro and total > 0:
+                        fast_reply = (
+                            f"📍 Temos {total} {'unidade' if total == 1 else 'unidades'} em {_cidade_filtro}:\n\n"
+                            f"{lista_str}\n\n"
+                            "Qual delas fica mais perto de você? 😊"
+                        )
+                    else:
+                        fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
+                            total=total, lista_str=lista_str
+                        )
+                    logger.info(f"⚡ Fast-path: {total} unidade(s) — resposta direta (sem LLM)")
                     await bd_registrar_evento_funil(
                         conversation_id, "consulta_unidades",
                         f"Cliente solicitou unidades{' em ' + _cidade_filtro if _cidade_filtro else ''}",
                         score_incremento=1
                     )
                 else:
-                    contexto_precarregado = "Não há unidades cadastradas no momento."
+                    fast_reply = "No momento não há unidades cadastradas. 😕"
+
+            # Fast-path: FAQ — último fallback antes da IA
+            # Só ativa com mensagem única para máxima precisão
+            elif slug and len(textos) == 1:
+                _faq_resposta = await buscar_resposta_faq(textos[0], slug, empresa_id)
+                if _faq_resposta:
+                    contexto_precarregado = (
+                        f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
+                        "(Use essa resposta como base — pode reformular de forma natural, "
+                        "mas não altere informações factuais nem adicione dados inexistentes.)"
+                    )
+                    logger.info(f"⚡ Fast-path: FAQ encontrado, LLM vai humanizar para conv {conversation_id}")
+                    if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
+                        METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
 
             # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
             # (a IA responde todas as perguntas de uma vez de forma mais coesa)
@@ -2833,7 +2838,10 @@ Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios')
             ) if mudou_unidade else ""
 
             prompt_sistema = f"""
-IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil. NUNCA responda em inglês ou qualquer outro idioma, independente da pergunta.
+IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
+NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
+NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
+Você é um atendente — apenas responda o cliente diretamente.
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
 
@@ -2957,10 +2965,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             model=model_id,
                             messages=[
                                 {"role": "system", "content": prompt_sistema},
-                                {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}
+                                {"role": "user", "content": conteudo_usuario if conteudo_usuario else mensagens_formatadas}
                             ],
                             temperature=temperature,
-                            max_tokens=800,   # Chatbot de vendas: 800 tokens é mais que suficiente
+                            max_tokens=500,   # Chatbot de vendas: respostas curtas e diretas
                                               # Reduz custo e evita erro 402 de crédito insuficiente
                         ),
                         timeout=extra_timeout
