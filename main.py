@@ -2431,7 +2431,7 @@ async def processar_ia_e_responder(
             # Fast-path: FAQ direto
             # Verifica antes da IA se a pergunta bate com alguma entrada do FAQ da unidade
             elif slug and (
-                _faq_resposta := await buscar_resposta_faq(texto_combinado, slug, empresa_id)
+                _faq_resposta := await buscar_resposta_faq(texto_combinado_norm, slug, empresa_id)
             ):
                 fast_reply = _faq_resposta
                 logger.info(f"⚡ Fast-path: FAQ respondeu direto para conv {conversation_id}")
@@ -3242,23 +3242,11 @@ async def chatwoot_webhook(
                 _primeiro_bv = _nome_bv.split()[0].capitalize() if _nome_bv and _nome_bv.lower() not in ("cliente", "contato", "") else ""
                 _saud_bv = f"{_cumpr_bv}, {_primeiro_bv}!" if _primeiro_bv else f"{_cumpr_bv}!"
 
-                # Monta dica de cidades únicas (até 8 para não poluir)
-                cidades_unicas = sorted(set(
-                    u['cidade'] for u in unidades_ativas if u.get('cidade')
-                ))
-                if len(cidades_unicas) <= 8:
-                    hint = "\n\n📍 Estamos em: " + " • ".join(cidades_unicas)
-                elif len(cidades_unicas) <= 20:
-                    hint = f"\n\n📍 Presentes em {len(cidades_unicas)} cidades"
-                else:
-                    hint = f"\n\n📍 {len(unidades_ativas)} unidades disponíveis"
-
                 msg = (
                     f"{_saud_bv} Eu sou {'a' if _nome_ia_bv[-1:].lower() == 'a' else 'o'} {_nome_ia_bv} "
                     f"da {nome_empresa}, tudo bem? 😊\n\n"
                     "Para te direcionar ao melhor atendimento, me conta:\n\n"
                     "Em qual *cidade* ou *bairro* você prefere treinar? 🎯"
-                    f"{hint}"
                 )
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
