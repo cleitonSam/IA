@@ -656,13 +656,20 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
             diferenciais = []
 
         # ── Pitch/descrição ──────────────────────────────────────────
-        pitch = (
+        # Ignora pitch que pareça código de banco (todo maiúsculo, igual ao nome, etc.)
+        _pitch_raw = (
             p.get('descricao') or
             p.get('pitch') or
             p.get('slogan') or
-            "Treine com estrutura completa e total liberdade."
+            ""
         )
-        pitch = str(pitch).strip()
+        _pitch_raw = str(_pitch_raw).strip()
+        _e_codigo = (
+            _pitch_raw == _pitch_raw.upper()         # todo maiúsculo
+            or normalizar(_pitch_raw) == normalizar(nome)   # igual ao nome do plano
+            or len(_pitch_raw) < 10                  # curto demais para ser um pitch real
+        )
+        pitch = None if _e_codigo or not _pitch_raw else _pitch_raw
 
         # ── Emoji do plano ───────────────────────────────────────────
         emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)]
@@ -672,14 +679,15 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
 
         # Cabeçalho
         linhas.append(f"{emoji} *{nome}*")
-        linhas.append("")
 
-        # Pitch
-        linhas.append(pitch)
-        linhas.append("")
+        # Pitch (só se existir e não for código)
+        if pitch:
+            linhas.append("")
+            linhas.append(pitch)
 
         # Diferenciais
         if diferenciais:
+            linhas.append("")
             linhas.append("Você terá acesso a:")
             linhas.append("")
             for dif in diferenciais:
@@ -688,7 +696,6 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
             linhas.append("Tudo isso por apenas:")
             linhas.append("")
         else:
-            linhas.append("Valor:")
             linhas.append("")
 
         # Preço principal
@@ -708,17 +715,18 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
         linhas.append("")
         linhas.append("👉 Comece agora:")
         linhas.append(link.strip())
-        linhas.append("")
 
-        # Pergunta de fechamento
-        linhas.append("Quer saber como funciona ou tirar alguma dúvida?")
+        # ⚠️ SEM pergunta de fechamento aqui — vai só no último bloco (ver abaixo)
 
         blocos.append("\n".join(linhas))
 
     if not blocos:
         return ["Não temos planos disponíveis no momento. 😕"]
 
-    # Cada bloco = mensagem separada (sem divisor entre eles)
+    # Pergunta de fechamento apenas no ÚLTIMO plano
+    blocos[-1] += "\n\nQuer saber mais sobre algum plano ou tirar alguma dúvida? 😊"
+
+    # Cada bloco = mensagem separada
     return blocos
 
 
@@ -1515,6 +1523,69 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Erro ao carregar unidade {slug}: {e}")
         return {}
+
+
+async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Optional[str]:
+    """
+    Tenta encontrar uma resposta direta no FAQ sem precisar chamar a IA.
+    Usa sobreposição de tokens (palavras significativas) entre a pergunta do
+    cliente e as perguntas cadastradas no FAQ.
+    Retorna a resposta do FAQ se similaridade >= threshold, senão None.
+    """
+    if not db_pool or not slug or not pergunta:
+        return None
+
+    cache_key = f"cfg:faq_raw:{slug}:{empresa_id}"
+    raw = await redis_client.get(cache_key)
+    if raw:
+        try:
+            faq_rows = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            faq_rows = []
+    else:
+        try:
+            faq_rows_db = await db_pool.fetch("""
+                SELECT f.pergunta, f.resposta
+                FROM faq f
+                JOIN unidades u ON u.id = f.unidade_id
+                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                ORDER BY f.prioridade DESC NULLS LAST
+                LIMIT 50
+            """, slug, empresa_id)
+            faq_rows = [{"pergunta": r["pergunta"], "resposta": r["resposta"]} for r in faq_rows_db]
+            await redis_client.setex(cache_key, 300, json.dumps(faq_rows, ensure_ascii=False))
+        except Exception:
+            return None
+
+    if not faq_rows:
+        return None
+
+    # Tokeniza a pergunta do cliente (palavras com >= 3 chars)
+    tokens_cliente = {t for t in normalizar(pergunta).split() if len(t) >= 3}
+    if not tokens_cliente:
+        return None
+
+    melhor_score = 0.0
+    melhor_resposta = None
+
+    for item in faq_rows:
+        tokens_faq = {t for t in normalizar(item["pergunta"]).split() if len(t) >= 3}
+        if not tokens_faq:
+            continue
+        # Jaccard: intersecção / união
+        intersecao = tokens_cliente & tokens_faq
+        uniao = tokens_cliente | tokens_faq
+        score = len(intersecao) / len(uniao) if uniao else 0.0
+        if score > melhor_score:
+            melhor_score = score
+            melhor_resposta = item["resposta"]
+
+    # Threshold: pelo menos 40% de sobreposição para aceitar
+    if melhor_score >= 0.40 and melhor_resposta:
+        logger.info(f"✅ FAQ fast-match (score={melhor_score:.2f}): '{pergunta[:50]}' → FAQ direto")
+        return melhor_resposta.strip()
+
+    return None
 
 
 async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
@@ -2357,6 +2428,16 @@ async def processar_ia_e_responder(
                     )
                     logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
 
+            # Fast-path: FAQ direto
+            # Verifica antes da IA se a pergunta bate com alguma entrada do FAQ da unidade
+            elif slug and (
+                _faq_resposta := await buscar_resposta_faq(texto_combinado, slug, empresa_id)
+            ):
+                fast_reply = _faq_resposta
+                logger.info(f"⚡ Fast-path: FAQ respondeu direto para conv {conversation_id}")
+                if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
+                    METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
+
             # Fast-path: listar unidades
             # Regex cobre singular E plural + com ou sem cidade na pergunta
             elif re.search(
@@ -2736,6 +2817,8 @@ Responda APENAS em JSON válido:
                                 {"role": "user", "content": conteudo_usuario if conteudo_usuario else " "}
                             ],
                             temperature=temperature,
+                            max_tokens=800,   # Chatbot de vendas: 800 tokens é mais que suficiente
+                                              # Reduz custo e evita erro 402 de crédito insuficiente
                         ),
                         timeout=extra_timeout
                     )
