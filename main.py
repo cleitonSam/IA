@@ -521,6 +521,9 @@ async def startup_event():
     asyncio.create_task(worker_metricas_diarias())
     asyncio.create_task(worker_sync_planos())
 
+    # ⚠️  Os workers usam _worker_leader_check() internamente para garantir que
+    # apenas UM processo execute em ambientes multi-worker (uvicorn --workers N).
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -744,28 +747,37 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
         pass
 
 
-# 🎯 FUNÇÃO PARA DETECTAR INTENÇÃO
-# ── Cache Semântico por Embedding (RAG Lite) ─────────────────────────────────
-# Permite cachear respostas baseadas em similaridade semântica, não só hash exato.
-# Requer: pip install sentence-transformers  (opcional — fallback para hash md5)
-try:
-    from sentence_transformers import SentenceTransformer as _ST
-    import numpy as _np
-    _embed_model = _ST("all-MiniLM-L6-v2")  # modelo leve ~22MB
-    _EMBED_OK = True
-    logger.info("✅ Sentence Transformers carregado — cache semântico ativo")
-except ImportError:
-    _EMBED_OK = False
-
+# ── Cache Semântico por Embedding via API ────────────────────────────────────
+# Usa text-embedding-3-small via OpenRouter/OpenAI (async, sem CPU local).
+# 90% mais leve que SentenceTransformer — não bloqueia event loop.
+# Fallback automático para cache por hash md5 se API falhar.
 
 def _cosine_sim(a: list, b: list) -> float:
-    """Similaridade de cosseno entre dois vetores."""
-    if not _EMBED_OK:
+    """Similaridade de cosseno entre dois vetores (pura Python, sem numpy)."""
+    if not a or not b or len(a) != len(b):
         return 0.0
-    va = _np.array(a, dtype="float32")
-    vb = _np.array(b, dtype="float32")
-    norm = (_np.linalg.norm(va) * _np.linalg.norm(vb))
-    return float(_np.dot(va, vb) / norm) if norm > 0 else 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    return dot / (norm_a * norm_b) if norm_a > 0 and norm_b > 0 else 0.0
+
+
+async def _get_embedding(texto: str) -> Optional[List[float]]:
+    """
+    Obtém embedding via API (text-embedding-3-small).
+    Retorna None se a API falhar — o sistema cai no hash cache.
+    """
+    if not cliente_ia:
+        return None
+    try:
+        resp = await cliente_ia.embeddings.create(
+            model="text-embedding-3-small",
+            input=texto[:512],  # Trunca para economizar tokens
+        )
+        return resp.data[0].embedding
+    except Exception as e:
+        logger.debug(f"Embedding API indisponível: {e}")
+        return None
 
 
 async def buscar_cache_semantico(
@@ -775,33 +787,37 @@ async def buscar_cache_semantico(
 ) -> Optional[Dict]:
     """
     Busca no Redis por uma resposta cacheada semanticamente similar à pergunta.
-    Funciona em 2 modos:
-      - Com sentence-transformers: usa embedding + cosine similarity (preciso)
-      - Sem: fallback para cache por hash md5 (exato)
+    Usa embedding via API (async) + SCAN (não bloqueia Redis) + cosine similarity.
     Retorna dict {"resposta": ..., "estado": ...} ou None.
     """
-    if not _EMBED_OK:
-        return None  # sem embeddings, usa hash normal
+    emb_query = await _get_embedding(texto)
+    if not emb_query:
+        return None  # API indisponível — usa hash cache
 
     try:
-        emb_query = _embed_model.encode(texto).tolist()
-        # Busca todas as chaves de embedding para este slug (até 200)
         pattern = f"semcache:{slug}:*"
-        keys = await redis_client.keys(pattern)
-        if not keys:
-            return None
-
         melhor_score = 0.0
         melhor_key   = None
-        for k in keys[:200]:  # limita busca
-            emb_str = await redis_client.hget(k, "embedding")
-            if not emb_str:
-                continue
-            emb_cached = json.loads(emb_str)
-            score = _cosine_sim(emb_query, emb_cached)
-            if score > melhor_score:
-                melhor_score = score
-                melhor_key   = k
+        total_scan   = 0
+
+        # ✅ SCAN em vez de KEYS — não trava o Redis
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.scan(cursor, match=pattern, count=50)
+            for k in keys:
+                total_scan += 1
+                if total_scan > 300:   # limita a 300 entradas por slug
+                    break
+                emb_str = await redis_client.hget(k, "embedding")
+                if not emb_str:
+                    continue
+                emb_cached = json.loads(emb_str)
+                score = _cosine_sim(emb_query, emb_cached)
+                if score > melhor_score:
+                    melhor_score = score
+                    melhor_key   = k
+            if cursor == 0 or total_scan > 300:
+                break
 
         if melhor_score >= threshold and melhor_key:
             resposta_str = await redis_client.hget(melhor_key, "resposta")
@@ -820,13 +836,13 @@ async def salvar_cache_semantico(
     ttl: int = 3600
 ):
     """
-    Salva embedding + resposta no Redis para uso futuro no cache semântico.
+    Salva embedding (via API) + resposta no Redis para uso futuro.
     Chave: semcache:{slug}:{md5(texto)}
     """
-    if not _EMBED_OK:
-        return
+    emb = await _get_embedding(texto)
+    if not emb:
+        return  # API indisponível — não salva embedding (hash cache ainda funciona)
     try:
-        emb = _embed_model.encode(texto).tolist()
         chave = f"semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
         await redis_client.hset(chave, mapping={
             "embedding": json.dumps(emb),
@@ -1136,15 +1152,47 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
     return "\n".join(linhas) if linhas else "Nenhum plano disponível no momento."
 
 
+# ── Distributed Leader Election ──────────────────────────────────────────────
+# Garante que apenas UM processo (worker uvicorn) execute cada worker periódico.
+# Sem isso, `uvicorn --workers 4` rodaria 4 instâncias de cada worker.
+# Mecanismo: SET NX EX no Redis — quem grava a chave vira líder por `ttl` segundos.
+# O líder renova a cada ciclo; os outros ficam dormindo e tentam novamente.
+
+_WORKER_ID = str(uuid.uuid4())  # ID único deste processo
+
+async def _is_worker_leader(nome: str, ttl: int) -> bool:
+    """
+    Tenta assumir a liderança para o worker `nome`.
+    Retorna True se este processo é o líder (ou renovou a liderança).
+    Retorna False se outro processo já é líder.
+    ttl deve ser ligeiramente maior que o intervalo do worker.
+    """
+    chave = f"worker_leader:{nome}"
+    # Tenta criar (NX = only if Not eXists)
+    ganhou = await redis_client.set(chave, _WORKER_ID, nx=True, ex=ttl)
+    if ganhou:
+        return True
+    # Verifica se JÁ é o líder atual (renovação)
+    lider_atual = await redis_client.get(chave)
+    if lider_atual == _WORKER_ID:
+        await redis_client.expire(chave, ttl)  # renova TTL
+        return True
+    return False
+
+
 async def worker_sync_planos():
     while True:
         await asyncio.sleep(21600)  # 6 horas
         if not db_pool:
             continue
+        if not await _is_worker_leader("sync_planos", ttl=22000):
+            logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
+            continue
         try:
             empresas = await db_pool.fetch("SELECT id FROM empresas")
             for emp in empresas:
                 await sincronizar_planos_evo(emp['id'])
+            logger.info("✅ worker_sync_planos executado pelo líder")
         except Exception as e:
             logger.error(f"Erro no worker de sincronização de planos: {e}")
 
@@ -2097,6 +2145,9 @@ async def worker_metricas_diarias():
         await asyncio.sleep(3600)
         if not db_pool:
             continue
+        if not await _is_worker_leader("metricas_diarias", ttl=3700):
+            logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
+            continue
         try:
             hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
             empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
@@ -2608,7 +2659,7 @@ async def processar_ia_e_responder(
         else:
             # --- FLUXO IA ---
             faq = await carregar_faq_unidade(slug, empresa_id) or ""
-            historico = await bd_obter_historico_local(conversation_id) or "Sem histórico."
+            historico = await bd_obter_historico_local(conversation_id, limit=12) or "Sem histórico."
 
             todas_unidades = await listar_unidades_ativas(empresa_id)
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
@@ -2762,8 +2813,7 @@ Estado emocional anterior: {estado_atual}
 MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
-Responda APENAS em JSON válido:
-{{"resposta": "<mensagem ao cliente>", "estado": "<neutro|interessado|animado|hesitante|frustrado|conversao>"}}
+RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```, sem prefixos.
 """
 
             conteudo_usuario = []
@@ -2878,50 +2928,63 @@ Responda APENAS em JSON válido:
                     METRIC_IA_LATENCY.observe(_latencia)
 
             if not goto_send:
-                resposta_bruta = corrigir_json(resposta_bruta)
-                try:
-                    dados_ia = json.loads(resposta_bruta)
-                    resposta_texto = dados_ia.get("resposta", "Desculpe, não consegui processar.")
-                    novo_estado = dados_ia.get("estado", estado_atual).strip().lower()
+                # ── A IA agora responde texto puro — sem JSON ──────────────────
+                resposta_texto = limpar_markdown(resposta_bruta.strip())
 
-                    # Garante que não há markdown na resposta da IA
-                    resposta_texto = limpar_markdown(resposta_texto)
+                # Tenta extrair JSON legado caso o modelo ainda retorne JSON (backward compat)
+                if resposta_texto.startswith('{'):
+                    try:
+                        _dados_legado = json.loads(corrigir_json(resposta_texto))
+                        resposta_texto = limpar_markdown(_dados_legado.get("resposta", resposta_texto))
+                        novo_estado = _dados_legado.get("estado", estado_atual).strip().lower()
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # Não é JSON, usa como texto mesmo
 
-                    # 🔧 Pós-processamento: se a IA gerou uma resposta com múltiplos planos
-                    # substitui pela versão bem formatada (evita fragmentação em msgs separadas)
-                    _qtd_precos = resposta_texto.count("R$")
-                    _qtd_links  = resposta_texto.count("http")
-                    if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
-                        logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando em msgs separadas")
-                        fast_reply_lista = formatar_planos_bonito(planos_ativos)
-                        resposta_texto = ""   # descarta resposta original da IA
-                        if _PROMETHEUS_OK:
-                            METRIC_PLANOS_ENVIADOS.inc()
-
-                    if not imagens_urls:
-                        _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
-                        await redis_client.setex(chave_cache_ia, 600, _cache_payload)
-                        # Salva também no cache semântico (embedding) para futuras queries similares
-                        if primeira_mensagem:
-                            await salvar_cache_semantico(
-                                primeira_mensagem, slug,
-                                {"resposta": resposta_texto, "estado": novo_estado},
-                                ttl=3600
-                            )
-
-                    if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
-                        await bd_registrar_evento_funil(
-                            conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
-                        )
-                    if tel_banco and tel_banco in resposta_texto:
-                        await bd_registrar_evento_funil(
-                            conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
-                        )
-
-                except json.JSONDecodeError:
-                    logger.error(f"❌ JSON inválido da IA. Bruto: {resposta_bruta[:200]}...")
-                    resposta_texto = "Desculpe, tive um problema ao processar sua solicitação. Pode reformular?"
+                # Inferir estado emocional a partir das palavras-chave da resposta
+                _resp_norm = normalizar(resposta_texto)
+                if any(w in _resp_norm for w in ("matricula", "matricular", "assinar", "plano", "checkout", "comecar agora")):
+                    novo_estado = "conversao"
+                elif any(w in _resp_norm for w in ("parabens", "que otimo", "incrivel", "adorei", "perfeito")):
+                    novo_estado = "animado"
+                elif any(w in _resp_norm for w in ("entendo", "compreendo", "preocupo", "problema", "dificuldade")):
+                    novo_estado = "hesitante"
+                elif any(w in _resp_norm for w in ("interesse", "quero saber", "me conta", "curioso")):
+                    novo_estado = "interessado"
+                else:
                     novo_estado = estado_atual
+
+                if not resposta_texto:
+                    resposta_texto = "Desculpe, pode repetir sua pergunta? 😊"
+                    novo_estado = estado_atual
+
+                # 🔧 Pós-processamento: se a IA gerou resposta com múltiplos planos → reformata
+                _qtd_precos = resposta_texto.count("R$")
+                _qtd_links  = resposta_texto.count("http")
+                if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
+                    logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando em msgs separadas")
+                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
+                    resposta_texto = ""
+                    if _PROMETHEUS_OK:
+                        METRIC_PLANOS_ENVIADOS.inc()
+
+                if not imagens_urls:
+                    _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
+                    await redis_client.setex(chave_cache_ia, 600, _cache_payload)
+                    if primeira_mensagem:
+                        await salvar_cache_semantico(
+                            primeira_mensagem, slug,
+                            {"resposta": resposta_texto, "estado": novo_estado},
+                            ttl=3600
+                        )
+
+                if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
+                    await bd_registrar_evento_funil(
+                        conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
+                    )
+                if tel_banco and tel_banco in resposta_texto:
+                    await bd_registrar_evento_funil(
+                        conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
+                    )
 
         # --- Salvar estado ---
         async with redis_client.pipeline(transaction=True) as pipe:
