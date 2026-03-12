@@ -2358,18 +2358,45 @@ async def processar_ia_e_responder(
         mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
 
         # Detecta se cliente mencionou outra unidade
+        # ⚠️ Regra de proteção: só muda slug se a mensagem contém indicador geográfico
+        # real (nome de cidade, bairro ou nome de unidade). Mensagens genéricas como
+        # "Queria saber o endereço" ou "E horário?" NÃO devem trocar a unidade.
         primeira_mensagem = textos[0] if textos else ""
-        slug_detectado = await buscar_unidade_na_pergunta(primeira_mensagem, empresa_id) if primeira_mensagem else None
         mudou_unidade = False
 
-        if slug_detectado and slug_detectado != slug:
-            logger.info(f"🔄 IA mudou contexto de {slug} para unidade: {slug_detectado}")
-            slug = slug_detectado
-            mudou_unidade = True
-            await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
-            await bd_registrar_evento_funil(
-                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
-            )
+        # Verifica se ALGUMA mensagem do buffer menciona indicador geográfico
+        _todas_msgs_norm = " ".join(normalizar(t) for t in textos)
+        _tem_geo = False
+        if db_pool:
+            try:
+                _todas_unidades_geo = await listar_unidades_ativas(empresa_id)
+                for _u in _todas_unidades_geo:
+                    _indicadores = [
+                        normalizar(_u.get('nome', '')),
+                        normalizar(_u.get('cidade', '') or ''),
+                        normalizar(_u.get('bairro', '') or ''),
+                    ]
+                    for _ind in _indicadores:
+                        if _ind and len(_ind) >= 4 and _ind in _todas_msgs_norm:
+                            _tem_geo = True
+                            break
+                    if _tem_geo:
+                        break
+            except Exception:
+                pass
+
+        if _tem_geo and primeira_mensagem:
+            slug_detectado = await buscar_unidade_na_pergunta(primeira_mensagem, empresa_id)
+            if slug_detectado and slug_detectado != slug:
+                logger.info(f"🔄 Webhook mudou contexto para {slug_detectado} (indicador geográfico detectado)")
+                slug = slug_detectado
+                mudou_unidade = True
+                await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
+                await bd_registrar_evento_funil(
+                    conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
+                )
+        elif not _tem_geo:
+            logger.debug(f"🔒 Slug mantido em '{slug}' — nenhum indicador geográfico nas mensagens")
 
         # Salvar mensagens do usuário
         for txt in textos:
@@ -2411,6 +2438,11 @@ async def processar_ia_e_responder(
         # ==================== FAST-PATH ====================
         # Texto combinado de TODAS as mensagens acumuladas para detectar intenção
         texto_combinado_norm = normalizar(" ".join(textos))
+
+        # Quando o buffer tem MÚLTIPLAS mensagens com intenções diferentes,
+        # desabilita o fast-path de intenção única e deixa a IA responder tudo de uma vez.
+        # Exceção: detecção de tipo de cliente (aluno/gympass) e saudação sempre rodam.
+        _multi_intencao = len(textos) > 1
 
         if not imagens_urls:
 
@@ -2480,18 +2512,18 @@ async def processar_ia_e_responder(
                     logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
 
             # Fast-path: FAQ direto
-            # Verifica antes da IA se a pergunta bate com alguma entrada do FAQ da unidade
-            elif slug and (
-                _faq_resposta := await buscar_resposta_faq(texto_combinado_norm, slug, empresa_id)
-            ):
-                fast_reply = _faq_resposta
-                logger.info(f"⚡ Fast-path: FAQ respondeu direto para conv {conversation_id}")
-                if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
-                    METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
+            # Busca em cada mensagem individual (não no texto combinado) para máxima precisão
+            elif slug and len(textos) == 1:
+                _faq_resposta = await buscar_resposta_faq(textos[0], slug, empresa_id)
+                if _faq_resposta:
+                    fast_reply = _faq_resposta
+                    logger.info(f"⚡ Fast-path: FAQ respondeu direto para conv {conversation_id}")
+                    if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
+                        METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
 
             # Fast-path: listar unidades
-            # Regex cobre singular E plural + com ou sem cidade na pergunta
-            elif re.search(
+            # Desabilitado quando buffer tem múltiplas mensagens — IA responde tudo junto
+            elif not _multi_intencao and re.search(
                 r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
                 r"|quantas.{0,10}unidades?"        # quantas unidades
                 r"|tem.{0,20}unidades?"            # tem unidade em SP / vcs tem unidades
@@ -2566,10 +2598,9 @@ async def processar_ia_e_responder(
                 else:
                     fast_reply = "No momento não há unidades cadastradas. 😕"
 
-            # Fast-path: planos — detecta intenção em QUALQUER das mensagens acumuladas
-            # Regex amplo para cobrir: "quais são os planos", "me fala o valor", "tem promoção",
-            # "quero me matricular", "como faço para assinar", etc.
-            elif re.search(
+            # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
+            # (a IA responde todas as perguntas de uma vez de forma mais coesa)
+            elif not _multi_intencao and re.search(
                 r"(preco|valor(es)?|quanto (custa|cobra|fica)"
                 r"|mensalidade|planos?|promocao|promoç"
                 r"|beneficio|benefícios|benefíci"
@@ -2591,25 +2622,42 @@ async def processar_ia_e_responder(
                     )
                     logger.info(f"⚡ Fast-path: {len(fast_reply_lista)} plano(s) — enviando como mensagens separadas")
 
-            # Fast-path: endereço (texto combinado)
+            # Fast-path: endereço e/ou horário
+            # Detecta cada um independentemente e combina numa resposta só
             elif unidade and re.search(
-                r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
+                r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
+                r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
                 texto_combinado_norm
             ):
-                if end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = random.choice(RESPOSTAS_ENDERECO).format(endereco=end_banco)
+                _quer_end = bool(re.search(
+                    r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
+                    texto_combinado_norm
+                ))
+                _quer_hor = bool(re.search(
+                    r"(horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
+                    texto_combinado_norm
+                ))
 
-            # Fast-path: horários (texto combinado)
-            elif unidade and re.search(
-                r"(horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-                texto_combinado_norm
-            ):
-                if hor_banco:
-                    if isinstance(hor_banco, dict):
-                        horario_str = "\n".join([f"• {dia}: {h}" for dia, h in hor_banco.items()])
+                _partes = []
+
+                if _quer_end and end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
+                    _partes.append(f"📍 *Endereço:*\n{end_banco}")
+
+                if _quer_hor and hor_banco:
+                    _hor = hor_banco
+                    if isinstance(_hor, str):
+                        try:
+                            _hor = json.loads(_hor)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    if isinstance(_hor, dict):
+                        _hor_str = "\n".join([f"• {dia}: {h}" for dia, h in _hor.items()])
                     else:
-                        horario_str = str(hor_banco)
-                    fast_reply = random.choice(RESPOSTAS_HORARIO).format(horario_str=horario_str)
+                        _hor_str = str(_hor)
+                    _partes.append(f"🕐 *Horários:*\n{_hor_str}")
+
+                if _partes:
+                    fast_reply = "\n\n".join(_partes) + "\n\nPosso ajudar com mais alguma coisa? 😊"
 
             # Fast-path: contato (texto combinado)
             elif unidade and re.search(
