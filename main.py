@@ -3438,6 +3438,16 @@ async def desbloquear_ia(conversation_id: int):
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 
+@app.get("/")
+@app.head("/")
+async def root_health():
+    """
+    Rota raiz para health check de plataformas (Render, Railway, Fly.io, etc.).
+    HEAD / e GET / retornam 200 — evita falso 'unhealthy' no dashboard.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/metrics")
 async def metrics_endpoint():
     """
