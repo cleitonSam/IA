@@ -2378,6 +2378,17 @@ async def processar_ia_e_responder(
 
         mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
 
+        # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
+        # O drain loop pode recolocar mensagens no buffer após o processamento.
+        # Se o hash das mensagens atuais é igual ao que foi respondido nos últimos
+        # 2 minutos, descarta silenciosamente — a resposta já foi enviada.
+        _hash_msgs = hashlib.md5(mensagens_formatadas.encode()).hexdigest()
+        _ultima_resp_key = f"last_ai_msg:{conversation_id}"
+        _ultima_resp_hash = await redis_client.get(_ultima_resp_key)
+        if _ultima_resp_hash and _ultima_resp_hash == _hash_msgs:
+            logger.info(f"⏭️ Anti-duplicata: mensagens já respondidas, descartando conv {conversation_id}")
+            return
+
         # Detecta se cliente mencionou outra unidade
         # ⚠️ Regra de proteção: só muda slug se a mensagem contém indicador geográfico
         # real (nome de cidade, bairro ou nome de unidade). Mensagens genéricas como
@@ -2613,9 +2624,9 @@ async def processar_ia_e_responder(
                     fast_reply = "No momento não há unidades cadastradas. 😕"
 
             # Fast-path: FAQ — último fallback antes da IA
-            # Só ativa com mensagem única para máxima precisão
-            elif slug and len(textos) == 1:
-                _faq_resposta = await buscar_resposta_faq(textos[0], slug, empresa_id)
+            # Usa texto combinado para funcionar mesmo quando cliente envia 2+ mensagens
+            elif slug:
+                _faq_resposta = await buscar_resposta_faq(" ".join(textos), slug, empresa_id)
                 if _faq_resposta:
                     contexto_precarregado = (
                         f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
@@ -2880,7 +2891,8 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO E CONDUÇÃO DE CONVERSA (OBRIGATÓRIO):
 - NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
 - NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
 - Em conversa casual (saudação, "tudo bem?", "por aí?"), responda de forma natural e acolhedora. NÃO empurre planos ou produtos sem que o cliente pergunte.
-- CONDUZA a conversa naturalmente em direção à venda: pergunte sobre objetivos, ajude o cliente a perceber o valor. Não seja agressivo.
+- Se o cliente fizer uma pergunta ESPECÍFICA (ex: "tem diária?", "qual o endereço?"), responda SOMENTE essa pergunta. Não adicione horários, planos ou outras informações que não foram pedidas.
+- CONDUZA a conversa naturalmente em direção à venda APENAS quando o cliente não fez pergunta específica. Quando há uma pergunta direta, responda-a primeiro — só depois, se natural, faça uma pergunta de acompanhamento.
 - Quando o cliente PERGUNTAR sobre planos/preços, aí sim apresente as opções.
 - Em saudações, NÃO mencione o nome da unidade — apenas se apresente.
 - Quando perguntarem seu nome, responda APENAS seu nome. Nada de "aqui na [unidade]".
@@ -3161,6 +3173,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
                     if i == 0:
                         await bd_registrar_primeira_resposta(conversation_id)
+
+        # Registra hash das mensagens respondidas para bloquear duplicatas no drain
+        await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
 
         # 🔄 DRAIN LOOP — processa mensagens que chegaram DURANTE o processamento da IA
         # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
