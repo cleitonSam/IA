@@ -107,7 +107,10 @@ async def rate_limit_middleware(request: Request, call_next):
     # 2. Rate limit por empresa (lido do payload — extrai account_id sem ler 2x o body)
     try:
         body = await request.body()
-        _payload = json.loads(body)
+        try:
+            _payload = json.loads(body.decode() or "{}")
+        except Exception:
+            _payload = {}
         _account_id = _payload.get("account", {}).get("id")
         if _account_id:
             emp_key   = f"rl:account:{_account_id}"
@@ -120,11 +123,8 @@ async def rate_limit_middleware(request: Request, call_next):
                     METRIC_ERROS_TOTAL.labels(tipo="rate_limit_account").inc()
                 from fastapi.responses import JSONResponse
                 return JSONResponse({"status": "rate_limit_account"}, status_code=429)
-        # Recria o request com o body já lido (FastAPI consome o stream uma vez)
-        from starlette.datastructures import Headers
-        from starlette.requests import Request as StarletteRequest
-        scope = request.scope
-        scope["_body"] = body
+        # Devolve o body ao request para que o endpoint possa lê-lo normalmente
+        request._body = body
     except Exception:
         pass
 
@@ -769,6 +769,10 @@ async def _get_embedding(texto: str) -> Optional[List[float]]:
     """
     if not cliente_ia:
         return None
+    # Textos muito curtos (saudações, "oi", "ok") não geram cache semântico útil
+    # e evitam custo de API desnecessário em escala
+    if len(texto.strip()) <= 15:
+        return None
     try:
         resp = await cliente_ia.embeddings.create(
             model="text-embedding-3-small",
@@ -843,6 +847,20 @@ async def salvar_cache_semantico(
     if not emb:
         return  # API indisponível — não salva embedding (hash cache ainda funciona)
     try:
+        # ── Limite por slug: máx 500 entradas para evitar crescimento ilimitado ──
+        _total_slug = 0
+        _cur_lim = 0
+        while True:
+            _cur_lim, _kk_lim = await redis_client.scan(
+                _cur_lim, match=f"semcache:{slug}:*", count=100
+            )
+            _total_slug += len(_kk_lim)
+            if _cur_lim == 0 or _total_slug >= 500:
+                break
+        if _total_slug >= 500:
+            logger.debug(f"semcache: limite 500 atingido para slug={slug}, entrada descartada")
+            return
+
         chave = f"semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
         await redis_client.hset(chave, mapping={
             "embedding": json.dumps(emb),
@@ -1314,6 +1332,9 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
 async def worker_followup():
     while True:
         await asyncio.sleep(30)
+        # Garante que apenas 1 worker processe follow-ups em ambiente multi-processo
+        if not await _is_worker_leader("followup", ttl=40):
+            continue
         if not db_pool:
             continue
         try:
@@ -2412,8 +2433,9 @@ async def processar_ia_e_responder(
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
         texto_norm_fast = normalizar(primeira_mensagem or "")
-        fast_reply = None          # str  — mensagem única
+        fast_reply = None          # str  — mensagem única (resposta fixa, sem LLM)
         fast_reply_lista = None   # List[str] — múltiplas mensagens (ex: planos)
+        contexto_precarregado = ""  # Dados buscados do BD — LLM gera a resposta humanizada
 
         # Campos da unidade
         end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
@@ -2511,19 +2533,23 @@ async def processar_ia_e_responder(
                     )
                     logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
 
-            # Fast-path: FAQ direto
-            # Busca em cada mensagem individual (não no texto combinado) para máxima precisão
+            # Fast-path: FAQ — busca resposta do banco e passa ao LLM para humanizar
+            # O LLM usa a resposta do FAQ como base mas constrói uma mensagem natural
             elif slug and len(textos) == 1:
                 _faq_resposta = await buscar_resposta_faq(textos[0], slug, empresa_id)
                 if _faq_resposta:
-                    fast_reply = _faq_resposta
-                    logger.info(f"⚡ Fast-path: FAQ respondeu direto para conv {conversation_id}")
+                    contexto_precarregado = (
+                        f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
+                        "(Use essa resposta como base — pode reformular de forma natural, "
+                        "mas não altere informações factuais nem adicione dados inexistentes.)"
+                    )
+                    logger.info(f"⚡ Fast-path: FAQ encontrado, LLM vai humanizar para conv {conversation_id}")
                     if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
                         METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
 
             # Fast-path: listar unidades
-            # Desabilitado quando buffer tem múltiplas mensagens — IA responde tudo junto
-            elif not _multi_intencao and re.search(
+            # Funciona mesmo com múltiplas mensagens — listar unidades é sempre seguro
+            elif re.search(
                 r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
                 r"|quantas.{0,10}unidades?"        # quantas unidades
                 r"|tem.{0,20}unidades?"            # tem unidade em SP / vcs tem unidades
@@ -2580,23 +2606,20 @@ async def processar_ia_e_responder(
                     # Só o nome — cidade não é exibida (evita repetição e poluição)
                     lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
 
-                    if _cidade_filtro and total > 0:
-                        fast_reply = (
-                            f"📍 Temos *{total} {'unidade' if total == 1 else 'unidades'}* em {_cidade_filtro}:\n\n"
-                            f"{lista_str}\n\n"
-                            "Qual delas fica mais perto de você? 😊"
-                        )
-                    else:
-                        fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
-                            total=total, lista_str=lista_str
-                        )
+                    _prefixo_geo = f" em {_cidade_filtro}" if _cidade_filtro else ""
+                    contexto_precarregado = (
+                        f"Unidades da rede{_prefixo_geo} ({total} no total):\n{lista_str}\n\n"
+                        "(Liste essas unidades de forma natural e convide o cliente a escolher "
+                        "a mais próxima ou perguntar sobre uma delas.)"
+                    )
+                    logger.info(f"⚡ Fast-path: {total} unidade(s) pré-carregada(s), LLM vai humanizar")
                     await bd_registrar_evento_funil(
                         conversation_id, "consulta_unidades",
                         f"Cliente solicitou unidades{' em ' + _cidade_filtro if _cidade_filtro else ''}",
                         score_incremento=1
                     )
                 else:
-                    fast_reply = "No momento não há unidades cadastradas. 😕"
+                    contexto_precarregado = "Não há unidades cadastradas no momento."
 
             # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
             # (a IA responde todas as perguntas de uma vez de forma mais coesa)
@@ -2638,10 +2661,10 @@ async def processar_ia_e_responder(
                     texto_combinado_norm
                 ))
 
-                _partes = []
+                _ctx_partes = []
 
                 if _quer_end and end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    _partes.append(f"📍 *Endereço:*\n{end_banco}")
+                    _ctx_partes.append(f"Endereço da unidade: {end_banco}")
 
                 if _quer_hor and hor_banco:
                     _hor = hor_banco
@@ -2651,21 +2674,23 @@ async def processar_ia_e_responder(
                         except (json.JSONDecodeError, ValueError):
                             pass
                     if isinstance(_hor, dict):
-                        _hor_str = "\n".join([f"• {dia}: {h}" for dia, h in _hor.items()])
+                        _hor_str = "\n".join([f"  {dia}: {h}" for dia, h in _hor.items()])
                     else:
                         _hor_str = str(_hor)
-                    _partes.append(f"🕐 *Horários:*\n{_hor_str}")
+                    _ctx_partes.append(f"Horários de funcionamento:\n{_hor_str}")
 
-                if _partes:
-                    fast_reply = "\n\n".join(_partes) + "\n\nPosso ajudar com mais alguma coisa? 😊"
+                if _ctx_partes:
+                    contexto_precarregado = "\n\n".join(_ctx_partes)
+                    logger.info(f"⚡ Fast-path: endereço/horário pré-carregado, LLM vai humanizar")
 
-            # Fast-path: contato (texto combinado)
+            # Fast-path: contato — passa número ao LLM para resposta humanizada
             elif unidade and re.search(
                 r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
                 texto_combinado_norm
             ):
                 if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = random.choice(RESPOSTAS_CONTATO).format(tel_banco=tel_banco)
+                    contexto_precarregado = f"Telefone/WhatsApp de contato da unidade: {tel_banco}"
+                    logger.info(f"⚡ Fast-path: contato pré-carregado, LLM vai humanizar")
                     await bd_registrar_evento_funil(
                         conversation_id, "solicitacao_telefone",
                         "Cliente solicitou telefone", score_incremento=3
@@ -2681,11 +2706,17 @@ async def processar_ia_e_responder(
             hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
             chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
 
-        resposta_cacheada = await redis_client.get(chave_cache_ia)
+        # Quando há dados pré-carregados do BD, bypassa cache completamente:
+        # os dados são ao vivo (endereço/horário podem ter mudado) e o LLM precisa
+        # gerar uma resposta humanizada nova — não uma resposta cacheada de outra conversa.
+        if contexto_precarregado:
+            resposta_cacheada = None
+        else:
+            resposta_cacheada = await redis_client.get(chave_cache_ia)
 
-        # Cache semântico (embedding) — consultado apenas se não houver cache exato
+        # Cache semântico (embedding) — consultado apenas se não houver cache exato nem contexto live
         _cache_sem = None
-        if not resposta_cacheada and not fast_reply and not imagens_urls and not mudou_unidade and primeira_mensagem:
+        if not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
             _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug)
 
         if fast_reply:
@@ -2802,6 +2833,8 @@ Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios')
             ) if mudou_unidade else ""
 
             prompt_sistema = f"""
+IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil. NUNCA responda em inglês ou qualquer outro idioma, independente da pergunta.
+
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
 
 PERSONALIDADE
@@ -2822,6 +2855,10 @@ REGRAS DE ATENDIMENTO
 {_extras_prompt}
 INFORMAÇÕES DA UNIDADE
 {dados_unidade}
+
+UNIDADES DA REDE {nome_empresa.upper()}:
+{lista_unidades_nomes}
+(Se o cliente perguntar quais unidades existem, liste esses nomes. Para detalhes de endereço/horário de outra unidade, pergunte qual delas ele prefere para você buscar as informações.)
 
 FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
@@ -2857,7 +2894,15 @@ FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
 DADOS DO ATENDIMENTO:
 Cliente: {nome_cliente}
 Estado emocional anterior: {estado_atual}
+{f"""
+DADOS JÁ CARREGADOS DO BANCO — USE EXATAMENTE ESSES, não invente nem altere:
+{contexto_precarregado}
 
+REGRA OBRIGATÓRIA: O cliente JÁ pediu esses dados — entregue-os DIRETAMENTE na resposta.
+NUNCA pergunte "Quer que eu te passe?", "Posso te enviar?" ou qualquer variação.
+NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo o caminho",
+"precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
+""" if contexto_precarregado else ""}
 MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
@@ -3191,12 +3236,13 @@ async def chatwoot_webhook(
 
     # Rate limiting por conversa
     # Rate limit por conversa (anti-loop de webhook)
-    rate_key = f"rate:{id_conv}"
+    rate_key = f"rl:conv:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1:
         await redis_client.expire(rate_key, 10)
     if contador > 10:
-        return {"status": "rate_limit"}
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "rate_limit"}, status_code=429)
 
     # Busca empresa pelo account_id
     empresa_id = await buscar_empresa_por_account_id(account_id)
@@ -3257,15 +3303,32 @@ async def chatwoot_webhook(
     # Detecta unidade na mensagem APENAS em dois cenários:
     # 1) Já existe um slug definido (cliente quer trocar de unidade)
     # 2) Cliente está no fluxo de escolha de unidade (esperando_unidade=1)
-    # NUNCA roda na primeira mensagem sem contexto — evita falsos positivos com 30 unidades
+    # PROTEÇÃO: só roda se a mensagem contém um indicador geográfico real
+    # (nome de unidade, cidade ou bairro). Mensagens genéricas NUNCA trocam o slug.
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
-        slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
-        if slug_detectado and slug_detectado != slug:
-            logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
-            slug = slug_detectado
-            await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-            if esperando_unidade:
-                await redis_client.delete(f"esperando_unidade:{id_conv}")
+        _msg_norm_wh = normalizar(conteudo_texto)
+        _tem_geo_wh = False
+        try:
+            _units_wh = await listar_unidades_ativas(empresa_id)
+            for _u in _units_wh:
+                for _campo in ['nome', 'cidade', 'bairro']:
+                    _val = normalizar(_u.get(_campo, '') or '')
+                    if _val and len(_val) >= 4 and _val in _msg_norm_wh:
+                        _tem_geo_wh = True
+                        break
+                if _tem_geo_wh:
+                    break
+        except Exception:
+            pass
+
+        if _tem_geo_wh or esperando_unidade:
+            slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
+            if slug_detectado and slug_detectado != slug:
+                logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
+                slug = slug_detectado
+                await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+                if esperando_unidade:
+                    await redis_client.delete(f"esperando_unidade:{id_conv}")
 
     # Sem unidade ainda — tenta definir
     if not slug and message_type == "incoming":
@@ -3438,14 +3501,7 @@ async def desbloquear_ia(conversation_id: int):
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 
-@app.get("/")
-@app.head("/")
-async def root_health():
-    """
-    Rota raiz para health check de plataformas (Render, Railway, Fly.io, etc.).
-    HEAD / e GET / retornam 200 — evita falso 'unhealthy' no dashboard.
-    """
-    return {"status": "ok"}
+# rota raiz consolidada em health() abaixo
 
 
 @app.get("/metrics")
@@ -3604,10 +3660,14 @@ async def status_endpoint():
 
 
 @app.get("/")
+@app.head("/")
 async def health():
+    """
+    Health check para plataformas (Render, Railway, Fly.io, etc.).
+    HEAD / e GET / retornam 200 — evita falso 'unhealthy' no dashboard.
+    """
     return {
-        "status": (
-            "🤖 Motor SaaS IA v2.5 — Planos bonitos, aluno/gympass detectado, "
-            "busca cidade/bairro aprimorada, métricas Prometheus, loguru!"
-        )
+        "status": "ok",
+        "service": "Motor SaaS IA",
+        "version": "2.5.0"
     }
