@@ -927,6 +927,9 @@ async def startup_event():
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
 
+    if OPENROUTER_API_KEY and cliente_ia:
+        logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
+
     worker_tasks = [
         asyncio.create_task(worker_followup(), name="worker_followup"),
         asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
@@ -1003,6 +1006,13 @@ def _is_provider_unavailable_error(err: Exception) -> bool:
         "key limit exceeded", "limit exceeded", "quota", "insufficient credits",
         "credit", "rate limit", "error code: 403", "error code: 402",
     ]
+    return any(s in msg for s in sinais)
+
+
+def _is_openrouter_auth_error(err: Exception) -> bool:
+    """Detecta erro de credencial/autorização da OPENROUTER_API_KEY."""
+    msg = normalizar(str(err) or "")
+    sinais = ["401", "unauthorized", "invalid api key", "authentication", "forbidden"]
     return any(s in msg for s in sinais)
 
 
@@ -3518,7 +3528,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 goto_send = True
             if not goto_send:
                 if not cliente_ia:
-                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
+                    resposta_texto = "Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes? 😊"
                     novo_estado = estado_atual
                     goto_send = True
 
@@ -3599,8 +3609,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     except Exception as e:
                         erro_provedor = _is_provider_unavailable_error(e)
                         if erro_provedor:
-                            logger.warning("⚠️ IA indisponível temporariamente")
+                            logger.warning("⚠️ IA indisponível temporariamente (OpenRouter)")
                             await redis_client.setex(llm_provider_pause_key, 300, "1")
+                        elif _is_openrouter_auth_error(e):
+                            logger.warning("⚠️ Falha de autenticação OpenRouter (verifique OPENROUTER_API_KEY)")
+                            await redis_client.setex(llm_provider_pause_key, 600, "1")
                         else:
                             logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
