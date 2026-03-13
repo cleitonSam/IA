@@ -927,6 +927,9 @@ async def startup_event():
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
 
+    if OPENROUTER_API_KEY and cliente_ia:
+        logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
+
     worker_tasks = [
         asyncio.create_task(worker_followup(), name="worker_followup"),
         asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
@@ -996,13 +999,20 @@ def primeiro_nome_cliente(nome: Optional[str]) -> str:
     return nome_limpo.split()[0].capitalize()
 
 
-def _is_quota_or_key_limit_error(err: Exception) -> bool:
-    """Detecta erros de limite/cota de provedores LLM sem expor detalhes sensíveis."""
+def _is_provider_unavailable_error(err: Exception) -> bool:
+    """Detecta indisponibilidade de provedor LLM para acionar modo degradado."""
     msg = normalizar(str(err) or "")
     sinais = [
         "key limit exceeded", "limit exceeded", "quota", "insufficient credits",
         "credit", "rate limit", "error code: 403", "error code: 402",
     ]
+    return any(s in msg for s in sinais)
+
+
+def _is_openrouter_auth_error(err: Exception) -> bool:
+    """Detecta erro de credencial/autorização da OPENROUTER_API_KEY."""
+    msg = normalizar(str(err) or "")
+    sinais = ["401", "unauthorized", "invalid api key", "authentication", "forbidden"]
     return any(s in msg for s in sinais)
 
 
@@ -3487,8 +3497,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             temperature = float(pers.get("temperatura") or 0.7)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
-            llm_quota_pause_key = f"llm:quota_pause:{empresa_id}"
-            if await redis_client.get(llm_quota_pause_key) == "1":
+            llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
+            if await redis_client.get(llm_provider_pause_key) == "1":
                 _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
                 resposta_texto = (
                     f"{_nome_cb}, agora estamos com alto volume no atendimento automático 😕\n\n"
@@ -3518,13 +3528,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 goto_send = True
             if not goto_send:
                 if not cliente_ia:
-                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
-                    novo_estado = estado_atual
-                    goto_send = True
-
-            if not goto_send:
-                if not cliente_ia:
-                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
+                    resposta_texto = "Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes? 😊"
                     novo_estado = estado_atual
                     goto_send = True
 
@@ -3591,9 +3595,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 "estado": estado_atual
                             })
                         except Exception as e2:
-                            if _is_quota_or_key_limit_error(e2):
-                                logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
-                                await redis_client.setex(llm_quota_pause_key, 300, "1")
+                            if _is_provider_unavailable_error(e2):
+                                logger.warning("⚠️ Fallback de IA indisponível temporariamente")
+                                await redis_client.setex(llm_provider_pause_key, 300, "1")
                             else:
                                 logger.error("❌ Erro no fallback")
                             await cb_llm.record_failure()
@@ -3603,20 +3607,23 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             })
 
                     except Exception as e:
-                        erro_quota = _is_quota_or_key_limit_error(e)
-                        if erro_quota:
-                            logger.warning("⚠️ LLM indisponível por limite/cota do provedor")
-                            await redis_client.setex(llm_quota_pause_key, 300, "1")
+                        erro_provedor = _is_provider_unavailable_error(e)
+                        if erro_provedor:
+                            logger.warning("⚠️ IA indisponível temporariamente (OpenRouter)")
+                            await redis_client.setex(llm_provider_pause_key, 300, "1")
+                        elif _is_openrouter_auth_error(e):
+                            logger.warning("⚠️ Falha de autenticação OpenRouter (verifique OPENROUTER_API_KEY)")
+                            await redis_client.setex(llm_provider_pause_key, 600, "1")
                         else:
                             logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
                         if _PROMETHEUS_OK:
                             METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
 
-                        # Em erro de quota, evita nova tentativa imediata no fallback
-                        # (normalmente falha igual e só gera ruído de log/latência).
-                        if erro_quota:
-                            await redis_client.setex(llm_quota_pause_key, 300, "1")
+                        # Em indisponibilidade do provedor, evita nova tentativa imediata no fallback
+                        # para reduzir ruído de log e latência.
+                        if erro_provedor:
+                            await redis_client.setex(llm_provider_pause_key, 300, "1")
                             resposta_bruta = json.dumps({
                                 "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
@@ -3628,9 +3635,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 resposta_bruta = response.choices[0].message.content
                                 await cb_llm.record_success()
                             except Exception as e2:
-                                if _is_quota_or_key_limit_error(e2):
-                                    logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
-                                    await redis_client.setex(llm_quota_pause_key, 300, "1")
+                                if _is_provider_unavailable_error(e2):
+                                    logger.warning("⚠️ Fallback de IA indisponível temporariamente")
+                                    await redis_client.setex(llm_provider_pause_key, 300, "1")
                                 else:
                                     logger.error("❌ Fallback também falhou")
                                 await cb_llm.record_failure()
