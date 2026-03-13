@@ -3594,7 +3594,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             })
                         except Exception as e2:
                             if _is_quota_or_key_limit_error(e2):
-                                logger.error("❌ Fallback falhou por limite/cota do provedor LLM")
+                                logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
                             else:
                                 logger.error("❌ Erro no fallback")
                             await cb_llm.record_failure()
@@ -3604,28 +3604,38 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             })
 
                     except Exception as e:
-                        if _is_quota_or_key_limit_error(e):
-                            logger.warning("⚠️ Erro LLM primário por limite/cota — tentando fallback")
+                        erro_quota = _is_quota_or_key_limit_error(e)
+                        if erro_quota:
+                            logger.warning("⚠️ LLM indisponível por limite/cota do provedor")
                         else:
                             logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
                         if _PROMETHEUS_OK:
                             METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
-                        try:
-                            modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
-                            response = await _chamar_llm(modelo_fallback, extra_timeout=20)
-                            resposta_bruta = response.choices[0].message.content
-                            await cb_llm.record_success()
-                        except Exception as e2:
-                            if _is_quota_or_key_limit_error(e2):
-                                logger.error("❌ Fallback falhou por limite/cota do provedor LLM")
-                            else:
-                                logger.error("❌ Fallback também falhou")
-                            await cb_llm.record_failure()
+
+                        # Em erro de quota, evita nova tentativa imediata no fallback
+                        # (normalmente falha igual e só gera ruído de log/latência).
+                        if erro_quota:
                             resposta_bruta = json.dumps({
                                 "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
                             })
+                        else:
+                            try:
+                                modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+                                response = await _chamar_llm(modelo_fallback, extra_timeout=20)
+                                resposta_bruta = response.choices[0].message.content
+                                await cb_llm.record_success()
+                            except Exception as e2:
+                                if _is_quota_or_key_limit_error(e2):
+                                    logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
+                                else:
+                                    logger.error("❌ Fallback também falhou")
+                                await cb_llm.record_failure()
+                                resposta_bruta = json.dumps({
+                                    "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
+                                    "estado": estado_atual
+                                })
 
                 _latencia = time.time() - start_time
                 logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
