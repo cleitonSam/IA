@@ -2775,6 +2775,7 @@ async def processar_ia_e_responder(
     integracao_chatwoot: dict
 ):
     chave_lock = f"lock:{conversation_id}"
+    chave_buffet = f"buffet:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
@@ -2826,6 +2827,8 @@ async def processar_ia_e_responder(
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
         texto_norm_fast = normalizar(primeira_mensagem or "")
+        resposta_texto = ""
+        novo_estado = estado_atual
         fast_reply = None          # str  — mensagem única (resposta fixa, sem LLM)
         fast_reply_lista = None   # List[str] — múltiplas mensagens (ex: planos)
         contexto_precarregado = ""  # Dados buscados do BD — LLM gera a resposta humanizada
@@ -2859,15 +2862,8 @@ async def processar_ia_e_responder(
         # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
-            planos_str = formatar_planos_para_prompt(planos_ativos)
-            links_dos_planos = "\n".join([
-                f"- {p['nome']}: {p['link_venda']}"
-                for p in planos_ativos if p.get('link_venda')
-            ])
             link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
         else:
-            planos_str = "não informado"
-            links_dos_planos = ""
             link_plano = link_mat
 
         # ==================== FAST-PATH ====================
