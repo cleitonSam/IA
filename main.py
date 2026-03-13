@@ -87,8 +87,18 @@ async def rate_limit_middleware(request: Request, call_next):
       2. Por empresa — máx 300 req/minuto (anti-loop de webhook)
     Apenas para o endpoint /webhook. Outros endpoints passam livre.
     """
-    if request.url.path != "/webhook" or redis_client is None:
+    if request.url.path != "/webhook" or not redis_client:
         return await call_next(request)
+
+    try:
+        await redis_client.ping()
+    except Exception:
+        return await call_next(request)
+
+    async def _set_body(req: Request, b: bytes):
+        async def receive():
+            return {"type": "http.request", "body": b, "more_body": False}
+        req._receive = receive
 
     client_ip = request.client.host if request.client else "unknown"
 
@@ -124,7 +134,7 @@ async def rate_limit_middleware(request: Request, call_next):
                 from fastapi.responses import JSONResponse
                 return JSONResponse({"status": "rate_limit_account"}, status_code=429)
         # Devolve o body ao request para que o endpoint possa lê-lo normalmente
-        request._body = body
+        await _set_body(request, body)
     except Exception:
         pass
 
@@ -197,7 +207,8 @@ class CircuitBreaker:
             logger.warning(f"⚡ CircuitBreaker [{self.name}] → OPEN novamente (falha em HALF_OPEN)")
         else:
             fails = await redis_client.incr(k_fail)
-            if not await redis_client.ttl(k_fail):
+            ttl = await redis_client.ttl(k_fail)
+            if ttl in (-1, -2):
                 await redis_client.expire(k_fail, 120)
             if fails >= self.failure_threshold:
                 await redis_client.mset({
@@ -230,6 +241,16 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+if not CHATWOOT_URL:
+    logger.warning("CHATWOOT_URL não definido globalmente")
+if not CHATWOOT_TOKEN:
+    logger.warning("CHATWOOT_TOKEN não definido globalmente")
+if not OPENROUTER_API_KEY:
+    logger.warning("OPENROUTER_API_KEY não definido")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL não definido")
 
 EMPRESA_ID_PADRAO = 1
 
@@ -429,6 +450,14 @@ def responder_horario(unidade: dict) -> str:
     )
 
 
+def extrair_telefone_unidade(unidade: dict) -> Optional[str]:
+    return (
+        unidade.get("telefone_principal")
+        or unidade.get("telefone")
+        or unidade.get("whatsapp")
+    )
+
+
 def responder_endereco(unidade: dict) -> str:
     nome = unidade.get("nome") or "da unidade"
     endereco = unidade.get("endereco_completo") or unidade.get("endereco")
@@ -445,7 +474,7 @@ def responder_endereco(unidade: dict) -> str:
 
 def responder_telefone(unidade: dict) -> str:
     nome = unidade.get("nome") or "da unidade"
-    telefone = unidade.get("telefone_principal") or unidade.get("telefone") or unidade.get("whatsapp")
+    telefone = extrair_telefone_unidade(unidade)
     if not telefone:
         return (
             f"📞 No momento não encontrei o contato da unidade *{nome}*.\n\n"
@@ -652,7 +681,7 @@ db_pool: asyncpg.Pool = None
 # --- CONTROLE DE CONCORRÊNCIA ---
 whisper_semaphore = asyncio.Semaphore(5)
 llm_semaphore = asyncio.Semaphore(15)
-USAR_CACHE_SEMANTICO = False
+USAR_CACHE_SEMANTICO = os.getenv("USAR_CACHE_SEMANTICO", "false").lower() == "true"
 
 LUA_RELEASE_LOCK = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -713,7 +742,13 @@ async def startup_event():
 
     if DATABASE_URL:
         try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            db_pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                command_timeout=20,
+                timeout=10,
+            )
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except asyncpg.PostgresConnectionStatusError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
@@ -1786,7 +1821,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
     if not db_pool:
         return {}
 
-    cache_key = f"cfg:unidade:{slug}:v2"
+    cache_key = f"cfg:unidade:{empresa_id}:{slug}:v2"
     cache = await redis_client.get(cache_key)
     if cache:
         return json.loads(cache)
@@ -2669,7 +2704,7 @@ async def processar_ia_e_responder(
         end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
         hor_banco = unidade.get('horarios')
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
-        tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
+        tel_banco = extrair_telefone_unidade(unidade)
 
         # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
@@ -3400,7 +3435,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
 
-        await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
+        if resposta_texto and resposta_texto.strip():
+            await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
         is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
 
@@ -3414,6 +3450,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     break
                 if not bloco_plano.strip():
                     continue
+                await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
                 typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
@@ -3574,7 +3611,8 @@ async def chatwoot_webhook(
         return {"status": "conversa_criada"}
 
     if event == "conversation_updated":
-        if conv_obj.get("status") == "resolved":
+        status_conv = conv_obj.get("status") or payload.get("status")
+        if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
                 f"pause_ia:{id_conv}", f"estado:{id_conv}",
