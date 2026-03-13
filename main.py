@@ -357,6 +357,22 @@ def formatar_horarios_funcionamento(horarios: Any) -> str:
     return str(horarios)
 
 
+def garantir_frase_completa(txt: str) -> str:
+    """Remove frase incompleta no final do texto para evitar resposta cortada."""
+    if not txt:
+        return txt
+    txt = txt.strip()
+    if not txt:
+        return txt
+    if txt[-1] in '.!?😊💪✅🏋🎯':
+        return txt
+    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
+        _pos = txt.rfind(_sep)
+        if _pos > len(txt) * 0.3:
+            return txt[:_pos + 1].strip()
+    return txt
+
+
 def classificar_intencao(texto: str) -> str:
     """Classifica intenção principal com foco operacional (factual antes de LLM)."""
     t = normalizar(texto or "")
@@ -509,6 +525,18 @@ async def gerar_resposta_inteligente(
         if convenios:
             lista = "\n".join([f"• {c}" for c in convenios])
             return {"tipo": "texto", "resposta": f"✅ A unidade *{unidade.get('nome', slug)}* trabalha com:\n{lista}\n\nSe quiser, também posso te passar os planos da unidade.", "slug": slug, "intencao": intencao}
+
+    if slug and intencao == "llm" and ctx.get("origem") == "mensagem":
+        unidade_nome = unidade.get("nome") or slug
+        horario_hoje = horario_hoje_formatado(unidade.get("horarios")) if unidade else None
+        _extra = f"\n🕒 Hoje: *{horario_hoje}*" if horario_hoje else ""
+        return {
+            "tipo": "texto",
+            "resposta": f"Perfeito! Vamos falar da unidade *{unidade_nome}*.{_extra}\n\nMe diz sua dúvida que já te respondo direto 😊",
+            "slug": slug,
+            "intencao": "contexto_unidade"
+        }
+
 
     if slug:
         faq = await buscar_resposta_faq(texto_cliente, slug, empresa_id)
@@ -2521,8 +2549,8 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda 6s para acumular mensagens enviadas em sequência rápida
-        await asyncio.sleep(6)
+        # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
+        await asyncio.sleep(2)
 
         chave_buffet = f"buffet:{conversation_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -3340,7 +3368,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 if not imagens_urls:
                     _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
                     await redis_client.setex(chave_cache_ia, 600, _cache_payload)
-                    if primeira_mensagem:
+                    if USAR_CACHE_SEMANTICO and primeira_mensagem:
                         await salvar_cache_semantico(
                             primeira_mensagem, slug,
                             {"resposta": resposta_texto, "estado": novo_estado},
@@ -3413,7 +3441,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # para conhecer..." em mensagem separada). O cliente recebe a resposta
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
-                _texto_final = _garantir_frase_completa(resposta_texto)
+                _texto_final = garantir_frase_completa(resposta_texto)
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
