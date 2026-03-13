@@ -3047,33 +3047,16 @@ async def processar_ia_e_responder(
                 )
                 logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
 
-            # Saudação — deixa o LLM gerar resposta dinâmica e natural
-            # Apenas informa o contexto (primeiro contato ou retorno)
+            # Saudação — responde via fast-path para evitar dependência do LLM
+            # em casos simples (e impedir travas quando há indisponibilidade de cota).
             elif all(eh_saudacao(t) for t in textos) and textos:
-                _qtd_ia_anterior = 0
-                try:
-                    _qtd_ia_anterior = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM mensagens m
-                        JOIN conversas c ON c.id = m.conversa_id
-                        WHERE c.conversation_id = $1 AND m.role = 'assistant'
-                    """, conversation_id) or 0
-                except Exception:
-                    pass
-
-                if _qtd_ia_anterior > 0:
-                    contexto_precarregado = (
-                        "[SAUDAÇÃO DE RETORNO] O cliente já conversou antes.\n"
-                        "Responda de forma CURTA e natural — sem se apresentar novamente.\n"
-                        "Exemplo: 'E aí, tudo certo? Como posso ajudar? 😊'"
-                    )
-                    logger.info(f"⚡ Saudação de retorno → LLM vai gerar para {nome_cliente}")
+                _primeiro_nome = primeiro_nome_cliente(nome_cliente)
+                _cumpr = saudacao_por_horario()
+                if _primeiro_nome:
+                    fast_reply = f"{_cumpr}, {_primeiro_nome}! 😊 Como posso te ajudar hoje?"
                 else:
-                    contexto_precarregado = (
-                        "[PRIMEIRO CONTATO] O cliente está chegando agora.\n"
-                        "Se apresente brevemente (seu nome), seja acolhedor.\n"
-                        "Pergunte como pode ajudar — NÃO liste serviços nem empurre planos."
-                    )
-                    logger.info(f"⚡ Primeiro contato → LLM vai gerar saudação para {nome_cliente}")
+                    fast_reply = f"{_cumpr}! 😊 Como posso te ajudar hoje?"
+                logger.info(f"⚡ Fast-path: saudação respondida sem LLM para {nome_cliente}")
 
             # Fast-path: listar unidades (prioridade ANTES do FAQ)
             # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
@@ -3137,17 +3120,12 @@ async def processar_ia_e_responder(
                 else:
                     fast_reply = "No momento não há unidades cadastradas. 😕"
 
-            # Fast-path: FAQ — último fallback antes da IA
-            # Usa texto combinado para funcionar mesmo quando cliente envia 2+ mensagens
+            # Fast-path: FAQ — resposta direta sem LLM para evitar travas por cota
             elif slug and not (_pedido_end_hor or _pedido_planos or _pedido_contato):
                 _faq_resposta = await buscar_resposta_faq(" ".join(textos), slug, empresa_id)
                 if _faq_resposta:
-                    contexto_precarregado = (
-                        f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
-                        "(Use essa resposta como base — pode reformular de forma natural, "
-                        "mas não altere informações factuais nem adicione dados inexistentes.)"
-                    )
-                    logger.info(f"⚡ Fast-path: FAQ encontrado, LLM vai humanizar para conv {conversation_id}")
+                    fast_reply = limpar_markdown(_faq_resposta)
+                    logger.info(f"⚡ Fast-path: FAQ encontrado — resposta direta sem LLM para conv {conversation_id}")
                     if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
                         METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
 
@@ -3508,9 +3486,26 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             )
             temperature = float(pers.get("temperatura") or 0.7)
 
+            # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
+            llm_quota_pause_key = f"llm:quota_pause:{empresa_id}"
+            if await redis_client.get(llm_quota_pause_key) == "1":
+                _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
+                resposta_texto = (
+                    f"{_nome_cb}, agora estamos com alto volume no atendimento automático 😕\n\n"
+                    "Se quiser, me manda sua dúvida em uma frase curta que priorizo aqui pra você."
+                )
+                novo_estado = estado_atual
+                goto_send = True
+            else:
+                goto_send = False
+
             # ── Circuit Breaker check ─────────────────────────────────────────
-            _cb_allowed = await cb_llm.is_allowed()
-            if not _cb_allowed:
+            if not goto_send:
+                _cb_allowed = await cb_llm.is_allowed()
+            else:
+                _cb_allowed = True
+
+            if not goto_send and not _cb_allowed:
                 logger.warning(f"🔴 CircuitBreaker OPEN — usando resposta padrão para conv {conversation_id}")
                 # Resposta de fallback quando LLM está indisponível
                 _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
@@ -3521,8 +3516,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 novo_estado = estado_atual
                 # Pula o bloco IA e vai direto para envio
                 goto_send = True
-            else:
-                goto_send = False
+            if not goto_send:
+                if not cliente_ia:
+                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
+                    novo_estado = estado_atual
+                    goto_send = True
 
             if not goto_send:
                 if not cliente_ia:
@@ -3595,6 +3593,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         except Exception as e2:
                             if _is_quota_or_key_limit_error(e2):
                                 logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
+                                await redis_client.setex(llm_quota_pause_key, 300, "1")
                             else:
                                 logger.error("❌ Erro no fallback")
                             await cb_llm.record_failure()
@@ -3607,6 +3606,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         erro_quota = _is_quota_or_key_limit_error(e)
                         if erro_quota:
                             logger.warning("⚠️ LLM indisponível por limite/cota do provedor")
+                            await redis_client.setex(llm_quota_pause_key, 300, "1")
                         else:
                             logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
@@ -3616,6 +3616,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         # Em erro de quota, evita nova tentativa imediata no fallback
                         # (normalmente falha igual e só gera ruído de log/latência).
                         if erro_quota:
+                            await redis_client.setex(llm_quota_pause_key, 300, "1")
                             resposta_bruta = json.dumps({
                                 "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
@@ -3629,6 +3630,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             except Exception as e2:
                                 if _is_quota_or_key_limit_error(e2):
                                     logger.warning("⚠️ Fallback indisponível por limite/cota do provedor LLM")
+                                    await redis_client.setex(llm_quota_pause_key, 300, "1")
                                 else:
                                     logger.error("❌ Fallback também falhou")
                                 await cb_llm.record_failure()
