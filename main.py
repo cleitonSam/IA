@@ -1365,13 +1365,32 @@ def detectar_intencao(texto: str) -> Optional[str]:
 
 
 async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
-    """Coleta mensagens do buffer e limpa a fila da conversa."""
+    """Coleta mensagens do buffer e limpa a fila da conversa.
+
+    Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
+    em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
+    """
     chave_buffet = f"buffet:{conversation_id}"
-    async with redis_client.pipeline(transaction=True) as pipe:
-        pipe.lrange(chave_buffet, 0, -1)
-        pipe.delete(chave_buffet)
-        resultado = await pipe.execute()
-    mensagens_acumuladas = resultado[0]
+
+    mensagens_acumuladas: List[str] = []
+    deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
+
+    while True:
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.lrange(chave_buffet, 0, -1)
+            pipe.delete(chave_buffet)
+            resultado = await pipe.execute()
+        lote = resultado[0] or []
+        if lote:
+            mensagens_acumuladas.extend(lote)
+            if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
+                break
+            await asyncio.sleep(0.25)
+            continue
+        if mensagens_acumuladas or time.time() >= deadline:
+            break
+        await asyncio.sleep(0.15)
+
     logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
 
@@ -3103,6 +3122,7 @@ async def processar_ia_e_responder(
                 if todas_ativas:
                     # Filtra por cidade se o cliente mencionou uma
                     _cidade_filtro = None
+                    _estado_filtro = None
                     # 1. Verifica se alguma cidade do banco está na pergunta
                     for _u in todas_ativas:
                         _cid = normalizar(_u.get('cidade', '') or '')
@@ -3120,13 +3140,23 @@ async def processar_ia_e_responder(
                     if not _cidade_filtro:
                         for _abbr, _cidade_nome in _ESTADO_MAP.items():
                             if _abbr in texto_combinado_norm.split() or _abbr in texto_combinado_norm:
+                                if _abbr in {"sp", "rj", "mg"}:
+                                    _estado_filtro = _abbr.upper()
+                                    break
                                 _cid_norm = normalizar(_cidade_nome)
                                 _match = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '').startswith(_cid_norm[:5])]
                                 if _match:
                                     _cidade_filtro = _match[0].get('cidade')
                                     break
 
-                    if _cidade_filtro:
+                    if _estado_filtro:
+                        unidades_lista = [
+                            u for u in todas_ativas
+                            if normalizar(u.get('estado', '') or '') == normalizar(_estado_filtro)
+                        ]
+                        if not unidades_lista:
+                            unidades_lista = todas_ativas
+                    elif _cidade_filtro:
                         _cid_norm = normalizar(_cidade_filtro)
                         unidades_lista = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '') == _cid_norm]
                         if not unidades_lista:
@@ -3138,9 +3168,10 @@ async def processar_ia_e_responder(
                     # Só o nome — cidade não é exibida (evita repetição e poluição)
                     lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
 
-                    if _cidade_filtro and total > 0:
+                    if (_cidade_filtro or _estado_filtro) and total > 0:
+                        _local_txt = _cidade_filtro or _estado_filtro
                         fast_reply = (
-                            f"📍 Temos {total} {'unidade' if total == 1 else 'unidades'} em {_cidade_filtro}:\n\n"
+                            f"📍 Temos {total} {'unidade' if total == 1 else 'unidades'} em {_local_txt}:\n\n"
                             f"{lista_str}\n\n"
                             "Qual delas fica mais perto de você? 😊"
                         )
@@ -4113,7 +4144,16 @@ async def chatwoot_webhook(
                     # Evita loop de mensagens repetidas quando já pedimos a unidade
                     # (ex.: múltiplos webhooks da mesma conversa em sequência).
                     if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
-                        logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
+                        # Não fica em silêncio: envia lembrete curto com throttle
+                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
+                        if not await redis_client.get(throttle_key):
+                            msg_retry = (
+                                "Ainda não consegui localizar a unidade certinha 😅\n\n"
+                                "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
+                            )
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, "Assistente Virtual", integracao)
+                            await redis_client.setex(throttle_key, 30, "1")
+                        logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
                         return {"status": "aguardando_escolha_unidade"}
 
                     # Unidade não identificada — pergunta direta, sem saudação fixa
