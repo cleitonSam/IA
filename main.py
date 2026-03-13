@@ -1533,6 +1533,17 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
 
         # Interseção de tokens significativos (ignora palavras curtas < 4 chars)
         _sig = lambda ts: {t for t in ts if len(t) >= 4}
+
+        # Token matching no NOME — exige ≥2 tokens para evitar falso positivo
+        # Ex: "Ricardo Jafet" → {"ricardo", "jafet"} ∩ tokens do texto → 2 matches → OK
+        _match_nome = _sig(tokens_texto) & _sig(tokens_nome)
+        if len(_match_nome) >= 2:
+            return u['slug']
+        # Para nomes com 1 único token significativo (ex: "Andorinha"),
+        # aceita match direto se esse token ≥6 chars (mais específico)
+        if len(_match_nome) == 1 and all(len(t) >= 6 for t in _match_nome):
+            return u['slug']
+
         if _sig(tokens_texto) & _sig(tokens_cidade):
             return u['slug']
         if _sig(tokens_texto) & _sig(tokens_bairro):
@@ -2885,30 +2896,63 @@ FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 HISTÓRICO DA CONVERSA
 {historico}
 
-REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO E CONDUÇÃO DE CONVERSA (OBRIGATÓRIO):
+REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
 - Se um campo estiver como "não informado", diga que não tem essa informação agora.
 - NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
 - NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
-- Em conversa casual (saudação, "tudo bem?", "por aí?"), responda de forma natural e acolhedora. NÃO empurre planos ou produtos sem que o cliente pergunte.
-- Se o cliente fizer uma pergunta ESPECÍFICA (ex: "tem diária?", "qual o endereço?"), responda SOMENTE essa pergunta. Não adicione horários, planos ou outras informações que não foram pedidas.
-- CONDUZA a conversa naturalmente em direção à venda APENAS quando o cliente não fez pergunta específica. Quando há uma pergunta direta, responda-a primeiro — só depois, se natural, faça uma pergunta de acompanhamento.
-- Quando o cliente PERGUNTAR sobre planos/preços, aí sim apresente as opções.
-- Em saudações, NÃO mencione o nome da unidade — apenas se apresente.
-- Quando perguntarem seu nome, responda APENAS seu nome. Nada de "aqui na [unidade]".
-- Se a pergunta do cliente bater com algum item do FAQ acima, USE exatamente aquela resposta.
+- Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
+
+FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
+Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo:
+1. Responda a pergunta do cliente de forma direta e curta
+2. Depois da resposta, faça UMA pergunta de descoberta que avança a conversa
+Exemplos:
+  Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
+  Cliente: "Qual o horário?" → "Nosso horário é seg-sex 06h às 23h 😊 Você já treina ou está começando agora?"
+  Cliente: "Quanto custa?" → "Temos planos a partir de R$X! Qual seu objetivo principal — musculação, cardio, ou os dois?"
+REGRAS do fluxo:
+- Resposta + pergunta na MESMA mensagem, sempre
+- A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização)
+- NUNCA adicione dados que o cliente NÃO pediu (ex: não jogue horários se pediu preço)
+- Se o cliente já respondeu uma descoberta, avance para a próxima etapa (mostrar plano, agendar visita)
+
+REGRAS DE TOM (OBRIGATÓRIO):
+- NUNCA comece resposta com "Olá" se já houve troca de mensagens — vá direto ao ponto
+- NUNCA diga "Olá! Nossos horários são:" — diga "Nosso horário é:"
+- Em saudações iniciais, NÃO mencione o nome da unidade — apenas se apresente
+- Quando perguntarem seu nome, responda APENAS seu nome
+- Conversa casual ("tudo bem?", "e aí?"): responda naturalmente, NÃO empurre planos
 
 FORMATAÇÃO DA RESPOSTA (OBRIGATÓRIO):
-- Fale como uma pessoa real — NUNCA mencione ser IA, robô ou assistente virtual
-- Use emojis com moderação (😊 💪 ✅)
-- Separe parágrafos com linha em branco
-- Para listas use • no início de cada item
-- NÃO use markdown: sem **, sem ##, sem [texto](url)
+Você escreve para WhatsApp. Toda mensagem deve ser LIMPA, ORGANIZADA e FÁCIL de ler.
+
+ESTRUTURA de cada resposta:
+1. Frase de abertura curta (resposta direta à pergunta)
+2. Dados/informações (se houver) — organizados com quebra de linha
+3. Pergunta de descoberta (para avançar a conversa)
+
+REGRAS DE FORMATO:
+- Use *texto* para destaque (bold do WhatsApp) — NUNCA use ** ou ##
+- Listas com • no início, cada item em linha separada
+- Separe blocos com UMA linha em branco
 - Links: sempre URL plana (ex: https://exemplo.com)
-- Respostas curtas e diretas, sem enrolação
-- Não se apresente novamente se já houver histórico
-- NUNCA repita o nome do cliente dentro da mesma resposta — use no máximo uma vez, só na saudação inicial
-- NUNCA comece respostas de acompanhamento com "Olá, [nome]!" — já cumprimentou antes
+- Emojis: máximo 2-3 por mensagem, nos pontos certos (😊 💪 ✅)
+- Tamanho ideal: 2-4 linhas. Máximo absoluto: 8 linhas
+- NUNCA use markdown: sem **, sem ##, sem ```código```, sem [texto](url)
+
+REGRAS DE TOM:
+- Fale como pessoa real — NUNCA mencione ser IA, robô ou assistente virtual
+- NUNCA se apresente novamente se já houver histórico
+- NUNCA repita o nome do cliente na mesma resposta — use no máximo 1 vez, na saudação
+- NUNCA comece com "Olá" se a conversa já começou — vá direto ao ponto
+
+EXEMPLO DE MENSAGEM BEM FORMATADA:
+"Temos sim! A diária custa *R$40* 💪
+
+Se quiser, pode vir treinar hoje mesmo — estamos abertos até as 23h.
+
+Você pretende treinar só hoje ou está pensando em começar academia?"
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO:
@@ -2971,13 +3015,23 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 # ── Chamada ao LLM com timeout global + circuit breaker ───────────
                 start_time = time.time()
 
+                # Monta conteúdo do role "user":
+                # - Com imagem: lista multimodal [imagem(s) + texto da pergunta]
+                # - Sem imagem: string direta com as mensagens
+                # Sem isso o modelo recebe a imagem mas não a pergunta real do cliente.
+                if conteudo_usuario:
+                    conteudo_usuario.append({"type": "text", "text": mensagens_formatadas})
+                    user_content = conteudo_usuario
+                else:
+                    user_content = mensagens_formatadas
+
                 async def _chamar_llm(model_id: str, extra_timeout: int = 25):
                     return await asyncio.wait_for(
                         cliente_ia.chat.completions.create(
                             model=model_id,
                             messages=[
                                 {"role": "system", "content": prompt_sistema},
-                                {"role": "user", "content": conteudo_usuario if conteudo_usuario else mensagens_formatadas}
+                                {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
                             max_tokens=500,   # Chatbot de vendas: respostas curtas e diretas
@@ -3151,28 +3205,19 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await bd_registrar_primeira_resposta(conversation_id)
 
         else:
-            # ── Resposta da IA: divide por parágrafo duplo para simular digitação ──
-            if not resposta_texto or not resposta_texto.strip():
-                pass  # nada para enviar
-            else:
-                paragrafos = [p.strip() for p in resposta_texto.split("\n\n") if p.strip()]
-                if not paragrafos:
-                    paragrafos = [resposta_texto.strip()]
-
-                for i, paragrafo in enumerate(paragrafos):
-                    if await redis_client.exists(f"pause_ia:{conversation_id}"):
-                        break
-
-                    typing_time = min(len(paragrafo) * 0.03, 5.0) + random.uniform(0.3, 1.0)
-                    await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
-
-                    await enviar_mensagem_chatwoot(
-                        account_id, conversation_id, paragrafo, nome_ia, integracao_chatwoot
-                    )
-                    await bd_atualizar_msg_ia(conversation_id)
-
-                    if i == 0:
-                        await bd_registrar_primeira_resposta(conversation_id)
+            # ── Resposta da IA: envia INTEIRA como UMA mensagem ──────────────
+            # Split por parágrafo causava frases cortadas no meio ("Uma ótima opção
+            # para conhecer..." em mensagem separada). O cliente recebe a resposta
+            # completa de uma vez, como um humano digitaria.
+            if resposta_texto and resposta_texto.strip():
+                _texto_final = resposta_texto.strip()
+                typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
+                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot
+                )
+                await bd_atualizar_msg_ia(conversation_id)
+                await bd_registrar_primeira_resposta(conversation_id)
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
