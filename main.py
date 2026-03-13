@@ -640,29 +640,17 @@ async def gerar_resposta_inteligente(
     slug_atual: Optional[str] = None,
     nome_cliente: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Motor de decisão: unidade -> intenção -> estruturado -> FAQ -> LLM."""
+    """Motor de decisão enxuto: fast-path apenas para horário/endereço."""
     ctx = await resolver_contexto_unidade(conversation_id, texto_cliente, empresa_id, slug_atual=slug_atual)
     slug = ctx.get("slug")
     intencao = classificar_intencao(texto_cliente)
-    _primeiro_nome = primeiro_nome_cliente(nome_cliente)
-    _prefixo_nome = f"{_primeiro_nome}, " if _primeiro_nome else ""
-    _abertura_ajuda = f"{_prefixo_nome}pra eu te ajudar direitinho" if _prefixo_nome else "Pra eu te ajudar direitinho"
-    _abertura_claro = f"{_prefixo_nome}claro!" if _prefixo_nome else "Claro!"
-    _abertura_perfeito = f"{_prefixo_nome}perfeito!" if _prefixo_nome else "Perfeito!"
 
-    pending_key = f"pending_offer:{conversation_id}"
-    pending_offer = await redis_client.get(pending_key)
-    if pending_offer and intencao in {"llm", "saudacao", "neutro"} and eh_confirmacao_curta(texto_cliente):
-        intencao = pending_offer
-        await redis_client.delete(pending_key)
-
-    if intencao == "unidades":
-        return {"tipo": "texto", "resposta": await responder_lista_unidades(empresa_id, texto_cliente), "slug": slug, "intencao": intencao}
-
-    if intencao in {"horario", "endereco", "telefone", "planos", "modalidades", "convenio"} and not slug:
+    if intencao in {"horario", "endereco"} and not slug:
+        _primeiro_nome = primeiro_nome_cliente(nome_cliente)
+        _prefixo = f"{_primeiro_nome}, " if _primeiro_nome else ""
         return {
             "tipo": "texto",
-            "resposta": f"{_abertura_ajuda}, me conta em qual *cidade* ou *bairro* você quer treinar 😊",
+            "resposta": f"{_prefixo}me fala a *cidade* ou *bairro* da unidade que você quer 😊",
             "slug": None,
             "intencao": intencao,
         }
@@ -670,54 +658,9 @@ async def gerar_resposta_inteligente(
     unidade = await carregar_unidade(slug, empresa_id) if slug else {}
 
     if intencao == "horario":
-        await redis_client.setex(pending_key, 600, "endereco")
         return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
     if intencao == "endereco":
-        await redis_client.setex(pending_key, 600, "horario")
         return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
-    if intencao == "telefone":
-        await redis_client.delete(pending_key)
-        return {"tipo": "texto", "resposta": responder_telefone(unidade), "slug": slug, "intencao": intencao}
-    if intencao == "planos":
-        await redis_client.delete(pending_key)
-        planos = await buscar_planos_ativos(empresa_id, unidade.get("id"), force_sync=True)
-        return {"tipo": "lista", "resposta": formatar_planos_bonito(planos) if planos else [], "slug": slug, "intencao": intencao}
-    if intencao == "modalidades":
-        modalidades = normalizar_lista_campo(unidade.get("modalidades"))
-        if modalidades:
-            lista = "\n".join([f"• {m}" for m in modalidades])
-            return {
-                "tipo": "texto",
-                "resposta": (
-                    f"{_abertura_claro} Na unidade *{unidade.get('nome', slug)}* essa é a nossa grade de aulas/modalidades:\n\n"
-                    f"{lista}\n\n"
-                    "Se quiser, já te passo também os planos 😉"
-                ),
-                "slug": slug,
-                "intencao": intencao,
-            }
-    if intencao == "convenio":
-        convenios = normalizar_lista_campo(unidade.get("convenios"))
-        if convenios:
-            lista = "\n".join([f"• {c}" for c in convenios])
-            return {"tipo": "texto", "resposta": f"✅ A unidade *{unidade.get('nome', slug)}* trabalha com:\n{lista}\n\nSe quiser, também posso te passar os planos da unidade.", "slug": slug, "intencao": intencao}
-
-    if slug and intencao == "llm" and ctx.get("origem") == "mensagem":
-        unidade_nome = unidade.get("nome") or slug
-        horario_hoje = horario_hoje_formatado(unidade.get("horarios")) if unidade else None
-        _extra = f"\n🕒 Hoje: *{horario_hoje}*" if horario_hoje else ""
-        return {
-            "tipo": "texto",
-            "resposta": f"{_abertura_perfeito} Vamos falar da unidade *{unidade_nome}*.{_extra}\n\nMe diz sua dúvida que já te respondo direto 😊",
-            "slug": slug,
-            "intencao": "contexto_unidade"
-        }
-
-
-    if slug:
-        faq = await buscar_resposta_faq(texto_cliente, slug, empresa_id)
-        if faq:
-            return {"tipo": "texto", "resposta": faq, "slug": slug, "intencao": "faq"}
 
     return {"tipo": "llm", "resposta": None, "slug": slug, "intencao": "llm"}
 
@@ -826,6 +769,7 @@ redis_client: redis.Redis = None
 db_pool: asyncpg.Pool = None
 worker_tasks: List[asyncio.Task] = []
 is_shutting_down = False
+_LOCAL_REDIS_FALLBACK: Dict[str, tuple] = {}  # key -> (exp_ts, json_str)
 
 
 def _log_worker_task_result(task: asyncio.Task):
@@ -1476,17 +1420,37 @@ async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], t
 
 
 async def redis_get_json(key: str, default=None):
-    raw = await redis_client.get(key)
-    if raw is None:
-        return default
     try:
-        return json.loads(raw)
+        raw = await redis_client.get(key)
     except Exception:
-        return default
+        raw = None
+
+    if raw is not None:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return default
+
+    # Fallback local em memória quando Redis estiver indisponível
+    now = time.time()
+    item = _LOCAL_REDIS_FALLBACK.get(key)
+    if item:
+        exp_ts, raw_local = item
+        if exp_ts >= now:
+            try:
+                return json.loads(raw_local)
+            except Exception:
+                return default
+        _LOCAL_REDIS_FALLBACK.pop(key, None)
+    return default
 
 
 async def redis_set_json(key: str, value: Any, ttl: int):
-    await redis_client.setex(key, ttl, json.dumps(value, default=str))
+    payload = json.dumps(value, default=str)
+    try:
+        await redis_client.setex(key, ttl, payload)
+    except Exception:
+        _LOCAL_REDIS_FALLBACK[key] = (time.time() + max(1, ttl), payload)
 
 
 # --- FUNÇÕES DE INTEGRAÇÃO (BUSCA POR EMPRESA) ---
@@ -1721,7 +1685,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         rows = await db_pool.fetch(query, *params)
         planos = [dict(r) for r in rows]
 
-    await redis_set_json(cache_key, planos, 300)
+    await redis_set_json(cache_key, planos, 120)
     return planos
 
 
@@ -2081,7 +2045,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         """
         rows = await db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
-        await redis_set_json(cache_key, data, 300)
+        await redis_set_json(cache_key, data, 120)
         return data
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao listar unidades para empresa {empresa_id}: {e}")
@@ -2213,7 +2177,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
         row = await db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
-            await redis_set_json(cache_key, dados, 300)
+            await redis_set_json(cache_key, dados, 120)
             return dados
         return {}
     except Exception as e:
@@ -2475,7 +2439,7 @@ async def bd_salvar_mensagem_local(
         logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
 
 
-async def bd_obter_historico_local(conversation_id: int, limit: int = 30) -> Optional[str]:
+async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Optional[str]:
     if not db_pool:
         return None
     try:
@@ -2928,7 +2892,8 @@ async def transcrever_audio(url: str):
         return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore:
         try:
-            resp = await http_client.get(url, follow_redirects=True)
+            resp = await http_client.get(url, follow_redirects=True, timeout=15.0)
+            resp.raise_for_status()
             audio_file = io.BytesIO(resp.content)
             audio_file.name = "audio.ogg"
             transcription = await cliente_whisper.audio.transcriptions.create(
@@ -3069,151 +3034,8 @@ async def processar_ia_e_responder(
 
         if not imagens_urls and not fast_reply and not fast_reply_lista:
 
-            # Fast-path: detecta tipo de cliente (aluno/gympass) para roteamento correto
-            # Roda em todas as mensagens acumuladas para maior cobertura
-            _tipo_cliente = None
-            for _t in textos:
-                _tipo_cliente = detectar_tipo_cliente(_t)
-                if _tipo_cliente:
-                    break
-            if not _tipo_cliente:
-                _tipo_cliente = detectar_tipo_cliente(texto_combinado_norm)
-
-            if _tipo_cliente == "gympass":
-                if _PROMETHEUS_OK:
-                    METRIC_ALUNO_DETECTADO.labels(tipo="gympass").inc()
-                fast_reply = (
-                    "💚 Que ótimo! Aceitamos *Gympass / TotalPass / Wellhub* e outros convênios.\n\n"
-                    "Para garantir o melhor atendimento, me conta:\n\n"
-                    "• Qual é o seu convênio?\n"
-                    "• Em qual cidade ou bairro você prefere treinar?\n\n"
-                    "Assim te direciono para a unidade certa 🏋️"
-                )
-                logger.info("⚡ Fast-path: cliente gympass/convênio detectado")
-            elif _tipo_cliente == "aluno":
-                if _PROMETHEUS_OK:
-                    METRIC_ALUNO_DETECTADO.labels(tipo="aluno").inc()
-                tel_suporte = (tel_banco or "nosso WhatsApp") if unidade else "nosso suporte"
-                fast_reply = (
-                    f"Olá! Vi que você já é aluno(a) 😊\n\n"
-                    "Para questões relacionadas ao seu contrato, cancelamento, congelamento "
-                    "ou financeiro, o melhor canal é falar diretamente com a nossa equipe:\n\n"
-                    f"📞 {tel_suporte}\n\n"
-                    "Posso ajudar com alguma outra dúvida? 💪"
-                )
-                logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
-
-            # Saudação — responde via fast-path para evitar dependência do LLM
-            # em casos simples (e impedir travas quando há indisponibilidade de cota).
-            elif all(eh_saudacao(t) for t in textos) and textos:
-                _primeiro_nome = primeiro_nome_cliente(nome_cliente)
-                _cumpr = saudacao_por_horario()
-                if _primeiro_nome:
-                    fast_reply = f"{_cumpr}, {_primeiro_nome}! 😊 Como posso te ajudar hoje?"
-                else:
-                    fast_reply = f"{_cumpr}! 😊 Como posso te ajudar hoje?"
-                logger.info(f"⚡ Fast-path: saudação respondida sem LLM para {nome_cliente}")
-
-            # Fast-path: listar unidades (prioridade ANTES do FAQ)
-            # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
-            # Funciona mesmo com múltiplas mensagens acumuladas
-            elif REGEX_LISTAR_UNIDADES.search(texto_combinado_norm):
-                todas_ativas = await listar_unidades_ativas(empresa_id)
-                if todas_ativas:
-                    # Filtra por cidade se o cliente mencionou uma
-                    _cidade_filtro = None
-                    _estado_filtro = None
-                    # 1. Verifica se alguma cidade do banco está na pergunta
-                    for _u in todas_ativas:
-                        _cid = normalizar(_u.get('cidade', '') or '')
-                        if _cid and len(_cid) > 3 and _cid in texto_combinado_norm:
-                            _cidade_filtro = _u.get('cidade')
-                            break
-                    # 2. Verifica abreviações de estado
-                    _ESTADO_MAP = {
-                        "sp": "São Paulo", "sao paulo": "São Paulo",
-                        "rj": "Rio de Janeiro", "rio": "Rio de Janeiro",
-                        "mg": "Minas Gerais", "bh": "Belo Horizonte",
-                        "brasilia": "Brasília", "campinas": "Campinas",
-                        "curitiba": "Curitiba",
-                    }
-                    if not _cidade_filtro:
-                        for _abbr, _cidade_nome in _ESTADO_MAP.items():
-                            if _abbr in texto_combinado_norm.split() or _abbr in texto_combinado_norm:
-                                if _abbr in {"sp", "rj", "mg"}:
-                                    _estado_filtro = _abbr.upper()
-                                    break
-                                _cid_norm = normalizar(_cidade_nome)
-                                _match = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '').startswith(_cid_norm[:5])]
-                                if _match:
-                                    _cidade_filtro = _match[0].get('cidade')
-                                    break
-
-                    if _estado_filtro:
-                        unidades_lista = [
-                            u for u in todas_ativas
-                            if normalizar(u.get('estado', '') or '') == normalizar(_estado_filtro)
-                        ]
-                        if not unidades_lista:
-                            unidades_lista = todas_ativas
-                    elif _cidade_filtro:
-                        _cid_norm = normalizar(_cidade_filtro)
-                        unidades_lista = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '') == _cid_norm]
-                        if not unidades_lista:
-                            unidades_lista = todas_ativas
-                    else:
-                        unidades_lista = todas_ativas
-
-                    total = len(unidades_lista)
-                    # Só o nome — cidade não é exibida (evita repetição e poluição)
-                    lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
-
-                    if (_cidade_filtro or _estado_filtro) and total > 0:
-                        _local_txt = _cidade_filtro or _estado_filtro
-                        fast_reply = (
-                            f"📍 Temos {total} {'unidade' if total == 1 else 'unidades'} em {_local_txt}:\n\n"
-                            f"{lista_str}\n\n"
-                            "Qual delas fica mais perto de você? 😊"
-                        )
-                    else:
-                        fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
-                            total=total, lista_str=lista_str
-                        )
-                    logger.info(f"⚡ Fast-path: {total} unidade(s) — resposta direta (sem LLM)")
-                    await bd_registrar_evento_funil(
-                        conversation_id, "consulta_unidades",
-                        f"Cliente solicitou unidades{' em ' + _cidade_filtro if _cidade_filtro else ''}",
-                        score_incremento=1
-                    )
-                else:
-                    fast_reply = "No momento não há unidades cadastradas. 😕"
-
-            # Fast-path: FAQ — resposta direta sem LLM para evitar travas por cota
-            elif slug and not (_pedido_end_hor or _pedido_planos or _pedido_contato):
-                _faq_resposta = await buscar_resposta_faq(" ".join(textos), slug, empresa_id)
-                if _faq_resposta:
-                    fast_reply = limpar_markdown(_faq_resposta)
-                    logger.info(f"⚡ Fast-path: FAQ encontrado — resposta direta sem LLM para conv {conversation_id}")
-                    if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
-                        METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
-
-            # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
-            # (a IA responde todas as perguntas de uma vez de forma mais coesa)
-            elif not _multi_intencao and _pedido_planos:
-                if planos_ativos:
-                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
-                    if _PROMETHEUS_OK:
-                        METRIC_PLANOS_ENVIADOS.inc()
-                        METRIC_FAST_PATH_TOTAL.labels(tipo="planos").inc()
-                    await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado",
-                        "Link enviado via fast-path", score_incremento=2
-                    )
-                    logger.info(f"⚡ Fast-path: {len(fast_reply_lista)} plano(s) — enviando como mensagens separadas")
-
-            # Fast-path: endereço e/ou horário
-            # Detecta cada um independentemente e combina numa resposta só
-            elif unidade and _pedido_end_hor:
+            # Fast-path mantido apenas para endereço e/ou horário
+            if unidade and _pedido_end_hor:
                 _quer_end = bool(re.search(
                     r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
                     texto_combinado_norm
@@ -3236,15 +3058,6 @@ async def processar_ia_e_responder(
                     fast_reply = "\n\n".join(_partes) + "\n\nSe quiser, também posso te ajudar com planos e matrícula. 😊"
                     logger.info("⚡ Fast-path: endereço/horário respondido sem LLM")
 
-            # Fast-path: contato — passa número ao LLM para resposta humanizada
-            elif unidade and _pedido_contato:
-                if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                    fast_reply = random.choice(RESPOSTAS_CONTATO).format(tel_banco=tel_banco)
-                    logger.info("⚡ Fast-path: contato respondido sem LLM")
-                    await bd_registrar_evento_funil(
-                        conversation_id, "solicitacao_telefone",
-                        "Cliente solicitou telefone", score_incremento=3
-                    )
 
         # ===================================================
 
@@ -3253,8 +3066,7 @@ async def processar_ia_e_responder(
         # genérica (ex: boas-vindas) pode ser repetida para perguntas diferentes.
         intencao = intencao_motor or (detectar_intencao(primeira_mensagem) if primeira_mensagem else None)
         _intencoes_cacheaveis = {
-            "horario", "endereco", "telefone", "planos", "unidades",
-            "modalidades", "convenio", "faq", "contexto_unidade"
+            "horario", "endereco"
         }
         _usa_cache_por_intencao = bool(intencao and intencao in _intencoes_cacheaveis)
 
@@ -3538,14 +3350,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     resp = await http_client.get(
                         img_url,
                         headers={"api_access_token": integracao_chatwoot['token']},
-                        follow_redirects=True
+                        follow_redirects=True,
+                        timeout=12.0,
                     )
-                    if resp.status_code == 200:
-                        img_b64 = base64.b64encode(resp.content).decode("utf-8")
-                        conteudo_usuario.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                        })
+                    resp.raise_for_status()
+                    img_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    conteudo_usuario.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                    })
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
