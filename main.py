@@ -426,7 +426,7 @@ def classificar_intencao(texto: str) -> str:
         return "unidades"
     if re.search(r"(preco|preço|valor|mensalidade|quanto custa|plano|planos|promo|promocao|promoção)", t):
         return "planos"
-    if re.search(r"(modalidade|modalidades|aulas|musculacao|musculação|funcional|spinning|cross)", t):
+    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross)", t):
         return "modalidades"
     if re.search(r"(convenio|convênio|gympass|wellhub|totalpass)", t):
         return "convenio"
@@ -616,12 +616,18 @@ async def gerar_resposta_inteligente(
     conversation_id: int,
     empresa_id: int,
     texto_cliente: str,
-    slug_atual: Optional[str] = None
+    slug_atual: Optional[str] = None,
+    nome_cliente: Optional[str] = None
 ) -> Dict[str, Any]:
     """Motor de decisão: unidade -> intenção -> estruturado -> FAQ -> LLM."""
     ctx = await resolver_contexto_unidade(conversation_id, texto_cliente, empresa_id, slug_atual=slug_atual)
     slug = ctx.get("slug")
     intencao = classificar_intencao(texto_cliente)
+    _primeiro_nome = primeiro_nome_cliente(nome_cliente)
+    _prefixo_nome = f"{_primeiro_nome}, " if _primeiro_nome else ""
+    _abertura_ajuda = f"{_prefixo_nome}pra eu te ajudar direitinho" if _prefixo_nome else "Pra eu te ajudar direitinho"
+    _abertura_claro = f"{_prefixo_nome}claro!" if _prefixo_nome else "Claro!"
+    _abertura_perfeito = f"{_prefixo_nome}perfeito!" if _prefixo_nome else "Perfeito!"
 
     pending_key = f"pending_offer:{conversation_id}"
     pending_offer = await redis_client.get(pending_key)
@@ -635,7 +641,7 @@ async def gerar_resposta_inteligente(
     if intencao in {"horario", "endereco", "telefone", "planos", "modalidades", "convenio"} and not slug:
         return {
             "tipo": "texto",
-            "resposta": "Pra eu te ajudar direitinho, me conta em qual *cidade* ou *bairro* você quer treinar 😊",
+            "resposta": f"{_abertura_ajuda}, me conta em qual *cidade* ou *bairro* você quer treinar 😊",
             "slug": None,
             "intencao": intencao,
         }
@@ -659,7 +665,16 @@ async def gerar_resposta_inteligente(
         modalidades = normalizar_lista_campo(unidade.get("modalidades"))
         if modalidades:
             lista = "\n".join([f"• {m}" for m in modalidades])
-            return {"tipo": "texto", "resposta": f"💪 Na unidade *{unidade.get('nome', slug)}* você encontra:\n{lista}\n\nSe quiser, também posso te passar os planos.", "slug": slug, "intencao": intencao}
+            return {
+                "tipo": "texto",
+                "resposta": (
+                    f"{_abertura_claro} Na unidade *{unidade.get('nome', slug)}* essa é a nossa grade de aulas/modalidades:\n\n"
+                    f"{lista}\n\n"
+                    "Se quiser, já te passo também os planos 😉"
+                ),
+                "slug": slug,
+                "intencao": intencao,
+            }
     if intencao == "convenio":
         convenios = normalizar_lista_campo(unidade.get("convenios"))
         if convenios:
@@ -672,7 +687,7 @@ async def gerar_resposta_inteligente(
         _extra = f"\n🕒 Hoje: *{horario_hoje}*" if horario_hoje else ""
         return {
             "tipo": "texto",
-            "resposta": f"Perfeito! Vamos falar da unidade *{unidade_nome}*.{_extra}\n\nMe diz sua dúvida que já te respondo direto 😊",
+            "resposta": f"{_abertura_perfeito} Vamos falar da unidade *{unidade_nome}*.{_extra}\n\nMe diz sua dúvida que já te respondo direto 😊",
             "slug": slug,
             "intencao": "contexto_unidade"
         }
@@ -775,7 +790,7 @@ INTENCOES = {
     "endereco": ["endereco", "endereço", "local", "localização", "fica", "onde fica", "como chegar", "localizacao"],
     "telefone": ["telefone", "contato", "whatsapp", "numero", "número", "ligar", "falar", "telefone"],
     "unidades": ["unidades", "outras unidades", "lista de unidades", "quantas unidades", "onde tem", "tem em", "unidade"],
-    "modalidades": ["modalidades", "atividades", "exercícios", "treinos", "aulas", "musculação", "cardio", "spinning", "alongamento", "crossfit", "funcional"],
+    "modalidades": ["modalidades", "atividades", "exercícios", "treinos", "aula", "aulas", "grade", "grade de aula", "grade de aulas", "musculação", "cardio", "spinning", "alongamento", "crossfit", "funcional"],
     "infraestrutura": ["estacionamento", "vestiário", "chuveiro", "armários", "sauna", "piscina", "acessibilidade", "infraestrutura"],
     "matricula": ["matricula", "matrícula", "inscrição", "cadastro", "se inscrever", "assinar", "contratar"]
 }
@@ -972,6 +987,13 @@ def limpar_nome(nome):
     if not nome:
         return "Cliente"
     return re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", str(nome)).strip()
+
+
+def primeiro_nome_cliente(nome: Optional[str]) -> str:
+    nome_limpo = limpar_nome(nome) if nome else ""
+    if not nome_limpo or nome_limpo.lower() in {"cliente", "contato", "visitante"}:
+        return ""
+    return nome_limpo.split()[0].capitalize()
 
 
 def limpar_markdown(texto: str) -> str:
@@ -2880,7 +2902,7 @@ async def processar_ia_e_responder(
 
     try:
         # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.8)
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
@@ -2942,6 +2964,7 @@ async def processar_ia_e_responder(
                 empresa_id=empresa_id,
                 texto_cliente=texto_cliente_unificado,
                 slug_atual=slug,
+                nome_cliente=nome_cliente,
             )
             intencao_motor = _motor.get("intencao")
             _slug_motor = _motor.get("slug")
@@ -3749,7 +3772,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
         _drain_tentativas = 0
         while _drain_tentativas < 2:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.0)
             mensagens_pendentes = await redis_client.lrange(chave_buffet, 0, -1)
             if not mensagens_pendentes:
                 break
