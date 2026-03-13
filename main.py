@@ -996,6 +996,16 @@ def primeiro_nome_cliente(nome: Optional[str]) -> str:
     return nome_limpo.split()[0].capitalize()
 
 
+def _is_quota_or_key_limit_error(err: Exception) -> bool:
+    """Detecta erros de limite/cota de provedores LLM sem expor detalhes sensíveis."""
+    msg = normalizar(str(err) or "")
+    sinais = [
+        "key limit exceeded", "limit exceeded", "quota", "insufficient credits",
+        "credit", "rate limit", "error code: 403", "error code: 402",
+    ]
+    return any(s in msg for s in sinais)
+
+
 def limpar_markdown(texto: str) -> str:
     """
     Converte markdown para formato compatível com WhatsApp/Chatwoot:
@@ -3583,15 +3593,21 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 "estado": estado_atual
                             })
                         except Exception as e2:
-                            logger.error(f"❌ Erro no fallback: {e2}")
+                            if _is_quota_or_key_limit_error(e2):
+                                logger.error("❌ Fallback falhou por limite/cota do provedor LLM")
+                            else:
+                                logger.error("❌ Erro no fallback")
                             await cb_llm.record_failure()
                             resposta_bruta = json.dumps({
-                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
                             })
 
                     except Exception as e:
-                        logger.warning(f"⚠️ Erro LLM primário ({e}) — tentando fallback")
+                        if _is_quota_or_key_limit_error(e):
+                            logger.warning("⚠️ Erro LLM primário por limite/cota — tentando fallback")
+                        else:
+                            logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
                         if _PROMETHEUS_OK:
                             METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
@@ -3601,10 +3617,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             resposta_bruta = response.choices[0].message.content
                             await cb_llm.record_success()
                         except Exception as e2:
-                            logger.error(f"❌ Fallback também falhou: {e2}")
+                            if _is_quota_or_key_limit_error(e2):
+                                logger.error("❌ Fallback falhou por limite/cota do provedor LLM")
+                            else:
+                                logger.error("❌ Fallback também falhou")
                             await cb_llm.record_failure()
                             resposta_bruta = json.dumps({
-                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
                             })
 
