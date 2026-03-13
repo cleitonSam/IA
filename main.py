@@ -2524,11 +2524,9 @@ async def processar_ia_e_responder(
                 )
                 logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
 
-            # Fast-path: saudação humanizada
-            # Ativa quando TODAS as mensagens acumuladas são saudações
-            # Ex: "Boa noite" + "Tudo bem?" enviados em sequência rápida
+            # Saudação — deixa o LLM gerar resposta dinâmica e natural
+            # Apenas informa o contexto (primeiro contato ou retorno)
             elif all(eh_saudacao(t) for t in textos) and textos:
-                # Verifica se já houve troca de mensagens (histórico existente)
                 _qtd_ia_anterior = 0
                 try:
                     _qtd_ia_anterior = await db_pool.fetchval("""
@@ -2540,20 +2538,19 @@ async def processar_ia_e_responder(
                     pass
 
                 if _qtd_ia_anterior > 0:
-                    # Conversa já existente — resposta curta, sem reapresentação
-                    _cumprimento_breve = saudacao_por_horario()
-                    fast_reply = f"{_cumprimento_breve}! 😊 Como posso ajudar?"
-                    logger.info(f"⚡ Fast-path: saudação curta (histórico existente) para {nome_cliente}")
-                else:
-                    # Primeiro contato — saudação completa com nome, horário e horas abertas
-                    fast_reply = montar_saudacao_humanizada(
-                        nome_cliente=nome_cliente,
-                        nome_ia=nome_ia,
-                        pers=pers,
-                        unidade=unidade,
-                        hor_banco=hor_banco,
+                    contexto_precarregado = (
+                        "[SAUDAÇÃO DE RETORNO] O cliente já conversou antes.\n"
+                        "Responda de forma CURTA e natural — sem se apresentar novamente.\n"
+                        "Exemplo: 'E aí, tudo certo? Como posso ajudar? 😊'"
                     )
-                    logger.info(f"⚡ Fast-path: saudação humanizada (primeiro contato) para {nome_cliente}")
+                    logger.info(f"⚡ Saudação de retorno → LLM vai gerar para {nome_cliente}")
+                else:
+                    contexto_precarregado = (
+                        "[PRIMEIRO CONTATO] O cliente está chegando agora.\n"
+                        "Se apresente brevemente (seu nome), seja acolhedor.\n"
+                        "Pergunte como pode ajudar — NÃO liste serviços nem empurre planos."
+                    )
+                    logger.info(f"⚡ Primeiro contato → LLM vai gerar saudação para {nome_cliente}")
 
             # Fast-path: listar unidades (prioridade ANTES do FAQ)
             # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
@@ -2938,8 +2935,16 @@ REGRAS DE FORMATO:
 - Separe blocos com UMA linha em branco
 - Links: sempre URL plana (ex: https://exemplo.com)
 - Emojis: máximo 2-3 por mensagem, nos pontos certos (😊 💪 ✅)
-- Tamanho ideal: 2-4 linhas. Máximo absoluto: 8 linhas
 - NUNCA use markdown: sem **, sem ##, sem ```código```, sem [texto](url)
+
+TAMANHO DA RESPOSTA (CRÍTICO — RESPEITE SEMPRE):
+- Tamanho ideal: 2-4 linhas. Máximo absoluto: 8 linhas
+- Se a resposta ficar maior que 8 linhas, RESUMA. Nunca liste todos os dias da semana um por um.
+- Horários: agrupe em UMA linha. Ex: "Seg-Sex: 06h-23h • Sáb: 09h-17h • Dom: 09h-13h"
+- NUNCA liste dia por dia (Segunda: ..., Terça: ..., Quarta: ...) — SEMPRE agrupe dias com mesmo horário
+- Planos: mostre no máximo 2-3 opções resumidas, não liste todos os detalhes
+- Se o cliente pedir detalhes completos, AINDA resuma — ofereça enviar por link ou foto
+- REGRA DE OURO: é melhor uma resposta CURTA e COMPLETA do que uma resposta LONGA e CORTADA
 
 REGRAS DE TOM:
 - Fale como pessoa real — NUNCA mencione ser IA, robô ou assistente virtual
@@ -3034,7 +3039,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
-                            max_tokens=800,   # Margem segura para respostas completas sem truncar
+                            max_tokens=1200,  # Margem generosa — prompt pede resposta curta, mas nunca trunca
                                               # Reduz custo e evita erro 402 de crédito insuficiente
                         ),
                         timeout=extra_timeout
@@ -3044,6 +3049,16 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
+                        # Detecta resposta truncada por max_tokens
+                        _finish = getattr(response.choices[0], 'finish_reason', None)
+                        if _finish == "length" and resposta_bruta:
+                            logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
+                            # Corta na última frase completa para não enviar frase pela metade
+                            for _sep in ['. ', '! ', '? ', '\n']:
+                                _pos = resposta_bruta.rfind(_sep)
+                                if _pos > len(resposta_bruta) * 0.3:
+                                    resposta_bruta = resposta_bruta[:_pos + 1]
+                                    break
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -3095,6 +3110,25 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     METRIC_IA_LATENCY.observe(_latencia)
 
             if not goto_send:
+                # ── Garante que NENHUMA resposta saia com frase cortada ──────────
+                def _garantir_frase_completa(txt: str) -> str:
+                    """Remove frase incompleta no final do texto.
+                    Procura o último terminador de frase (. ! ? ou quebra de linha)
+                    e descarta tudo depois, evitando enviar 'horários super est'."""
+                    if not txt:
+                        return txt
+                    txt = txt.strip()
+                    # Se termina com pontuação ou emoji, está OK
+                    if txt[-1] in '.!?😊💪✅🏋🎯':
+                        return txt
+                    # Procura último ponto de corte seguro
+                    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
+                        _pos = txt.rfind(_sep)
+                        if _pos > len(txt) * 0.3:  # só corta se mantém >30% do texto
+                            return txt[:_pos + 1].strip()
+                    # Sem ponto de corte — retorna tudo (melhor inteiro que vazio)
+                    return txt
+
                 # ── A IA agora responde texto puro — sem JSON ──────────────────
                 resposta_texto = limpar_markdown(resposta_bruta.strip())
 
@@ -3210,7 +3244,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # para conhecer..." em mensagem separada). O cliente recebe a resposta
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
-                _texto_final = resposta_texto.strip()
+                _texto_final = _garantir_frase_completa(resposta_texto)
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
