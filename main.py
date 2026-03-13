@@ -444,23 +444,29 @@ async def resolver_contexto_unidade(
     slug_redis = await redis_client.get(f"unidade_escolhida:{conversation_id}")
     slug_salvo = slug_redis or slug_atual
 
-    # Só tenta trocar unidade se houver indicador geográfico explícito na mensagem.
-    # Isso evita mudanças acidentais em mensagens genéricas como "quero sim" ou "endereço".
+    # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
+    # Aqui consideramos:
+    # 1) match direto de nome/cidade/bairro
+    # 2) interseção de tokens significativos com nome da unidade (ex.: "ricardo jafet")
     texto_norm = normalizar(texto or "")
+    tokens_texto_sig = {t for t in texto_norm.split() if len(t) >= 4}
     tem_geo = False
     try:
         unidades = await listar_unidades_ativas(empresa_id)
         for u in unidades:
-            indicadores = [
-                normalizar(u.get("nome", "") or ""),
-                normalizar(u.get("cidade", "") or ""),
-                normalizar(u.get("bairro", "") or ""),
-            ]
-            for ind in indicadores:
-                if ind and len(ind) >= 4 and ind in texto_norm:
-                    tem_geo = True
-                    break
-            if tem_geo:
+            nome_u = normalizar(u.get("nome", "") or "")
+            cidade_u = normalizar(u.get("cidade", "") or "")
+            bairro_u = normalizar(u.get("bairro", "") or "")
+
+            # Match direto
+            if any(ind and len(ind) >= 4 and ind in texto_norm for ind in (nome_u, cidade_u, bairro_u)):
+                tem_geo = True
+                break
+
+            # Match por tokens do nome da unidade (suporta "ricardo jafet" sem nome completo)
+            tokens_nome_sig = {t for t in nome_u.split() if len(t) >= 4 and t not in {"red", "fitness", "academia", "unidade"}}
+            if len(tokens_texto_sig & tokens_nome_sig) >= 1:
+                tem_geo = True
                 break
     except Exception:
         tem_geo = False
@@ -629,7 +635,7 @@ async def gerar_resposta_inteligente(
     if intencao in {"horario", "endereco", "telefone", "planos", "modalidades", "convenio"} and not slug:
         return {
             "tipo": "texto",
-            "resposta": "Para eu te passar a informação certinha, me fala a *cidade* ou *bairro* da unidade que você quer 😊",
+            "resposta": "Pra eu te ajudar direitinho, me conta em qual *cidade* ou *bairro* você quer treinar 😊",
             "slug": None,
             "intencao": intencao,
         }
@@ -3163,9 +3169,17 @@ async def processar_ia_e_responder(
 
         # ===================================================
 
-        # Cache de intenção
+        # Cache: usa chave por intenção APENAS para intenções factuais/estáveis.
+        # Nunca usar cache por intenção para "llm"/"saudacao", senão uma resposta
+        # genérica (ex: boas-vindas) pode ser repetida para perguntas diferentes.
         intencao = intencao_motor or (detectar_intencao(primeira_mensagem) if primeira_mensagem else None)
-        if intencao:
+        _intencoes_cacheaveis = {
+            "horario", "endereco", "telefone", "planos", "unidades",
+            "modalidades", "convenio", "faq", "contexto_unidade"
+        }
+        _usa_cache_por_intencao = bool(intencao and intencao in _intencoes_cacheaveis)
+
+        if _usa_cache_por_intencao:
             chave_cache_ia = f"cache:intent:{slug}:{intencao}"
         else:
             hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
@@ -3194,6 +3208,19 @@ async def processar_ia_e_responder(
             dados_cache = json.loads(resposta_cacheada)
             resposta_texto = dados_cache["resposta"]
             novo_estado = dados_cache["estado"]
+
+            # Proteção anti-loop: se a resposta cacheada parece saudação, só use
+            # quando a mensagem atual também for saudação.
+            _msg_eh_saudacao = eh_saudacao(primeira_mensagem or "")
+            _resp_norm = normalizar(resposta_texto or "")
+            _resp_parece_saudacao = any(
+                s in _resp_norm for s in [
+                    "como posso te ajudar", "bem-vindo", "eu sou o", "eu sou a"
+                ]
+            )
+            if _resp_parece_saudacao and not _msg_eh_saudacao:
+                logger.info("⏭️ Cache ignorado: resposta de saudação para pergunta não-saudação")
+                resposta_texto = ""
 
         elif _cache_sem and not imagens_urls and not mudou_unidade:
             logger.info("🧬 Cache Semântico HIT! Respondendo por similaridade.")
@@ -3622,10 +3649,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     if _PROMETHEUS_OK:
                         METRIC_PLANOS_ENVIADOS.inc()
 
-                if not imagens_urls:
+                if not imagens_urls and resposta_texto:
                     _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
-                    await redis_client.setex(chave_cache_ia, 600, _cache_payload)
-                    if USAR_CACHE_SEMANTICO and primeira_mensagem:
+                    # Não persiste cache para saudações curtas para evitar repetição
+                    # em consultas futuras de conteúdo diferente.
+                    _mensagem_eh_saudacao = eh_saudacao(primeira_mensagem or "")
+                    if not _mensagem_eh_saudacao:
+                        await redis_client.setex(chave_cache_ia, 600, _cache_payload)
+
+                    if USAR_CACHE_SEMANTICO and primeira_mensagem and not _mensagem_eh_saudacao:
                         await salvar_cache_semantico(
                             primeira_mensagem, slug,
                             {"resposta": resposta_texto, "estado": novo_estado},
@@ -3869,7 +3901,9 @@ async def chatwoot_webhook(
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
-    slug = slug_redis or slug_label
+    # Regra de segurança: em operação multiunidade, NÃO usar label como fonte primária.
+    # A unidade só é assumida por escolha explícita (Redis) ou por detecção no texto.
+    slug = slug_redis
     slug_detectado = None
     esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
     prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
@@ -3919,90 +3953,91 @@ async def chatwoot_webhook(
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
 
         else:
-            # Múltiplas unidades — fluxo inteligente de identificação
-            texto_cliente = normalizar(conteudo_texto).strip()
+            if not slug:
+                # Múltiplas unidades — fluxo inteligente de identificação
+                texto_cliente = normalizar(conteudo_texto).strip()
 
-            # Tenta por nome/cidade/bairro já na primeira mensagem (ex: "ricardo jafet")
-            if not slug_detectado:
-                slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
+                # Tenta por nome/cidade/bairro já na primeira mensagem (ex: "ricardo jafet")
+                if not slug_detectado:
+                    slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
-            # Tenta por número digitado (ex: "1", "2")
-            if not slug_detectado and texto_cliente.isdigit():
-                idx = int(texto_cliente) - 1
-                if 0 <= idx < len(unidades_ativas):
-                    slug_detectado = unidades_ativas[idx]["slug"]
+                # Tenta por número digitado (ex: "1", "2")
+                if not slug_detectado and texto_cliente.isdigit():
+                    idx = int(texto_cliente) - 1
+                    if 0 <= idx < len(unidades_ativas):
+                        slug_detectado = unidades_ativas[idx]["slug"]
 
-            if slug_detectado:
-                # Unidade identificada — confirma com mensagem humanizada e prossegue
-                slug = slug_detectado
-                await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-                await redis_client.delete(f"esperando_unidade:{id_conv}")
-                await redis_client.delete(prompt_unidade_key)
-                contato = payload.get("sender", {})
-                _nome_contato = limpar_nome(contato.get("name"))
-                await bd_iniciar_conversa(
-                    id_conv, slug, account_id,
-                    contato.get("id"), _nome_contato, empresa_id
-                )
-                await bd_registrar_evento_funil(
-                    id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
-                )
+                if slug_detectado:
+                    # Unidade identificada — confirma com mensagem humanizada e prossegue
+                    slug = slug_detectado
+                    await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+                    await redis_client.delete(f"esperando_unidade:{id_conv}")
+                    await redis_client.delete(prompt_unidade_key)
+                    contato = payload.get("sender", {})
+                    _nome_contato = limpar_nome(contato.get("name"))
+                    await bd_iniciar_conversa(
+                        id_conv, slug, account_id,
+                        contato.get("id"), _nome_contato, empresa_id
+                    )
+                    await bd_registrar_evento_funil(
+                        id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
+                    )
 
-                # Envia confirmação humanizada com dados da unidade
-                _unid_dados = await carregar_unidade(slug, empresa_id) or {}
-                _nome_unid = _unid_dados.get('nome') or slug
-                _end_unid = extrair_endereco_unidade(_unid_dados) or ''
-                _hor_unid = _unid_dados.get('horarios')
-                _pers_temp = await carregar_personalidade(empresa_id) or {}
-                _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
+                    # Envia confirmação humanizada com dados da unidade
+                    _unid_dados = await carregar_unidade(slug, empresa_id) or {}
+                    _nome_unid = _unid_dados.get('nome') or slug
+                    _end_unid = extrair_endereco_unidade(_unid_dados) or ''
+                    _hor_unid = _unid_dados.get('horarios')
+                    _pers_temp = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
 
-                _cumpr = saudacao_por_horario()
-                _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
-                _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
+                    _cumpr = saudacao_por_horario()
+                    _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
+                    _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
-                _horario_hoje = horario_hoje_formatado(_hor_unid)
-                _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
-                _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
+                    _horario_hoje = horario_hoje_formatado(_hor_unid)
+                    _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                    _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
 
-                _msg_confirmacao = (
-                    f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
-                    f"{_linha_end}{_linha_horario}"
-                    f"\n\nComo posso te ajudar? 😊"
-                )
-                await enviar_mensagem_chatwoot(
-                    account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
-                )
+                    _msg_confirmacao = (
+                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
+                        f"{_linha_end}{_linha_horario}"
+                        f"\n\nComo posso te ajudar? 😊"
+                    )
+                    await enviar_mensagem_chatwoot(
+                        account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
+                    )
 
-                lock_key = f"agendar_lock:{id_conv}"
-                if await redis_client.set(lock_key, "1", nx=True, ex=5):
-                    try:
-                        existe = await db_pool.fetchval(
-                            "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
-                            "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
-                        )
-                        if not existe:
-                            await agendar_followups(id_conv, account_id, slug, empresa_id)
-                    finally:
-                        await redis_client.delete(lock_key)
-                # Confirmação já enviada — NÃO cai no buffer/LLM
-                return {"status": "unidade_confirmada"}
-            else:
-                # Evita loop de mensagens repetidas quando já pedimos a unidade
-                # (ex.: múltiplos webhooks da mesma conversa em sequência).
-                if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
-                    logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
+                    lock_key = f"agendar_lock:{id_conv}"
+                    if await redis_client.set(lock_key, "1", nx=True, ex=5):
+                        try:
+                            existe = await db_pool.fetchval(
+                                "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
+                                "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
+                            )
+                            if not existe:
+                                await agendar_followups(id_conv, account_id, slug, empresa_id)
+                        finally:
+                            await redis_client.delete(lock_key)
+                    # Confirmação já enviada — NÃO cai no buffer/LLM
+                    return {"status": "unidade_confirmada"}
+                else:
+                    # Evita loop de mensagens repetidas quando já pedimos a unidade
+                    # (ex.: múltiplos webhooks da mesma conversa em sequência).
+                    if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
+                        logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
+                        return {"status": "aguardando_escolha_unidade"}
+
+                    # Unidade não identificada — pergunta direta, sem saudação fixa
+                    msg = (
+                        "Me ajuda rapidinho pra eu te atender melhor 😊\n\n"
+                        "Qual *cidade* ou *bairro* fica melhor pra você treinar?"
+                    )
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
+                    await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
+                    await redis_client.setex(prompt_unidade_key, 600, "1")
+                    background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                     return {"status": "aguardando_escolha_unidade"}
-
-                # Unidade não identificada — pergunta direta, sem saudação fixa
-                msg = (
-                    "Para te direcionar ao melhor atendimento, preciso identificar sua unidade. 🎯\n\n"
-                    "Em qual *cidade* ou *bairro* você prefere treinar?"
-                )
-                await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
-                await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
-                await redis_client.setex(prompt_unidade_key, 600, "1")
-                background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
-                return {"status": "aguardando_escolha_unidade"}
 
     if not slug:
         return {"status": "erro_sem_unidade"}
