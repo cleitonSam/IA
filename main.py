@@ -1391,7 +1391,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
             config = row['config']
             if isinstance(config, str):
                 config = json.loads(config)
-            await redis_client.setex(cache_key, 300, json.dumps(config))
+            await redis_set_json(cache_key, config, 300)
             return config
         return None
     except asyncpg.PostgresError as e:
@@ -1537,9 +1537,9 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         return []
 
     cache_key = f"planos:ativos:{empresa_id}:{unidade_id or 'todos'}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        return json.loads(cached)
+    cached = await redis_get_json(cache_key)
+    if cached is not None:
+        return cached
 
     query = """
         SELECT * FROM planos
@@ -1561,7 +1561,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         rows = await db_pool.fetch(query, *params)
         planos = [dict(r) for r in rows]
 
-    await redis_client.setex(cache_key, 300, json.dumps(planos, default=str))
+    await redis_set_json(cache_key, planos, 300)
     return planos
 
 
@@ -1864,9 +1864,9 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
+    cache = await redis_get_json(cache_key)
     if cache:
-        return json.loads(cache)
+        return cache
 
     try:
         query = """
@@ -1901,7 +1901,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         """
         rows = await db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
-        await redis_client.setex(cache_key, 300, json.dumps(data, default=str))
+        await redis_set_json(cache_key, data, 300)
         return data
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao listar unidades para empresa {empresa_id}: {e}")
@@ -2016,9 +2016,9 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
         return {}
 
     cache_key = f"cfg:unidade:{empresa_id}:{slug}:v2"
-    cache = await redis_client.get(cache_key)
+    cache = await redis_get_json(cache_key)
     if cache:
-        return json.loads(cache)
+        return cache
 
     try:
         query = """
@@ -3131,6 +3131,9 @@ async def processar_ia_e_responder(
 
             # Detalhes de planos para o prompt (texto simples, sem markdown)
             planos_detalhados = formatar_planos_para_prompt(planos_ativos) if planos_ativos else "não informado"
+            modalidades_prompt = ", ".join(normalizar_lista_campo(unidade.get("modalidades"))) or "não informado"
+            pagamentos_prompt = ", ".join(normalizar_lista_campo(unidade.get("formas_pagamento"))) or "não informado"
+            convenios_prompt = ", ".join(normalizar_lista_campo(unidade.get("convenios"))) or "não informado"
 
             dados_unidade = f"""
 DADOS COMPLETOS DA UNIDADE
@@ -3145,10 +3148,10 @@ Planos (com links de matricula):
 {planos_detalhados}
 Site: {unidade.get('site') or 'não informado'}
 Instagram: {unidade.get('instagram') or 'não informado'}
-Modalidades: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
+Modalidades: {modalidades_prompt}
 Infraestrutura: {json.dumps(unidade.get('infraestrutura', {}), ensure_ascii=False) if unidade.get('infraestrutura') else 'não informado'}
-Pagamentos: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('formas_pagamento') else 'não informado'}
-Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios') else 'não informado'}
+Pagamentos: {pagamentos_prompt}
+Convênios: {convenios_prompt}
 """
 
             # ── Campos conhecidos da personalidade_ia ──────────────────────────
@@ -3646,8 +3649,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await redis_client.expire(chave_buffet, 60)
             _drain_tentativas += 1
 
-    except Exception as e:
-        logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
+    except Exception:
+        logger.exception("🔥 Erro Crítico no processamento")
     finally:
         watchdog.cancel()
         try:
