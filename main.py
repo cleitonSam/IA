@@ -782,6 +782,8 @@ cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else Non
 http_client: httpx.AsyncClient = None
 redis_client: redis.Redis = None
 db_pool: asyncpg.Pool = None
+worker_tasks: List[asyncio.Task] = []
+is_shutting_down = False
 
 # --- CONTROLE DE CONCORRÊNCIA ---
 whisper_semaphore = asyncio.Semaphore(5)
@@ -852,7 +854,8 @@ RESPOSTAS_CONTATO = [
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client, redis_client, db_pool
+    global http_client, redis_client, db_pool, worker_tasks, is_shutting_down
+    is_shutting_down = False
     http_client = httpx.AsyncClient(
         timeout=30.0,
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
@@ -891,9 +894,11 @@ async def startup_event():
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
 
-    asyncio.create_task(worker_followup())
-    asyncio.create_task(worker_metricas_diarias())
-    asyncio.create_task(worker_sync_planos())
+    worker_tasks = [
+        asyncio.create_task(worker_followup(), name="worker_followup"),
+        asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
+        asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
+    ]
 
     # ⚠️  Os workers usam _worker_leader_check() internamente para garantir que
     # apenas UM processo execute em ambientes multi-worker (uvicorn --workers N).
@@ -901,6 +906,14 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global is_shutting_down
+    is_shutting_down = True
+
+    for task in worker_tasks:
+        task.cancel()
+    if worker_tasks:
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
+
     await http_client.aclose()
     await redis_client.aclose()
     if db_pool:
@@ -1667,33 +1680,45 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
     """
     chave = f"worker_leader:{nome}"
     # Tenta criar (NX = only if Not eXists)
-    ganhou = await redis_client.set(chave, _WORKER_ID, nx=True, ex=ttl)
-    if ganhou:
-        return True
-    # Verifica se JÁ é o líder atual (renovação)
-    lider_atual = await redis_client.get(chave)
-    if lider_atual == _WORKER_ID:
-        await redis_client.expire(chave, ttl)  # renova TTL
-        return True
-    return False
+    try:
+        ganhou = await redis_client.set(chave, _WORKER_ID, nx=True, ex=ttl)
+        if ganhou:
+            return True
+        # Verifica se JÁ é o líder atual (renovação)
+        lider_atual = await redis_client.get(chave)
+        if lider_atual == _WORKER_ID:
+            await redis_client.expire(chave, ttl)  # renova TTL
+            return True
+        return False
+    except asyncio.CancelledError:
+        raise
+    except redis.RedisError as e:
+        if not is_shutting_down:
+            logger.warning(f"⚠️ Falha ao verificar liderança do worker '{nome}': {e}")
+        return False
 
 
 async def worker_sync_planos():
-    while True:
-        if not db_pool:
-            await asyncio.sleep(60)
-            continue
-        if not await _is_worker_leader("sync_planos", ttl=22000):
-            logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
-            continue
-        try:
-            empresas = await db_pool.fetch("SELECT id FROM empresas")
-            for emp in empresas:
-                await sincronizar_planos_evo(emp['id'])
-            logger.info("✅ worker_sync_planos executado pelo líder")
-        except Exception as e:
-            logger.error(f"Erro no worker de sincronização de planos: {e}")
-        await asyncio.sleep(21600)  # 6 horas
+    try:
+        while True:
+            if not db_pool:
+                await asyncio.sleep(60)
+                continue
+            if not await _is_worker_leader("sync_planos", ttl=22000):
+                logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
+                await asyncio.sleep(10)
+                continue
+            try:
+                empresas = await db_pool.fetch("SELECT id FROM empresas")
+                for emp in empresas:
+                    await sincronizar_planos_evo(emp['id'])
+                logger.info("✅ worker_sync_planos executado pelo líder")
+            except Exception as e:
+                logger.error(f"Erro no worker de sincronização de planos: {e}")
+            await asyncio.sleep(21600)  # 6 horas
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_sync_planos cancelado")
+        raise
 
 
 @app.get("/sync-planos/{empresa_id}")
@@ -1811,59 +1836,63 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
 
 
 async def worker_followup():
-    while True:
-        await asyncio.sleep(30)
-        # Garante que apenas 1 worker processe follow-ups em ambiente multi-processo
-        if not await _is_worker_leader("followup", ttl=40):
-            continue
-        if not db_pool:
-            continue
-        try:
-            agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
+    try:
+        while True:
+            await asyncio.sleep(30)
+            # Garante que apenas 1 worker processe follow-ups em ambiente multi-processo
+            if not await _is_worker_leader("followup", ttl=40):
+                continue
+            if not db_pool:
+                continue
+            try:
+                agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
-            pendentes = await db_pool.fetch("""
-                SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
-                FROM followups f
-                JOIN conversas c ON c.id = f.conversa_id
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE f.status = 'pendente' AND f.agendado_para <= $1
-                ORDER BY f.agendado_para
-                LIMIT 20
-                FOR UPDATE SKIP LOCKED
-            """, agora)
+                pendentes = await db_pool.fetch("""
+                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
+                    FROM followups f
+                    JOIN conversas c ON c.id = f.conversa_id
+                    JOIN unidades u ON u.id = f.unidade_id
+                    WHERE f.status = 'pendente' AND f.agendado_para <= $1
+                    ORDER BY f.agendado_para
+                    LIMIT 20
+                    FOR UPDATE SKIP LOCKED
+                """, agora)
 
-            for f in pendentes:
-                if (
-                    await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
-                    or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
-                ):
-                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
-                    continue
+                for f in pendentes:
+                    if (
+                        await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
+                        or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
+                    ):
+                        await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        continue
 
-                respondeu = await db_pool.fetchval("""
-                    SELECT 1 FROM mensagens
-                    WHERE conversa_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
-                """, f['conversa_id'])
-                if respondeu:
-                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
-                    continue
+                    respondeu = await db_pool.fetchval("""
+                        SELECT 1 FROM mensagens
+                        WHERE conversa_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
+                    """, f['conversa_id'])
+                    if respondeu:
+                        await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        continue
 
-                integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
-                if not integracao:
-                    await db_pool.execute(
-                        "UPDATE followups SET status = 'erro', erro_log = 'Sem integração' WHERE id = $1", f['id']
+                    integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
+                    if not integracao:
+                        await db_pool.execute(
+                            "UPDATE followups SET status = 'erro', erro_log = 'Sem integração' WHERE id = $1", f['id']
+                        )
+                        continue
+
+                    await enviar_mensagem_chatwoot(
+                        f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
                     )
-                    continue
+                    await db_pool.execute(
+                        "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
+                    )
 
-                await enviar_mensagem_chatwoot(
-                    f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
-                )
-                await db_pool.execute(
-                    "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
-                )
-
-        except Exception as e:
-            logger.error(f"Erro no worker de follow-up: {e}")
+            except Exception as e:
+                logger.error(f"Erro no worker de follow-up: {e}")
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_followup cancelado")
+        raise
 
 
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empresa_id: int):
@@ -1961,14 +1990,14 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
       1. Função SQL customizada (se existir)
       2. Correspondência exata/parcial em nome, cidade, bairro e palavras-chave
       3. Correspondência por partes (tokens) — suporta nomes compostos e abreviações
-      4. Fuzzy matching conservador (threshold 90)
+      4. Fuzzy matching conservador (threshold ajustável)
     """
     if not db_pool or not texto:
         return None
@@ -2039,7 +2068,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
             if _sig(tokens_texto) & _sig(tokens_pchave):
                 return u['slug']
 
-    # 3. Fuzzy matching conservador — threshold 90 para evitar falsos positivos
+    # 3. Fuzzy matching conservador — threshold ajustável para evitar falsos positivos
     melhor_slug = None
     maior_score = 0
     for u in unidades:
@@ -2053,7 +2082,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
                 maior_score = score
                 melhor_slug = u['slug']
 
-    if maior_score >= 90:
+    if maior_score >= fuzzy_threshold:
         return melhor_slug
 
     return None
@@ -3784,6 +3813,7 @@ async def chatwoot_webhook(
         await redis_client.delete(
             f"pause_ia:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+            f"prompt_unidade_enviado:{id_conv}",
             f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
@@ -3796,6 +3826,7 @@ async def chatwoot_webhook(
             await redis_client.delete(
                 f"pause_ia:{id_conv}", f"estado:{id_conv}",
                 f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+                f"prompt_unidade_enviado:{id_conv}",
                 f"atend_manual:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
@@ -3809,12 +3840,21 @@ async def chatwoot_webhook(
     content_attrs = payload.get("content_attributes") or {}
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
+
+    # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
+    mensagem_id = payload.get("id")
+    if message_type == "incoming" and mensagem_id:
+        dedup_key = f"msg_incoming_processada:{id_conv}:{mensagem_id}"
+        if not await redis_client.set(dedup_key, "1", nx=True, ex=120):
+            logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
+            return {"status": "duplicado"}
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
     slug = slug_redis or slug_label
     slug_detectado = None
     esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
+    prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
 
     # Detecta unidade na mensagem APENAS em dois cenários:
     # 1) Já existe um slug definido (cliente quer trocar de unidade)
@@ -3838,13 +3878,16 @@ async def chatwoot_webhook(
             pass
 
         if _tem_geo_wh or esperando_unidade:
-            slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
+            slug_detectado = await buscar_unidade_na_pergunta(
+                conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
+            )
             if slug_detectado and slug_detectado != slug:
                 logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 if esperando_unidade:
                     await redis_client.delete(f"esperando_unidade:{id_conv}")
+                await redis_client.delete(prompt_unidade_key)
 
     # Sem unidade ainda — tenta definir
     if not slug and message_type == "incoming":
@@ -3876,6 +3919,7 @@ async def chatwoot_webhook(
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 await redis_client.delete(f"esperando_unidade:{id_conv}")
+                await redis_client.delete(prompt_unidade_key)
                 contato = payload.get("sender", {})
                 _nome_contato = limpar_nome(contato.get("name"))
                 await bd_iniciar_conversa(
@@ -3925,9 +3969,9 @@ async def chatwoot_webhook(
                 # Confirmação já enviada — NÃO cai no buffer/LLM
                 return {"status": "unidade_confirmada"}
             else:
-                # Se já estamos esperando escolha de unidade, NÃO reenvia a saudação.
-                # Isso evita duplicata quando o cliente manda 2+ msgs antes de escolher.
-                if esperando_unidade:
+                # Evita loop de mensagens repetidas quando já pedimos a unidade
+                # (ex.: múltiplos webhooks da mesma conversa em sequência).
+                if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
                     logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
                     return {"status": "aguardando_escolha_unidade"}
 
@@ -3952,6 +3996,7 @@ async def chatwoot_webhook(
                 )
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
+                await redis_client.setex(prompt_unidade_key, 600, "1")
                 background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                 return {"status": "aguardando_escolha_unidade"}
 
