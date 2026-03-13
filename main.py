@@ -228,7 +228,9 @@ class CircuitBreaker:
         if state == "CLOSED":
             return True
         if state == "HALF_OPEN":
-            return True   # permite 1 chamada de teste
+            test_key = f"cb:{self.name}:half_open_test"
+            acquired = await redis_client.set(test_key, "1", nx=True, ex=30)
+            return bool(acquired)
         # OPEN — verifica se recovery_timeout já passou
         return False
 
@@ -253,6 +255,7 @@ if not REDIS_URL:
     raise RuntimeError("REDIS_URL não definido")
 
 EMPRESA_ID_PADRAO = 1
+APP_VERSION = "2.5.0"
 
 # 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura OU small talk sem intenção real
 # Inclui respostas de follow-up ("tudo sim", "por aí?") para não disparar vendas acidentalmente
@@ -277,9 +280,9 @@ def eh_saudacao(texto: str) -> bool:
         return False
     norm = normalizar(texto).strip()
     palavras = norm.split()
-    # Mensagem curta (até 5 palavras) que começa ou contém saudação
+    # Mensagem curta (até 5 palavras) com match exato/início controlado
     if len(palavras) <= 5:
-        return any(s in norm for s in SAUDACOES)
+        return norm in SAUDACOES or any(norm.startswith(f"{s} ") for s in SAUDACOES)
     return False
 
 
@@ -670,7 +673,7 @@ INTENCOES = {
 }
 
 # Clientes de IA
-cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
+cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY) if OPENROUTER_API_KEY else None
 cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Clientes Globais de Conexão
@@ -690,6 +693,30 @@ else
     return 0
 end
 """
+
+# Regex compiladas para intenções frequentes (manutenção centralizada)
+REGEX_PEDIDO_PLANOS = re.compile(
+    r"(preco|valor(es)?|quanto (custa|cobra|fica)|mensalidade|planos?|promocao|promoç|"
+    r"beneficio|benefícios|benefíci|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?|"
+    r"tem planos?|ver planos?|quero (assinar|contratar|me matricular)|"
+    r"como (faço|faz|funciona).{0,10}(matric|assinar|contratar)|"
+    r"quanto (é|e|custa|vale) o plano|opcoes.{0,10}planos?|opções.{0,10}planos?)",
+    re.IGNORECASE,
+)
+REGEX_PEDIDO_END_HOR = re.compile(
+    r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
+    r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
+    re.IGNORECASE,
+)
+REGEX_PEDIDO_CONTATO = re.compile(r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)", re.IGNORECASE)
+REGEX_LISTAR_UNIDADES = re.compile(
+    r"(quais.{0,15}unidades?|quantas.{0,10}unidades?|tem.{0,20}unidades?|unidades?.{0,10}tem|"
+    r"mais.{0,10}unidades?|outras.{0,10}unidades?|lista.{0,10}unidades?|onde.{0,10}academia|"
+    r"academia.{0,15}(sp|sao paulo|rio|rj|mg|bh)|saber.{0,10}unidades?|todas.{0,10}unidades?|"
+    r"unidades?.{0,10}existem|unidades?.{0,10}disponiveis|unidades?.{0,10}abertas|"
+    r"unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
+    re.IGNORECASE,
+)
 
 # ==================== MENSAGENS PRÉ-FORMATADAS ====================
 # Removido ** (markdown duplo) — WhatsApp usa *asterisco simples* para negrito
@@ -2728,23 +2755,9 @@ async def processar_ia_e_responder(
         # desabilita o fast-path de intenção única e deixa a IA responder tudo de uma vez.
         # Exceção: detecção de tipo de cliente (aluno/gympass) e saudação sempre rodam.
         _multi_intencao = len(textos) > 1
-        _pedido_planos = bool(re.search(
-            r"(preco|valor(es)?|quanto (custa|cobra|fica)|mensalidade|planos?|promocao|promoç|"
-            r"beneficio|benefícios|benefíci|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?|"
-            r"tem planos?|ver planos?|quero (assinar|contratar|me matricular)|"
-            r"como (faço|faz|funciona).{0,10}(matric|assinar|contratar)|"
-            r"quanto (é|e|custa|vale) o plano|opcoes.{0,10}planos?|opções.{0,10}planos?)",
-            texto_combinado_norm
-        ))
-        _pedido_end_hor = bool(re.search(
-            r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
-            r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-            texto_combinado_norm
-        ))
-        _pedido_contato = bool(re.search(
-            r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
-            texto_combinado_norm
-        ))
+        _pedido_planos = bool(REGEX_PEDIDO_PLANOS.search(texto_combinado_norm))
+        _pedido_end_hor = bool(REGEX_PEDIDO_END_HOR.search(texto_combinado_norm))
+        _pedido_contato = bool(REGEX_PEDIDO_CONTATO.search(texto_combinado_norm))
 
         if not imagens_urls and not fast_reply and not fast_reply_lista:
 
@@ -2813,24 +2826,7 @@ async def processar_ia_e_responder(
             # Fast-path: listar unidades (prioridade ANTES do FAQ)
             # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
             # Funciona mesmo com múltiplas mensagens acumuladas
-            elif re.search(
-                r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
-                r"|quantas.{0,10}unidades?"        # quantas unidades
-                r"|tem.{0,20}unidades?"            # tem unidade em SP / vcs tem unidades
-                r"|unidades?.{0,10}tem"            # unidades que tem
-                r"|mais.{0,10}unidades?"           # mais unidades
-                r"|outras.{0,10}unidades?"         # outras unidades
-                r"|lista.{0,10}unidades?"          # lista de unidades
-                r"|onde.{0,10}academia"            # onde tem academia
-                r"|academia.{0,15}(sp|sao paulo|rio|rj|mg|bh)"  # academia em SP / RJ
-                r"|saber.{0,10}unidades?"          # queria saber as unidades
-                r"|todas.{0,10}unidades?"          # todas as unidades
-                r"|unidades?.{0,10}existem"        # quais unidades existem
-                r"|unidades?.{0,10}disponiveis"    # unidades disponíveis
-                r"|unidades?.{0,10}abertas"        # unidades abertas
-                r"|unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
-                texto_combinado_norm, re.IGNORECASE
-            ):
+            elif REGEX_LISTAR_UNIDADES.search(texto_combinado_norm):
                 todas_ativas = await listar_unidades_ativas(empresa_id)
                 if todas_ativas:
                     # Filtra por cidade se o cliente mencionou uma
@@ -3249,6 +3245,12 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 goto_send = False
 
             if not goto_send:
+                if not cliente_ia:
+                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
+                    novo_estado = estado_atual
+                    goto_send = True
+
+            if not goto_send:
                 # ── Chamada ao LLM com timeout global + circuit breaker ───────────
                 start_time = time.time()
 
@@ -3435,7 +3437,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
 
-        if resposta_texto and resposta_texto.strip():
+        salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
+        if salvar_resposta_unica:
             await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
         is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
@@ -3569,6 +3572,9 @@ async def chatwoot_webhook(
 
     if _PROMETHEUS_OK:
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
+
+    if not id_conv:
+        return {"status": "ignorado_sem_conversation_id"}
 
     # Rate limiting por conversa
     # Rate limit por conversa (anti-loop de webhook)
@@ -4004,7 +4010,7 @@ async def status_endpoint():
         "redis": "✅ conectado" if redis_ok else "❌ offline",
         "postgres": "✅ conectado" if db_ok else "❌ offline",
         "prometheus": "✅ ativo" if _PROMETHEUS_OK else "⚠️ não instalado",
-        "versao": "2.5.0",
+        "versao": APP_VERSION,
     }
 
 
@@ -4018,5 +4024,5 @@ async def health():
     return {
         "status": "ok",
         "service": "Motor SaaS IA",
-        "version": "2.5.0"
+        "version": APP_VERSION
     }
