@@ -3034,7 +3034,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
-                            max_tokens=500,   # Chatbot de vendas: respostas curtas e diretas
+                            max_tokens=800,   # Margem segura para respostas completas sem truncar
                                               # Reduz custo e evita erro 402 de crédito insuficiente
                         ),
                         timeout=extra_timeout
@@ -3470,7 +3470,15 @@ async def chatwoot_webhook(
                             await agendar_followups(id_conv, account_id, slug, empresa_id)
                     finally:
                         await redis_client.delete(lock_key)
+                # Confirmação já enviada — NÃO cai no buffer/LLM
+                return {"status": "unidade_confirmada"}
             else:
+                # Se já estamos esperando escolha de unidade, NÃO reenvia a saudação.
+                # Isso evita duplicata quando o cliente manda 2+ msgs antes de escolher.
+                if esperando_unidade:
+                    logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
+                    return {"status": "aguardando_escolha_unidade"}
+
                 # Unidade não identificada — pergunta cidade/bairro de forma humanizada
                 cfg = await carregar_configuracao_global(empresa_id)
                 nome_empresa = cfg.get('nome_empresa') or 'nossa academia'
