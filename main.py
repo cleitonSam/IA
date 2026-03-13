@@ -3523,6 +3523,12 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     goto_send = True
 
             if not goto_send:
+                if not cliente_ia:
+                    resposta_texto = "Estou com uma indisponibilidade técnica no momento. Pode tentar novamente em instantes? 😊"
+                    novo_estado = estado_atual
+                    goto_send = True
+
+            if not goto_send:
                 # ── Chamada ao LLM com timeout global + circuit breaker ───────────
                 start_time = time.time()
 
