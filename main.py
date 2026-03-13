@@ -1317,7 +1317,7 @@ async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], t
 
 async def redis_get_json(key: str, default=None):
     raw = await redis_client.get(key)
-    if not raw:
+    if raw is None:
         return default
     try:
         return json.loads(raw)
@@ -1376,7 +1376,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
     cache = await redis_get_json(cache_key)
-    if cache:
+    if cache is not None:
         return cache
 
     try:
@@ -1636,8 +1636,8 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
 
 async def worker_sync_planos():
     while True:
-        await asyncio.sleep(21600)  # 6 horas
         if not db_pool:
+            await asyncio.sleep(60)
             continue
         if not await _is_worker_leader("sync_planos", ttl=22000):
             logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
@@ -1649,6 +1649,7 @@ async def worker_sync_planos():
             logger.info("✅ worker_sync_planos executado pelo líder")
         except Exception as e:
             logger.error(f"Erro no worker de sincronização de planos: {e}")
+        await asyncio.sleep(21600)  # 6 horas
 
 
 @app.get("/sync-planos/{empresa_id}")
@@ -1865,7 +1866,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
 
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
     cache = await redis_get_json(cache_key)
-    if cache:
+    if cache is not None:
         return cache
 
     try:
@@ -1879,7 +1880,10 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
                 u.cidade,
                 u.bairro,
                 u.estado,
-                u.endereco || ', ' || COALESCE(u.numero, '') as endereco_completo,
+                CASE WHEN u.numero IS NOT NULL AND TRIM(u.numero) <> ''
+                    THEN u.endereco || ', ' || u.numero
+                    ELSE u.endereco
+                END as endereco_completo,
                 u.telefone_principal as telefone,
                 u.whatsapp,
                 u.horarios,
@@ -2017,7 +2021,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
 
     cache_key = f"cfg:unidade:{empresa_id}:{slug}:v2"
     cache = await redis_get_json(cache_key)
-    if cache:
+    if cache is not None:
         return cache
 
     try:
@@ -2169,9 +2173,8 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         return {}
 
     cache_key = f"cfg:pers:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        dados_cache = json.loads(cache)
+    dados_cache = await redis_get_json(cache_key)
+    if dados_cache is not None:
         if dados_cache.get('ativo') is True:
             return dados_cache
         else:
@@ -2190,10 +2193,10 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             for key, value in dados.items():
                 if isinstance(value, Decimal):
                     dados[key] = float(value)
-            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
+            await redis_set_json(cache_key, dados, 300)
             return dados
         else:
-            await redis_client.setex(cache_key, 60, json.dumps({}))
+            await redis_set_json(cache_key, {}, 60)
             return {}
     except Exception as e:
         logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
@@ -2205,9 +2208,9 @@ async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
         return {}
 
     cache_key = f"cfg:global:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        return json.loads(cache)
+    cache = await redis_get_json(cache_key)
+    if cache is not None:
+        return cache
 
     try:
         query = "SELECT config, nome, plano FROM empresas WHERE id = $1"
