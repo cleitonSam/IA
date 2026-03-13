@@ -288,6 +288,16 @@ def eh_saudacao(texto: str) -> bool:
     return False
 
 
+def eh_confirmacao_curta(texto: str) -> bool:
+    """Detecta confirmações curtas de continuidade (ex: 'quero sim', 'pode mandar')."""
+    if not texto:
+        return False
+    t = normalizar(texto).strip()
+    if len(t.split()) > 6:
+        return False
+    return bool(re.search(r"^(sim|quero sim|quero|pode|pode sim|pode mandar|manda|me passa|pode passar|ok|beleza|blz|claro)$", t))
+
+
 def saudacao_por_horario() -> str:
     """
     Retorna 'Bom dia', 'Boa tarde' ou 'Boa noite' baseado no horário de São Paulo.
@@ -430,8 +440,32 @@ async def resolver_contexto_unidade(
     slug_atual: Optional[str] = None
 ) -> Dict[str, Optional[str]]:
     """Resolve unidade da conversa em um único ponto (mensagem > contexto)."""
-    slug_salvo = slug_atual or await redis_client.get(f"unidade_escolhida:{conversation_id}")
-    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id)
+    # Prioriza contexto já salvo em Redis (mais confiável que slug transitório do webhook)
+    slug_redis = await redis_client.get(f"unidade_escolhida:{conversation_id}")
+    slug_salvo = slug_redis or slug_atual
+
+    # Só tenta trocar unidade se houver indicador geográfico explícito na mensagem.
+    # Isso evita mudanças acidentais em mensagens genéricas como "quero sim" ou "endereço".
+    texto_norm = normalizar(texto or "")
+    tem_geo = False
+    try:
+        unidades = await listar_unidades_ativas(empresa_id)
+        for u in unidades:
+            indicadores = [
+                normalizar(u.get("nome", "") or ""),
+                normalizar(u.get("cidade", "") or ""),
+                normalizar(u.get("bairro", "") or ""),
+            ]
+            for ind in indicadores:
+                if ind and len(ind) >= 4 and ind in texto_norm:
+                    tem_geo = True
+                    break
+            if tem_geo:
+                break
+    except Exception:
+        tem_geo = False
+
+    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if tem_geo else None
 
     if slug_detectado:
         mudou = slug_detectado != slug_salvo
@@ -583,6 +617,12 @@ async def gerar_resposta_inteligente(
     slug = ctx.get("slug")
     intencao = classificar_intencao(texto_cliente)
 
+    pending_key = f"pending_offer:{conversation_id}"
+    pending_offer = await redis_client.get(pending_key)
+    if pending_offer and intencao in {"llm", "saudacao", "neutro"} and eh_confirmacao_curta(texto_cliente):
+        intencao = pending_offer
+        await redis_client.delete(pending_key)
+
     if intencao == "unidades":
         return {"tipo": "texto", "resposta": await responder_lista_unidades(empresa_id, texto_cliente), "slug": slug, "intencao": intencao}
 
@@ -597,12 +637,16 @@ async def gerar_resposta_inteligente(
     unidade = await carregar_unidade(slug, empresa_id) if slug else {}
 
     if intencao == "horario":
+        await redis_client.setex(pending_key, 600, "endereco")
         return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
     if intencao == "endereco":
+        await redis_client.setex(pending_key, 600, "horario")
         return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
     if intencao == "telefone":
+        await redis_client.delete(pending_key)
         return {"tipo": "texto", "resposta": responder_telefone(unidade), "slug": slug, "intencao": intencao}
     if intencao == "planos":
+        await redis_client.delete(pending_key)
         planos = await buscar_planos_ativos(empresa_id, unidade.get("id"), force_sync=True)
         return {"tipo": "lista", "resposta": formatar_planos_bonito(planos) if planos else [], "slug": slug, "intencao": intencao}
     if intencao == "modalidades":
@@ -3209,6 +3253,18 @@ Convênios: {convenios_prompt}
                 "Use os dados abaixo para responder."
             ) if mudou_unidade else ""
 
+            contexto_precarregado_bloco = ""
+            if contexto_precarregado:
+                contexto_precarregado_bloco = f"""
+DADOS JÁ CARREGADOS DO BANCO — USE EXATAMENTE ESSES, não invente nem altere:
+{contexto_precarregado}
+
+REGRA OBRIGATÓRIA: O cliente JÁ pediu esses dados — entregue-os DIRETAMENTE na resposta.
+NUNCA pergunte "Quer que eu te passe?", "Posso te enviar?" ou qualquer variação.
+NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo o caminho",
+"precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
+"""
+
             prompt_sistema = f"""
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
 NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
@@ -3316,15 +3372,7 @@ Você pretende treinar só hoje ou está pensando em começar academia?"
 DADOS DO ATENDIMENTO:
 Cliente: {nome_cliente}
 Estado emocional anterior: {estado_atual}
-{f"""
-DADOS JÁ CARREGADOS DO BANCO — USE EXATAMENTE ESSES, não invente nem altere:
-{contexto_precarregado}
-
-REGRA OBRIGATÓRIA: O cliente JÁ pediu esses dados — entregue-os DIRETAMENTE na resposta.
-NUNCA pergunte "Quer que eu te passe?", "Posso te enviar?" ou qualquer variação.
-NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo o caminho",
-"precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
-""" if contexto_precarregado else ""}
+{contexto_precarregado_bloco}
 MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
