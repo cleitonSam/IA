@@ -340,6 +340,23 @@ def horario_hoje_formatado(horarios: Any) -> Optional[str]:
     return None
 
 
+def formatar_horarios_funcionamento(horarios: Any) -> str:
+    """Converte horários da unidade em texto amigável para resposta direta ao cliente."""
+    if not horarios:
+        return "não informado"
+
+    if isinstance(horarios, str):
+        try:
+            horarios = json.loads(horarios)
+        except (json.JSONDecodeError, ValueError):
+            return horarios
+
+    if isinstance(horarios, dict):
+        return "\n".join([f"- {dia}: {hora}" for dia, hora in horarios.items()])
+
+    return str(horarios)
+
+
 def montar_saudacao_humanizada(
     nome_cliente: str,
     nome_ia: str,
@@ -2487,6 +2504,23 @@ async def processar_ia_e_responder(
         # desabilita o fast-path de intenção única e deixa a IA responder tudo de uma vez.
         # Exceção: detecção de tipo de cliente (aluno/gympass) e saudação sempre rodam.
         _multi_intencao = len(textos) > 1
+        _pedido_planos = bool(re.search(
+            r"(preco|valor(es)?|quanto (custa|cobra|fica)|mensalidade|planos?|promocao|promoç|"
+            r"beneficio|benefícios|benefíci|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?|"
+            r"tem planos?|ver planos?|quero (assinar|contratar|me matricular)|"
+            r"como (faço|faz|funciona).{0,10}(matric|assinar|contratar)|"
+            r"quanto (é|e|custa|vale) o plano|opcoes.{0,10}planos?|opções.{0,10}planos?)",
+            texto_combinado_norm
+        ))
+        _pedido_end_hor = bool(re.search(
+            r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
+            r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
+            texto_combinado_norm
+        ))
+        _pedido_contato = bool(re.search(
+            r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
+            texto_combinado_norm
+        ))
 
         if not imagens_urls:
 
@@ -2633,7 +2667,7 @@ async def processar_ia_e_responder(
 
             # Fast-path: FAQ — último fallback antes da IA
             # Usa texto combinado para funcionar mesmo quando cliente envia 2+ mensagens
-            elif slug:
+            elif slug and not (_pedido_end_hor or _pedido_planos or _pedido_contato):
                 _faq_resposta = await buscar_resposta_faq(" ".join(textos), slug, empresa_id)
                 if _faq_resposta:
                     contexto_precarregado = (
@@ -2647,17 +2681,7 @@ async def processar_ia_e_responder(
 
             # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
             # (a IA responde todas as perguntas de uma vez de forma mais coesa)
-            elif not _multi_intencao and re.search(
-                r"(preco|valor(es)?|quanto (custa|cobra|fica)"
-                r"|mensalidade|planos?|promocao|promoç"
-                r"|beneficio|benefícios|benefíci"
-                r"|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?"
-                r"|tem planos?|ver planos?|quero (assinar|contratar|me matricular)"
-                r"|como (faço|faz|funciona).{0,10}(matric|assinar|contratar)"
-                r"|quanto (é|e|custa|vale) o plano"
-                r"|opcoes.{0,10}planos?|opções.{0,10}planos?)",
-                texto_combinado_norm
-            ):
+            elif not _multi_intencao and _pedido_planos:
                 if planos_ativos:
                     fast_reply_lista = formatar_planos_bonito(planos_ativos)
                     if _PROMETHEUS_OK:
@@ -2671,11 +2695,7 @@ async def processar_ia_e_responder(
 
             # Fast-path: endereço e/ou horário
             # Detecta cada um independentemente e combina numa resposta só
-            elif unidade and re.search(
-                r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
-                r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-                texto_combinado_norm
-            ):
+            elif unidade and _pedido_end_hor:
                 _quer_end = bool(re.search(
                     r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
                     texto_combinado_norm
@@ -2685,36 +2705,24 @@ async def processar_ia_e_responder(
                     texto_combinado_norm
                 ))
 
-                _ctx_partes = []
+                _partes = []
 
                 if _quer_end and end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    _ctx_partes.append(f"Endereço da unidade: {end_banco}")
+                    _partes.append(f"📍 Endereço:\n{end_banco}")
 
                 if _quer_hor and hor_banco:
-                    _hor = hor_banco
-                    if isinstance(_hor, str):
-                        try:
-                            _hor = json.loads(_hor)
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                    if isinstance(_hor, dict):
-                        _hor_str = "\n".join([f"  {dia}: {h}" for dia, h in _hor.items()])
-                    else:
-                        _hor_str = str(_hor)
-                    _ctx_partes.append(f"Horários de funcionamento:\n{_hor_str}")
+                    _hor_str = formatar_horarios_funcionamento(hor_banco)
+                    _partes.append(f"🕒 Horário de funcionamento:\n{_hor_str}")
 
-                if _ctx_partes:
-                    contexto_precarregado = "\n\n".join(_ctx_partes)
-                    logger.info(f"⚡ Fast-path: endereço/horário pré-carregado, LLM vai humanizar")
+                if _partes:
+                    fast_reply = "\n\n".join(_partes) + "\n\nSe quiser, também posso te ajudar com planos e matrícula. 😊"
+                    logger.info("⚡ Fast-path: endereço/horário respondido sem LLM")
 
             # Fast-path: contato — passa número ao LLM para resposta humanizada
-            elif unidade and re.search(
-                r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
-                texto_combinado_norm
-            ):
+            elif unidade and _pedido_contato:
                 if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                    contexto_precarregado = f"Telefone/WhatsApp de contato da unidade: {tel_banco}"
-                    logger.info(f"⚡ Fast-path: contato pré-carregado, LLM vai humanizar")
+                    fast_reply = random.choice(RESPOSTAS_CONTATO).format(tel_banco=tel_banco)
+                    logger.info("⚡ Fast-path: contato respondido sem LLM")
                     await bd_registrar_evento_funil(
                         conversation_id, "solicitacao_telefone",
                         "Cliente solicitou telefone", score_incremento=3
@@ -3446,6 +3454,10 @@ async def chatwoot_webhook(
         else:
             # Múltiplas unidades — fluxo inteligente de identificação
             texto_cliente = normalizar(conteudo_texto).strip()
+
+            # Tenta por nome/cidade/bairro já na primeira mensagem (ex: "ricardo jafet")
+            if not slug_detectado:
+                slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
             # Tenta por número digitado (ex: "1", "2")
             if not slug_detectado and texto_cliente.isdigit():
