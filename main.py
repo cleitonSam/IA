@@ -433,6 +433,27 @@ def classificar_intencao(texto: str) -> str:
     return "llm"
 
 
+def _faq_compativel_com_intencao(intencao: str, pergunta_faq: str) -> bool:
+    """Evita FAQ fora de contexto (ex.: carnaval) para perguntas de grade/planos."""
+    if not intencao or intencao in {"llm", "neutro", "saudacao"}:
+        return True
+
+    mapa = {
+        "modalidades": {"aula", "aulas", "grade", "modalidade", "modalidades", "pilates", "zumba", "fit", "dance", "muay", "thai"},
+        "horario": {"horario", "funcionamento", "abre", "fecha"},
+        "endereco": {"endereco", "endereço", "local", "unidade", "fica"},
+        "telefone": {"telefone", "whatsapp", "contato", "numero", "número"},
+        "planos": {"plano", "planos", "valor", "preco", "preço", "mensalidade", "beneficio", "benefício"},
+        "convenio": {"convenio", "convênio", "gympass", "wellhub", "totalpass"},
+    }
+    chaves = mapa.get(intencao)
+    if not chaves:
+        return True
+
+    tokens_faq = {t for t in normalizar(pergunta_faq or "").split() if len(t) >= 3}
+    return any(t in tokens_faq for t in chaves)
+
+
 async def resolver_contexto_unidade(
     conversation_id: int,
     texto: str,
@@ -2217,14 +2238,19 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
         return None
 
     # Tokeniza a pergunta do cliente (palavras com >= 3 chars)
-    tokens_cliente = {t for t in normalizar(pergunta).split() if len(t) >= 3}
+    pergunta_norm = normalizar(pergunta)
+    tokens_cliente = {t for t in pergunta_norm.split() if len(t) >= 3}
     if not tokens_cliente:
         return None
+
+    intencao_cliente = classificar_intencao(pergunta)
 
     melhor_score = 0.0
     melhor_resposta = None
 
     for item in faq_rows:
+        if not _faq_compativel_com_intencao(intencao_cliente, item.get("pergunta", "")):
+            continue
         tokens_faq = {t for t in normalizar(item["pergunta"]).split() if len(t) >= 3}
         if not tokens_faq:
             continue
@@ -2236,8 +2262,9 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
             melhor_score = score
             melhor_resposta = item["resposta"]
 
-    # Threshold: pelo menos 40% de sobreposição para aceitar
-    if melhor_score >= 0.40 and melhor_resposta:
+    # Threshold dinâmico: intents factuais exigem match mais forte para evitar respostas erradas.
+    threshold = 0.55 if intencao_cliente in {"modalidades", "planos", "horario", "endereco"} else 0.40
+    if melhor_score >= threshold and melhor_resposta:
         logger.info(f"✅ FAQ fast-match (score={melhor_score:.2f}): '{pergunta[:50]}' → FAQ direto")
         return melhor_resposta.strip()
 
