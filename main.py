@@ -190,6 +190,7 @@ class CircuitBreaker:
             succs = await redis_client.incr(k_succ)
             if succs >= self.success_threshold:
                 await redis_client.mset({k_state: "CLOSED", k_fail: 0, k_succ: 0})
+                await redis_client.delete(f"cb:{self.name}:half_open_test")
                 logger.info(f"✅ CircuitBreaker [{self.name}] → CLOSED (recuperado)")
         else:
             await redis_client.set(k_fail, 0)
@@ -204,6 +205,7 @@ class CircuitBreaker:
                 k_succ:  0,
                 k_opened: str(time.time()),
             })
+            await redis_client.delete(f"cb:{self.name}:half_open_test")
             logger.warning(f"⚡ CircuitBreaker [{self.name}] → OPEN novamente (falha em HALF_OPEN)")
         else:
             fails = await redis_client.incr(k_fail)
@@ -453,6 +455,62 @@ def responder_horario(unidade: dict) -> str:
     )
 
 
+def extrair_endereco_unidade(unidade: dict) -> Optional[str]:
+    """Monta endereço completo com número quando necessário."""
+    endereco = (unidade.get("endereco_completo") or unidade.get("endereco") or "").strip()
+    numero = str(unidade.get("numero") or "").strip()
+    if not endereco:
+        return None
+    if numero and numero.lower() not in {"s/n", "sn"}:
+        # Se número ainda não aparece no endereço, concatena
+        if numero not in endereco:
+            endereco = f"{endereco}, {numero}"
+    return endereco
+
+
+def normalizar_lista_campo(valor: Any) -> List[str]:
+    """Converte campo de lista (list/json/string) em itens limpos para WhatsApp."""
+    if not valor:
+        return []
+    if isinstance(valor, list):
+        bruto = valor
+    elif isinstance(valor, str):
+        txt = valor.strip()
+        if not txt:
+            return []
+        try:
+            parsed = json.loads(txt)
+            if isinstance(parsed, list):
+                bruto = parsed
+            elif isinstance(parsed, str):
+                bruto = [parsed]
+            else:
+                bruto = [txt]
+        except Exception:
+            # Se vier texto corrido/grade, quebra por linha e separadores mais comuns
+            bruto = [p for p in re.split(r"\n+|;|\|", txt) if p and p.strip()]
+    else:
+        bruto = [str(valor)]
+
+    itens = []
+    for item in bruto:
+        t = str(item).strip()
+        if not t:
+            continue
+        # Remove marcadores/bullets estranhos no início
+        t = re.sub(r"^[•\-⁠​\s]+", "", t).strip()
+        if len(t) <= 1:
+            continue
+        itens.append(t)
+
+    # Se ainda parece texto por caractere, tenta recompor como única linha
+    if itens and all(len(i) == 1 for i in itens):
+        juntado = "".join(itens).strip()
+        return [juntado] if juntado else []
+
+    return itens
+
+
 def extrair_telefone_unidade(unidade: dict) -> Optional[str]:
     return (
         unidade.get("telefone_principal")
@@ -463,7 +521,7 @@ def extrair_telefone_unidade(unidade: dict) -> Optional[str]:
 
 def responder_endereco(unidade: dict) -> str:
     nome = unidade.get("nome") or "da unidade"
-    endereco = unidade.get("endereco_completo") or unidade.get("endereco")
+    endereco = extrair_endereco_unidade(unidade)
     if not endereco:
         return (
             f"📍 No momento não encontrei o endereço da unidade *{nome}*.\n\n"
@@ -548,12 +606,12 @@ async def gerar_resposta_inteligente(
         planos = await buscar_planos_ativos(empresa_id, unidade.get("id"), force_sync=True)
         return {"tipo": "lista", "resposta": formatar_planos_bonito(planos) if planos else [], "slug": slug, "intencao": intencao}
     if intencao == "modalidades":
-        modalidades = unidade.get("modalidades") or []
+        modalidades = normalizar_lista_campo(unidade.get("modalidades"))
         if modalidades:
             lista = "\n".join([f"• {m}" for m in modalidades])
             return {"tipo": "texto", "resposta": f"💪 Na unidade *{unidade.get('nome', slug)}* você encontra:\n{lista}\n\nSe quiser, também posso te passar os planos.", "slug": slug, "intencao": intencao}
     if intencao == "convenio":
-        convenios = unidade.get("convenios") or []
+        convenios = normalizar_lista_campo(unidade.get("convenios"))
         if convenios:
             lista = "\n".join([f"• {c}" for c in convenios])
             return {"tipo": "texto", "resposta": f"✅ A unidade *{unidade.get('nome', slug)}* trabalha com:\n{lista}\n\nSe quiser, também posso te passar os planos da unidade.", "slug": slug, "intencao": intencao}
@@ -779,10 +837,13 @@ async def startup_event():
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except asyncpg.PostgresConnectionStatusError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
+            raise e
         except asyncpg.CannotConnectNowError as e:
             logger.error(f"❌ PostgreSQL não está aceitando conexões: {e}")
+            raise e
         except Exception as e:
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
+            raise e
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
 
@@ -1162,6 +1223,112 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
+async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+    """Coleta mensagens do buffer e limpa a fila da conversa."""
+    chave_buffet = f"buffet:{conversation_id}"
+    async with redis_client.pipeline(transaction=True) as pipe:
+        pipe.lrange(chave_buffet, 0, -1)
+        pipe.delete(chave_buffet)
+        resultado = await pipe.execute()
+    mensagens_acumuladas = resultado[0]
+    logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
+    return mensagens_acumuladas
+
+
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+    """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
+    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+        return False
+
+    logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
+    for m_json in mensagens_acumuladas:
+        await redis_client.rpush(f"buffet:{conversation_id}", m_json)
+    await redis_client.expire(f"buffet:{conversation_id}", 300)
+    return True
+
+
+async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[str, Any]:
+    """Extrai textos, transcrições e imagens a partir das mensagens acumuladas."""
+    textos, tasks_audio, imagens_urls = [], [], []
+    for m_json in mensagens_acumuladas:
+        m = json.loads(m_json)
+        if m.get("text"):
+            textos.append(m["text"])
+        for f in m.get("files", []):
+            if f["type"] == "audio":
+                tasks_audio.append(transcrever_audio(f["url"]))
+            elif f["type"] == "image":
+                imagens_urls.append(f["url"])
+
+    transcricoes = await asyncio.gather(*tasks_audio)
+
+    mensagens_lista = []
+    for i, txt in enumerate(textos, 1):
+        mensagens_lista.append(f"{i}. {txt}")
+    for i, transc in enumerate(transcricoes, len(textos) + 1):
+        mensagens_lista.append(f"{i}. [Áudio] {transc}")
+
+    return {
+        "textos": textos,
+        "transcricoes": transcricoes,
+        "imagens_urls": imagens_urls,
+        "mensagens_formatadas": "\n".join(mensagens_lista) if mensagens_lista else "",
+    }
+
+
+async def resolver_contexto_atendimento(
+    conversation_id: int,
+    textos: List[str],
+    transcricoes: List[str],
+    slug: str,
+    empresa_id: int,
+) -> Dict[str, Any]:
+    """Resolve slug da unidade para o atendimento atual e registra mudança de contexto."""
+    primeira_mensagem = textos[0] if textos else ""
+    mudou_unidade = False
+    texto_unificado = " ".join([t for t in (textos + transcricoes) if t]).strip()
+
+    if texto_unificado:
+        ctx_unidade = await resolver_contexto_unidade(
+            conversation_id=conversation_id,
+            texto=texto_unificado,
+            empresa_id=empresa_id,
+            slug_atual=slug,
+        )
+        novo_slug = ctx_unidade.get("slug")
+        if novo_slug and novo_slug != slug:
+            logger.info(f"🔄 Contexto de unidade atualizado para {novo_slug}")
+            slug = novo_slug
+            mudou_unidade = True
+            await bd_registrar_evento_funil(
+                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
+            )
+
+    return {"slug": slug, "mudou_unidade": mudou_unidade, "primeira_mensagem": primeira_mensagem}
+
+
+async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], transcricoes: List[str]):
+    """Persiste histórico de mensagens do usuário (texto e áudio transcrito)."""
+    for txt in textos:
+        await bd_salvar_mensagem_local(conversation_id, "user", txt)
+    for transc in transcricoes:
+        await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+
+
+async def redis_get_json(key: str, default=None):
+    raw = await redis_client.get(key)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default
+
+
+async def redis_set_json(key: str, value: Any, ttl: int):
+    await redis_client.setex(key, ttl, json.dumps(value, default=str))
+
+
 # --- FUNÇÕES DE INTEGRAÇÃO (BUSCA POR EMPRESA) ---
 
 async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
@@ -1208,9 +1375,9 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         return None
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
-    cache = await redis_client.get(cache_key)
+    cache = await redis_get_json(cache_key)
     if cache:
-        return json.loads(cache)
+        return cache
 
     try:
         query = """
@@ -1866,7 +2033,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
         row = await db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
-            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
+            await redis_set_json(cache_key, dados, 300)
             return dados
         return {}
     except Exception as e:
@@ -2614,49 +2781,18 @@ async def processar_ia_e_responder(
         # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
         await asyncio.sleep(2)
 
-        chave_buffet = f"buffet:{conversation_id}"
-        async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.lrange(chave_buffet, 0, -1)
-            pipe.delete(chave_buffet)
-            resultado = await pipe.execute()
-
-        mensagens_acumuladas = resultado[0]
-        logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
-
+        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
             return
 
-        # Guard: se o cliente ainda não escolheu a unidade, não processa com IA
-        # O webhook já enviou a pergunta "Em qual cidade/bairro você prefere treinar?"
-        if await redis_client.exists(f"esperando_unidade:{conversation_id}"):
-            logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
-            # Recoloca mensagens no buffet para serem processadas quando unidade for escolhida
-            for m_json in mensagens_acumuladas:
-                await redis_client.rpush(f"buffet:{conversation_id}", m_json)
-            await redis_client.expire(f"buffet:{conversation_id}", 300)
+        if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
             return
 
-        textos, tasks_audio, imagens_urls = [], [], []
-
-        for m_json in mensagens_acumuladas:
-            m = json.loads(m_json)
-            if m.get("text"):
-                textos.append(m["text"])
-            for f in m.get("files", []):
-                if f["type"] == "audio":
-                    tasks_audio.append(transcrever_audio(f["url"]))
-                elif f["type"] == "image":
-                    imagens_urls.append(f["url"])
-
-        transcricoes = await asyncio.gather(*tasks_audio)
-
-        mensagens_lista = []
-        for i, txt in enumerate(textos, 1):
-            mensagens_lista.append(f"{i}. {txt}")
-        for i, transc in enumerate(transcricoes, len(textos) + 1):
-            mensagens_lista.append(f"{i}. [Áudio] {transc}")
-
-        mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
+        anexos = await processar_anexos_mensagens(mensagens_acumuladas)
+        textos = anexos["textos"]
+        transcricoes = anexos["transcricoes"]
+        imagens_urls = anexos["imagens_urls"]
+        mensagens_formatadas = anexos["mensagens_formatadas"]
 
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
         # O drain loop pode recolocar mensagens no buffer após o processamento.
@@ -2669,31 +2805,18 @@ async def processar_ia_e_responder(
             logger.info(f"⏭️ Anti-duplicata: mensagens já respondidas, descartando conv {conversation_id}")
             return
 
-        # Resolve unidade de forma centralizada (mensagem > contexto salvo)
-        primeira_mensagem = textos[0] if textos else ""
-        mudou_unidade = False
-        _texto_unificado_unidade = " ".join([t for t in (textos + transcricoes) if t]).strip()
-        if _texto_unificado_unidade:
-            _ctx_unidade = await resolver_contexto_unidade(
-                conversation_id=conversation_id,
-                texto=_texto_unificado_unidade,
-                empresa_id=empresa_id,
-                slug_atual=slug,
-            )
-            _novo_slug = _ctx_unidade.get("slug")
-            if _novo_slug and _novo_slug != slug:
-                logger.info(f"🔄 Contexto de unidade atualizado para {_novo_slug}")
-                slug = _novo_slug
-                mudou_unidade = True
-                await bd_registrar_evento_funil(
-                    conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
-                )
+        contexto = await resolver_contexto_atendimento(
+            conversation_id=conversation_id,
+            textos=textos,
+            transcricoes=transcricoes,
+            slug=slug,
+            empresa_id=empresa_id,
+        )
+        slug = contexto["slug"]
+        mudou_unidade = contexto["mudou_unidade"]
+        primeira_mensagem = contexto["primeira_mensagem"]
 
-        # Salvar mensagens do usuário
-        for txt in textos:
-            await bd_salvar_mensagem_local(conversation_id, "user", txt)
-        for transc in transcricoes:
-            await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+        await persistir_mensagens_usuario(conversation_id, textos, transcricoes)
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
@@ -2728,7 +2851,7 @@ async def processar_ia_e_responder(
                 fast_reply_lista = _motor.get("resposta") or []
 
         # Campos da unidade
-        end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
+        end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
         tel_banco = extrair_telefone_unidade(unidade)
@@ -3716,7 +3839,7 @@ async def chatwoot_webhook(
                 # Envia confirmação humanizada com dados da unidade
                 _unid_dados = await carregar_unidade(slug, empresa_id) or {}
                 _nome_unid = _unid_dados.get('nome') or slug
-                _end_unid = _unid_dados.get('endereco_completo') or _unid_dados.get('endereco') or ''
+                _end_unid = extrair_endereco_unidade(_unid_dados) or ''
                 _hor_unid = _unid_dados.get('horarios')
                 _pers_temp = await carregar_personalidade(empresa_id) or {}
                 _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
