@@ -785,6 +785,18 @@ db_pool: asyncpg.Pool = None
 worker_tasks: List[asyncio.Task] = []
 is_shutting_down = False
 
+
+def _log_worker_task_result(task: asyncio.Task):
+    """Evita 'Task exception was never retrieved' e registra falhas de workers."""
+    try:
+        _ = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        nome = task.get_name() if hasattr(task, 'get_name') else 'worker'
+        if not is_shutting_down:
+            logger.error(f"❌ {nome} finalizou com erro não tratado: {e}")
+
 # --- CONTROLE DE CONCORRÊNCIA ---
 whisper_semaphore = asyncio.Semaphore(5)
 llm_semaphore = asyncio.Semaphore(15)
@@ -899,6 +911,8 @@ async def startup_event():
         asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
         asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
     ]
+    for _task in worker_tasks:
+        _task.add_done_callback(_log_worker_task_result)
 
     # ⚠️  Os workers usam _worker_leader_check() internamente para garantir que
     # apenas UM processo execute em ambientes multi-worker (uvicorn --workers N).
@@ -913,6 +927,7 @@ async def shutdown_event():
         task.cancel()
     if worker_tasks:
         await asyncio.gather(*worker_tasks, return_exceptions=True)
+        worker_tasks.clear()
 
     await http_client.aclose()
     await redis_client.aclose()
@@ -2685,110 +2700,113 @@ async def worker_metricas_diarias():
     Colunas opcionais (satisfacao_media, tokens, custo) são ignoradas com
     graceful fallback se a coluna ainda não existir no banco.
     """
-    while True:
-        await asyncio.sleep(3600)
-        if not db_pool:
-            continue
-        if not await _is_worker_leader("metricas_diarias", ttl=3700):
-            logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
-            continue
-        try:
-            hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-            empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
+    try:
+        while True:
+            await asyncio.sleep(3600)
+            if not db_pool:
+                continue
+            if not await _is_worker_leader("metricas_diarias", ttl=3700):
+                logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
+                continue
+            try:
+                hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
 
-            total_unidades = 0
-            for emp in empresas:
-                empresa_id = emp['id']
-                unidades = await db_pool.fetch(
-                    "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
-                    empresa_id
-                )
-
-                for unid in unidades:
-                    unidade_id = unid['id']
-                    total_unidades += 1
-
-                    m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
-
-                    # ── Upsert principal (colunas garantidas) ─────────────
-                    await db_pool.execute("""
-                        INSERT INTO metricas_diarias (
-                            empresa_id, unidade_id, data,
-                            total_conversas, conversas_encerradas, conversas_sem_resposta,
-                            novos_contatos,
-                            total_mensagens, total_mensagens_ia,
-                            leads_qualificados, taxa_conversao,
-                            tempo_medio_resposta,
-                            total_solicitacoes_telefone, total_links_enviados,
-                            total_planos_enviados, total_matriculas,
-                            pico_hora,
-                            satisfacao_media,
-                            updated_at
-                        )
-                        VALUES (
-                            $1, $2, $3,
-                            $4, $5, $6,
-                            $7,
-                            $8, $9,
-                            $10, $11,
-                            $12,
-                            $13, $14,
-                            $15, $16,
-                            $17,
-                            $18,
-                            NOW()
-                        )
-                        ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
-                            total_conversas            = EXCLUDED.total_conversas,
-                            conversas_encerradas       = EXCLUDED.conversas_encerradas,
-                            conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
-                            novos_contatos             = EXCLUDED.novos_contatos,
-                            total_mensagens            = EXCLUDED.total_mensagens,
-                            total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
-                            leads_qualificados         = EXCLUDED.leads_qualificados,
-                            taxa_conversao             = EXCLUDED.taxa_conversao,
-                            tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
-                            total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
-                            total_links_enviados       = EXCLUDED.total_links_enviados,
-                            total_planos_enviados      = EXCLUDED.total_planos_enviados,
-                            total_matriculas           = EXCLUDED.total_matriculas,
-                            pico_hora                  = EXCLUDED.pico_hora,
-                            satisfacao_media           = EXCLUDED.satisfacao_media,
-                            updated_at                 = NOW()
-                    """,
-                        empresa_id, unidade_id, hoje,
-                        m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
-                        m["novos_contatos"],
-                        m["total_mensagens"], m["total_mensagens_ia"],
-                        m["leads_qualificados"], m["taxa_conversao"],
-                        m["tempo_medio_resposta"],
-                        m["total_solicitacoes_telefone"], m["total_links_enviados"],
-                        m["total_planos_enviados"], m["total_matriculas"],
-                        m["pico_hora"],
-                        m["satisfacao_media"],
+                total_unidades = 0
+                for emp in empresas:
+                    empresa_id = emp['id']
+                    unidades = await db_pool.fetch(
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                        empresa_id
                     )
 
-                    # ── Colunas opcionais (tokens/custo) — graceful fallback ──
-                    if m["tokens_consumidos"] is not None:
-                        try:
-                            await db_pool.execute("""
-                                UPDATE metricas_diarias
-                                SET tokens_consumidos  = $4,
-                                    custo_estimado_usd = $5,
-                                    updated_at         = NOW()
-                                WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
-                            """, empresa_id, unidade_id, hoje,
-                                m["tokens_consumidos"], m["custo_estimado_usd"])
-                        except Exception:
-                            pass  # colunas ainda não existem no banco
+                    for unid in unidades:
+                        unidade_id = unid['id']
+                        total_unidades += 1
 
-            logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
+                        m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
 
-        except asyncpg.PostgresError as e:
-            logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
-        except Exception as e:
-            logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+                        # ── Upsert principal (colunas garantidas) ─────────────
+                        await db_pool.execute("""
+                            INSERT INTO metricas_diarias (
+                                empresa_id, unidade_id, data,
+                                total_conversas, conversas_encerradas, conversas_sem_resposta,
+                                novos_contatos,
+                                total_mensagens, total_mensagens_ia,
+                                leads_qualificados, taxa_conversao,
+                                tempo_medio_resposta,
+                                total_solicitacoes_telefone, total_links_enviados,
+                                total_planos_enviados, total_matriculas,
+                                pico_hora,
+                                satisfacao_media,
+                                updated_at
+                            )
+                            VALUES (
+                                $1, $2, $3,
+                                $4, $5, $6,
+                                $7,
+                                $8, $9,
+                                $10, $11,
+                                $12,
+                                $13, $14,
+                                $15, $16,
+                                $17,
+                                $18,
+                                NOW()
+                            )
+                            ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
+                                total_conversas            = EXCLUDED.total_conversas,
+                                conversas_encerradas       = EXCLUDED.conversas_encerradas,
+                                conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
+                                novos_contatos             = EXCLUDED.novos_contatos,
+                                total_mensagens            = EXCLUDED.total_mensagens,
+                                total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
+                                leads_qualificados         = EXCLUDED.leads_qualificados,
+                                taxa_conversao             = EXCLUDED.taxa_conversao,
+                                tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
+                                total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
+                                total_links_enviados       = EXCLUDED.total_links_enviados,
+                                total_planos_enviados      = EXCLUDED.total_planos_enviados,
+                                total_matriculas           = EXCLUDED.total_matriculas,
+                                pico_hora                  = EXCLUDED.pico_hora,
+                                satisfacao_media           = EXCLUDED.satisfacao_media,
+                                updated_at                 = NOW()
+                        """,
+                            empresa_id, unidade_id, hoje,
+                            m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
+                            m["novos_contatos"],
+                            m["total_mensagens"], m["total_mensagens_ia"],
+                            m["leads_qualificados"], m["taxa_conversao"],
+                            m["tempo_medio_resposta"],
+                            m["total_solicitacoes_telefone"], m["total_links_enviados"],
+                            m["total_planos_enviados"], m["total_matriculas"],
+                            m["pico_hora"],
+                            m["satisfacao_media"],
+                        )
 
+                        # ── Colunas opcionais (tokens/custo) — graceful fallback ──
+                        if m["tokens_consumidos"] is not None:
+                            try:
+                                await db_pool.execute("""
+                                    UPDATE metricas_diarias
+                                    SET tokens_consumidos  = $4,
+                                        custo_estimado_usd = $5,
+                                        updated_at         = NOW()
+                                    WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
+                                """, empresa_id, unidade_id, hoje,
+                                    m["tokens_consumidos"], m["custo_estimado_usd"])
+                            except Exception:
+                                pass  # colunas ainda não existem no banco
+
+                logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
+
+            except asyncpg.PostgresError as e:
+                logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
+            except Exception as e:
+                logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_metricas_diarias cancelado")
+        raise
 
 # --- UTILITÁRIOS DE JSON ---
 
@@ -3975,24 +3993,10 @@ async def chatwoot_webhook(
                     logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
                     return {"status": "aguardando_escolha_unidade"}
 
-                # Unidade não identificada — pergunta cidade/bairro de forma humanizada
-                cfg = await carregar_configuracao_global(empresa_id)
-                nome_empresa = cfg.get('nome_empresa') or 'nossa academia'
-                _pers_bv = await carregar_personalidade(empresa_id) or {}
-                _nome_ia_bv = _pers_bv.get('nome_ia') or 'Assistente Virtual'
-
-                # Saudação personalizada com nome e horário
-                _cumpr_bv = saudacao_por_horario()
-                _contato_bv = payload.get("sender", {})
-                _nome_bv = limpar_nome(_contato_bv.get("name"))
-                _primeiro_bv = _nome_bv.split()[0].capitalize() if _nome_bv and _nome_bv.lower() not in ("cliente", "contato", "") else ""
-                _saud_bv = f"{_cumpr_bv}, {_primeiro_bv}!" if _primeiro_bv else f"{_cumpr_bv}!"
-
+                # Unidade não identificada — pergunta direta, sem saudação fixa
                 msg = (
-                    f"{_saud_bv} Eu sou {'a' if _nome_ia_bv[-1:].lower() == 'a' else 'o'} {_nome_ia_bv} "
-                    f"da {nome_empresa}, tudo bem? 😊\n\n"
-                    "Para te direcionar ao melhor atendimento, me conta:\n\n"
-                    "Em qual *cidade* ou *bairro* você prefere treinar? 🎯"
+                    "Para te direcionar ao melhor atendimento, preciso identificar sua unidade. 🎯\n\n"
+                    "Em qual *cidade* ou *bairro* você prefere treinar?"
                 )
                 await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                 await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
