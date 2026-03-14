@@ -54,7 +54,7 @@ from src.services.db_queries import (
     log_db_error, bd_iniciar_conversa, bd_salvar_mensagem_local,
     bd_obter_historico_local, bd_atualizar_msg_cliente, bd_atualizar_msg_ia,
     bd_registrar_primeira_resposta, bd_registrar_evento_funil, bd_finalizar_conversa,
-    _coletar_metricas_unidade, buscar_resposta_faq, carregar_faq_unidade
+    _coletar_metricas_unidade, buscar_resposta_faq, carregar_faq_unidade, bd_atualizar_metricas_venda
 )
 from src.services.chatwoot_client import (
     simular_digitacao, formatar_mensagem_saida, suavizar_personalizacao_nome,
@@ -1519,10 +1519,17 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             ttl=3600
                         )
 
-                if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
+                link_enviado = bool(link_plano in resposta_texto)
+                intencao = link_enviado or "matricular" in resposta_texto.lower()
+                
+                if intencao:
                     await bd_registrar_evento_funil(
                         conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
                     )
+                    await bd_atualizar_metricas_venda(
+                        conversation_id, link_venda_enviado=link_enviado, intencao_de_compra=intencao
+                    )
+                    
                 if tel_banco and tel_banco in resposta_texto:
                     await bd_registrar_evento_funil(
                         conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3

@@ -1138,3 +1138,28 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
         "tokens_consumidos": tokens_consumidos,
         "custo_estimado_usd": custo_estimado_usd,
     }
+
+
+async def bd_atualizar_metricas_venda(conversation_id: int, link_venda_enviado: bool = False, intencao_de_compra: bool = False):
+    """Atualiza as métricas de venda na tabela conversas, caso a IA demonstre intenção ou envie um link de venda."""
+    if not _database.db_pool:
+        return
+        
+    try:
+        if link_venda_enviado or intencao_de_compra:
+            update_queries = []
+            if link_venda_enviado:
+                update_queries.append("link_venda_enviado = TRUE")
+            if intencao_de_compra:
+                update_queries.append("intencao_de_compra = TRUE")
+                
+            set_clause = ", ".join(update_queries)
+            
+            await _database.db_pool.execute(f"""
+                UPDATE conversas
+                SET {set_clause}
+                WHERE conversation_id = $1
+            """, conversation_id)
+            logger.info(f"📊 Métricas atualizadas para conv={conversation_id}: link_enviado={link_venda_enviado}, intencao={intencao_de_compra}")
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar métricas de venda para conv {conversation_id}: {e}")
