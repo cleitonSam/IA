@@ -964,6 +964,31 @@ def primeiro_nome_cliente(nome: Optional[str]) -> str:
     return nome_limpo.split()[0].capitalize()
 
 
+def nome_eh_valido(nome: Optional[str]) -> bool:
+    nome_limpo = limpar_nome(nome) if nome else ""
+    if not nome_limpo or len(nome_limpo) < 2:
+        return False
+    return nome_limpo.lower() not in {"cliente", "contato", "visitante", "unknown", "na", "n a"}
+
+
+def extrair_nome_do_texto(texto: str) -> Optional[str]:
+    if not texto:
+        return None
+    t = str(texto).strip()
+    padroes = [
+        r"(?:meu nome e|meu nome é|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
+        r"^([A-Za-zÀ-ÿ]{2,20})(?:\s+[A-Za-zÀ-ÿ]{2,20})?$",
+    ]
+    for ptn in padroes:
+        m = re.search(ptn, t, flags=re.IGNORECASE)
+        if not m:
+            continue
+        nome = limpar_nome(m.group(1))
+        if nome_eh_valido(nome):
+            return nome.title()
+    return None
+
+
 def _is_provider_unavailable_error(err: Exception) -> bool:
     """Detecta indisponibilidade de provedor LLM para acionar modo degradado."""
     msg = normalizar(str(err) or "")
@@ -1007,7 +1032,7 @@ def limpar_markdown(texto: str) -> str:
     return texto
 
 
-def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
+def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True) -> List[str]:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
     Retorna uma LISTA de strings — cada item = uma mensagem separada no chat.
@@ -1042,7 +1067,19 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
 
     blocos: List[str] = []
 
-    for idx, p in enumerate(planos):
+    planos_ordenados = list(planos)
+    if destacar_melhor_preco:
+        def _valor_plano(item: Dict[str, Any]) -> float:
+            raw = item.get('valor_promocional') if item.get('valor_promocional') not in (None, "") else item.get('valor')
+            try:
+                v = float(raw)
+                return v if v > 0 else 999999.0
+            except (TypeError, ValueError):
+                return 999999.0
+
+        planos_ordenados.sort(key=_valor_plano)
+
+    for idx, p in enumerate(planos_ordenados):
         nome = p.get('nome', 'Plano')
         link = p.get('link_venda', '') or ''
 
@@ -1096,7 +1133,8 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
         linhas: List[str] = []
 
         # Cabeçalho
-        linhas.append(f"{emoji} *{nome}*")
+        _selo = " 🏆 *MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
+        linhas.append(f"{emoji} *{nome}*{_selo}")
 
         # Pitch (só se existir e não for código)
         if pitch:
@@ -1837,6 +1875,41 @@ async def simular_digitacao(account_id: int, conversation_id: int, integracao: d
     await asyncio.sleep(max(0.5, min(segundos, 6.0)))
 
 
+def formatar_mensagem_saida(content: str) -> str:
+    """Padroniza quebras de linha e espaços para mensagens mais legíveis."""
+    txt = limpar_markdown(content or "")
+    txt = txt.replace("\r\n", "\n").replace("\r", "\n")
+    txt = re.sub(r"[ \t]+", " ", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome: str, integracao: dict) -> bool:
+    """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
+    if not contact_id or not nome_eh_valido(nome):
+        return False
+    url_base = integracao.get('url')
+    token = integracao.get('token')
+    if not url_base or not token:
+        return False
+
+    headers = {"api_access_token": token}
+    payload = {"name": nome.strip()}
+    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
+    try:
+        resp = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+        return True
+    except Exception:
+        try:
+            resp = await http_client.patch(url, json=payload, headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning(f"Não foi possível atualizar nome do contato {contact_id} no Chatwoot: {e}")
+            return False
+
+
 async def enviar_mensagem_chatwoot(
     account_id: int,
     conversation_id: int,
@@ -1850,8 +1923,19 @@ async def enviar_mensagem_chatwoot(
         logger.error("Integração Chatwoot incompleta: url ou token ausentes")
         return None
 
-    # Limpa markdown incompatível antes de enviar
-    content = limpar_markdown(content)
+    # Padroniza formatação antes de enviar
+    content = formatar_mensagem_saida(content)
+
+    # Personaliza condução com nome sempre que possível
+    try:
+        _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
+    except Exception:
+        _nome_salvo = None
+    _primeiro = primeiro_nome_cliente(_nome_salvo)
+    if _primeiro:
+        _inicio = (content or "").strip().lower()
+        if not (_inicio.startswith(_primeiro.lower() + ",") or _inicio.startswith(_primeiro.lower() + " ")):
+            content = f"{_primeiro},\n\n{content.strip()}"
 
     url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {
@@ -3070,8 +3154,8 @@ async def processar_ia_e_responder(
             _texto_cliente_norm,
         ))
         if planos_ativos and intencao in {"planos", "preco"} and _quer_todos_planos:
-            fast_reply = formatar_todos_planos_em_texto_unico(planos_ativos)
-            logger.info("⚡ Planos completos: resposta única com todos os planos ativos")
+            fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
+            logger.info("⚡ Planos completos: envio em blocos com destaque para melhor preço")
 
         _intencoes_cacheaveis = {
             "horario", "endereco"
@@ -3810,7 +3894,7 @@ async def chatwoot_webhook(
         await redis_client.delete(
             f"pause_ia:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
-            f"prompt_unidade_enviado:{id_conv}",
+            f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
             f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
@@ -3823,7 +3907,7 @@ async def chatwoot_webhook(
             await redis_client.delete(
                 f"pause_ia:{id_conv}", f"estado:{id_conv}",
                 f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
-                f"prompt_unidade_enviado:{id_conv}",
+                f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
                 f"atend_manual:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
@@ -3837,6 +3921,31 @@ async def chatwoot_webhook(
     content_attrs = payload.get("content_attributes") or {}
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
+
+    contato = payload.get("sender", {})
+    nome_contato_raw = contato.get("name")
+    nome_contato_limpo = limpar_nome(nome_contato_raw)
+    nome_contato_valido = nome_eh_valido(nome_contato_limpo)
+
+    if message_type == "incoming":
+        if nome_contato_valido:
+            await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
+        else:
+            _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
+            if _nome_informado:
+                await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
+                await redis_client.delete(f"aguardando_nome:{id_conv}")
+                await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
+            else:
+                _aguardando_nome = await redis_client.get(f"aguardando_nome:{id_conv}")
+                if not _aguardando_nome:
+                    msg_nome = (
+                        "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
+                        "Pode me responder só com seu primeiro nome."
+                    )
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao)
+                    await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
+                    return {"status": "aguardando_nome"}
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
@@ -4028,9 +4137,10 @@ async def chatwoot_webhook(
         return {"status": "ignorado"}
 
     contato = payload.get("sender", {})
+    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
     await bd_iniciar_conversa(
         id_conv, slug, account_id,
-        contato.get("id"), limpar_nome(contato.get("name")), empresa_id
+        contato.get("id"), _nome_para_bd, empresa_id
     )
 
     lock_key = f"agendar_lock:{id_conv}"
@@ -4068,7 +4178,7 @@ async def chatwoot_webhook(
         background_tasks.add_task(
             processar_ia_e_responder,
             account_id, id_conv, contato.get("id"), slug,
-            limpar_nome(contato.get("name")), lock_val, empresa_id, integracao
+            _nome_para_bd, lock_val, empresa_id, integracao
         )
         return {"status": "processando"}
 
