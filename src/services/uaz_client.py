@@ -37,32 +37,36 @@ class UazAPIClient:
                 METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
             return None
 
-    async def send_text(self, chat_id: str, text: str, delay: int = 0) -> bool:
+    async def send_text(self, number: str, text: str, delay: int = 0) -> bool:
         """Envia mensagem de texto com simulação opcional de typing."""
+        # Limpa o número para conter apenas dígitos (remove @s.whatsapp.net se presente)
+        clean_number = "".join(filter(str.isdigit, number))
         payload = {
-            "chatId": chat_id,
+            "number": clean_number,
             "text": text,
-            "delay": delay
+            "delay": str(delay) # UazAPI as vezes prefere string para delay
         }
-        res = await self._request("POST", "/message/text", json=payload)
-        return res is not None and res.get("status") in (200, 201, "success")
+        res = await self._request("POST", "/send/text", json=payload)
+        return res is not None
 
-    async def set_presence(self, chat_id: str, presence: str = "composing", delay: int = 2000) -> bool:
+    async def set_presence(self, number: str, presence: str = "composing", delay: int = 2000) -> bool:
         """
         Simula presença: 'composing' (digitando), 'recording' (gravando), 'paused'.
         """
+        clean_number = "".join(filter(str.isdigit, number))
         payload = {
-            "chatId": chat_id,
+            "number": clean_number,
             "presence": presence,
-            "delay": delay
+            "delay": str(delay)
         }
-        res = await self._request("POST", "/message/presence", json=payload)
+        res = await self._request("POST", "/send/presence", json=payload)
         return res is not None
 
-    async def send_media(self, chat_id: str, url: str, caption: str = "", media_type: str = "image") -> bool:
+    async def send_media(self, number: str, url: str, caption: str = "", media_type: str = "image") -> bool:
         """Envia imagem, vídeo ou documento via URL."""
+        clean_number = "".join(filter(str.isdigit, number))
         payload = {
-            "chatId": chat_id,
+            "number": clean_number,
             "url": url,
             "caption": caption,
             "type": media_type
@@ -70,10 +74,11 @@ class UazAPIClient:
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None
 
-    async def send_ptt(self, chat_id: str, url: str) -> bool:
+    async def send_ptt(self, number: str, url: str) -> bool:
         """Envia áudio como PTT (gravado na hora)."""
+        clean_number = "".join(filter(str.isdigit, number))
         payload = {
-            "chatId": chat_id,
+            "number": clean_number,
             "url": url,
             "ptt": True
         }

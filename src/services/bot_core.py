@@ -813,13 +813,8 @@ async def despachar_resposta(
     Despacha a resposta para o canal correto (Chatwoot ou UazAPI).
     """
     if source == 'uazapi':
-        # Para UazAPI, o conversation_id pode ser interno, usamos contato_fone como chatId
+        # Para UazAPI, usamos o contato_fone (ou conversation_id como fallback)
         chat_id = contato_fone if contato_fone else str(conversation_id)
-        # Limpa caracteres não numéricos para o formato JID do WhatsApp
-        chat_id = "".join(filter(str.isdigit, chat_id))
-        
-        if "@" not in chat_id:
-            chat_id = f"{chat_id}@s.whatsapp.net"
             
         uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
         
