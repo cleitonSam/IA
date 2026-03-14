@@ -66,7 +66,6 @@ from src.services.workers import (
     agendar_followups, worker_followup, worker_metricas_diarias
 )
 import src.services.workers as _workers_module
-from src.services.stream_worker import run_stream_worker
 
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
 from dotenv import load_dotenv
@@ -533,6 +532,7 @@ async def startup_event():
     logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
 
     if APP_MODE in ("worker", "both"):
+        from src.services.stream_worker import run_stream_worker
         worker_tasks = [
             asyncio.create_task(worker_followup(), name="worker_followup"),
             asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),

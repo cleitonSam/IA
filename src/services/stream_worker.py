@@ -7,7 +7,6 @@ from src.core.config import (
     PROMETHEUS_OK, METRIC_QUEUE_SIZE, METRIC_WORKER_LATENCY, METRIC_WORKER_PROCESSED
 )
 from src.core.redis_client import redis_client
-from src.services.bot_core import processar_ia_e_responder
 from src.services.db_queries import carregar_integracao
 
 STREAM_NAME = "ia:webhook:stream"
@@ -58,6 +57,7 @@ async def run_stream_worker():
                         
                         integracao = await carregar_integracao(empresa_id, 'chatwoot')
                         
+                        from src.services.bot_core import processar_ia_e_responder
                         lock_val = str(uuid.uuid4())
                         if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=180):
                             await processar_ia_e_responder(
