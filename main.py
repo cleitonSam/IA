@@ -8,6 +8,7 @@ from src.services.bot_core import startup_event, shutdown_event, rate_limit_midd
 # Importações dos novos Roteadores do Motor SaaS
 from src.api.routers.system import router as system_router
 from src.api.routers.webhook import router as webhook_router
+from src.api.routers.uaz_webhook import router as uaz_webhook_router
 
 # Inicialização limpa e abstrata do FastAPI
 app = FastAPI(title="Motor SaaS IA Gym", version=APP_VERSION, docs_url=None, redoc_url=None)
@@ -32,6 +33,7 @@ app.add_event_handler("shutdown", shutdown_event)
 
 # Injeção de Dependências - Roteadores
 app.include_router(webhook_router, tags=["Webhooks Chatwoot"])
+app.include_router(uaz_webhook_router, tags=["Webhooks UazAPI"])
 app.include_router(system_router, tags=["Sistema Base SaaS"])
 
 if __name__ == "__main__":

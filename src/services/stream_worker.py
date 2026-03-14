@@ -8,6 +8,9 @@ from src.core.config import (
 )
 from src.core.redis_client import redis_client
 from src.services.db_queries import carregar_integracao
+# Import lazy resolvido: bot_core depende de stream_worker indiretamente via startup,
+# mas processar_ia_e_responder não cria ciclo real — importar aqui é seguro e mais eficiente.
+from src.services.bot_core import processar_ia_e_responder
 
 STREAM_NAME = "ia:webhook:stream"
 CONSUMER_GROUP = "ia_workers_group"
@@ -47,29 +50,55 @@ async def run_stream_worker():
                 for msg_id, payload in messages:
                     _start = time.time()
                     try:
-                        # Extrair dados do job (com proteção a campos None/string)
-                        account_id = int(payload.get("account_id") or 0)
-                        conversation_id = int(payload.get("conversation_id") or 0)
-                        _raw_contact = payload.get("contact_id")
-                        contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
-                        slug = payload.get("slug") or None
-                        nome_cliente = payload.get("nome_cliente") or None
+                        source = payload.get("source", "chatwoot")
                         empresa_id = int(payload.get("empresa_id") or 0)
+                        
+                        if source == "uazapi":
+                            phone = payload.get("phone")
+                            from src.services.db_queries import buscar_conversa_por_fone, bd_iniciar_conversa
+                            
+                            conversa = await buscar_conversa_por_fone(phone, empresa_id)
+                            if not conversa:
+                                # Se não tem conversa, precisamos de um account_id fake para o bot_core
+                                # ou adaptar o bot_core para não exigir se for UazAPI.
+                                # Por ora, criamos uma conversa com ID negativo para diferenciar
+                                temp_conv_id = int(time.time()) * -1
+                                await bd_iniciar_conversa(
+                                    temp_conv_id, "uazapi", 0, 
+                                    contato_nome=payload.get("nome_cliente"),
+                                    empresa_id=empresa_id,
+                                    contato_fone=phone
+                                )
+                                conversa = await buscar_conversa_por_fone(phone, empresa_id)
+                            
+                            account_id = conversa.get("account_id", 0)
+                            conversation_id = conversa.get("conversation_id")
+                            contact_id = conversa.get("contato_id")
+                            slug = conversa.get("unidade_slug") or "uazapi"
+                            nome_cliente = conversa.get("contato_nome")
+                        else:
+                            # Fluxo Chatwoot clássico
+                            account_id = int(payload.get("account_id") or 0)
+                            conversation_id = int(payload.get("conversation_id") or 0)
+                            _raw_contact = payload.get("contact_id")
+                            contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
+                            slug = payload.get("slug")
+                            nome_cliente = payload.get("nome_cliente")
 
-                        if not account_id or not conversation_id or not empresa_id:
+                        if not conversation_id or not empresa_id:
                             logger.error(f"❌ Job inválido no stream {msg_id}: {payload}")
                             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
-                            await redis_client.xdel(STREAM_NAME, msg_id)
                             continue
                         
-                        integracao = await carregar_integracao(empresa_id, 'chatwoot')
+                        integracao = await carregar_integracao(empresa_id, 'chatwoot' if source == "chatwoot" else 'uazapi')
                         
                         from src.services.bot_core import processar_ia_e_responder
                         lock_val = str(uuid.uuid4())
-                        if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=180):
+                        if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=60):
                             await processar_ia_e_responder(
                                 account_id, conversation_id, contact_id, slug,
-                                nome_cliente, lock_val, empresa_id, integracao
+                                nome_cliente, lock_val, empresa_id, integracao,
+                                source=source # Passamos a origem para o bot_core decidir como responder
                             )
                         
                         await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)

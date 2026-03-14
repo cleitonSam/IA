@@ -741,7 +741,8 @@ def log_db_error(retry_state):
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_iniciar_conversa(
     conversation_id: int, slug: str, account_id: int,
-    contato_id: int = None, contato_nome: str = None, empresa_id: int = None
+    contato_id: int = None, contato_nome: str = None, empresa_id: int = None,
+    contato_fone: str = None
 ):
     if not _database.db_pool:
         return
@@ -754,14 +755,15 @@ async def bd_iniciar_conversa(
             return
         unidade_id = unidade['id']
         await _database.db_pool.execute("""
-            INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, primeira_mensagem, status)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa')
+            INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, primeira_mensagem, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'ativa')
             ON CONFLICT (conversation_id) DO UPDATE SET
-                contato_nome = EXCLUDED.contato_nome,
+                contato_nome = COALESCE(EXCLUDED.contato_nome, conversas.contato_nome),
+                contato_fone = COALESCE(EXCLUDED.contato_fone, conversas.contato_fone),
                 unidade_id = EXCLUDED.unidade_id,
                 status = 'ativa',
                 updated_at = NOW()
-        """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id)
+        """, conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id)
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {e}")
 
@@ -786,6 +788,39 @@ async def bd_salvar_mensagem_local(
         """, conversa['id'], role, tipo, content, url_midia)
     except Exception as e:
         logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
+
+
+async def buscar_conversa_por_fone(contato_fone: str, empresa_id: int) -> Optional[Dict]:
+    """
+    Busca uma conversa ativa pelo número de telefone e empresa.
+    Útil para integração direta com WhatsApp (UazAPI).
+    """
+    if not _database.db_pool or not contato_fone:
+        return None
+
+    cache_key = f"conv:fone:{contato_fone}:{empresa_id}"
+    cached = await redis_get_json(cache_key)
+    if cached:
+        return cached
+
+    try:
+        query = """
+            SELECT c.*, u.slug as unidade_slug
+            FROM conversas c
+            JOIN unidades u ON u.id = c.unidade_id
+            WHERE c.contato_fone = $1 AND c.empresa_id = $2
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+        """
+        row = await _database.db_pool.fetchrow(query, contato_fone, empresa_id)
+        if row:
+            dados = dict(row)
+            await redis_set_json(cache_key, dados, 300)
+            return dados
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar conversa por fone {contato_fone}: {e}")
+        return None
 
 
 async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Optional[str]:
