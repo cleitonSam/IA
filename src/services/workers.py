@@ -6,6 +6,7 @@ from typing import List
 from src.core.config import logger, OPENAI_API_KEY
 import src.core.database as _database
 from src.core.redis_client import redis_client
+from src.services.llm_service import cliente_ia
 from src.services.db_queries import (
     carregar_integracao, sincronizar_planos_evo,
     _is_worker_leader, _coletar_metricas_unidade
@@ -173,8 +174,11 @@ async def worker_followup():
                         )
                         continue
 
-                    from openai import AsyncOpenAI
-                    cliente_llm = AsyncOpenAI(api_key=OPENAI_API_KEY)
+                    if not cliente_ia:
+                        await _database.db_pool.execute(
+                            "UPDATE followups SET status = 'erro', erro_log = 'Cliente IA não configurado' WHERE id = $1", f['id']
+                        )
+                        continue
                     
                     nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
                     nome_unidade = f['nome_unidade'] or ''
@@ -200,7 +204,7 @@ async def worker_followup():
                     )
                     
                     try:
-                        resp_llm = await cliente_llm.chat.completions.create(
+                        resp_llm = await cliente_ia.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=[{"role": "system", "content": prompt_sistema}],
                             temperature=0.7,
