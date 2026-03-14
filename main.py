@@ -3297,13 +3297,11 @@ async def processar_ia_e_responder(
             _texto_cliente_norm,
         ))
         if planos_ativos and intencao in {"planos", "preco"}:
+            # Sempre envia planos em blocos estruturados — nunca pelo LLM.
+            # O LLM trunca respostas longas com múltiplos planos.
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
-            if _quer_todos_planos or len(_planos_filtrados) != len(planos_ativos):
-                fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
-                logger.info("⚡ Planos: envio em blocos com filtro por contexto e destaque de melhor preço")
-            elif re.search(r"(quero saber dos planos|quais planos|planos)" , _texto_cliente_norm):
-                fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
-                logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
+            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
+            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -3632,10 +3630,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
             )
             temperature = float(pers.get("temperatura") or 0.7)
-            max_tokens_llm = int(pers.get("max_tokens") or 2000)
-            # Garante mínimo de 2000 — suficiente para qualquer resposta de WhatsApp
-            # sem truncamento, sem incentivar respostas longas desnecessárias
-            max_tokens_llm = max(max_tokens_llm, 2000)
+            max_tokens_llm = int(pers.get("max_tokens") or 8000)
+            # Mínimo alto para nunca truncar respostas com múltiplos planos ou detalhes
+            max_tokens_llm = max(max_tokens_llm, 8000)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
