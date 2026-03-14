@@ -818,9 +818,9 @@ async def despachar_resposta(
             
         uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
         
-        # Substitui proporção por um tempo de digitação rígido entre 400 e 1200 ms
+        # Substitui proporção por um tempo de digitação rígido entre 800 e 1200 ms
         import random
-        tempo_digitacao = random.randint(400, 1200)
+        tempo_digitacao = random.randint(800, 1200)
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
         # Marca que o próximo fromMe=true nessa conversa é do BOT (não de atendente humano)
