@@ -1186,35 +1186,55 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
     return blocos
 
 
-def formatar_todos_planos_em_texto_unico(planos: List[Dict]) -> str:
-    """Retorna todos os planos ativos em uma única mensagem comercial."""
+def filtrar_planos_por_contexto(texto_cliente: str, planos: List[Dict]) -> List[Dict]:
+    """Prioriza planos mais aderentes ao que o cliente pediu (ex.: aulas coletivas)."""
     if not planos:
-        return "No momento, não encontrei planos ativos 😕"
+        return []
 
-    linhas = ["Perfeito! Além do Prime, temos estas opções ativas para você comparar 👇", ""]
+    txt = normalizar(texto_cliente or "")
+    if not txt:
+        return planos
 
+    intencoes = {
+        "aulas_coletivas": ["aulas coletivas", "coletiva", "fit dance", "zumba", "pilates", "yoga", "muay thai", "aula"],
+        "musculacao": ["musculacao", "musculação", "peso", "hipertrofia", "academia"],
+        "premium": ["premium", "vip", "completo", "top", "melhor plano"],
+        "economico": ["barato", "mais em conta", "economico", "econômico", "preco", "preço"],
+    }
+
+    pesos = {k: 0 for k in intencoes}
+    for k, chaves in intencoes.items():
+        for c in chaves:
+            if normalizar(c) in txt:
+                pesos[k] += 1
+
+    if sum(pesos.values()) == 0:
+        return planos
+
+    ranqueados = []
     for p in planos:
-        nome = str(p.get("nome") or "Plano").strip()
-        link = str(p.get("link_venda") or "").strip()
-        try:
-            valor = float(p.get("valor")) if p.get("valor") is not None else None
-        except (TypeError, ValueError):
-            valor = None
+        corpus = " ".join([
+            str(p.get("nome") or ""),
+            str(p.get("descricao") or ""),
+            str(p.get("pitch") or ""),
+            str(p.get("slogan") or ""),
+            json.dumps(p.get("diferenciais") or "", ensure_ascii=False),
+        ])
+        corp_norm = normalizar(corpus)
+        score = 0
+        for k, chaves in intencoes.items():
+            if pesos[k] <= 0:
+                continue
+            score += sum(2 for c in chaves if normalizar(c) in corp_norm)
+        ranqueados.append((score, p))
 
-        if valor and valor > 0:
-            valor_fmt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            preco_txt = f"R${valor_fmt}/mês"
-        else:
-            preco_txt = "valor sob consulta"
+    ranqueados.sort(key=lambda x: x[0], reverse=True)
+    melhores = [p for sc, p in ranqueados if sc > 0]
+    if not melhores:
+        return planos
 
-        linha = f"• *{nome}* — {preco_txt}"
-        if link:
-            linha += f"\n  Link: {link}"
-        linhas.append(linha)
-
-    linhas.append("")
-    linhas.append("Se você quiser, eu já te indico o melhor custo-benefício para o seu objetivo e te envio o link certo de matrícula agora. 💪")
-    return "\n".join(linhas)
+    # Limita a 3 para não poluir, mas mantém contexto comercial claro.
+    return melhores[:3]
 
 
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
@@ -3167,12 +3187,17 @@ async def processar_ia_e_responder(
             _texto_cliente_norm,
         ))
         _quer_todos_planos = bool(re.search(
-            r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano)",
+            r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano|saber dos planos|quero ver planos|me fala dos planos)",
             _texto_cliente_norm,
         ))
-        if planos_ativos and intencao in {"planos", "preco"} and _quer_todos_planos:
-            fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
-            logger.info("⚡ Planos completos: envio em blocos com destaque para melhor preço")
+        if planos_ativos and intencao in {"planos", "preco"}:
+            _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
+            if _quer_todos_planos or len(_planos_filtrados) != len(planos_ativos):
+                fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
+                logger.info("⚡ Planos: envio em blocos com filtro por contexto e destaque de melhor preço")
+            elif re.search(r"(quero saber dos planos|quais planos|planos)" , _texto_cliente_norm):
+                fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
+                logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
 
         _intencoes_cacheaveis = {
             "horario", "endereco"
