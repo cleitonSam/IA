@@ -90,8 +90,8 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
     first_name = name_parts[0]
     last_name = name_parts[1] if len(name_parts) > 1 else first_name
 
-    # O e-mail é OBRIGATÓRIO na EVO v1 Prospects, não aceita string vazia.
-    # Se não houver, geramos um placeholder baseado no telefone.
+    # E-mail é OBRIGATÓRIO na EVO v1 Prospects (não aceita vazio/nulo).
+    # Se não houver, geramos um placeholder baseado no telefone para destravar o CRM.
     email = lead_data.get('email')
     if not email:
         email = f"{number}@atendimento.com.br"
