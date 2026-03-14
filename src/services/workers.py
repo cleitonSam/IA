@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List
 
-from src.core.config import logger
+from src.core.config import logger, OPENAI_API_KEY
 import src.core.database as _database
 from src.core.redis_client import redis_client
 from src.services.db_queries import (
@@ -173,9 +173,8 @@ async def worker_followup():
                         )
                         continue
 
-                    import os
                     from openai import AsyncOpenAI
-                    cliente_llm = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    cliente_llm = AsyncOpenAI(api_key=OPENAI_API_KEY)
                     
                     nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
                     nome_unidade = f['nome_unidade'] or ''
