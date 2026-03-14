@@ -115,8 +115,15 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload, timeout=15)
             if resp.status_code in (200, 201):
-                logger.info(f"🚀 [CRM EVO] Prospect CRIADO com SUCESSO na Unidade {unidade_id} (Branch {id_branch})")
-                return True
+                data = resp.json()
+                prospect_id = None
+                if isinstance(data, dict):
+                    prospect_id = data.get('idProspect') or data.get('id')
+                elif isinstance(data, list) and len(data) > 0:
+                    prospect_id = data[0].get('idProspect') or data[0].get('id')
+                
+                logger.info(f"🚀 [CRM EVO] Prospect CRIADO com SUCESSO na Unidade {unidade_id} (ID: {prospect_id})")
+                return prospect_id or True
             else:
                 logger.error(f"❌ Erro EVO API ({resp.status_code}): {resp.text}")
                 return False

@@ -1571,18 +1571,38 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                       (_nome_valido and novo_estado == "interessado")
 
         if _trigger_crm:
-            await bd_registrar_evento_funil(
-                conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
-            )
             # ── INTEGRAÇÃO EVO: Criar Prospect se não for aluno e for estratégico ──
             if not status_evo.get("is_aluno"):
-                lead_data = {
-                    "name": nome_cliente,
-                    "cellphone": contato_fone,
-                    "notes": f"Interesse estratégico detectado via IA (Estado: {novo_estado})",
-                    "temperature": 1 if novo_estado == "interessado" else 2
-                }
-                asyncio.create_task(criar_prospect_evo(empresa_id, unidade.get('id'), lead_data))
+                # Verifica se JÁ existe um prospect_id_evo para este telefone em QUALQUER conversa
+                _ja_prospect = await _database.db_pool.fetchval(
+                    "SELECT prospect_id_evo FROM conversas WHERE contato_fone = $1 AND prospect_id_evo IS NOT NULL LIMIT 1",
+                    contato_fone
+                )
+                
+                if not _ja_prospect:
+                    await bd_registrar_evento_funil(
+                        conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
+                    )
+                    lead_data = {
+                        "name": nome_cliente,
+                        "cellphone": contato_fone,
+                        "notes": f"Interesse estratégico detectado via IA (Estado: {novo_estado})",
+                        "temperature": 1 if novo_estado == "interessado" else 2
+                    }
+                    
+                    async def _criar_e_registrar():
+                        res_id = await criar_prospect_evo(empresa_id, unidade.get('id'), lead_data)
+                        if res_id and not isinstance(res_id, bool):
+                            # Salva o ID do prospect na conversa atual para evitar duplicidade futura
+                            await _database.db_pool.execute(
+                                "UPDATE conversas SET prospect_id_evo = $1 WHERE conversation_id = $2",
+                                res_id, conversation_id
+                            )
+                            logger.info(f"💾 Prospect ID {res_id} registrado para conv {conversation_id}")
+                    
+                    asyncio.create_task(_criar_e_registrar())
+                else:
+                    logger.debug(f"⏭️ Prospect já existe para {contato_fone} (ID: {_ja_prospect}). Pulando criação.")
             # ─────────────────────────────────────────────────────────────
 
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
