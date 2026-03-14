@@ -1212,6 +1212,7 @@ async def processar_ia_e_responder(
         fast_reply_lista = None   # List[str] — múltiplas mensagens (ex: planos)
         contexto_precarregado = ""  # Dados buscados do BD — LLM gera a resposta humanizada
         intencao_motor = None
+        _resposta_foi_truncada = False
 
         # Fast-path desativado: sempre seguir pelo fluxo FAQ + IA.
         texto_cliente_unificado = " ".join([t for t in (textos + transcricoes) if t]).strip()
