@@ -14,7 +14,7 @@ import time
 import zlib
 import unicodedata
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
@@ -391,6 +391,74 @@ def formatar_horarios_funcionamento(horarios: Any) -> str:
         return "\n".join([f"- {dia}: {hora}" for dia, hora in horarios.items()])
 
     return str(horarios)
+
+
+def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
+    """
+    Analisa o horário de funcionamento e retorna (aberta_agora, horario_hoje).
+    Suporta string multi-linha "Seg-Sex: 06:00–23:00\nSáb: 09:00–17:00\nDom: 09:00–13:00"
+    e dict com chaves por dia.
+    Retorna (None, None) se não conseguir determinar.
+    """
+    if not horarios:
+        return None, None
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    dia_idx = agora.weekday()  # 0=segunda, 6=domingo
+    hora_atual = agora.time()
+
+    DIA_ABREV = {
+        'seg': 0, 'ter': 1, 'qua': 2, 'qui': 3, 'sex': 4,
+        'sab': 5, 'sáb': 5, 'dom': 6,
+    }
+
+    def _normalizar_dia(s: str) -> Optional[int]:
+        return DIA_ABREV.get(normalizar(s).strip()[:3])
+
+    def _dia_na_linha(dias_str: str) -> bool:
+        dias_str = normalizar(dias_str).strip()
+        m = re.match(r'^(\w+)\s*[-–]\s*(\w+)$', dias_str)
+        if m:
+            ini = _normalizar_dia(m.group(1))
+            fim = _normalizar_dia(m.group(2))
+            if ini is not None and fim is not None:
+                return ini <= dia_idx <= fim
+        d = _normalizar_dia(dias_str)
+        return d == dia_idx
+
+    horario_hoje = None
+
+    if isinstance(horarios, str):
+        try:
+            horarios = json.loads(horarios)
+        except (json.JSONDecodeError, ValueError):
+            for linha in horarios.strip().split('\n'):
+                linha = linha.strip()
+                if ':' not in linha:
+                    continue
+                partes = linha.split(':', 1)
+                if _dia_na_linha(partes[0].strip()):
+                    horario_hoje = partes[1].strip()
+                    break
+
+    if isinstance(horarios, dict):
+        horario_hoje = horario_hoje_formatado(horarios)
+
+    if not horario_hoje:
+        return None, None
+
+    # Extrai os dois primeiros horários: abertura e fechamento
+    times = re.findall(r'(\d{1,2}):(\d{2})', horario_hoje)
+    if len(times) < 2:
+        return None, horario_hoje
+
+    try:
+        abertura = dtime(int(times[0][0]), int(times[0][1]))
+        fechamento = dtime(int(times[1][0]), int(times[1][1]))
+    except ValueError:
+        return None, horario_hoje
+
+    return abertura <= hora_atual < fechamento, horario_hoje
 
 
 def garantir_frase_completa(txt: str) -> str:
@@ -2071,21 +2139,10 @@ async def worker_followup():
                 agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
                 pendentes = await db_pool.fetch("""
-                    SELECT
-                        f.*,
-                        COALESCE(f.conversation_id, c.conversation_id) AS conv_id,
-                        COALESCE(f.account_id, c.account_id) AS acc_id,
-                        u.slug,
-                        COALESCE(f.empresa_id, c.empresa_id) AS emp_id
-                    FROM (
-                        SELECT * FROM followups
-                        WHERE status = 'pendente' AND agendado_para <= $1
-                          AND (conversa_id IS NOT NULL OR conversation_id IS NOT NULL)
-                        ORDER BY agendado_para
-                        LIMIT 20
-                        FOR UPDATE SKIP LOCKED
-                    ) f
-                    LEFT JOIN conversas c ON c.id = f.conversa_id
+                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id,
+                           u.nome AS nome_unidade, c.contato_nome
+                    FROM followups f
+                    JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
                 """, agora)
 
@@ -2124,8 +2181,14 @@ async def worker_followup():
                         )
                         continue
 
+                    nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
+                    nome_unidade = f['nome_unidade'] or ''
+                    mensagem = (f['mensagem'] or '')
+                    mensagem = mensagem.replace('{{nome}}', nome_contato)
+                    mensagem = mensagem.replace('{{unidade}}', nome_unidade)
+
                     await enviar_mensagem_chatwoot(
-                        acc_id, conv_id, f['mensagem'], "Assistente Virtual", integracao
+                        f['account_id'], f['conversation_id'], mensagem, "Assistente Virtual", integracao
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
@@ -2383,8 +2446,12 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
             faq_rows_db = await db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                WHERE f.empresa_id = $2 AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                      OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 50
             """, slug, empresa_id)
@@ -2440,19 +2507,23 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     if not db_pool:
         return ""
 
-    cache_key = f"cfg:faq:{slug}:v3"
+    cache_key = f"cfg:faq:{slug}:v4"
     cache = await redis_client.get(cache_key)
     if cache:
         return cache
 
     rows = []
     try:
-        # Query principal — com prioridade e visualizacoes
+        # Query principal — unidade específica, múltiplas unidades ou todas
         rows = await db_pool.fetch("""
             SELECT f.pergunta, f.resposta
             FROM faq f
-            JOIN unidades u ON u.id = f.unidade_id
-            WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+            WHERE f.empresa_id = $2 AND f.ativo = true
+              AND (
+                  f.todas_unidades = true
+                  OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                  OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+              )
             ORDER BY f.prioridade DESC NULLS LAST, f.visualizacoes DESC NULLS LAST
             LIMIT 30
         """, slug, empresa_id)
@@ -2462,8 +2533,12 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
             rows = await db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                WHERE f.empresa_id = $2 AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                      OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 30
             """, slug, empresa_id)
@@ -2938,11 +3013,12 @@ async def worker_metricas_diarias():
     """
     try:
         while True:
-            await asyncio.sleep(3600)
             if not db_pool:
+                await asyncio.sleep(60)
                 continue
             if not await _is_worker_leader("metricas_diarias", ttl=3700):
                 logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
+                await asyncio.sleep(3600)
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
@@ -3040,6 +3116,7 @@ async def worker_metricas_diarias():
                 logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
             except Exception as e:
                 logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+            await asyncio.sleep(3600)
     except asyncio.CancelledError:
         logger.info("🛑 worker_metricas_diarias cancelado")
         raise
@@ -3225,14 +3302,21 @@ async def processar_ia_e_responder(
                 fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
                 logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
 
-        # Pré-carrega horário no contexto para garantir que o LLM use o dado real do BD.
-        # Sem isso, quando a intenção é "horario" mas slug estava indefinido em algum momento,
-        # o LLM pode gerar resposta vaga ("nossos horários são ótimos") sem os dados concretos.
+        # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
             horarios_formatados = formatar_horarios_funcionamento(hor_banco)
-            nome_unid_ctx = unidade.get('nome') or 'da unidade'
-            contexto_precarregado = f"Horário de funcionamento da unidade {nome_unid_ctx}:\n{horarios_formatados}"
-            logger.info("📋 Horário pré-carregado no contexto para LLM")
+            _aberta, _hor_hoje = esta_aberta_agora(hor_banco)
+            _nome_unid = unidade.get('nome') or 'da unidade'
+            if _aberta is True:
+                _status_ctx = f"✅ A unidade está ABERTA agora. Horário de hoje: {_hor_hoje}"
+            elif _aberta is False:
+                _status_ctx = f"❌ A unidade está FECHADA no momento. Horário de hoje: {_hor_hoje}"
+            else:
+                _status_ctx = "Status de funcionamento não determinado."
+            contexto_precarregado = (
+                f"Horários de funcionamento — {_nome_unid}:\n{horarios_formatados}\n\n{_status_ctx}"
+            )
+            logger.info(f"📋 Horário + status pré-carregado: {_status_ctx}")
 
         _intencoes_cacheaveis = {
             "horario", "endereco"
@@ -3306,6 +3390,14 @@ async def processar_ia_e_responder(
             else:
                 horarios_str = "não informado"
 
+            _aberta_agora, _horario_hoje = esta_aberta_agora(hor_banco)
+            if _aberta_agora is True:
+                _status_agora = f"✅ ABERTA AGORA (hoje: {_horario_hoje})"
+            elif _aberta_agora is False:
+                _status_agora = f"❌ FECHADA AGORA (hoje: {_horario_hoje})"
+            else:
+                _status_agora = "não informado"
+
             # Detalhes de planos para o prompt (texto simples, sem markdown)
             planos_detalhados = formatar_planos_para_prompt(planos_ativos) if planos_ativos else "não informado"
             modalidades_prompt = ", ".join(normalizar_lista_campo(unidade.get("modalidades"))) or "não informado"
@@ -3319,6 +3411,7 @@ Empresa: {unidade.get('nome_empresa') or 'não informado'}
 Endereço: {end_banco or 'não informado'}
 Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
 Telefone: {tel_banco or 'não informado'}
+Status atual: {_status_agora}
 Horários:
 {horarios_str}
 Planos (com links de matricula):
