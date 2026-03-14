@@ -72,6 +72,9 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
     url = f"{api_base.replace('/v2', '/v1')}/prospects"
     
     headers = await _get_evo_headers(integracao)
+    # Revertido para application/json (confirmado funcional via curl manual)
+    headers['Content-Type'] = 'application/json'
+    headers['accept'] = 'application/json'
     
     phone = lead_data.get('cellphone', '').replace('+', '').replace(' ', '')
     # Lógica simples de DDI para BR
@@ -85,28 +88,33 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
     full_name = lead_data.get('name', 'Lead WhatsApp').strip()
     name_parts = full_name.split(' ', 1)
     first_name = name_parts[0]
-    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else first_name
+
+    # O e-mail é OBRIGATÓRIO na EVO v1 Prospects, não aceita string vazia.
+    # Se não houver, geramos um placeholder baseado no telefone.
+    email = lead_data.get('email')
+    if not email:
+        email = f"{number}@atendimento.com.br"
 
     payload = {
-        "firstName": first_name,
-        "lastName": last_name,
         "name": full_name,
+        "lastName": last_name,
         "idBranch": int(id_branch),
+        "email": email,
         "ddi": ddi,
         "cellphone": number,
-        "email": lead_data.get('email') or "",
         "notes": lead_data.get('notes', 'Gerado via IA Antigravity'),
         "currentStep": "Contato Inicial (IA)",
         "marketingType": "WhatsApp / IA"
     }
 
-    logger.debug(f"📤 [CRM EVO] Enviando payload: name={full_name}, branch={id_branch}, fone={ddi}{number}")
+    logger.debug(f"📤 [CRM EVO] Enviando prospect: {full_name} ({email}) para Unid {unidade_id}")
 
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload, timeout=15)
             if resp.status_code in (200, 201):
-                logger.info(f"🚀 [CRM EVO] Prospect CRIACO com SUCESSO na Unidade {unidade_id} (Branch {id_branch})")
+                logger.info(f"🚀 [CRM EVO] Prospect CRIADO com SUCESSO na Unidade {unidade_id} (Branch {id_branch})")
                 return True
             else:
                 logger.error(f"❌ Erro EVO API ({resp.status_code}): {resp.text}")
