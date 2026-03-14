@@ -85,7 +85,8 @@ async def enviar_mensagem_chatwoot(
     conversation_id: int,
     content: str,
     nome_ia: str,
-    integracao: dict
+    integracao: dict,
+    evitar_prefixo_nome: bool = False
 ):
     url_base = integracao.get('url')
     token = integracao.get('token')
@@ -97,11 +98,12 @@ async def enviar_mensagem_chatwoot(
     content = formatar_mensagem_saida(content)
 
     # Personalização natural com nome (sem repetição artificial)
-    try:
-        _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
-    except Exception:
-        _nome_salvo = None
-    content = suavizar_personalizacao_nome(content, _nome_salvo)
+    if not evitar_prefixo_nome:
+        try:
+            _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
+        except Exception:
+            _nome_salvo = None
+        content = suavizar_personalizacao_nome(content, _nome_salvo)
 
     url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {

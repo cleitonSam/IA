@@ -156,14 +156,47 @@ async def worker_followup():
                         )
                         continue
 
+                    import os
+                    from openai import AsyncOpenAI
+                    cliente_llm = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    
                     nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
                     nome_unidade = f['nome_unidade'] or ''
-                    mensagem = (f['mensagem'] or '')
-                    mensagem = mensagem.replace('{{nome}}', nome_contato)
-                    mensagem = mensagem.replace('{{unidade}}', nome_unidade)
+                    template_base = (f['mensagem'] or '').replace('{{nome}}', nome_contato).replace('{{unidade}}', nome_unidade)
+                    
+                    # ── Lógica do Score e Geração IA ────────────────────────
+                    eventos = await _database.db_pool.fetch("SELECT tipo, score_incremento FROM eventos_funil WHERE conversa_id = $1", f['conversa_id'])
+                    score_total = sum((e['score_incremento'] or 1) for e in eventos)
+                    
+                    if score_total >= 4:
+                        contexto_lead = "Este lead é QUENTE (Alta intenção). Já interagiu bem ou pediu link de matrícula. Faça um remarketing direto, focando em urgência e conversão, mostre proximidade."
+                    elif score_total >= 2:
+                        contexto_lead = "Este lead é MORNO. Fez algumas perguntas mas esfriou. Mande uma mensagem amigável de benefício, sem pressão excessiva."
+                    else:
+                        contexto_lead = "Este lead é FRIO. Falou pouco. Mande apenas uma lembrança gentil de que estamos à disposição."
+
+                    prompt_sistema = (
+                        f"Você é um excelente assistente de vendas da academia {nome_unidade}.\n"
+                        f"Sua missão é reescrever este template de recarga/follow-up de forma natural, humana e curtinha de WhatsApp.\n"
+                        f"{contexto_lead}\n\n"
+                        f"Template Original: '{template_base}'\n"
+                        f"Regras: Não pareça um robô. Use no máximo 2 emojis. Seja breve."
+                    )
+                    
+                    try:
+                        resp_llm = await cliente_llm.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "system", "content": prompt_sistema}],
+                            temperature=0.7,
+                            max_tokens=150
+                        )
+                        mensagem_final = resp_llm.choices[0].message.content.strip()
+                    except Exception as e_llm:
+                        logger.error(f"Erro no LLM do follow-up (fallback para template estático): {e_llm}")
+                        mensagem_final = template_base
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], mensagem, "Assistente Virtual", integracao
+                        f['account_id'], f['conversation_id'], mensagem_final, "Assistente Virtual", integracao, evitar_prefixo_nome=True
                     )
                     await _database.db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
