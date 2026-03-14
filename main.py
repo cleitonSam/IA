@@ -1186,6 +1186,37 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
     return blocos
 
 
+def formatar_todos_planos_em_texto_unico(planos: List[Dict]) -> str:
+    """Retorna todos os planos ativos em uma única mensagem comercial."""
+    if not planos:
+        return "No momento, não encontrei planos ativos 😕"
+
+    linhas = ["Perfeito! Além do Prime, temos estas opções ativas para você comparar 👇", ""]
+
+    for p in planos:
+        nome = str(p.get("nome") or "Plano").strip()
+        link = str(p.get("link_venda") or "").strip()
+        try:
+            valor = float(p.get("valor")) if p.get("valor") is not None else None
+        except (TypeError, ValueError):
+            valor = None
+
+        if valor and valor > 0:
+            valor_fmt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            preco_txt = f"R${valor_fmt}/mês"
+        else:
+            preco_txt = "valor sob consulta"
+
+        linha = f"• *{nome}* — {preco_txt}"
+        if link:
+            linha += f"\n  Link: {link}"
+        linhas.append(linha)
+
+    linhas.append("")
+    linhas.append("Se você quiser, eu já te indico o melhor custo-benefício para o seu objetivo e te envio o link certo de matrícula agora. 💪")
+    return "\n".join(linhas)
+
+
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
     try:
         while True:
