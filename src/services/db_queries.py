@@ -178,11 +178,17 @@ async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = 
             else:
                 diffs = []
 
+            valor_total = item.get('value')
+            valor_mensal = (valor_total / 12) if valor_total else 0
+
+            valor_promo_total = item.get('valuePromotionalPeriod')
+            valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total else None
+
             plano = {
                 'id': item.get('idMembership'),
                 'nome': item.get('displayName') or item.get('nameMembership', 'Plano'),
-                'valor': item.get('value'),
-                'valor_promocional': item.get('valuePromotionalPeriod'),
+                'valor': round(valor_mensal, 2) if valor_mensal else 0,
+                'valor_promocional': round(valor_promo_mensal, 2) if valor_promo_mensal else None,
                 'meses_promocionais': item.get('monthsPromotionalPeriod'),
                 'descricao': item.get('description'),
                 'diferenciais': diffs,

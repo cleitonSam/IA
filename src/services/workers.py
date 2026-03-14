@@ -61,9 +61,17 @@ async def worker_sync_planos():
 
 
 async def sync_planos_manual(empresa_id: int):
+    # Sincroniza Global
     count = await sincronizar_planos_evo(empresa_id)
-    await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
-    return {"status": "ok", "sincronizados": count}
+    
+    # Sincroniza Unidades
+    unidades = await _database.db_pool.fetch(
+        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true", empresa_id
+    )
+    for unid in unidades:
+        count += await sincronizar_planos_evo(empresa_id, unidade_id=unid['id'])
+        
+    return {"status": "ok", "total_sincronizados": count}
 
 
 async def agendar_followups(conversation_id: int, account_id: int, slug: str, empresa_id: int):
