@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 
-from src.core.database import db_pool, init_db_pool, close_db_pool
+import src.core.database as _database
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
 from src.core.security import cb_llm
 from src.utils.text_helpers import (
@@ -520,7 +520,7 @@ async def startup_event():
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
     )
 
-    await init_db_pool()
+    await _database.init_db_pool()
 
     if OPENROUTER_API_KEY and cliente_ia:
         logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
@@ -551,7 +551,7 @@ async def shutdown_event():
     if _chatwoot_module.http_client:
         await _chatwoot_module.http_client.aclose()
     await redis_client.aclose()
-    await close_db_pool()
+    await _database.close_db_pool()
     logger.info("🛑 Servidor desligado.")
 
 
@@ -2208,7 +2208,7 @@ async def chatwoot_webhook(
                     lock_key = f"agendar_lock:{id_conv}"
                     if await redis_client.set(lock_key, "1", nx=True, ex=5):
                         try:
-                            existe = await db_pool.fetchval(
+                            existe = await _database.db_pool.fetchval(
                                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
                                 "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
                             )
@@ -2255,8 +2255,8 @@ async def chatwoot_webhook(
         if is_ai_message:
             return {"status": "ignorado"}
         await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
-        if db_pool:
-            await db_pool.execute(
+        if _database.db_pool:
+            await _database.db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
                 "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1) "
                 "AND status = 'pendente'", id_conv
@@ -2276,7 +2276,7 @@ async def chatwoot_webhook(
     lock_key = f"agendar_lock:{id_conv}"
     if await redis_client.set(lock_key, "1", nx=True, ex=5):
         try:
-            existe = await db_pool.fetchval(
+            existe = await _database.db_pool.fetchval(
                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
                 "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
             )
@@ -2356,7 +2356,7 @@ async def metricas_diagnostico(
 
     Útil para verificar se o worker_metricas_diarias está populando todas as colunas.
     """
-    if not db_pool:
+    if not _database.db_pool:
         raise HTTPException(status_code=503, detail="Banco de dados indisponível")
 
     try:
@@ -2375,7 +2375,7 @@ async def metricas_diagnostico(
         ]
 
         # ── Colunas reais no banco ────────────────────────────────────
-        colunas_banco = await db_pool.fetch("""
+        colunas_banco = await _database.db_pool.fetch("""
             SELECT column_name
             FROM information_schema.columns
             WHERE table_name = 'metricas_diarias'
@@ -2393,7 +2393,7 @@ async def metricas_diagnostico(
         if empresa_id:
             params_base.append(empresa_id)
 
-        registros = await db_pool.fetch(f"""
+        registros = await _database.db_pool.fetch(f"""
             SELECT *
             FROM metricas_diarias
             WHERE data >= (CURRENT_DATE - ($1 || ' days')::interval)::date
@@ -2418,7 +2418,7 @@ async def metricas_diagnostico(
                 }
 
         # ── Última execução do worker ─────────────────────────────────
-        ultima_atualizacao = await db_pool.fetchval("""
+        ultima_atualizacao = await _database.db_pool.fetchval("""
             SELECT MAX(updated_at) FROM metricas_diarias
         """)
 
@@ -2462,8 +2462,8 @@ async def status_endpoint():
     except Exception:
         pass
     try:
-        if db_pool:
-            await db_pool.fetchval("SELECT 1")
+        if _database.db_pool:
+            await _database.db_pool.fetchval("SELECT 1")
             db_ok = True
     except Exception:
         pass

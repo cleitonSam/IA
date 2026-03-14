@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
 from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL
-from src.core.database import db_pool
+import src.core.database as _database
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
 from src.utils.intent_helpers import classificar_intencao, _faq_compativel_com_intencao
 from src.utils.text_helpers import normalizar
@@ -32,7 +32,7 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
     """
     Retorna o ID da empresa associada ao account_id do Chatwoot.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return None
 
     cache_key = f"map:account:{account_id}"
@@ -48,7 +48,7 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
               AND config->>'account_id' = $1::text
             LIMIT 1
         """
-        row = await db_pool.fetchrow(query, str(account_id))
+        row = await _database.db_pool.fetchrow(query, str(account_id))
         if row:
             empresa_id = row['empresa_id']
             await redis_client.setex(cache_key, 3600, str(empresa_id))
@@ -68,7 +68,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
     """
     Carrega a configuração de integração ativa de uma empresa.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return None
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
@@ -83,7 +83,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
             WHERE empresa_id = $1 AND tipo = $2 AND ativo = true
             LIMIT 1
         """
-        row = await db_pool.fetchrow(query, empresa_id, tipo)
+        row = await _database.db_pool.fetchrow(query, empresa_id, tipo)
         if row:
             config = row['config']
             if isinstance(config, str):
@@ -108,7 +108,7 @@ async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
     """
     Busca os planos (memberships) da academia via API Evo diretamente.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return None
 
     integracao = await carregar_integracao(empresa_id, 'evo')
@@ -187,7 +187,7 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
     """
     Busca planos da API Evo e insere/atualiza na tabela planos.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return 0
 
     planos_api = await buscar_planos_evo_da_api(empresa_id)
@@ -199,12 +199,12 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
         if not p.get('link_venda'):
             continue
 
-        existing = await db_pool.fetchval(
+        existing = await _database.db_pool.fetchval(
             "SELECT id FROM planos WHERE empresa_id = $1 AND id_externo = $2",
             empresa_id, p['id']
         )
         if existing:
-            await db_pool.execute("""
+            await _database.db_pool.execute("""
                 UPDATE planos SET
                     nome = $1, valor = $2, valor_promocional = $3, meses_promocionais = $4,
                     descricao = $5, diferenciais = $6, link_venda = $7, updated_at = NOW()
@@ -212,7 +212,7 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
             """, p['nome'], p['valor'], p['valor_promocional'], p['meses_promocionais'],
                p['descricao'], p['diferenciais'], p['link_venda'], existing)
         else:
-            await db_pool.execute("""
+            await _database.db_pool.execute("""
                 INSERT INTO planos
                     (empresa_id, id_externo, nome, valor, valor_promocional, meses_promocionais,
                      descricao, diferenciais, link_venda, ativo, ordem)
@@ -230,7 +230,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
     """
     Retorna planos ativos da empresa, ordenados por ordem e nome.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return []
 
     cache_key = f"planos:ativos:{empresa_id}:{unidade_id or 'todos'}"
@@ -249,13 +249,13 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         params.append(unidade_id)
     query += " ORDER BY ordem, nome"
 
-    rows = await db_pool.fetch(query, *params)
+    rows = await _database.db_pool.fetch(query, *params)
     planos = [dict(r) for r in rows]
 
     if not planos and force_sync:
         logger.info(f"🔄 Nenhum plano ativo no banco para empresa {empresa_id}. Tentando sincronizar da API...")
         await sincronizar_planos_evo(empresa_id)
-        rows = await db_pool.fetch(query, *params)
+        rows = await _database.db_pool.fetch(query, *params)
         planos = [dict(r) for r in rows]
 
         await redis_set_json(cache_key, planos, 60)
@@ -337,7 +337,7 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
 
 
 async def listar_unidades_ativas(empresa_id: int = 1) -> List[Dict[str, Any]]:
-    if not db_pool:
+    if not _database.db_pool:
         return []
 
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
@@ -379,7 +379,7 @@ async def listar_unidades_ativas(empresa_id: int = 1) -> List[Dict[str, Any]]:
             WHERE u.ativa = true AND u.empresa_id = $1
             ORDER BY u.ordem_exibicao, u.nome
         """
-        rows = await db_pool.fetch(query, empresa_id)
+        rows = await _database.db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
         await redis_set_json(cache_key, data, 60)
         return data
@@ -402,7 +402,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
       3. Correspondência por partes (tokens) — suporta nomes compostos e abreviações
       4. Fuzzy matching conservador (threshold ajustável)
     """
-    if not db_pool or not texto:
+    if not _database.db_pool or not texto:
         return None
 
     from src.utils.intent_helpers import eh_saudacao
@@ -413,7 +413,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
     # 1. Função SQL customizada (mais precisa, se disponível no banco)
     try:
         query = "SELECT unidade_slug FROM buscar_unidades_por_texto($1, $2) LIMIT 1"
-        row = await db_pool.fetchrow(query, empresa_id, texto)
+        row = await _database.db_pool.fetchrow(query, empresa_id, texto)
         if row:
             return row['unidade_slug']
     except asyncpg.UndefinedFunctionError:
@@ -493,7 +493,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
 
 
 async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
-    if not db_pool:
+    if not _database.db_pool:
         return {}
 
     cache_key = f"cfg:unidade:{empresa_id}:{slug}:v2"
@@ -511,7 +511,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
             JOIN empresas e ON e.id = u.empresa_id
             WHERE u.slug = $1 AND u.ativa = true AND u.empresa_id = $2
         """
-        row = await db_pool.fetchrow(query, slug, empresa_id)
+        row = await _database.db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
             await redis_set_json(cache_key, dados, 60)
@@ -529,7 +529,7 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     cliente e as perguntas cadastradas no FAQ.
     Retorna a resposta do FAQ se similaridade >= threshold, senão None.
     """
-    if not db_pool or not slug or not pergunta:
+    if not _database.db_pool or not slug or not pergunta:
         return None
 
     cache_key = f"cfg:faq_raw:{slug}:{empresa_id}"
@@ -541,7 +541,7 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
             faq_rows = []
     else:
         try:
-            faq_rows_db = await db_pool.fetch("""
+            faq_rows_db = await _database.db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
                 WHERE f.empresa_id = $2 AND f.ativo = true
@@ -602,7 +602,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     (caso a coluna ainda não exista no banco).
     Loga aviso quando FAQ está vazio para facilitar diagnóstico.
     """
-    if not db_pool:
+    if not _database.db_pool:
         return ""
 
     cache_key = f"cfg:faq:{slug}:v4"
@@ -613,7 +613,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     rows = []
     try:
         # Query principal — unidade específica, múltiplas unidades ou todas
-        rows = await db_pool.fetch("""
+        rows = await _database.db_pool.fetch("""
             SELECT f.pergunta, f.resposta
             FROM faq f
             WHERE f.empresa_id = $2 AND f.ativo = true
@@ -628,7 +628,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     except asyncpg.UndefinedColumnError:
         # Fallback: sem a coluna visualizacoes
         try:
-            rows = await db_pool.fetch("""
+            rows = await _database.db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
                 WHERE f.empresa_id = $2 AND f.ativo = true
@@ -664,7 +664,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
 
 
 async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
-    if not db_pool:
+    if not _database.db_pool:
         return {}
 
     cache_key = f"cfg:pers:empresa:{empresa_id}"
@@ -682,7 +682,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             WHERE p.empresa_id = $1 AND p.ativo = true
             LIMIT 1
         """
-        row = await db_pool.fetchrow(query, empresa_id)
+        row = await _database.db_pool.fetchrow(query, empresa_id)
         if row:
             dados = dict(row)
             for key, value in dados.items():
@@ -699,7 +699,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
 
 
 async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
-    if not db_pool:
+    if not _database.db_pool:
         return {}
 
     cache_key = f"cfg:global:empresa:{empresa_id}"
@@ -709,7 +709,7 @@ async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
 
     try:
         query = "SELECT config, nome, plano FROM empresas WHERE id = $1"
-        row = await db_pool.fetchrow(query, empresa_id)
+        row = await _database.db_pool.fetchrow(query, empresa_id)
         if row:
             config_data = row['config']
             if config_data is None:
@@ -743,17 +743,17 @@ async def bd_iniciar_conversa(
     conversation_id: int, slug: str, account_id: int,
     contato_id: int = None, contato_nome: str = None, empresa_id: int = None
 ):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        unidade = await db_pool.fetchrow(
+        unidade = await _database.db_pool.fetchrow(
             "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
         )
         if not unidade:
             logger.error(f"Unidade {slug} não encontrada para empresa {empresa_id}")
             return
         unidade_id = unidade['id']
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, primeira_mensagem, status)
             VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa')
             ON CONFLICT (conversation_id) DO UPDATE SET
@@ -771,16 +771,16 @@ async def bd_salvar_mensagem_local(
     conversation_id: int, role: str, content: str,
     tipo: str = 'texto', url_midia: str = None
 ):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        conversa = await db_pool.fetchrow(
+        conversa = await _database.db_pool.fetchrow(
             "SELECT id FROM conversas WHERE conversation_id = $1", conversation_id
         )
         if not conversa:
             logger.error(f"Conversa {conversation_id} não encontrada para salvar mensagem.")
             return
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             INSERT INTO mensagens (conversa_id, role, tipo, conteudo, url_midia, created_at)
             VALUES ($1, $2, $3, $4, $5, NOW())
         """, conversa['id'], role, tipo, content, url_midia)
@@ -789,10 +789,10 @@ async def bd_salvar_mensagem_local(
 
 
 async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Optional[str]:
-    if not db_pool:
+    if not _database.db_pool:
         return None
     try:
-        rows = await db_pool.fetch("""
+        rows = await _database.db_pool.fetch("""
             SELECT role, conteudo
             FROM mensagens m
             JOIN conversas c ON c.id = m.conversa_id
@@ -812,10 +812,10 @@ async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Opt
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_cliente(conversation_id: int):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE conversas
             SET total_mensagens_cliente = total_mensagens_cliente + 1,
                 ultima_mensagem = NOW(), updated_at = NOW()
@@ -827,10 +827,10 @@ async def bd_atualizar_msg_cliente(conversation_id: int):
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_atualizar_msg_ia(conversation_id: int):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE conversas
             SET total_mensagens_ia = total_mensagens_ia + 1,
                 ultima_mensagem = NOW(), updated_at = NOW()
@@ -842,10 +842,10 @@ async def bd_atualizar_msg_ia(conversation_id: int):
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_primeira_resposta(conversation_id: int):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE conversas
             SET primeira_resposta_em = NOW(), updated_at = NOW()
             WHERE conversation_id = $1 AND primeira_resposta_em IS NULL
@@ -859,10 +859,10 @@ async def bd_registrar_evento_funil(
     conversation_id: int, tipo_evento: str,
     descricao: str, score_incremento: int = 5
 ):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        conversa = await db_pool.fetchrow(
+        conversa = await _database.db_pool.fetchrow(
             "SELECT id FROM conversas WHERE conversation_id = $1", conversation_id
         )
         if not conversa:
@@ -870,26 +870,26 @@ async def bd_registrar_evento_funil(
         conversa_id = conversa['id']
 
         if tipo_evento == "interesse_detectado":
-            existe = await db_pool.fetchval("""
+            existe = await _database.db_pool.fetchval("""
                 SELECT 1 FROM eventos_funil
                 WHERE conversa_id = $1 AND tipo_evento = $2
             """, conversa_id, tipo_evento)
             if existe:
                 return
 
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
             VALUES ($1, $2, $3, $4, NOW())
         """, conversa_id, tipo_evento, descricao, score_incremento)
 
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE conversas
             SET score_interesse = score_interesse + $2, updated_at = NOW()
             WHERE id = $1
         """, conversa_id, score_incremento)
 
         if tipo_evento == "interesse_detectado":
-            await db_pool.execute(
+            await _database.db_pool.execute(
                 "UPDATE conversas SET lead_qualificado = TRUE WHERE id = $1", conversa_id
             )
     except Exception as e:
@@ -898,15 +898,15 @@ async def bd_registrar_evento_funil(
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_finalizar_conversa(conversation_id: int):
-    if not db_pool:
+    if not _database.db_pool:
         return
     try:
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE conversas
             SET status = 'encerrada', encerrada_em = NOW(), updated_at = NOW()
             WHERE conversation_id = $1
         """, conversation_id)
-        await db_pool.execute("""
+        await _database.db_pool.execute("""
             UPDATE followups SET status = 'cancelado'
             WHERE (
                 conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
@@ -927,27 +927,27 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     Cada query usa COALESCE para nunca retornar NULL.
     """
     # ── Conversas ──────────────────────────────────────────────────────
-    total_conversas = await db_pool.fetchval("""
+    total_conversas = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    conversas_encerradas = await db_pool.fetchval("""
+    conversas_encerradas = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND status IN ('encerrada', 'resolved', 'closed')
           AND DATE(updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    conversas_sem_resposta = await db_pool.fetchval("""
+    conversas_sem_resposta = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND primeira_resposta_em IS NULL
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    novos_contatos = await db_pool.fetchval("""
+    novos_contatos = await _database.db_pool.fetchval("""
         SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
@@ -960,7 +960,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """, empresa_id, unidade_id, hoje) or 0
 
     # ── Mensagens ──────────────────────────────────────────────────────
-    total_mensagens = await db_pool.fetchval("""
+    total_mensagens = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM mensagens m
         JOIN conversas c ON c.id = m.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -968,7 +968,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
           AND m.role = 'user'
     """, empresa_id, unidade_id, hoje) or 0
 
-    total_mensagens_ia = await db_pool.fetchval("""
+    total_mensagens_ia = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM mensagens m
         JOIN conversas c ON c.id = m.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -977,7 +977,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """, empresa_id, unidade_id, hoje) or 0
 
     # ── Leads & Conversão ──────────────────────────────────────────────
-    leads_qualificados = await db_pool.fetchval("""
+    leads_qualificados = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND lead_qualificado = true
@@ -988,7 +988,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     taxa_conversao = round(leads_qualificados / total_conversas, 4) if total_conversas > 0 else 0.0
 
     # ── Tempo de Resposta ──────────────────────────────────────────────
-    tempo_medio_resposta = await db_pool.fetchval("""
+    tempo_medio_resposta = await _database.db_pool.fetchval("""
         SELECT COALESCE(
             AVG(EXTRACT(EPOCH FROM (primeira_resposta_em - primeira_mensagem))),
             0
@@ -1001,7 +1001,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """, empresa_id, unidade_id, hoje) or 0.0
 
     # ── Eventos do Funil ───────────────────────────────────────────────
-    total_solicitacoes_telefone = await db_pool.fetchval("""
+    total_solicitacoes_telefone = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM eventos_funil ef
         JOIN conversas c ON c.id = ef.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -1009,7 +1009,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
           AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    total_links_enviados = await db_pool.fetchval("""
+    total_links_enviados = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM eventos_funil ef
         JOIN conversas c ON c.id = ef.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -1017,7 +1017,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
           AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    total_planos_enviados = await db_pool.fetchval("""
+    total_planos_enviados = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM eventos_funil ef
         JOIN conversas c ON c.id = ef.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -1025,7 +1025,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
           AND DATE(ef.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
-    total_matriculas = await db_pool.fetchval("""
+    total_matriculas = await _database.db_pool.fetchval("""
         SELECT COUNT(*) FROM eventos_funil ef
         JOIN conversas c ON c.id = ef.conversa_id
         WHERE c.empresa_id = $1 AND c.unidade_id = $2
@@ -1035,7 +1035,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
 
     # ── Horário de Pico ────────────────────────────────────────────────
     # Hora com maior volume de mensagens recebidas
-    pico_row = await db_pool.fetchrow("""
+    pico_row = await _database.db_pool.fetchrow("""
         SELECT EXTRACT(HOUR FROM m.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
                COUNT(*) AS qtd
         FROM mensagens m
@@ -1053,7 +1053,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     # Tenta buscar da tabela `avaliacoes` se existir; senão mantém NULL
     satisfacao_media = None
     try:
-        satisfacao_media = await db_pool.fetchval("""
+        satisfacao_media = await _database.db_pool.fetchval("""
             SELECT COALESCE(AVG(nota), NULL)
             FROM avaliacoes av
             JOIN conversas c ON c.id = av.conversa_id
@@ -1067,7 +1067,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     tokens_consumidos = None
     custo_estimado_usd = None
     try:
-        row_tokens = await db_pool.fetchrow("""
+        row_tokens = await _database.db_pool.fetchrow("""
             SELECT COALESCE(SUM(tokens_prompt + tokens_completion), 0) AS total_tokens,
                    COALESCE(SUM(custo_usd), 0.0) AS custo
             FROM uso_ia ui
