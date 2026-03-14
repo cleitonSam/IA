@@ -5,7 +5,7 @@ from src.core.config import (
     generate_latest, CONTENT_TYPE_LATEST,
     CHATWOOT_URL, CHATWOOT_TOKEN, CHATWOOT_WEBHOOK_SECRET,
     OPENROUTER_API_KEY, OPENAI_API_KEY, REDIS_URL, DATABASE_URL,
-    EMPRESA_ID_PADRAO, APP_VERSION,
+    EMPRESA_ID_PADRAO, APP_VERSION, APP_MODE,
 )
 
 import os
@@ -528,6 +528,8 @@ async def startup_event():
     # Limpa cooldown de provedor no startup (destrava o bot se o usuário corrigiu a chave)
     llm_provider_pause_key = f"llm:provider_pause:{EMPRESA_ID_PADRAO}"
     await redis_client.delete(llm_provider_pause_key)
+
+    logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
 
     if APP_MODE in ("worker", "both"):
         worker_tasks = [
