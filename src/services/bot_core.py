@@ -1566,16 +1566,21 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             pipe.expire(f"hist_estado:{conversation_id}", 86400)
             await pipe.execute()
 
-        if any(k in novo_estado for k in ("interessado", "conversao", "matricula", "animado")):
+        _nome_valido = bool(nome_cliente and not any(p in (nome_cliente or "").lower() for p in ["cliente", "whatsapp", "lead"]))
+        _trigger_crm = any(k in novo_estado for k in ("conversao", "matricula")) or \
+                      (_nome_valido and novo_estado == "interessado")
+
+        if _trigger_crm:
             await bd_registrar_evento_funil(
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
-            # ── INTEGRAÇÃO EVO: Criar Prospect se não for aluno ──────────
+            # ── INTEGRAÇÃO EVO: Criar Prospect se não for aluno e for estratégico ──
             if not status_evo.get("is_aluno"):
                 lead_data = {
                     "name": nome_cliente,
                     "cellphone": contato_fone,
-                    "notes": f"Interesse detectado via IA (Estado: {novo_estado}) na unidade {slug}"
+                    "notes": f"Interesse estratégico detectado via IA (Estado: {novo_estado})",
+                    "temperature": 1 if novo_estado == "interessado" else 2
                 }
                 asyncio.create_task(criar_prospect_evo(empresa_id, unidade.get('id'), lead_data))
             # ─────────────────────────────────────────────────────────────
