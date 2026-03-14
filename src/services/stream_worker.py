@@ -6,8 +6,10 @@ from src.core.config import (
     logger, REDIS_URL, EMPRESA_ID_PADRAO,
     PROMETHEUS_OK, METRIC_QUEUE_SIZE, METRIC_WORKER_LATENCY, METRIC_WORKER_PROCESSED
 )
+import src.core.database as _database
 from src.core.redis_client import redis_client
-from src.services.db_queries import carregar_integracao
+from src.services.db_queries import carregar_integracao, buscar_conversa_por_fone, bd_iniciar_conversa
+from src.services.bot_core import processar_ia_e_responder
 
 STREAM_NAME = "ia:webhook:stream"
 CONSUMER_GROUP = "ia_workers_group"
@@ -53,8 +55,6 @@ async def run_stream_worker():
                         
                         if source == "uazapi":
                             phone = payload.get("phone")
-                            from src.services.db_queries import buscar_conversa_por_fone, bd_iniciar_conversa
-                            
                             conversa = await buscar_conversa_por_fone(phone, empresa_id)
                             if not conversa:
                                 # Se não tem conversa, precisamos de um account_id fake para o bot_core
@@ -110,7 +110,6 @@ async def run_stream_worker():
                             continue
                         
                         logger.info(f"⚙️ Integração {source} carregada com sucesso. Iniciando processamento IA.")
-                        from src.services.bot_core import processar_ia_e_responder
                         lock_val = str(uuid.uuid4())
                         if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=60):
                             await processar_ia_e_responder(

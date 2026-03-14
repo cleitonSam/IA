@@ -2,7 +2,7 @@ import uuid
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
-from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone
+from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao
 
 router = APIRouter()
 
