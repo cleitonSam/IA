@@ -824,7 +824,9 @@ async def despachar_resposta(
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
         # Marca que o próximo fromMe=true nesse número é do BOT (não de atendente humano)
-        await redis_client.setex(f"uaz_bot_sent:{chat_id}", 30, "1")
+        # Normaliza para só dígitos — igual ao formato que vem do JID do WhatsApp no webhook
+        _clean_phone = "".join(filter(str.isdigit, chat_id))
+        await redis_client.setex(f"uaz_bot_sent:{_clean_phone}", 30, "1")
         res = await uaz.send_text(chat_id, content, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res
