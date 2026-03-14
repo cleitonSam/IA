@@ -823,10 +823,9 @@ async def despachar_resposta(
         tempo_digitacao = random.randint(400, 1200)
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
-        # Marca que o próximo fromMe=true nesse número é do BOT (não de atendente humano)
-        # Normaliza para só dígitos — igual ao formato que vem do JID do WhatsApp no webhook
-        _clean_phone = "".join(filter(str.isdigit, chat_id))
-        await redis_client.setex(f"uaz_bot_sent:{_clean_phone}", 30, "1")
+        # Marca que o próximo fromMe=true nessa conversa é do BOT (não de atendente humano)
+        # Usamos 120s para garantir que cubra qualquer delay de sincronização entre API e Chatwoot
+        await redis_client.setex(f"uaz_bot_sent_conv:{conversation_id}", 120, "1")
         res = await uaz.send_text(chat_id, content, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res

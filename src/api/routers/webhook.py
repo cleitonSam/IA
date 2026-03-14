@@ -323,11 +323,9 @@ async def chatwoot_webhook(
         if is_ai_message:
             return {"status": "ignorado"}
             
-        if contato_fone:
-            _clean_phone = "".join(filter(str.isdigit, str(contato_fone)))
-            if await redis_client.exists(f"uaz_bot_sent:{_clean_phone}"):
-                logger.info(f"⏭️ Ignorando bloqueio: mensagem reconhecida como eco do UazAPI (fone: {_clean_phone})")
-                return {"status": "ignorado_uazapi_echo"}
+        if await redis_client.exists(f"uaz_bot_sent_conv:{id_conv}"):
+            logger.info(f"⏭️ Ignorando bloqueio: mensagem reconhecida como eco do UazAPI (conv: {id_conv})")
+            return {"status": "ignorado_uazapi_echo"}
                 
         await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
         if _database.db_pool:
