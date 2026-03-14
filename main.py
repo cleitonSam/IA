@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import redis.asyncio as redis
 import asyncpg
-from tenacity import retry, wait_exponential, stop_after_attempt
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from rapidfuzz import fuzz
 
 # --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
@@ -1148,6 +1148,37 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
     return blocos
 
 
+def formatar_todos_planos_em_texto_unico(planos: List[Dict]) -> str:
+    """Retorna todos os planos ativos em uma única mensagem comercial."""
+    if not planos:
+        return "No momento, não encontrei planos ativos 😕"
+
+    linhas = ["Perfeito! Além do Prime, temos estas opções ativas para você comparar 👇", ""]
+
+    for p in planos:
+        nome = str(p.get("nome") or "Plano").strip()
+        link = str(p.get("link_venda") or "").strip()
+        try:
+            valor = float(p.get("valor")) if p.get("valor") is not None else None
+        except (TypeError, ValueError):
+            valor = None
+
+        if valor and valor > 0:
+            valor_fmt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            preco_txt = f"R${valor_fmt}/mês"
+        else:
+            preco_txt = "valor sob consulta"
+
+        linha = f"• *{nome}* — {preco_txt}"
+        if link:
+            linha += f"\n  Link: {link}"
+        linhas.append(linha)
+
+    linhas.append("")
+    linhas.append("Se você quiser, eu já te indico o melhor custo-benefício para o seu objetivo e te envio o link certo de matrícula agora. 💪")
+    return "\n".join(linhas)
+
+
 async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
     try:
         while True:
@@ -1685,7 +1716,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         rows = await db_pool.fetch(query, *params)
         planos = [dict(r) for r in rows]
 
-    await redis_set_json(cache_key, planos, 120)
+        await redis_set_json(cache_key, planos, 60)
     return planos
 
 
@@ -2045,7 +2076,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         """
         rows = await db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
-        await redis_set_json(cache_key, data, 120)
+        await redis_set_json(cache_key, data, 60)
         return data
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao listar unidades para empresa {empresa_id}: {e}")
@@ -2177,7 +2208,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
         row = await db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
-            await redis_set_json(cache_key, dados, 120)
+            await redis_set_json(cache_key, dados, 60)
             return dados
         return {}
     except Exception as e:
@@ -2892,8 +2923,7 @@ async def transcrever_audio(url: str):
         return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore:
         try:
-            resp = await http_client.get(url, follow_redirects=True, timeout=15.0)
-            resp.raise_for_status()
+            resp = await baixar_midia_com_retry(url, timeout=15.0)
             audio_file = io.BytesIO(resp.content)
             audio_file.name = "audio.ogg"
             transcription = await cliente_whisper.audio.transcriptions.create(
@@ -2915,6 +2945,24 @@ async def transcrever_audio(url: str):
             if _PROMETHEUS_OK:
                 METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
             return "[Erro ao transcrever áudio]"
+
+
+@retry(
+    wait=wait_exponential(multiplier=0.5, min=1, max=4),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError)),
+    reraise=True,
+)
+async def baixar_midia_com_retry(url: str, timeout: float = 15.0, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+    """Baixa mídia com retry para mitigar falhas transitórias de rede/provedor."""
+    resp = await http_client.get(
+        url,
+        headers=headers,
+        follow_redirects=True,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp
 
 
 async def processar_ia_e_responder(
@@ -2987,25 +3035,10 @@ async def processar_ia_e_responder(
         contexto_precarregado = ""  # Dados buscados do BD — LLM gera a resposta humanizada
         intencao_motor = None
 
-        # Motor principal: factual -> FAQ -> LLM (somente quando necessário)
+        # Fast-path desativado: sempre seguir pelo fluxo FAQ + IA.
         texto_cliente_unificado = " ".join([t for t in (textos + transcricoes) if t]).strip()
         if texto_cliente_unificado and not imagens_urls:
-            _motor = await gerar_resposta_inteligente(
-                conversation_id=conversation_id,
-                empresa_id=empresa_id,
-                texto_cliente=texto_cliente_unificado,
-                slug_atual=slug,
-                nome_cliente=nome_cliente,
-            )
-            intencao_motor = _motor.get("intencao")
-            _slug_motor = _motor.get("slug")
-            if _slug_motor and _slug_motor != slug:
-                slug = _slug_motor
-                unidade = await carregar_unidade(slug, empresa_id) or {}
-            if _motor.get("tipo") == "texto":
-                fast_reply = _motor.get("resposta")
-            elif _motor.get("tipo") == "lista":
-                fast_reply_lista = _motor.get("resposta") or []
+            intencao_motor = detectar_intencao(texto_cliente_unificado)
 
         # Campos da unidade
         end_banco = extrair_endereco_unidade(unidade)
@@ -3020,51 +3053,26 @@ async def processar_ia_e_responder(
         else:
             link_plano = link_mat
 
-        # ==================== FAST-PATH ====================
-        # Texto combinado de TODAS as mensagens acumuladas para detectar intenção
-        texto_combinado_norm = normalizar(" ".join(textos))
+        # Fast-path desativado conforme regra de negócio.
 
-        # Quando o buffer tem MÚLTIPLAS mensagens com intenções diferentes,
-        # desabilita o fast-path de intenção única e deixa a IA responder tudo de uma vez.
-        # Exceção: detecção de tipo de cliente (aluno/gympass) e saudação sempre rodam.
-        _multi_intencao = len(textos) > 1
-        _pedido_planos = bool(REGEX_PEDIDO_PLANOS.search(texto_combinado_norm))
-        _pedido_end_hor = bool(REGEX_PEDIDO_END_HOR.search(texto_combinado_norm))
-        _pedido_contato = bool(REGEX_PEDIDO_CONTATO.search(texto_combinado_norm))
-
-        if not imagens_urls and not fast_reply and not fast_reply_lista:
-
-            # Fast-path mantido apenas para endereço e/ou horário
-            if unidade and _pedido_end_hor:
-                _quer_end = bool(re.search(
-                    r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
-                    texto_combinado_norm
-                ))
-                _quer_hor = bool(re.search(
-                    r"(horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-                    texto_combinado_norm
-                ))
-
-                _partes = []
-
-                if _quer_end and end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    _partes.append(f"📍 Endereço:\n{end_banco}")
-
-                if _quer_hor and hor_banco:
-                    _hor_str = formatar_horarios_funcionamento(hor_banco)
-                    _partes.append(f"🕒 Horário de funcionamento:\n{_hor_str}")
-
-                if _partes:
-                    fast_reply = "\n\n".join(_partes) + "\n\nSe quiser, também posso te ajudar com planos e matrícula. 😊"
-                    logger.info("⚡ Fast-path: endereço/horário respondido sem LLM")
-
-
-        # ===================================================
 
         # Cache: usa chave por intenção APENAS para intenções factuais/estáveis.
         # Nunca usar cache por intenção para "llm"/"saudacao", senão uma resposta
         # genérica (ex: boas-vindas) pode ser repetida para perguntas diferentes.
         intencao = intencao_motor or (detectar_intencao(primeira_mensagem) if primeira_mensagem else None)
+        _texto_cliente_norm = normalizar(texto_cliente_unificado or "")
+        _intencao_compra = bool(re.search(
+            r"(vou querer|quero (esse|este|fechar|contratar|assinar)|manda(r)? (o )?link|pode mandar o link|poderia mandar o link|tenho interesse|gostei desse preco|gostei desse preço|vamos fechar|quero me matricular)",
+            _texto_cliente_norm,
+        ))
+        _quer_todos_planos = bool(re.search(
+            r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano)",
+            _texto_cliente_norm,
+        ))
+        if planos_ativos and intencao in {"planos", "preco"} and _quer_todos_planos:
+            fast_reply = formatar_todos_planos_em_texto_unico(planos_ativos)
+            logger.info("⚡ Planos completos: resposta única com todos os planos ativos")
+
         _intencoes_cacheaveis = {
             "horario", "endereco"
         }
@@ -3347,13 +3355,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             conteudo_usuario = []
             for img_url in imagens_urls:
                 try:
-                    resp = await http_client.get(
+                    resp = await baixar_midia_com_retry(
                         img_url,
-                        headers={"api_access_token": integracao_chatwoot['token']},
-                        follow_redirects=True,
                         timeout=12.0,
+                        headers={"api_access_token": integracao_chatwoot['token']},
                     )
-                    resp.raise_for_status()
                     img_b64 = base64.b64encode(resp.content).decode("utf-8")
                     conteudo_usuario.append({
                         "type": "image_url",
@@ -3571,15 +3577,24 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     resposta_texto = "Desculpe, pode repetir sua pergunta? 😊"
                     novo_estado = estado_atual
 
-                # 🔧 Pós-processamento: se a IA gerou resposta com múltiplos planos → reformata
-                _qtd_precos = resposta_texto.count("R$")
-                _qtd_links  = resposta_texto.count("http")
-                if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
-                    logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando em msgs separadas")
-                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
-                    resposta_texto = ""
-                    if _PROMETHEUS_OK:
-                        METRIC_PLANOS_ENVIADOS.inc()
+                # Pós-processamento de conversão: se o cliente já sinalizou compra,
+                # garante envio do link de matrícula e CTA de outros planos na mesma resposta.
+                if _intencao_compra and link_plano:
+                    _resp_norm_compra = normalizar(resposta_texto or "")
+                    _tem_link = ("http://" in (resposta_texto or "")) or ("https://" in (resposta_texto or ""))
+                    if not _tem_link:
+                        _base = resposta_texto.strip() if resposta_texto and resposta_texto.strip() else "Perfeito! Vamos fechar agora 🚀"
+                        resposta_texto = (
+                            f"{_base}\n\n"
+                            f"🔗 Para garantir sua matrícula agora: {link_plano}\n\n"
+                            "Se quiser, também te mostro *outros planos* para você comparar rapidinho."
+                        )
+                    elif "outros planos" not in _resp_norm_compra:
+                        resposta_texto = (
+                            f"{resposta_texto.rstrip()}\n\n"
+                            "Se quiser, também te mostro *outros planos* para você comparar rapidinho."
+                        )
+                    novo_estado = "conversao"
 
                 if not imagens_urls and resposta_texto:
                     _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
@@ -3889,8 +3904,19 @@ async def chatwoot_webhook(
                 # Múltiplas unidades — fluxo inteligente de identificação
                 texto_cliente = normalizar(conteudo_texto).strip()
 
-                # Tenta por nome/cidade/bairro já na primeira mensagem (ex: "ricardo jafet")
-                if not slug_detectado:
+                # Tenta por nome/cidade/bairro já na primeira mensagem APENAS
+                # quando houver indicador geográfico claro.
+                _tem_geo_multi = False
+                for _u in unidades_ativas:
+                    for _campo in ["nome", "cidade", "bairro"]:
+                        _v = normalizar(_u.get(_campo, "") or "")
+                        if _v and len(_v) >= 4 and _v in texto_cliente:
+                            _tem_geo_multi = True
+                            break
+                    if _tem_geo_multi:
+                        break
+
+                if not slug_detectado and _tem_geo_multi:
                     slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
                 # Tenta por número digitado (ex: "1", "2")
@@ -3969,10 +3995,12 @@ async def chatwoot_webhook(
                         logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
                         return {"status": "aguardando_escolha_unidade"}
 
-                    # Unidade não identificada — pergunta direta, sem saudação fixa
+                    # Unidade não identificada — não assume uma unidade específica.
+                    _qtd_unidades = len(unidades_ativas)
                     msg = (
-                        "Me ajuda rapidinho pra eu te atender melhor 😊\n\n"
-                        "Qual *cidade* ou *bairro* fica melhor pra você treinar?"
+                        "Boa pergunta! Somos sim a Red Fitness 💪\n\n"
+                        f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
+                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
                     )
                     await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
                     await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
