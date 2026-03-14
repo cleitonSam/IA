@@ -64,32 +64,46 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return None
 
 
-async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Optional[Dict[str, Any]]:
+async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Carrega a configuração de integração ativa de uma empresa.
+    Tenta primeiro por unidade, se não houver, busca a global da empresa.
     """
     if not _database.db_pool:
         return None
 
-    cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
+    cache_key = f"cfg:integracao:{empresa_id}:{tipo}:{unidade_id or 'global'}"
     cache = await redis_get_json(cache_key)
     if cache is not None:
         return cache
 
     try:
-        query = """
-            SELECT config
-            FROM integracoes
-            WHERE empresa_id = $1 AND tipo = $2 AND ativo = true
+        if unidade_id:
+            # Tenta unidade específica primeiro
+            row = await _database.db_pool.fetchrow("""
+                SELECT config FROM integracoes
+                WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3 AND ativo = true
+                LIMIT 1
+            """, empresa_id, tipo, unidade_id)
+            if row:
+                config = row['config']
+                if isinstance(config, str): config = json.loads(config)
+                await redis_set_json(cache_key, config, 300)
+                return config
+
+        # Fallback para global
+        row = await _database.db_pool.fetchrow("""
+            SELECT config FROM integracoes
+            WHERE empresa_id = $1 AND tipo = $2 AND unidade_id IS NULL AND ativo = true
             LIMIT 1
-        """
-        row = await _database.db_pool.fetchrow(query, empresa_id, tipo)
+        """, empresa_id, tipo)
+        
         if row:
             config = row['config']
-            if isinstance(config, str):
-                config = json.loads(config)
+            if isinstance(config, str): config = json.loads(config)
             await redis_set_json(cache_key, config, 300)
             return config
+        
         return None
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao carregar integração {tipo} da empresa {empresa_id}: {e}")
@@ -104,16 +118,16 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
 
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 
-async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
+async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[List[Dict]]:
     """
     Busca os planos (memberships) da academia via API Evo diretamente.
     """
     if not _database.db_pool:
         return None
 
-    integracao = await carregar_integracao(empresa_id, 'evo')
+    integracao = await carregar_integracao(empresa_id, 'evo', unidade_id=unidade_id)
     if not integracao:
-        logger.info(f"ℹ️ Empresa {empresa_id} não tem integração Evo ativa")
+        logger.info(f"ℹ️ Empresa {empresa_id} (Unid {unidade_id}) não tem integração Evo ativa")
         return None
 
     dns = integracao.get('dns')
@@ -183,14 +197,14 @@ async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
         return None
 
 
-async def sincronizar_planos_evo(empresa_id: int) -> int:
+async def sincronizar_planos_evo(empresa_id: int, unidade_id: Optional[int] = None) -> int:
     """
     Busca planos da API Evo e insere/atualiza na tabela planos.
     """
     if not _database.db_pool:
         return 0
 
-    planos_api = await buscar_planos_evo_da_api(empresa_id)
+    planos_api = await buscar_planos_evo_da_api(empresa_id, unidade_id=unidade_id)
     if not planos_api:
         return 0
 
@@ -199,10 +213,15 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
         if not p.get('link_venda'):
             continue
 
-        existing = await _database.db_pool.fetchval(
-            "SELECT id FROM planos WHERE empresa_id = $1 AND id_externo = $2",
-            empresa_id, p['id']
-        )
+        # Se estamos sincronizando para uma unidade específica, o plano deve ser vinculado a ela.
+        # Caso contrário, se for global, unidade_id no banco fica nulo.
+        
+        existing = await _database.db_pool.fetchval("""
+            SELECT id FROM planos 
+            WHERE empresa_id = $1 AND id_externo = $2 
+              AND (unidade_id = $3 OR (unidade_id IS NULL AND $3 IS NULL))
+        """, empresa_id, p['id'], unidade_id)
+
         if existing:
             await _database.db_pool.execute("""
                 UPDATE planos SET
@@ -214,15 +233,15 @@ async def sincronizar_planos_evo(empresa_id: int) -> int:
         else:
             await _database.db_pool.execute("""
                 INSERT INTO planos
-                    (empresa_id, id_externo, nome, valor, valor_promocional, meses_promocionais,
+                    (empresa_id, unidade_id, id_externo, nome, valor, valor_promocional, meses_promocionais,
                      descricao, diferenciais, link_venda, ativo, ordem)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, 0)
-            """, empresa_id, p['id'], p['nome'], p['valor'], p['valor_promocional'],
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, 0)
+            """, empresa_id, unidade_id, p['id'], p['nome'], p['valor'], p['valor_promocional'],
                p['meses_promocionais'], p['descricao'], p['diferenciais'], p['link_venda'])
             count += 1
 
-    await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
-    logger.info(f"✅ Sincronizados {count} novos planos para empresa {empresa_id}")
+    await redis_client.delete(f"planos:ativos:{empresa_id}:{unidade_id or 'todos'}")
+    logger.info(f"✅ Sincronizados {count} novos planos para empresa {empresa_id} (Unid {unidade_id})")
     return count
 
 

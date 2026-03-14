@@ -39,9 +39,18 @@ async def worker_sync_planos():
                 await asyncio.sleep(10)
                 continue
             try:
-                empresas = await _database.db_pool.fetch("SELECT id FROM empresas")
+                empresas = await _database.db_pool.fetch("SELECT id FROM empresas WHERE status = 'active'")
                 for emp in empresas:
-                    await sincronizar_planos_evo(emp['id'])
+                    emp_id = emp['id']
+                    # Sincroniza Global (fallback/caso geral)
+                    await sincronizar_planos_evo(emp_id)
+                    
+                    # Sincroniza Unidades Específicas
+                    unidades = await _database.db_pool.fetch(
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true", emp_id
+                    )
+                    for unid in unidades:
+                        await sincronizar_planos_evo(emp_id, unidade_id=unid['id'])
                 logger.info("✅ worker_sync_planos executado pelo líder")
             except Exception as e:
                 logger.error(f"Erro no worker de sincronização de planos: {e}")
@@ -165,7 +174,7 @@ async def worker_followup():
                     template_base = (f['mensagem'] or '').replace('{{nome}}', nome_contato).replace('{{unidade}}', nome_unidade)
                     
                     # ── Lógica do Score e Geração IA ────────────────────────
-                    eventos = await _database.db_pool.fetch("SELECT tipo, score_incremento FROM eventos_funil WHERE conversa_id = $1", f['conversa_id'])
+                    eventos = await _database.db_pool.fetch("SELECT tipo_evento, score_incremento FROM eventos_funil WHERE conversa_id = $1", f['conversa_id'])
                     score_total = sum((e['score_incremento'] or 1) for e in eventos)
                     
                     if score_total >= 4:

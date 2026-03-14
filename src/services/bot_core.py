@@ -60,6 +60,7 @@ from src.services.chatwoot_client import (
     simular_digitacao, formatar_mensagem_saida, suavizar_personalizacao_nome,
     atualizar_nome_contato_chatwoot, enviar_mensagem_chatwoot, validar_assinatura,
 )
+from src.services.evo_client import verificar_status_membro_evo, criar_prospect_evo
 import src.services.chatwoot_client as _chatwoot_module
 from src.services.workers import (
     _log_worker_task_result, worker_sync_planos, sync_planos_manual,
@@ -899,6 +900,18 @@ async def processar_ia_e_responder(
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
+        # ── INTEGRAÇÃO EVO: Verificação de Membro ─────────────────────
+        status_evo = {"is_aluno": False, "status": "lead"}
+        if contato_fone:
+            status_evo = await verificar_status_membro_evo(contato_fone, empresa_id, unidade.get('id'))
+        
+        ctx_aluno = ""
+        if status_evo.get("is_aluno"):
+            ctx_aluno = f"[SISTEMA: O cliente é um ALUNO {status_evo['status'].upper()}. Nome na EVO: {status_evo['nome']}. Trate-o como aluno e se ele tiver dúvidas de treino/financeiro peça para usar o App EVO.]"
+        else:
+            ctx_aluno = "[SISTEMA: O cliente NÃO é aluno (é um LEAD/PROSPECT). O foco é conversão e tirar dúvidas básicas.]"
+        # ─────────────────────────────────────────────────────────────
+
         texto_norm_fast = normalizar(primeira_mensagem or "")
         resposta_texto = ""
         novo_estado = estado_atual
@@ -1149,6 +1162,8 @@ NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect an
 Você é um atendente — apenas responda o cliente diretamente.
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
+
+{ctx_aluno}
 
 PERSONALIDADE
 {pers.get('personalidade', 'Atendente prestativo, simpático e focado em ajudar.')}
@@ -1550,6 +1565,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await bd_registrar_evento_funil(
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
+            # ── INTEGRAÇÃO EVO: Criar Prospect se não for aluno ──────────
+            if not status_evo.get("is_aluno"):
+                lead_data = {
+                    "name": nome_cliente,
+                    "cellphone": contato_fone,
+                    "notes": f"Interesse detectado via IA (Estado: {novo_estado}) na unidade {slug}"
+                }
+                asyncio.create_task(criar_prospect_evo(empresa_id, unidade.get('id'), lead_data))
+            # ─────────────────────────────────────────────────────────────
 
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
         if salvar_resposta_unica:
