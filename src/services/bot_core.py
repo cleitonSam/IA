@@ -818,14 +818,12 @@ async def despachar_resposta(
             
         uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
         
-        # Simula digitação proporcional ao tamanho do texto (mín 1.5s, máx 8s)
-        tempo_digitacao = min(max(int(len(content) * 0.05 * 1000), 1500), 8000)
-        
-        logger.info(f"📤 Despachando via UazAPI para {chat_id} (typing {tempo_digitacao}ms)")
-        await uaz.set_presence(chat_id, "composing", tempo_digitacao)
-        await asyncio.sleep(tempo_digitacao / 1000)
-        
-        res = await uaz.send_text(chat_id, content)
+        # Simula digitação proporcional ao tamanho do texto via delay no próprio /send/text
+        # (mín 1.2s, máx 8s) — o /send/presence retorna 405 nessa instância UazAPI
+        tempo_digitacao = min(max(int(len(content) * 0.05 * 1000), 1200), 8000)
+
+        logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
+        res = await uaz.send_text(chat_id, content, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res
     else:
