@@ -2021,8 +2021,10 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
     try:
         await db_pool.execute("""
             UPDATE followups SET status = 'cancelado'
-            WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
-              AND status = 'pendente'
+            WHERE (
+                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
+                OR conversation_id = $1
+            ) AND status = 'pendente'
         """, conversation_id)
 
         templates = await db_pool.fetch("""
@@ -2040,14 +2042,16 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
             agendado_para = agora + timedelta(minutes=t["delay_minutos"])
             await db_pool.execute("""
                 INSERT INTO followups
-                    (conversa_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
+                    (conversa_id, conversation_id, account_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
                 VALUES (
                     (SELECT id FROM conversas WHERE conversation_id = $1),
+                    $1,
+                    $9,
                     $2,
                     (SELECT id FROM unidades WHERE slug = $3),
                     $4, $5, $6, $7, $8, 'pendente'
                 )
-            """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para)
+            """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para, account_id)
 
         logger.info(f"📅 {len(templates)} follow-ups agendados para conversa {conversation_id}")
     except Exception as e:
@@ -2067,33 +2071,51 @@ async def worker_followup():
                 agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
                 pendentes = await db_pool.fetch("""
-                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
+                    SELECT
+                        f.*,
+                        COALESCE(f.conversation_id, c.conversation_id) AS conv_id,
+                        COALESCE(f.account_id, c.account_id) AS acc_id,
+                        u.slug,
+                        COALESCE(f.empresa_id, c.empresa_id) AS emp_id
                     FROM followups f
-                    JOIN conversas c ON c.id = f.conversa_id
+                    LEFT JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
                     WHERE f.status = 'pendente' AND f.agendado_para <= $1
+                      AND (f.conversa_id IS NOT NULL OR f.conversation_id IS NOT NULL)
                     ORDER BY f.agendado_para
                     LIMIT 20
                     FOR UPDATE SKIP LOCKED
                 """, agora)
 
                 for f in pendentes:
+                    conv_id = f['conv_id']
+                    acc_id = f['acc_id']
+                    emp_id = f['emp_id']
+
+                    if not conv_id or not acc_id:
+                        await db_pool.execute(
+                            "UPDATE followups SET status = 'erro', erro_log = 'conversation_id ou account_id ausente' WHERE id = $1", f['id']
+                        )
+                        continue
+
                     if (
-                        await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
-                        or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
+                        await redis_client.get(f"atend_manual:{conv_id}") == "1"
+                        or await redis_client.get(f"pause_ia:{conv_id}") == "1"
                     ):
                         await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
 
                     respondeu = await db_pool.fetchval("""
-                        SELECT 1 FROM mensagens
-                        WHERE conversa_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
-                    """, f['conversa_id'])
+                        SELECT 1 FROM mensagens m
+                        JOIN conversas c ON c.id = m.conversa_id
+                        WHERE c.conversation_id = $1 AND m.role = 'user'
+                          AND m.created_at > NOW() - interval '5 minutes'
+                    """, conv_id)
                     if respondeu:
                         await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
 
-                    integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
+                    integracao = await carregar_integracao(emp_id, 'chatwoot')
                     if not integracao:
                         await db_pool.execute(
                             "UPDATE followups SET status = 'erro', erro_log = 'Sem integração' WHERE id = $1", f['id']
@@ -2101,7 +2123,7 @@ async def worker_followup():
                         continue
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
+                        acc_id, conv_id, f['mensagem'], "Assistente Virtual", integracao
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
@@ -2711,8 +2733,10 @@ async def bd_finalizar_conversa(conversation_id: int):
         """, conversation_id)
         await db_pool.execute("""
             UPDATE followups SET status = 'cancelado'
-            WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
-              AND status = 'pendente'
+            WHERE (
+                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
+                OR conversation_id = $1
+            ) AND status = 'pendente'
         """, conversation_id)
         logger.info(f"✅ Conversa {conversation_id} finalizada")
     except Exception as e:
@@ -2749,13 +2773,13 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """, empresa_id, unidade_id, hoje) or 0
 
     novos_contatos = await db_pool.fetchval("""
-        SELECT COUNT(DISTINCT telefone) FROM conversas
+        SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
           AND NOT EXISTS (
               SELECT 1 FROM conversas c2
               WHERE c2.empresa_id = $1
-                AND c2.telefone = conversas.telefone
+                AND c2.contato_telefone = conversas.contato_telefone
                 AND c2.created_at < conversas.created_at
           )
     """, empresa_id, unidade_id, hoje) or 0
@@ -2920,13 +2944,13 @@ async def worker_metricas_diarias():
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE status = 'active'")
 
                 total_unidades = 0
                 for emp in empresas:
                     empresa_id = emp['id']
                     unidades = await db_pool.fetch(
-                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true",
                         empresa_id
                     )
 
