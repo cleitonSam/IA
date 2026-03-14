@@ -110,6 +110,9 @@ async def chatwoot_webhook(
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
 
+    # Recupera o slug (unidade) do Redis se já estiver em atendimento
+    slug = await redis_client.get(f"unidade_escolhida:{id_conv}")
+
     contato = payload.get("sender", {})
     nome_contato_raw = contato.get("name")
     nome_contato_limpo = limpar_nome(nome_contato_raw)
@@ -164,7 +167,7 @@ async def chatwoot_webhook(
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
-    slug = slug_redis
+    # slug já foi inicializado no topo com slug_redis
     slug_detectado = None
     esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
     prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
