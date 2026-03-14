@@ -2749,13 +2749,13 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """, empresa_id, unidade_id, hoje) or 0
 
     novos_contatos = await db_pool.fetchval("""
-        SELECT COUNT(DISTINCT telefone) FROM conversas
+        SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
           AND NOT EXISTS (
               SELECT 1 FROM conversas c2
               WHERE c2.empresa_id = $1
-                AND c2.telefone = conversas.telefone
+                AND c2.contato_telefone = conversas.contato_telefone
                 AND c2.created_at < conversas.created_at
           )
     """, empresa_id, unidade_id, hoje) or 0
@@ -2920,13 +2920,13 @@ async def worker_metricas_diarias():
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE status = 'active'")
 
                 total_unidades = 0
                 for emp in empresas:
                     empresa_id = emp['id']
                     unidades = await db_pool.fetch(
-                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true",
                         empresa_id
                     )
 
