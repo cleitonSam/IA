@@ -691,6 +691,7 @@ async def resolver_contexto_atendimento(
 
 async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], transcricoes: List[str]):
     """Persiste histórico de mensagens do usuário (texto e áudio transcrito)."""
+    logger.debug(f"💾 Persistindo {len(textos)} textos e {len(transcricoes)} áudios para conv {conversation_id}")
     for txt in textos:
         await bd_salvar_mensagem_local(conversation_id, "user", txt)
     for transc in transcricoes:
@@ -869,6 +870,10 @@ async def processar_ia_e_responder(
         imagens_urls = anexos["imagens_urls"]
         mensagens_formatadas = anexos["mensagens_formatadas"]
 
+        # ── GARANTIA DE PERSISTÊNCIA: Salva assim que coleta do buffer ────────
+        await persistir_mensagens_usuario(conversation_id, textos, transcricoes)
+        # ──────────────────────────────────────────────────────────────────────
+
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
         # O drain loop pode recolocar mensagens no buffer após o processamento.
         # Se o hash das mensagens atuais é igual ao que foi respondido nos últimos
@@ -890,8 +895,6 @@ async def processar_ia_e_responder(
         slug = contexto["slug"]
         mudou_unidade = contexto["mudou_unidade"]
         primeira_mensagem = contexto["primeira_mensagem"]
-
-        await persistir_mensagens_usuario(conversation_id, textos, transcricoes)
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}

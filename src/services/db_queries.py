@@ -814,6 +814,7 @@ async def bd_salvar_mensagem_local(
             INSERT INTO mensagens (conversa_id, role, tipo, conteudo, url_midia, created_at)
             VALUES ($1, $2, $3, $4, $5, NOW())
         """, conversa['id'], role, tipo, content, url_midia)
+        logger.info(f"✅ Mensagem {role} salva para conversa {conversation_id} (id_db={conversa['id']})")
     except Exception as e:
         logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
 
