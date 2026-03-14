@@ -2077,14 +2077,16 @@ async def worker_followup():
                         COALESCE(f.account_id, c.account_id) AS acc_id,
                         u.slug,
                         COALESCE(f.empresa_id, c.empresa_id) AS emp_id
-                    FROM followups f
+                    FROM (
+                        SELECT * FROM followups
+                        WHERE status = 'pendente' AND agendado_para <= $1
+                          AND (conversa_id IS NOT NULL OR conversation_id IS NOT NULL)
+                        ORDER BY agendado_para
+                        LIMIT 20
+                        FOR UPDATE SKIP LOCKED
+                    ) f
                     LEFT JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
-                    WHERE f.status = 'pendente' AND f.agendado_para <= $1
-                      AND (f.conversa_id IS NOT NULL OR f.conversation_id IS NOT NULL)
-                    ORDER BY f.agendado_para
-                    LIMIT 20
-                    FOR UPDATE SKIP LOCKED
                 """, agora)
 
                 for f in pendentes:
@@ -3531,6 +3533,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
             )
             temperature = float(pers.get("temperatura") or 0.7)
+            max_tokens_llm = int(pers.get("max_tokens") or 1200)
+            # Garante mínimo de 1500 para evitar truncamento em prompts com dados da unidade
+            max_tokens_llm = max(max_tokens_llm, 1500)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
@@ -3591,8 +3596,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
-                            max_tokens=1200,  # Margem generosa — prompt pede resposta curta, mas nunca trunca
-                                              # Reduz custo e evita erro 402 de crédito insuficiente
+                            max_tokens=max_tokens_llm,
                         ),
                         timeout=extra_timeout
                     )
