@@ -14,7 +14,7 @@ import time
 import zlib
 import unicodedata
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
@@ -391,6 +391,74 @@ def formatar_horarios_funcionamento(horarios: Any) -> str:
         return "\n".join([f"- {dia}: {hora}" for dia, hora in horarios.items()])
 
     return str(horarios)
+
+
+def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
+    """
+    Analisa o horário de funcionamento e retorna (aberta_agora, horario_hoje).
+    Suporta string multi-linha "Seg-Sex: 06:00–23:00\nSáb: 09:00–17:00\nDom: 09:00–13:00"
+    e dict com chaves por dia.
+    Retorna (None, None) se não conseguir determinar.
+    """
+    if not horarios:
+        return None, None
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    dia_idx = agora.weekday()  # 0=segunda, 6=domingo
+    hora_atual = agora.time()
+
+    DIA_ABREV = {
+        'seg': 0, 'ter': 1, 'qua': 2, 'qui': 3, 'sex': 4,
+        'sab': 5, 'sáb': 5, 'dom': 6,
+    }
+
+    def _normalizar_dia(s: str) -> Optional[int]:
+        return DIA_ABREV.get(normalizar(s).strip()[:3])
+
+    def _dia_na_linha(dias_str: str) -> bool:
+        dias_str = normalizar(dias_str).strip()
+        m = re.match(r'^(\w+)\s*[-–]\s*(\w+)$', dias_str)
+        if m:
+            ini = _normalizar_dia(m.group(1))
+            fim = _normalizar_dia(m.group(2))
+            if ini is not None and fim is not None:
+                return ini <= dia_idx <= fim
+        d = _normalizar_dia(dias_str)
+        return d == dia_idx
+
+    horario_hoje = None
+
+    if isinstance(horarios, str):
+        try:
+            horarios = json.loads(horarios)
+        except (json.JSONDecodeError, ValueError):
+            for linha in horarios.strip().split('\n'):
+                linha = linha.strip()
+                if ':' not in linha:
+                    continue
+                partes = linha.split(':', 1)
+                if _dia_na_linha(partes[0].strip()):
+                    horario_hoje = partes[1].strip()
+                    break
+
+    if isinstance(horarios, dict):
+        horario_hoje = horario_hoje_formatado(horarios)
+
+    if not horario_hoje:
+        return None, None
+
+    # Extrai os dois primeiros horários: abertura e fechamento
+    times = re.findall(r'(\d{1,2}):(\d{2})', horario_hoje)
+    if len(times) < 2:
+        return None, horario_hoje
+
+    try:
+        abertura = dtime(int(times[0][0]), int(times[0][1]))
+        fechamento = dtime(int(times[1][0]), int(times[1][1]))
+    except ValueError:
+        return None, horario_hoje
+
+    return abertura <= hora_atual < fechamento, horario_hoje
 
 
 def garantir_frase_completa(txt: str) -> str:
@@ -3220,6 +3288,22 @@ async def processar_ia_e_responder(
                 fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
                 logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
 
+        # Pré-carrega horário com status aberta/fechada quando intenção é horário
+        if intencao == "horario" and hor_banco:
+            horarios_formatados = formatar_horarios_funcionamento(hor_banco)
+            _aberta, _hor_hoje = esta_aberta_agora(hor_banco)
+            _nome_unid = unidade.get('nome') or 'da unidade'
+            if _aberta is True:
+                _status_ctx = f"✅ A unidade está ABERTA agora. Horário de hoje: {_hor_hoje}"
+            elif _aberta is False:
+                _status_ctx = f"❌ A unidade está FECHADA no momento. Horário de hoje: {_hor_hoje}"
+            else:
+                _status_ctx = "Status de funcionamento não determinado."
+            contexto_precarregado = (
+                f"Horários de funcionamento — {_nome_unid}:\n{horarios_formatados}\n\n{_status_ctx}"
+            )
+            logger.info(f"📋 Horário + status pré-carregado: {_status_ctx}")
+
         _intencoes_cacheaveis = {
             "horario", "endereco"
         }
@@ -3292,6 +3376,14 @@ async def processar_ia_e_responder(
             else:
                 horarios_str = "não informado"
 
+            _aberta_agora, _horario_hoje = esta_aberta_agora(hor_banco)
+            if _aberta_agora is True:
+                _status_agora = f"✅ ABERTA AGORA (hoje: {_horario_hoje})"
+            elif _aberta_agora is False:
+                _status_agora = f"❌ FECHADA AGORA (hoje: {_horario_hoje})"
+            else:
+                _status_agora = "não informado"
+
             # Detalhes de planos para o prompt (texto simples, sem markdown)
             planos_detalhados = formatar_planos_para_prompt(planos_ativos) if planos_ativos else "não informado"
             modalidades_prompt = ", ".join(normalizar_lista_campo(unidade.get("modalidades"))) or "não informado"
@@ -3305,6 +3397,7 @@ Empresa: {unidade.get('nome_empresa') or 'não informado'}
 Endereço: {end_banco or 'não informado'}
 Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
 Telefone: {tel_banco or 'não informado'}
+Status atual: {_status_agora}
 Horários:
 {horarios_str}
 Planos (com links de matricula):
