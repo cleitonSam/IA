@@ -82,16 +82,25 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
         ddi = '55'
         number = phone
 
+    full_name = lead_data.get('name', 'Lead WhatsApp').strip()
+    name_parts = full_name.split(' ', 1)
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+
     payload = {
-        "name": lead_data.get('name', 'Lead WhatsApp'),
-        "idBranch": id_branch,
+        "firstName": first_name,
+        "lastName": last_name,
+        "name": full_name,
+        "idBranch": int(id_branch),
         "ddi": ddi,
         "cellphone": number,
-        "email": lead_data.get('email'),
+        "email": lead_data.get('email') or "",
         "notes": lead_data.get('notes', 'Gerado via IA Antigravity'),
         "currentStep": "Contato Inicial (IA)",
         "marketingType": "WhatsApp / IA"
     }
+
+    logger.debug(f"📤 [CRM EVO] Enviando payload: name={full_name}, branch={id_branch}, fone={ddi}{number}")
 
     try:
         async with httpx.AsyncClient() as client:
