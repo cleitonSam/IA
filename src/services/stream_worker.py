@@ -82,11 +82,18 @@ async def run_stream_worker():
                             _raw_contact = payload.get("contact_id")
                             contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
                             slug = payload.get("slug")
-                            nome_cliente = payload.get("nome_cliente")
                             contato_fone = payload.get("contato_fone")
                             
-                            # NOVIDADE: Se vier do Chatwoot mas tiver telefone, responder via UazAPI (Modo Humano)
-                            if contato_fone:
+                            # Se não veio no payload, tenta buscar no BD se já conhecemos esse telefone
+                            if not contato_fone:
+                                _db_fone = await _database.db_pool.fetchval(
+                                    "SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id
+                                )
+                                if _db_fone:
+                                    contato_fone = _db_fone
+                            
+                            # NOVIDADE: Se temos o telefone (via payload ou BD), responder via UazAPI (Modo Humano)
+                            if contato_fone and contato_fone.strip():
                                 source = "uazapi"
                                 logger.info(f"🔄 Redirecionando resposta da conv {conversation_id} para UazAPI (fone: {contato_fone})")
 

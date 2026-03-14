@@ -758,8 +758,8 @@ async def bd_iniciar_conversa(
             INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, primeira_mensagem, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'ativa')
             ON CONFLICT (conversation_id) DO UPDATE SET
-                contato_nome = COALESCE(EXCLUDED.contato_nome, conversas.contato_nome),
-                contato_fone = COALESCE(EXCLUDED.contato_fone, conversas.contato_fone),
+                contato_nome = COALESCE(NULLIF(EXCLUDED.contato_nome, ''), conversas.contato_nome),
+                contato_fone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_fone),
                 unidade_id = EXCLUDED.unidade_id,
                 status = 'ativa',
                 updated_at = NOW()

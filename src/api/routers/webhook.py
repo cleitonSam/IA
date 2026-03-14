@@ -114,8 +114,18 @@ async def chatwoot_webhook(
     nome_contato_raw = contato.get("name")
     nome_contato_limpo = limpar_nome(nome_contato_raw)
     nome_contato_valido = nome_eh_valido(nome_contato_limpo)
-    # Tenta pegar o telefone do contato (Chatwoot envia no sender)
-    contato_fone = contato.get("phone_number")
+
+    # Extração multiescamada do telefone (Chatwoot pode enviar em locais diferentes)
+    contato_fone = (
+        contato.get("phone_number") or 
+        payload.get("conversation", {}).get("contact", {}).get("phone_number") or
+        payload.get("meta", {}).get("sender", {}).get("phone_number")
+    )
+    
+    if contato_fone:
+        logger.info(f"📱 Telefone identificado no webhook: {contato_fone} (conv={id_conv})")
+    
+    # logger.info(f"🔍 DEBUG Chatwoot: conv={id_conv} | sender_data={json.dumps(contato)} | extracted_phone={contato_fone}") # Desativado para log limpo
 
     if message_type == "incoming":
         if nome_contato_valido:
