@@ -49,6 +49,7 @@ async def run_stream_worker():
                     try:
                         source = payload.get("source", "chatwoot")
                         empresa_id = int(payload.get("empresa_id") or 0)
+                        logger.info(f"📥 Job recebido no Worker: empresa={empresa_id} source={source} msg_id={msg_id}")
                         
                         if source == "uazapi":
                             phone = payload.get("phone")
@@ -103,7 +104,12 @@ async def run_stream_worker():
                             continue
                         
                         integracao = await carregar_integracao(empresa_id, 'chatwoot' if source == "chatwoot" else 'uazapi')
+                        if not integracao:
+                            logger.error(f"❌ Falha ao carregar integração {source} para empresa {empresa_id}. Job abortado.")
+                            await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+                            continue
                         
+                        logger.info(f"⚙️ Integração {source} carregada com sucesso. Iniciando processamento IA.")
                         from src.services.bot_core import processar_ia_e_responder
                         lock_val = str(uuid.uuid4())
                         if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=60):

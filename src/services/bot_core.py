@@ -821,13 +821,15 @@ async def despachar_resposta(
         # Simula digitação proporcional ao tamanho do texto (mín 1.5s, máx 8s)
         tempo_digitacao = min(max(int(len(content) * 0.05 * 1000), 1500), 8000)
         
-        # Decide se envia texto ou áudio (Inovação: 20% das respostas longas viram áudio se o usuário pediu)
-        # Por simplicidade inicial, focamos em texto com simulação de typing
+        logger.info(f"📤 Despachando via UazAPI para {chat_id} (typing {tempo_digitacao}ms)")
         await uaz.set_presence(chat_id, "composing", tempo_digitacao)
         await asyncio.sleep(tempo_digitacao / 1000)
         
-        return await uaz.send_text(chat_id, content)
+        res = await uaz.send_text(chat_id, content)
+        logger.info(f"✅ UazAPI Result: {res}")
+        return res
     else:
+        logger.info(f"📤 Despachando via Chatwoot conv={conversation_id}")
         return await enviar_mensagem_chatwoot(account_id, conversation_id, content, nome_ia, integracao)
 
 
@@ -843,6 +845,7 @@ async def processar_ia_e_responder(
     source: str = 'chatwoot',
     contato_fone: str = None
 ):
+    logger.info(f"🧠 BotCore: processar_ia_e_responder conv={conversation_id} source={source} fone={contato_fone}")
     chave_lock = f"lock:{conversation_id}"
     chave_buffet = f"buffet:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
