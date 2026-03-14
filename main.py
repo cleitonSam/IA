@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import redis.asyncio as redis
 import asyncpg
-from tenacity import retry, wait_exponential, stop_after_attempt
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from rapidfuzz import fuzz
 
 # --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
@@ -87,8 +87,18 @@ async def rate_limit_middleware(request: Request, call_next):
       2. Por empresa — máx 300 req/minuto (anti-loop de webhook)
     Apenas para o endpoint /webhook. Outros endpoints passam livre.
     """
-    if request.url.path != "/webhook" or redis_client is None:
+    if request.url.path != "/webhook" or not redis_client:
         return await call_next(request)
+
+    try:
+        await redis_client.ping()
+    except Exception:
+        return await call_next(request)
+
+    async def _set_body(req: Request, b: bytes):
+        async def receive():
+            return {"type": "http.request", "body": b, "more_body": False}
+        req._receive = receive
 
     client_ip = request.client.host if request.client else "unknown"
 
@@ -124,7 +134,7 @@ async def rate_limit_middleware(request: Request, call_next):
                 from fastapi.responses import JSONResponse
                 return JSONResponse({"status": "rate_limit_account"}, status_code=429)
         # Devolve o body ao request para que o endpoint possa lê-lo normalmente
-        request._body = body
+        await _set_body(request, body)
     except Exception:
         pass
 
@@ -180,6 +190,7 @@ class CircuitBreaker:
             succs = await redis_client.incr(k_succ)
             if succs >= self.success_threshold:
                 await redis_client.mset({k_state: "CLOSED", k_fail: 0, k_succ: 0})
+                await redis_client.delete(f"cb:{self.name}:half_open_test")
                 logger.info(f"✅ CircuitBreaker [{self.name}] → CLOSED (recuperado)")
         else:
             await redis_client.set(k_fail, 0)
@@ -194,10 +205,12 @@ class CircuitBreaker:
                 k_succ:  0,
                 k_opened: str(time.time()),
             })
+            await redis_client.delete(f"cb:{self.name}:half_open_test")
             logger.warning(f"⚡ CircuitBreaker [{self.name}] → OPEN novamente (falha em HALF_OPEN)")
         else:
             fails = await redis_client.incr(k_fail)
-            if not await redis_client.ttl(k_fail):
+            ttl = await redis_client.ttl(k_fail)
+            if ttl in (-1, -2):
                 await redis_client.expire(k_fail, 120)
             if fails >= self.failure_threshold:
                 await redis_client.mset({
@@ -217,7 +230,9 @@ class CircuitBreaker:
         if state == "CLOSED":
             return True
         if state == "HALF_OPEN":
-            return True   # permite 1 chamada de teste
+            test_key = f"cb:{self.name}:half_open_test"
+            acquired = await redis_client.set(test_key, "1", nx=True, ex=30)
+            return bool(acquired)
         # OPEN — verifica se recovery_timeout já passou
         return False
 
@@ -231,7 +246,18 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+
+if not CHATWOOT_URL:
+    logger.warning("CHATWOOT_URL não definido globalmente")
+if not CHATWOOT_TOKEN:
+    logger.warning("CHATWOOT_TOKEN não definido globalmente")
+if not OPENROUTER_API_KEY:
+    logger.warning("OPENROUTER_API_KEY não definido")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL não definido")
+
 EMPRESA_ID_PADRAO = 1
+APP_VERSION = "2.5.0"
 
 # 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura OU small talk sem intenção real
 # Inclui respostas de follow-up ("tudo sim", "por aí?") para não disparar vendas acidentalmente
@@ -256,10 +282,20 @@ def eh_saudacao(texto: str) -> bool:
         return False
     norm = normalizar(texto).strip()
     palavras = norm.split()
-    # Mensagem curta (até 5 palavras) que começa ou contém saudação
+    # Mensagem curta (até 5 palavras) com match exato/início controlado
     if len(palavras) <= 5:
-        return any(s in norm for s in SAUDACOES)
+        return norm in SAUDACOES or any(norm.startswith(f"{s} ") for s in SAUDACOES)
     return False
+
+
+def eh_confirmacao_curta(texto: str) -> bool:
+    """Detecta confirmações curtas de continuidade (ex: 'quero sim', 'pode mandar')."""
+    if not texto:
+        return False
+    t = normalizar(texto).strip()
+    if len(t.split()) > 6:
+        return False
+    return bool(re.search(r"^(sim|quero sim|quero|pode|pode sim|pode mandar|manda|me passa|pode passar|ok|beleza|blz|claro)$", t))
 
 
 def saudacao_por_horario() -> str:
@@ -338,6 +374,295 @@ def horario_hoje_formatado(horarios: Any) -> Optional[str]:
                         return str(valor)
 
     return None
+
+
+def formatar_horarios_funcionamento(horarios: Any) -> str:
+    """Converte horários da unidade em texto amigável para resposta direta ao cliente."""
+    if not horarios:
+        return "não informado"
+
+    if isinstance(horarios, str):
+        try:
+            horarios = json.loads(horarios)
+        except (json.JSONDecodeError, ValueError):
+            return horarios
+
+    if isinstance(horarios, dict):
+        return "\n".join([f"- {dia}: {hora}" for dia, hora in horarios.items()])
+
+    return str(horarios)
+
+
+def garantir_frase_completa(txt: str) -> str:
+    """Remove frase incompleta no final do texto para evitar resposta cortada."""
+    if not txt:
+        return txt
+    txt = txt.strip()
+    if not txt:
+        return txt
+    if txt[-1] in '.!?😊💪✅🏋🎯':
+        return txt
+    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
+        _pos = txt.rfind(_sep)
+        if _pos > len(txt) * 0.3:
+            return txt[:_pos + 1].strip()
+    return txt
+
+
+def classificar_intencao(texto: str) -> str:
+    """Classifica intenção principal com foco operacional (factual antes de LLM)."""
+    t = normalizar(texto or "")
+    if not t.strip():
+        return "neutro"
+    if eh_saudacao(t):
+        return "saudacao"
+    if re.search(r"(horario|horário|funcionamento|abre|fecha|que horas|aberto)", t):
+        return "horario"
+    if re.search(r"(endereco|endereço|localizacao|localização|onde fica|fica onde|como chegar)", t):
+        return "endereco"
+    if re.search(r"(telefone|whatsapp|contato|numero|número|ligar|falar com)", t):
+        return "telefone"
+    if re.search(r"(quais unidades|outras unidades|lista de unidades|quantas unidades|tem unidade|unidades)", t):
+        return "unidades"
+    if re.search(r"(preco|preço|valor|mensalidade|quanto custa|plano|planos|promo|promocao|promoção)", t):
+        return "planos"
+    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross)", t):
+        return "modalidades"
+    if re.search(r"(convenio|convênio|gympass|wellhub|totalpass)", t):
+        return "convenio"
+    return "llm"
+
+
+def _faq_compativel_com_intencao(intencao: str, pergunta_faq: str) -> bool:
+    """Evita FAQ fora de contexto (ex.: carnaval) para perguntas de grade/planos."""
+    if not intencao or intencao in {"llm", "neutro", "saudacao"}:
+        return True
+
+    mapa = {
+        "modalidades": {"aula", "aulas", "grade", "modalidade", "modalidades", "pilates", "zumba", "fit", "dance", "muay", "thai"},
+        "horario": {"horario", "funcionamento", "abre", "fecha"},
+        "endereco": {"endereco", "endereço", "local", "unidade", "fica"},
+        "telefone": {"telefone", "whatsapp", "contato", "numero", "número"},
+        "planos": {"plano", "planos", "valor", "preco", "preço", "mensalidade", "beneficio", "benefício"},
+        "convenio": {"convenio", "convênio", "gympass", "wellhub", "totalpass"},
+    }
+    chaves = mapa.get(intencao)
+    if not chaves:
+        return True
+
+    tokens_faq = {t for t in normalizar(pergunta_faq or "").split() if len(t) >= 3}
+    return any(t in tokens_faq for t in chaves)
+
+
+async def resolver_contexto_unidade(
+    conversation_id: int,
+    texto: str,
+    empresa_id: int,
+    slug_atual: Optional[str] = None
+) -> Dict[str, Optional[str]]:
+    """Resolve unidade da conversa em um único ponto (mensagem > contexto)."""
+    # Prioriza contexto já salvo em Redis (mais confiável que slug transitório do webhook)
+    slug_redis = await redis_client.get(f"unidade_escolhida:{conversation_id}")
+    slug_salvo = slug_redis or slug_atual
+
+    # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
+    # Aqui consideramos:
+    # 1) match direto de nome/cidade/bairro
+    # 2) interseção de tokens significativos com nome da unidade (ex.: "ricardo jafet")
+    texto_norm = normalizar(texto or "")
+    tokens_texto_sig = {t for t in texto_norm.split() if len(t) >= 4}
+    tem_geo = False
+    try:
+        unidades = await listar_unidades_ativas(empresa_id)
+        for u in unidades:
+            nome_u = normalizar(u.get("nome", "") or "")
+            cidade_u = normalizar(u.get("cidade", "") or "")
+            bairro_u = normalizar(u.get("bairro", "") or "")
+
+            # Match direto
+            if any(ind and len(ind) >= 4 and ind in texto_norm for ind in (nome_u, cidade_u, bairro_u)):
+                tem_geo = True
+                break
+
+            # Match por tokens do nome da unidade (suporta "ricardo jafet" sem nome completo)
+            tokens_nome_sig = {t for t in nome_u.split() if len(t) >= 4 and t not in {"red", "fitness", "academia", "unidade"}}
+            if len(tokens_texto_sig & tokens_nome_sig) >= 1:
+                tem_geo = True
+                break
+    except Exception:
+        tem_geo = False
+
+    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if tem_geo else None
+
+    if slug_detectado:
+        mudou = slug_detectado != slug_salvo
+        if mudou:
+            await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug_detectado)
+        return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true" if mudou else "false"}
+
+    if slug_salvo:
+        return {"slug": slug_salvo, "origem": "contexto", "mudou": "false"}
+
+    return {"slug": None, "origem": "indefinido", "mudou": "false"}
+
+
+def responder_horario(unidade: dict) -> str:
+    nome = unidade.get("nome") or "da unidade"
+    horarios = formatar_horarios_funcionamento(unidade.get("horarios"))
+    return (
+        f"🕒 O horário da unidade *{nome}* é:\n"
+        f"{horarios}\n\n"
+        "Se quiser, também posso te passar o endereço 😊"
+    )
+
+
+def extrair_endereco_unidade(unidade: dict) -> Optional[str]:
+    """Monta endereço completo com número quando necessário."""
+    endereco = (unidade.get("endereco_completo") or unidade.get("endereco") or "").strip()
+    numero = str(unidade.get("numero") or "").strip()
+    if not endereco:
+        return None
+    if numero and numero.lower() not in {"s/n", "sn"}:
+        # Se número ainda não aparece no endereço, concatena
+        if numero not in endereco:
+            endereco = f"{endereco}, {numero}"
+    return endereco
+
+
+def normalizar_lista_campo(valor: Any) -> List[str]:
+    """Converte campo de lista (list/json/string) em itens limpos para WhatsApp."""
+    if not valor:
+        return []
+    if isinstance(valor, list):
+        bruto = valor
+    elif isinstance(valor, str):
+        txt = valor.strip()
+        if not txt:
+            return []
+        try:
+            parsed = json.loads(txt)
+            if isinstance(parsed, list):
+                bruto = parsed
+            elif isinstance(parsed, str):
+                bruto = [parsed]
+            else:
+                bruto = [txt]
+        except Exception:
+            # Se vier texto corrido/grade, quebra por linha e separadores mais comuns
+            bruto = [p for p in re.split(r"\n+|;|\|", txt) if p and p.strip()]
+    else:
+        bruto = [str(valor)]
+
+    itens = []
+    for item in bruto:
+        t = str(item).strip()
+        if not t:
+            continue
+        # Remove marcadores/bullets estranhos no início
+        t = re.sub(r"^[•\-⁠​\s]+", "", t).strip()
+        if len(t) <= 1:
+            continue
+        itens.append(t)
+
+    # Se ainda parece texto por caractere, tenta recompor como única linha
+    if itens and all(len(i) == 1 for i in itens):
+        juntado = "".join(itens).strip()
+        return [juntado] if juntado else []
+
+    return itens
+
+
+def extrair_telefone_unidade(unidade: dict) -> Optional[str]:
+    return (
+        unidade.get("telefone_principal")
+        or unidade.get("telefone")
+        or unidade.get("whatsapp")
+    )
+
+
+def responder_endereco(unidade: dict) -> str:
+    nome = unidade.get("nome") or "da unidade"
+    endereco = extrair_endereco_unidade(unidade)
+    if not endereco:
+        return (
+            f"📍 No momento não encontrei o endereço da unidade *{nome}*.\n\n"
+            "Se quiser, posso te passar o telefone da unidade."
+        )
+    return (
+        f"📍 A unidade *{nome}* fica em:\n{endereco}\n\n"
+        "Se quiser, também te passo o horário de funcionamento 😊"
+    )
+
+
+def responder_telefone(unidade: dict) -> str:
+    nome = unidade.get("nome") or "da unidade"
+    telefone = extrair_telefone_unidade(unidade)
+    if not telefone:
+        return (
+            f"📞 No momento não encontrei o contato da unidade *{nome}*.\n\n"
+            "Se quiser, posso te passar o endereço."
+        )
+    return (
+        f"📞 O contato da unidade *{nome}* é:\n{telefone}\n\n"
+        "Se quiser, também posso te passar o endereço ou horário."
+    )
+
+
+async def responder_lista_unidades(empresa_id: int, texto: str) -> str:
+    unidades = await listar_unidades_ativas(empresa_id)
+    if not unidades:
+        return "No momento não encontrei unidades cadastradas."
+
+    texto_norm = normalizar(texto)
+    cidade_filtro = None
+    for u in unidades:
+        cidade = normalizar(u.get("cidade", "") or "")
+        if cidade and cidade in texto_norm:
+            cidade_filtro = u.get("cidade")
+            break
+
+    if cidade_filtro:
+        unidades = [u for u in unidades if normalizar(u.get("cidade", "") or "") == normalizar(cidade_filtro)]
+
+    lista = "\n".join([f"• {u['nome']}" for u in unidades])
+    if cidade_filtro:
+        return (
+            f"📍 Temos {len(unidades)} unidade(s) em *{cidade_filtro}*:\n\n{lista}\n\n"
+            "Qual delas fica melhor para você? 😊"
+        )
+    return f"📍 Temos {len(unidades)} unidades:\n\n{lista}\n\nQual delas fica mais perto de você? 😊"
+
+
+async def gerar_resposta_inteligente(
+    conversation_id: int,
+    empresa_id: int,
+    texto_cliente: str,
+    slug_atual: Optional[str] = None,
+    nome_cliente: Optional[str] = None
+) -> Dict[str, Any]:
+    """Motor de decisão enxuto: fast-path apenas para horário/endereço."""
+    ctx = await resolver_contexto_unidade(conversation_id, texto_cliente, empresa_id, slug_atual=slug_atual)
+    slug = ctx.get("slug")
+    intencao = classificar_intencao(texto_cliente)
+
+    if intencao in {"horario", "endereco"} and not slug:
+        _primeiro_nome = primeiro_nome_cliente(nome_cliente)
+        _prefixo = f"{_primeiro_nome}, " if _primeiro_nome else ""
+        return {
+            "tipo": "texto",
+            "resposta": f"{_prefixo}me fala a *cidade* ou *bairro* da unidade que você quer 😊",
+            "slug": None,
+            "intencao": intencao,
+        }
+
+    unidade = await carregar_unidade(slug, empresa_id) if slug else {}
+
+    if intencao == "horario":
+        return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
+    if intencao == "endereco":
+        return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
+
+    return {"tipo": "llm", "resposta": None, "slug": slug, "intencao": "llm"}
 
 
 def montar_saudacao_humanizada(
@@ -429,23 +754,39 @@ INTENCOES = {
     "endereco": ["endereco", "endereço", "local", "localização", "fica", "onde fica", "como chegar", "localizacao"],
     "telefone": ["telefone", "contato", "whatsapp", "numero", "número", "ligar", "falar", "telefone"],
     "unidades": ["unidades", "outras unidades", "lista de unidades", "quantas unidades", "onde tem", "tem em", "unidade"],
-    "modalidades": ["modalidades", "atividades", "exercícios", "treinos", "aulas", "musculação", "cardio", "spinning", "alongamento", "crossfit", "funcional"],
+    "modalidades": ["modalidades", "atividades", "exercícios", "treinos", "aula", "aulas", "grade", "grade de aula", "grade de aulas", "musculação", "cardio", "spinning", "alongamento", "crossfit", "funcional"],
     "infraestrutura": ["estacionamento", "vestiário", "chuveiro", "armários", "sauna", "piscina", "acessibilidade", "infraestrutura"],
     "matricula": ["matricula", "matrícula", "inscrição", "cadastro", "se inscrever", "assinar", "contratar"]
 }
 
 # Clientes de IA
-cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
+cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY) if OPENROUTER_API_KEY else None
 cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Clientes Globais de Conexão
 http_client: httpx.AsyncClient = None
 redis_client: redis.Redis = None
 db_pool: asyncpg.Pool = None
+worker_tasks: List[asyncio.Task] = []
+is_shutting_down = False
+_LOCAL_REDIS_FALLBACK: Dict[str, tuple] = {}  # key -> (exp_ts, json_str)
+
+
+def _log_worker_task_result(task: asyncio.Task):
+    """Evita 'Task exception was never retrieved' e registra falhas de workers."""
+    try:
+        _ = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        nome = task.get_name() if hasattr(task, 'get_name') else 'worker'
+        if not is_shutting_down:
+            logger.error(f"❌ {nome} finalizou com erro não tratado: {e}")
 
 # --- CONTROLE DE CONCORRÊNCIA ---
 whisper_semaphore = asyncio.Semaphore(5)
 llm_semaphore = asyncio.Semaphore(15)
+USAR_CACHE_SEMANTICO = os.getenv("USAR_CACHE_SEMANTICO", "false").lower() == "true"
 
 LUA_RELEASE_LOCK = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -454,6 +795,30 @@ else
     return 0
 end
 """
+
+# Regex compiladas para intenções frequentes (manutenção centralizada)
+REGEX_PEDIDO_PLANOS = re.compile(
+    r"(preco|valor(es)?|quanto (custa|cobra|fica)|mensalidade|planos?|promocao|promoç|"
+    r"beneficio|benefícios|benefíci|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?|"
+    r"tem planos?|ver planos?|quero (assinar|contratar|me matricular)|"
+    r"como (faço|faz|funciona).{0,10}(matric|assinar|contratar)|"
+    r"quanto (é|e|custa|vale) o plano|opcoes.{0,10}planos?|opções.{0,10}planos?)",
+    re.IGNORECASE,
+)
+REGEX_PEDIDO_END_HOR = re.compile(
+    r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
+    r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
+    re.IGNORECASE,
+)
+REGEX_PEDIDO_CONTATO = re.compile(r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)", re.IGNORECASE)
+REGEX_LISTAR_UNIDADES = re.compile(
+    r"(quais.{0,15}unidades?|quantas.{0,10}unidades?|tem.{0,20}unidades?|unidades?.{0,10}tem|"
+    r"mais.{0,10}unidades?|outras.{0,10}unidades?|lista.{0,10}unidades?|onde.{0,10}academia|"
+    r"academia.{0,15}(sp|sao paulo|rio|rj|mg|bh)|saber.{0,10}unidades?|todas.{0,10}unidades?|"
+    r"unidades?.{0,10}existem|unidades?.{0,10}disponiveis|unidades?.{0,10}abertas|"
+    r"unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
+    re.IGNORECASE,
+)
 
 # ==================== MENSAGENS PRÉ-FORMATADAS ====================
 # Removido ** (markdown duplo) — WhatsApp usa *asterisco simples* para negrito
@@ -487,7 +852,8 @@ RESPOSTAS_CONTATO = [
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client, redis_client, db_pool
+    global http_client, redis_client, db_pool, worker_tasks, is_shutting_down
+    is_shutting_down = False
     http_client = httpx.AsyncClient(
         timeout=30.0,
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
@@ -506,20 +872,36 @@ async def startup_event():
 
     if DATABASE_URL:
         try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            db_pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                command_timeout=20,
+                timeout=10,
+            )
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except asyncpg.PostgresConnectionStatusError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
+            raise e
         except asyncpg.CannotConnectNowError as e:
             logger.error(f"❌ PostgreSQL não está aceitando conexões: {e}")
+            raise e
         except Exception as e:
             logger.error(f"❌ Erro ao conectar no PostgreSQL: {e}")
+            raise e
     else:
         logger.warning("⚠️ DATABASE_URL não definida. As métricas não serão salvas.")
 
-    asyncio.create_task(worker_followup())
-    asyncio.create_task(worker_metricas_diarias())
-    asyncio.create_task(worker_sync_planos())
+    if OPENROUTER_API_KEY and cliente_ia:
+        logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
+
+    worker_tasks = [
+        asyncio.create_task(worker_followup(), name="worker_followup"),
+        asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
+        asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
+    ]
+    for _task in worker_tasks:
+        _task.add_done_callback(_log_worker_task_result)
 
     # ⚠️  Os workers usam _worker_leader_check() internamente para garantir que
     # apenas UM processo execute em ambientes multi-worker (uvicorn --workers N).
@@ -527,6 +909,15 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global is_shutting_down
+    is_shutting_down = True
+
+    for task in worker_tasks:
+        task.cancel()
+    if worker_tasks:
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
+        worker_tasks.clear()
+
     await http_client.aclose()
     await redis_client.aclose()
     if db_pool:
@@ -566,6 +957,55 @@ def limpar_nome(nome):
     return re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", str(nome)).strip()
 
 
+def primeiro_nome_cliente(nome: Optional[str]) -> str:
+    nome_limpo = limpar_nome(nome) if nome else ""
+    if not nome_limpo or nome_limpo.lower() in {"cliente", "contato", "visitante"}:
+        return ""
+    return nome_limpo.split()[0].capitalize()
+
+
+def nome_eh_valido(nome: Optional[str]) -> bool:
+    nome_limpo = limpar_nome(nome) if nome else ""
+    if not nome_limpo or len(nome_limpo) < 2:
+        return False
+    return nome_limpo.lower() not in {"cliente", "contato", "visitante", "unknown", "na", "n a"}
+
+
+def extrair_nome_do_texto(texto: str) -> Optional[str]:
+    if not texto:
+        return None
+    t = str(texto).strip()
+    padroes = [
+        r"(?:meu nome e|meu nome é|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
+        r"^([A-Za-zÀ-ÿ]{2,20})(?:\s+[A-Za-zÀ-ÿ]{2,20})?$",
+    ]
+    for ptn in padroes:
+        m = re.search(ptn, t, flags=re.IGNORECASE)
+        if not m:
+            continue
+        nome = limpar_nome(m.group(1))
+        if nome_eh_valido(nome):
+            return nome.title()
+    return None
+
+
+def _is_provider_unavailable_error(err: Exception) -> bool:
+    """Detecta indisponibilidade de provedor LLM para acionar modo degradado."""
+    msg = normalizar(str(err) or "")
+    sinais = [
+        "key limit exceeded", "limit exceeded", "quota", "insufficient credits",
+        "credit", "rate limit", "error code: 403", "error code: 402",
+    ]
+    return any(s in msg for s in sinais)
+
+
+def _is_openrouter_auth_error(err: Exception) -> bool:
+    """Detecta erro de credencial/autorização da OPENROUTER_API_KEY."""
+    msg = normalizar(str(err) or "")
+    sinais = ["401", "unauthorized", "invalid api key", "authentication", "forbidden"]
+    return any(s in msg for s in sinais)
+
+
 def limpar_markdown(texto: str) -> str:
     """
     Converte markdown para formato compatível com WhatsApp/Chatwoot:
@@ -592,7 +1032,7 @@ def limpar_markdown(texto: str) -> str:
     return texto
 
 
-def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
+def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True) -> List[str]:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
     Retorna uma LISTA de strings — cada item = uma mensagem separada no chat.
@@ -627,7 +1067,19 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
 
     blocos: List[str] = []
 
-    for idx, p in enumerate(planos):
+    planos_ordenados = list(planos)
+    if destacar_melhor_preco:
+        def _valor_plano(item: Dict[str, Any]) -> float:
+            raw = item.get('valor_promocional') if item.get('valor_promocional') not in (None, "") else item.get('valor')
+            try:
+                v = float(raw)
+                return v if v > 0 else 999999.0
+            except (TypeError, ValueError):
+                return 999999.0
+
+        planos_ordenados.sort(key=_valor_plano)
+
+    for idx, p in enumerate(planos_ordenados):
         nome = p.get('nome', 'Plano')
         link = p.get('link_venda', '') or ''
 
@@ -681,7 +1133,8 @@ def formatar_planos_bonito(planos: List[Dict]) -> List[str]:
         linhas: List[str] = []
 
         # Cabeçalho
-        linhas.append(f"{emoji} *{nome}*")
+        _selo = " 🏆 *MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
+        linhas.append(f"{emoji} *{nome}*{_selo}")
 
         # Pitch (só se existir e não for código)
         if pitch:
@@ -893,6 +1346,151 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
+async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+    """Coleta mensagens do buffer e limpa a fila da conversa.
+
+    Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
+    em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
+    """
+    chave_buffet = f"buffet:{conversation_id}"
+
+    mensagens_acumuladas: List[str] = []
+    deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
+
+    while True:
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.lrange(chave_buffet, 0, -1)
+            pipe.delete(chave_buffet)
+            resultado = await pipe.execute()
+        lote = resultado[0] or []
+        if lote:
+            mensagens_acumuladas.extend(lote)
+            if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
+                break
+            await asyncio.sleep(0.25)
+            continue
+        if mensagens_acumuladas or time.time() >= deadline:
+            break
+        await asyncio.sleep(0.15)
+
+    logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
+    return mensagens_acumuladas
+
+
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+    """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
+    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+        return False
+
+    logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
+    for m_json in mensagens_acumuladas:
+        await redis_client.rpush(f"buffet:{conversation_id}", m_json)
+    await redis_client.expire(f"buffet:{conversation_id}", 300)
+    return True
+
+
+async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[str, Any]:
+    """Extrai textos, transcrições e imagens a partir das mensagens acumuladas."""
+    textos, tasks_audio, imagens_urls = [], [], []
+    for m_json in mensagens_acumuladas:
+        m = json.loads(m_json)
+        if m.get("text"):
+            textos.append(m["text"])
+        for f in m.get("files", []):
+            if f["type"] == "audio":
+                tasks_audio.append(transcrever_audio(f["url"]))
+            elif f["type"] == "image":
+                imagens_urls.append(f["url"])
+
+    transcricoes = await asyncio.gather(*tasks_audio)
+
+    mensagens_lista = []
+    for i, txt in enumerate(textos, 1):
+        mensagens_lista.append(f"{i}. {txt}")
+    for i, transc in enumerate(transcricoes, len(textos) + 1):
+        mensagens_lista.append(f"{i}. [Áudio] {transc}")
+
+    return {
+        "textos": textos,
+        "transcricoes": transcricoes,
+        "imagens_urls": imagens_urls,
+        "mensagens_formatadas": "\n".join(mensagens_lista) if mensagens_lista else "",
+    }
+
+
+async def resolver_contexto_atendimento(
+    conversation_id: int,
+    textos: List[str],
+    transcricoes: List[str],
+    slug: str,
+    empresa_id: int,
+) -> Dict[str, Any]:
+    """Resolve slug da unidade para o atendimento atual e registra mudança de contexto."""
+    primeira_mensagem = textos[0] if textos else ""
+    mudou_unidade = False
+    texto_unificado = " ".join([t for t in (textos + transcricoes) if t]).strip()
+
+    if texto_unificado:
+        ctx_unidade = await resolver_contexto_unidade(
+            conversation_id=conversation_id,
+            texto=texto_unificado,
+            empresa_id=empresa_id,
+            slug_atual=slug,
+        )
+        novo_slug = ctx_unidade.get("slug")
+        if novo_slug and novo_slug != slug:
+            logger.info(f"🔄 Contexto de unidade atualizado para {novo_slug}")
+            slug = novo_slug
+            mudou_unidade = True
+            await bd_registrar_evento_funil(
+                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
+            )
+
+    return {"slug": slug, "mudou_unidade": mudou_unidade, "primeira_mensagem": primeira_mensagem}
+
+
+async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], transcricoes: List[str]):
+    """Persiste histórico de mensagens do usuário (texto e áudio transcrito)."""
+    for txt in textos:
+        await bd_salvar_mensagem_local(conversation_id, "user", txt)
+    for transc in transcricoes:
+        await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+
+
+async def redis_get_json(key: str, default=None):
+    try:
+        raw = await redis_client.get(key)
+    except Exception:
+        raw = None
+
+    if raw is not None:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return default
+
+    # Fallback local em memória quando Redis estiver indisponível
+    now = time.time()
+    item = _LOCAL_REDIS_FALLBACK.get(key)
+    if item:
+        exp_ts, raw_local = item
+        if exp_ts >= now:
+            try:
+                return json.loads(raw_local)
+            except Exception:
+                return default
+        _LOCAL_REDIS_FALLBACK.pop(key, None)
+    return default
+
+
+async def redis_set_json(key: str, value: Any, ttl: int):
+    payload = json.dumps(value, default=str)
+    try:
+        await redis_client.setex(key, ttl, payload)
+    except Exception:
+        _LOCAL_REDIS_FALLBACK[key] = (time.time() + max(1, ttl), payload)
+
+
 # --- FUNÇÕES DE INTEGRAÇÃO (BUSCA POR EMPRESA) ---
 
 async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
@@ -939,9 +1537,9 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         return None
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        return json.loads(cache)
+    cache = await redis_get_json(cache_key)
+    if cache is not None:
+        return cache
 
     try:
         query = """
@@ -955,7 +1553,7 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
             config = row['config']
             if isinstance(config, str):
                 config = json.loads(config)
-            await redis_client.setex(cache_key, 300, json.dumps(config))
+            await redis_set_json(cache_key, config, 300)
             return config
         return None
     except asyncpg.PostgresError as e:
@@ -1101,9 +1699,9 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         return []
 
     cache_key = f"planos:ativos:{empresa_id}:{unidade_id or 'todos'}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        return json.loads(cached)
+    cached = await redis_get_json(cache_key)
+    if cached is not None:
+        return cached
 
     query = """
         SELECT * FROM planos
@@ -1125,7 +1723,7 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
         rows = await db_pool.fetch(query, *params)
         planos = [dict(r) for r in rows]
 
-    await redis_client.setex(cache_key, 300, json.dumps(planos, default=str))
+        await redis_set_json(cache_key, planos, 60)
     return planos
 
 
@@ -1187,32 +1785,45 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
     """
     chave = f"worker_leader:{nome}"
     # Tenta criar (NX = only if Not eXists)
-    ganhou = await redis_client.set(chave, _WORKER_ID, nx=True, ex=ttl)
-    if ganhou:
-        return True
-    # Verifica se JÁ é o líder atual (renovação)
-    lider_atual = await redis_client.get(chave)
-    if lider_atual == _WORKER_ID:
-        await redis_client.expire(chave, ttl)  # renova TTL
-        return True
-    return False
+    try:
+        ganhou = await redis_client.set(chave, _WORKER_ID, nx=True, ex=ttl)
+        if ganhou:
+            return True
+        # Verifica se JÁ é o líder atual (renovação)
+        lider_atual = await redis_client.get(chave)
+        if lider_atual == _WORKER_ID:
+            await redis_client.expire(chave, ttl)  # renova TTL
+            return True
+        return False
+    except asyncio.CancelledError:
+        raise
+    except redis.RedisError as e:
+        if not is_shutting_down:
+            logger.warning(f"⚠️ Falha ao verificar liderança do worker '{nome}': {e}")
+        return False
 
 
 async def worker_sync_planos():
-    while True:
-        await asyncio.sleep(21600)  # 6 horas
-        if not db_pool:
-            continue
-        if not await _is_worker_leader("sync_planos", ttl=22000):
-            logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
-            continue
-        try:
-            empresas = await db_pool.fetch("SELECT id FROM empresas")
-            for emp in empresas:
-                await sincronizar_planos_evo(emp['id'])
-            logger.info("✅ worker_sync_planos executado pelo líder")
-        except Exception as e:
-            logger.error(f"Erro no worker de sincronização de planos: {e}")
+    try:
+        while True:
+            if not db_pool:
+                await asyncio.sleep(60)
+                continue
+            if not await _is_worker_leader("sync_planos", ttl=22000):
+                logger.debug("⏭️ worker_sync_planos: não é líder, pulando ciclo")
+                await asyncio.sleep(10)
+                continue
+            try:
+                empresas = await db_pool.fetch("SELECT id FROM empresas")
+                for emp in empresas:
+                    await sincronizar_planos_evo(emp['id'])
+                logger.info("✅ worker_sync_planos executado pelo líder")
+            except Exception as e:
+                logger.error(f"Erro no worker de sincronização de planos: {e}")
+            await asyncio.sleep(21600)  # 6 horas
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_sync_planos cancelado")
+        raise
 
 
 @app.get("/sync-planos/{empresa_id}")
@@ -1233,6 +1844,41 @@ async def simular_digitacao(account_id: int, conversation_id: int, integracao: d
     await asyncio.sleep(max(0.5, min(segundos, 6.0)))
 
 
+def formatar_mensagem_saida(content: str) -> str:
+    """Padroniza quebras de linha e espaços para mensagens mais legíveis."""
+    txt = limpar_markdown(content or "")
+    txt = txt.replace("\r\n", "\n").replace("\r", "\n")
+    txt = re.sub(r"[ \t]+", " ", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome: str, integracao: dict) -> bool:
+    """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
+    if not contact_id or not nome_eh_valido(nome):
+        return False
+    url_base = integracao.get('url')
+    token = integracao.get('token')
+    if not url_base or not token:
+        return False
+
+    headers = {"api_access_token": token}
+    payload = {"name": nome.strip()}
+    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
+    try:
+        resp = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+        return True
+    except Exception:
+        try:
+            resp = await http_client.patch(url, json=payload, headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning(f"Não foi possível atualizar nome do contato {contact_id} no Chatwoot: {e}")
+            return False
+
+
 async def enviar_mensagem_chatwoot(
     account_id: int,
     conversation_id: int,
@@ -1246,8 +1892,19 @@ async def enviar_mensagem_chatwoot(
         logger.error("Integração Chatwoot incompleta: url ou token ausentes")
         return None
 
-    # Limpa markdown incompatível antes de enviar
-    content = limpar_markdown(content)
+    # Padroniza formatação antes de enviar
+    content = formatar_mensagem_saida(content)
+
+    # Personaliza condução com nome sempre que possível
+    try:
+        _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
+    except Exception:
+        _nome_salvo = None
+    _primeiro = primeiro_nome_cliente(_nome_salvo)
+    if _primeiro:
+        _inicio = (content or "").strip().lower()
+        if not (_inicio.startswith(_primeiro.lower() + ",") or _inicio.startswith(_primeiro.lower() + " ")):
+            content = f"{_primeiro},\n\n{content.strip()}"
 
     url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {
@@ -1330,59 +1987,63 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
 
 
 async def worker_followup():
-    while True:
-        await asyncio.sleep(30)
-        # Garante que apenas 1 worker processe follow-ups em ambiente multi-processo
-        if not await _is_worker_leader("followup", ttl=40):
-            continue
-        if not db_pool:
-            continue
-        try:
-            agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
+    try:
+        while True:
+            await asyncio.sleep(30)
+            # Garante que apenas 1 worker processe follow-ups em ambiente multi-processo
+            if not await _is_worker_leader("followup", ttl=40):
+                continue
+            if not db_pool:
+                continue
+            try:
+                agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
-            pendentes = await db_pool.fetch("""
-                SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
-                FROM followups f
-                JOIN conversas c ON c.id = f.conversa_id
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE f.status = 'pendente' AND f.agendado_para <= $1
-                ORDER BY f.agendado_para
-                LIMIT 20
-                FOR UPDATE SKIP LOCKED
-            """, agora)
+                pendentes = await db_pool.fetch("""
+                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
+                    FROM followups f
+                    JOIN conversas c ON c.id = f.conversa_id
+                    JOIN unidades u ON u.id = f.unidade_id
+                    WHERE f.status = 'pendente' AND f.agendado_para <= $1
+                    ORDER BY f.agendado_para
+                    LIMIT 20
+                    FOR UPDATE SKIP LOCKED
+                """, agora)
 
-            for f in pendentes:
-                if (
-                    await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
-                    or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
-                ):
-                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
-                    continue
+                for f in pendentes:
+                    if (
+                        await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
+                        or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
+                    ):
+                        await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        continue
 
-                respondeu = await db_pool.fetchval("""
-                    SELECT 1 FROM mensagens
-                    WHERE conversa_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
-                """, f['conversa_id'])
-                if respondeu:
-                    await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
-                    continue
+                    respondeu = await db_pool.fetchval("""
+                        SELECT 1 FROM mensagens
+                        WHERE conversa_id = $1 AND role = 'user' AND created_at > NOW() - interval '5 minutes'
+                    """, f['conversa_id'])
+                    if respondeu:
+                        await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        continue
 
-                integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
-                if not integracao:
-                    await db_pool.execute(
-                        "UPDATE followups SET status = 'erro', erro_log = 'Sem integração' WHERE id = $1", f['id']
+                    integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
+                    if not integracao:
+                        await db_pool.execute(
+                            "UPDATE followups SET status = 'erro', erro_log = 'Sem integração' WHERE id = $1", f['id']
+                        )
+                        continue
+
+                    await enviar_mensagem_chatwoot(
+                        f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
                     )
-                    continue
+                    await db_pool.execute(
+                        "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
+                    )
 
-                await enviar_mensagem_chatwoot(
-                    f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
-                )
-                await db_pool.execute(
-                    "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
-                )
-
-        except Exception as e:
-            logger.error(f"Erro no worker de follow-up: {e}")
+            except Exception as e:
+                logger.error(f"Erro no worker de follow-up: {e}")
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_followup cancelado")
+        raise
 
 
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empresa_id: int):
@@ -1428,9 +2089,9 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        return json.loads(cache)
+    cache = await redis_get_json(cache_key)
+    if cache is not None:
+        return cache
 
     try:
         query = """
@@ -1443,7 +2104,10 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
                 u.cidade,
                 u.bairro,
                 u.estado,
-                u.endereco || ', ' || COALESCE(u.numero, '') as endereco_completo,
+                CASE WHEN u.numero IS NOT NULL AND TRIM(u.numero) <> ''
+                    THEN u.endereco || ', ' || u.numero
+                    ELSE u.endereco
+                END as endereco_completo,
                 u.telefone_principal as telefone,
                 u.whatsapp,
                 u.horarios,
@@ -1465,7 +2129,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         """
         rows = await db_pool.fetch(query, empresa_id)
         data = [dict(r) for r in rows]
-        await redis_client.setex(cache_key, 300, json.dumps(data, default=str))
+        await redis_set_json(cache_key, data, 60)
         return data
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao listar unidades para empresa {empresa_id}: {e}")
@@ -1477,14 +2141,14 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
       1. Função SQL customizada (se existir)
       2. Correspondência exata/parcial em nome, cidade, bairro e palavras-chave
       3. Correspondência por partes (tokens) — suporta nomes compostos e abreviações
-      4. Fuzzy matching conservador (threshold 90)
+      4. Fuzzy matching conservador (threshold ajustável)
     """
     if not db_pool or not texto:
         return None
@@ -1555,7 +2219,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
             if _sig(tokens_texto) & _sig(tokens_pchave):
                 return u['slug']
 
-    # 3. Fuzzy matching conservador — threshold 90 para evitar falsos positivos
+    # 3. Fuzzy matching conservador — threshold ajustável para evitar falsos positivos
     melhor_slug = None
     maior_score = 0
     for u in unidades:
@@ -1569,7 +2233,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int) -> Optional[st
                 maior_score = score
                 melhor_slug = u['slug']
 
-    if maior_score >= 90:
+    if maior_score >= fuzzy_threshold:
         return melhor_slug
 
     return None
@@ -1579,10 +2243,10 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
     if not db_pool:
         return {}
 
-    cache_key = f"cfg:unidade:{slug}:v2"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        return json.loads(cache)
+    cache_key = f"cfg:unidade:{empresa_id}:{slug}:v2"
+    cache = await redis_get_json(cache_key)
+    if cache is not None:
+        return cache
 
     try:
         query = """
@@ -1597,7 +2261,7 @@ async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:
         row = await db_pool.fetchrow(query, slug, empresa_id)
         if row:
             dados = dict(row)
-            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
+            await redis_set_json(cache_key, dados, 60)
             return dados
         return {}
     except Exception as e:
@@ -1641,14 +2305,19 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
         return None
 
     # Tokeniza a pergunta do cliente (palavras com >= 3 chars)
-    tokens_cliente = {t for t in normalizar(pergunta).split() if len(t) >= 3}
+    pergunta_norm = normalizar(pergunta)
+    tokens_cliente = {t for t in pergunta_norm.split() if len(t) >= 3}
     if not tokens_cliente:
         return None
+
+    intencao_cliente = classificar_intencao(pergunta)
 
     melhor_score = 0.0
     melhor_resposta = None
 
     for item in faq_rows:
+        if not _faq_compativel_com_intencao(intencao_cliente, item.get("pergunta", "")):
+            continue
         tokens_faq = {t for t in normalizar(item["pergunta"]).split() if len(t) >= 3}
         if not tokens_faq:
             continue
@@ -1660,8 +2329,9 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
             melhor_score = score
             melhor_resposta = item["resposta"]
 
-    # Threshold: pelo menos 40% de sobreposição para aceitar
-    if melhor_score >= 0.40 and melhor_resposta:
+    # Threshold dinâmico: intents factuais exigem match mais forte para evitar respostas erradas.
+    threshold = 0.55 if intencao_cliente in {"modalidades", "planos", "horario", "endereco"} else 0.40
+    if melhor_score >= threshold and melhor_resposta:
         logger.info(f"✅ FAQ fast-match (score={melhor_score:.2f}): '{pergunta[:50]}' → FAQ direto")
         return melhor_resposta.strip()
 
@@ -1733,9 +2403,8 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         return {}
 
     cache_key = f"cfg:pers:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        dados_cache = json.loads(cache)
+    dados_cache = await redis_get_json(cache_key)
+    if dados_cache is not None:
         if dados_cache.get('ativo') is True:
             return dados_cache
         else:
@@ -1754,10 +2423,10 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             for key, value in dados.items():
                 if isinstance(value, Decimal):
                     dados[key] = float(value)
-            await redis_client.setex(cache_key, 300, json.dumps(dados, default=str))
+            await redis_set_json(cache_key, dados, 300)
             return dados
         else:
-            await redis_client.setex(cache_key, 60, json.dumps({}))
+            await redis_set_json(cache_key, {}, 60)
             return {}
     except Exception as e:
         logger.error(f"Erro ao carregar personalidade da empresa {empresa_id}: {e}")
@@ -1769,9 +2438,9 @@ async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
         return {}
 
     cache_key = f"cfg:global:empresa:{empresa_id}"
-    cache = await redis_client.get(cache_key)
-    if cache:
-        return json.loads(cache)
+    cache = await redis_get_json(cache_key)
+    if cache is not None:
+        return cache
 
     try:
         query = "SELECT config, nome, plano FROM empresas WHERE id = $1"
@@ -1854,7 +2523,7 @@ async def bd_salvar_mensagem_local(
         logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
 
 
-async def bd_obter_historico_local(conversation_id: int, limit: int = 30) -> Optional[str]:
+async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Optional[str]:
     if not db_pool:
         return None
     try:
@@ -2173,110 +2842,113 @@ async def worker_metricas_diarias():
     Colunas opcionais (satisfacao_media, tokens, custo) são ignoradas com
     graceful fallback se a coluna ainda não existir no banco.
     """
-    while True:
-        await asyncio.sleep(3600)
-        if not db_pool:
-            continue
-        if not await _is_worker_leader("metricas_diarias", ttl=3700):
-            logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
-            continue
-        try:
-            hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-            empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
+    try:
+        while True:
+            await asyncio.sleep(3600)
+            if not db_pool:
+                continue
+            if not await _is_worker_leader("metricas_diarias", ttl=3700):
+                logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
+                continue
+            try:
+                hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
 
-            total_unidades = 0
-            for emp in empresas:
-                empresa_id = emp['id']
-                unidades = await db_pool.fetch(
-                    "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
-                    empresa_id
-                )
-
-                for unid in unidades:
-                    unidade_id = unid['id']
-                    total_unidades += 1
-
-                    m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
-
-                    # ── Upsert principal (colunas garantidas) ─────────────
-                    await db_pool.execute("""
-                        INSERT INTO metricas_diarias (
-                            empresa_id, unidade_id, data,
-                            total_conversas, conversas_encerradas, conversas_sem_resposta,
-                            novos_contatos,
-                            total_mensagens, total_mensagens_ia,
-                            leads_qualificados, taxa_conversao,
-                            tempo_medio_resposta,
-                            total_solicitacoes_telefone, total_links_enviados,
-                            total_planos_enviados, total_matriculas,
-                            pico_hora,
-                            satisfacao_media,
-                            updated_at
-                        )
-                        VALUES (
-                            $1, $2, $3,
-                            $4, $5, $6,
-                            $7,
-                            $8, $9,
-                            $10, $11,
-                            $12,
-                            $13, $14,
-                            $15, $16,
-                            $17,
-                            $18,
-                            NOW()
-                        )
-                        ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
-                            total_conversas            = EXCLUDED.total_conversas,
-                            conversas_encerradas       = EXCLUDED.conversas_encerradas,
-                            conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
-                            novos_contatos             = EXCLUDED.novos_contatos,
-                            total_mensagens            = EXCLUDED.total_mensagens,
-                            total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
-                            leads_qualificados         = EXCLUDED.leads_qualificados,
-                            taxa_conversao             = EXCLUDED.taxa_conversao,
-                            tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
-                            total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
-                            total_links_enviados       = EXCLUDED.total_links_enviados,
-                            total_planos_enviados      = EXCLUDED.total_planos_enviados,
-                            total_matriculas           = EXCLUDED.total_matriculas,
-                            pico_hora                  = EXCLUDED.pico_hora,
-                            satisfacao_media           = EXCLUDED.satisfacao_media,
-                            updated_at                 = NOW()
-                    """,
-                        empresa_id, unidade_id, hoje,
-                        m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
-                        m["novos_contatos"],
-                        m["total_mensagens"], m["total_mensagens_ia"],
-                        m["leads_qualificados"], m["taxa_conversao"],
-                        m["tempo_medio_resposta"],
-                        m["total_solicitacoes_telefone"], m["total_links_enviados"],
-                        m["total_planos_enviados"], m["total_matriculas"],
-                        m["pico_hora"],
-                        m["satisfacao_media"],
+                total_unidades = 0
+                for emp in empresas:
+                    empresa_id = emp['id']
+                    unidades = await db_pool.fetch(
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                        empresa_id
                     )
 
-                    # ── Colunas opcionais (tokens/custo) — graceful fallback ──
-                    if m["tokens_consumidos"] is not None:
-                        try:
-                            await db_pool.execute("""
-                                UPDATE metricas_diarias
-                                SET tokens_consumidos  = $4,
-                                    custo_estimado_usd = $5,
-                                    updated_at         = NOW()
-                                WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
-                            """, empresa_id, unidade_id, hoje,
-                                m["tokens_consumidos"], m["custo_estimado_usd"])
-                        except Exception:
-                            pass  # colunas ainda não existem no banco
+                    for unid in unidades:
+                        unidade_id = unid['id']
+                        total_unidades += 1
 
-            logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
+                        m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
 
-        except asyncpg.PostgresError as e:
-            logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
-        except Exception as e:
-            logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+                        # ── Upsert principal (colunas garantidas) ─────────────
+                        await db_pool.execute("""
+                            INSERT INTO metricas_diarias (
+                                empresa_id, unidade_id, data,
+                                total_conversas, conversas_encerradas, conversas_sem_resposta,
+                                novos_contatos,
+                                total_mensagens, total_mensagens_ia,
+                                leads_qualificados, taxa_conversao,
+                                tempo_medio_resposta,
+                                total_solicitacoes_telefone, total_links_enviados,
+                                total_planos_enviados, total_matriculas,
+                                pico_hora,
+                                satisfacao_media,
+                                updated_at
+                            )
+                            VALUES (
+                                $1, $2, $3,
+                                $4, $5, $6,
+                                $7,
+                                $8, $9,
+                                $10, $11,
+                                $12,
+                                $13, $14,
+                                $15, $16,
+                                $17,
+                                $18,
+                                NOW()
+                            )
+                            ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
+                                total_conversas            = EXCLUDED.total_conversas,
+                                conversas_encerradas       = EXCLUDED.conversas_encerradas,
+                                conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
+                                novos_contatos             = EXCLUDED.novos_contatos,
+                                total_mensagens            = EXCLUDED.total_mensagens,
+                                total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
+                                leads_qualificados         = EXCLUDED.leads_qualificados,
+                                taxa_conversao             = EXCLUDED.taxa_conversao,
+                                tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
+                                total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
+                                total_links_enviados       = EXCLUDED.total_links_enviados,
+                                total_planos_enviados      = EXCLUDED.total_planos_enviados,
+                                total_matriculas           = EXCLUDED.total_matriculas,
+                                pico_hora                  = EXCLUDED.pico_hora,
+                                satisfacao_media           = EXCLUDED.satisfacao_media,
+                                updated_at                 = NOW()
+                        """,
+                            empresa_id, unidade_id, hoje,
+                            m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
+                            m["novos_contatos"],
+                            m["total_mensagens"], m["total_mensagens_ia"],
+                            m["leads_qualificados"], m["taxa_conversao"],
+                            m["tempo_medio_resposta"],
+                            m["total_solicitacoes_telefone"], m["total_links_enviados"],
+                            m["total_planos_enviados"], m["total_matriculas"],
+                            m["pico_hora"],
+                            m["satisfacao_media"],
+                        )
 
+                        # ── Colunas opcionais (tokens/custo) — graceful fallback ──
+                        if m["tokens_consumidos"] is not None:
+                            try:
+                                await db_pool.execute("""
+                                    UPDATE metricas_diarias
+                                    SET tokens_consumidos  = $4,
+                                        custo_estimado_usd = $5,
+                                        updated_at         = NOW()
+                                    WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
+                                """, empresa_id, unidade_id, hoje,
+                                    m["tokens_consumidos"], m["custo_estimado_usd"])
+                            except Exception:
+                                pass  # colunas ainda não existem no banco
+
+                logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
+
+            except asyncpg.PostgresError as e:
+                logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
+            except Exception as e:
+                logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_metricas_diarias cancelado")
+        raise
 
 # --- UTILITÁRIOS DE JSON ---
 
@@ -2304,7 +2976,7 @@ async def transcrever_audio(url: str):
         return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore:
         try:
-            resp = await http_client.get(url, follow_redirects=True)
+            resp = await baixar_midia_com_retry(url, timeout=15.0)
             audio_file = io.BytesIO(resp.content)
             audio_file.name = "audio.ogg"
             transcription = await cliente_whisper.audio.transcriptions.create(
@@ -2328,6 +3000,24 @@ async def transcrever_audio(url: str):
             return "[Erro ao transcrever áudio]"
 
 
+@retry(
+    wait=wait_exponential(multiplier=0.5, min=1, max=4),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError)),
+    reraise=True,
+)
+async def baixar_midia_com_retry(url: str, timeout: float = 15.0, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+    """Baixa mídia com retry para mitigar falhas transitórias de rede/provedor."""
+    resp = await http_client.get(
+        url,
+        headers=headers,
+        follow_redirects=True,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp
+
+
 async def processar_ia_e_responder(
     account_id: int,
     conversation_id: int,
@@ -2339,55 +3029,25 @@ async def processar_ia_e_responder(
     integracao_chatwoot: dict
 ):
     chave_lock = f"lock:{conversation_id}"
+    chave_buffet = f"buffet:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda 6s para acumular mensagens enviadas em sequência rápida
-        await asyncio.sleep(6)
+        # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
+        await asyncio.sleep(0.8)
 
-        chave_buffet = f"buffet:{conversation_id}"
-        async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.lrange(chave_buffet, 0, -1)
-            pipe.delete(chave_buffet)
-            resultado = await pipe.execute()
-
-        mensagens_acumuladas = resultado[0]
-        logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
-
+        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
             return
 
-        # Guard: se o cliente ainda não escolheu a unidade, não processa com IA
-        # O webhook já enviou a pergunta "Em qual cidade/bairro você prefere treinar?"
-        if await redis_client.exists(f"esperando_unidade:{conversation_id}"):
-            logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
-            # Recoloca mensagens no buffet para serem processadas quando unidade for escolhida
-            for m_json in mensagens_acumuladas:
-                await redis_client.rpush(f"buffet:{conversation_id}", m_json)
-            await redis_client.expire(f"buffet:{conversation_id}", 300)
+        if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
             return
 
-        textos, tasks_audio, imagens_urls = [], [], []
-
-        for m_json in mensagens_acumuladas:
-            m = json.loads(m_json)
-            if m.get("text"):
-                textos.append(m["text"])
-            for f in m.get("files", []):
-                if f["type"] == "audio":
-                    tasks_audio.append(transcrever_audio(f["url"]))
-                elif f["type"] == "image":
-                    imagens_urls.append(f["url"])
-
-        transcricoes = await asyncio.gather(*tasks_audio)
-
-        mensagens_lista = []
-        for i, txt in enumerate(textos, 1):
-            mensagens_lista.append(f"{i}. {txt}")
-        for i, transc in enumerate(transcricoes, len(textos) + 1):
-            mensagens_lista.append(f"{i}. [Áudio] {transc}")
-
-        mensagens_formatadas = "\n".join(mensagens_lista) if mensagens_lista else ""
+        anexos = await processar_anexos_mensagens(mensagens_acumuladas)
+        textos = anexos["textos"]
+        transcricoes = anexos["transcricoes"]
+        imagens_urls = anexos["imagens_urls"]
+        mensagens_formatadas = anexos["mensagens_formatadas"]
 
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
         # O drain loop pode recolocar mensagens no buffer após o processamento.
@@ -2400,52 +3060,18 @@ async def processar_ia_e_responder(
             logger.info(f"⏭️ Anti-duplicata: mensagens já respondidas, descartando conv {conversation_id}")
             return
 
-        # Detecta se cliente mencionou outra unidade
-        # ⚠️ Regra de proteção: só muda slug se a mensagem contém indicador geográfico
-        # real (nome de cidade, bairro ou nome de unidade). Mensagens genéricas como
-        # "Queria saber o endereço" ou "E horário?" NÃO devem trocar a unidade.
-        primeira_mensagem = textos[0] if textos else ""
-        mudou_unidade = False
+        contexto = await resolver_contexto_atendimento(
+            conversation_id=conversation_id,
+            textos=textos,
+            transcricoes=transcricoes,
+            slug=slug,
+            empresa_id=empresa_id,
+        )
+        slug = contexto["slug"]
+        mudou_unidade = contexto["mudou_unidade"]
+        primeira_mensagem = contexto["primeira_mensagem"]
 
-        # Verifica se ALGUMA mensagem do buffer menciona indicador geográfico
-        _todas_msgs_norm = " ".join(normalizar(t) for t in textos)
-        _tem_geo = False
-        if db_pool:
-            try:
-                _todas_unidades_geo = await listar_unidades_ativas(empresa_id)
-                for _u in _todas_unidades_geo:
-                    _indicadores = [
-                        normalizar(_u.get('nome', '')),
-                        normalizar(_u.get('cidade', '') or ''),
-                        normalizar(_u.get('bairro', '') or ''),
-                    ]
-                    for _ind in _indicadores:
-                        if _ind and len(_ind) >= 4 and _ind in _todas_msgs_norm:
-                            _tem_geo = True
-                            break
-                    if _tem_geo:
-                        break
-            except Exception:
-                pass
-
-        if _tem_geo and primeira_mensagem:
-            slug_detectado = await buscar_unidade_na_pergunta(primeira_mensagem, empresa_id)
-            if slug_detectado and slug_detectado != slug:
-                logger.info(f"🔄 Webhook mudou contexto para {slug_detectado} (indicador geográfico detectado)")
-                slug = slug_detectado
-                mudou_unidade = True
-                await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
-                await bd_registrar_evento_funil(
-                    conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
-                )
-        elif not _tem_geo:
-            logger.debug(f"🔒 Slug mantido em '{slug}' — nenhum indicador geográfico nas mensagens")
-
-        # Salvar mensagens do usuário
-        for txt in textos:
-            await bd_salvar_mensagem_local(conversation_id, "user", txt)
-        for transc in transcricoes:
-            await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+        await persistir_mensagens_usuario(conversation_id, textos, transcricoes)
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
@@ -2455,276 +3081,57 @@ async def processar_ia_e_responder(
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
         texto_norm_fast = normalizar(primeira_mensagem or "")
+        resposta_texto = ""
+        novo_estado = estado_atual
         fast_reply = None          # str  — mensagem única (resposta fixa, sem LLM)
         fast_reply_lista = None   # List[str] — múltiplas mensagens (ex: planos)
         contexto_precarregado = ""  # Dados buscados do BD — LLM gera a resposta humanizada
+        intencao_motor = None
+
+        # Fast-path desativado: sempre seguir pelo fluxo FAQ + IA.
+        texto_cliente_unificado = " ".join([t for t in (textos + transcricoes) if t]).strip()
+        if texto_cliente_unificado and not imagens_urls:
+            intencao_motor = detectar_intencao(texto_cliente_unificado)
 
         # Campos da unidade
-        end_banco = unidade.get('endereco_completo') or unidade.get('endereco')
+        end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
         link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
-        tel_banco = unidade.get('telefone') or unidade.get('whatsapp')
+        tel_banco = extrair_telefone_unidade(unidade)
 
         # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
-            planos_str = formatar_planos_para_prompt(planos_ativos)
-            links_dos_planos = "\n".join([
-                f"- {p['nome']}: {p['link_venda']}"
-                for p in planos_ativos if p.get('link_venda')
-            ])
             link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
         else:
-            planos_str = "não informado"
-            links_dos_planos = ""
             link_plano = link_mat
 
-        # ==================== FAST-PATH ====================
-        # Texto combinado de TODAS as mensagens acumuladas para detectar intenção
-        texto_combinado_norm = normalizar(" ".join(textos))
+        # Fast-path desativado conforme regra de negócio.
 
-        # Quando o buffer tem MÚLTIPLAS mensagens com intenções diferentes,
-        # desabilita o fast-path de intenção única e deixa a IA responder tudo de uma vez.
-        # Exceção: detecção de tipo de cliente (aluno/gympass) e saudação sempre rodam.
-        _multi_intencao = len(textos) > 1
 
-        if not imagens_urls:
+        # Cache: usa chave por intenção APENAS para intenções factuais/estáveis.
+        # Nunca usar cache por intenção para "llm"/"saudacao", senão uma resposta
+        # genérica (ex: boas-vindas) pode ser repetida para perguntas diferentes.
+        intencao = intencao_motor or (detectar_intencao(primeira_mensagem) if primeira_mensagem else None)
+        _texto_cliente_norm = normalizar(texto_cliente_unificado or "")
+        _intencao_compra = bool(re.search(
+            r"(vou querer|quero (esse|este|fechar|contratar|assinar)|manda(r)? (o )?link|pode mandar o link|poderia mandar o link|tenho interesse|gostei desse preco|gostei desse preço|vamos fechar|quero me matricular)",
+            _texto_cliente_norm,
+        ))
+        _quer_todos_planos = bool(re.search(
+            r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano)",
+            _texto_cliente_norm,
+        ))
+        if planos_ativos and intencao in {"planos", "preco"} and _quer_todos_planos:
+            fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
+            logger.info("⚡ Planos completos: envio em blocos com destaque para melhor preço")
 
-            # Fast-path: detecta tipo de cliente (aluno/gympass) para roteamento correto
-            # Roda em todas as mensagens acumuladas para maior cobertura
-            _tipo_cliente = None
-            for _t in textos:
-                _tipo_cliente = detectar_tipo_cliente(_t)
-                if _tipo_cliente:
-                    break
-            if not _tipo_cliente:
-                _tipo_cliente = detectar_tipo_cliente(texto_combinado_norm)
+        _intencoes_cacheaveis = {
+            "horario", "endereco"
+        }
+        _usa_cache_por_intencao = bool(intencao and intencao in _intencoes_cacheaveis)
 
-            if _tipo_cliente == "gympass":
-                if _PROMETHEUS_OK:
-                    METRIC_ALUNO_DETECTADO.labels(tipo="gympass").inc()
-                fast_reply = (
-                    "💚 Que ótimo! Aceitamos *Gympass / TotalPass / Wellhub* e outros convênios.\n\n"
-                    "Para garantir o melhor atendimento, me conta:\n\n"
-                    "• Qual é o seu convênio?\n"
-                    "• Em qual cidade ou bairro você prefere treinar?\n\n"
-                    "Assim te direciono para a unidade certa 🏋️"
-                )
-                logger.info("⚡ Fast-path: cliente gympass/convênio detectado")
-            elif _tipo_cliente == "aluno":
-                if _PROMETHEUS_OK:
-                    METRIC_ALUNO_DETECTADO.labels(tipo="aluno").inc()
-                tel_suporte = (tel_banco or "nosso WhatsApp") if unidade else "nosso suporte"
-                fast_reply = (
-                    f"Olá! Vi que você já é aluno(a) 😊\n\n"
-                    "Para questões relacionadas ao seu contrato, cancelamento, congelamento "
-                    "ou financeiro, o melhor canal é falar diretamente com a nossa equipe:\n\n"
-                    f"📞 {tel_suporte}\n\n"
-                    "Posso ajudar com alguma outra dúvida? 💪"
-                )
-                logger.info("⚡ Fast-path: aluno detectado — redirecionado para suporte")
-
-            # Saudação — deixa o LLM gerar resposta dinâmica e natural
-            # Apenas informa o contexto (primeiro contato ou retorno)
-            elif all(eh_saudacao(t) for t in textos) and textos:
-                _qtd_ia_anterior = 0
-                try:
-                    _qtd_ia_anterior = await db_pool.fetchval("""
-                        SELECT COUNT(*) FROM mensagens m
-                        JOIN conversas c ON c.id = m.conversa_id
-                        WHERE c.conversation_id = $1 AND m.role = 'assistant'
-                    """, conversation_id) or 0
-                except Exception:
-                    pass
-
-                if _qtd_ia_anterior > 0:
-                    contexto_precarregado = (
-                        "[SAUDAÇÃO DE RETORNO] O cliente já conversou antes.\n"
-                        "Responda de forma CURTA e natural — sem se apresentar novamente.\n"
-                        "Exemplo: 'E aí, tudo certo? Como posso ajudar? 😊'"
-                    )
-                    logger.info(f"⚡ Saudação de retorno → LLM vai gerar para {nome_cliente}")
-                else:
-                    contexto_precarregado = (
-                        "[PRIMEIRO CONTATO] O cliente está chegando agora.\n"
-                        "Se apresente brevemente (seu nome), seja acolhedor.\n"
-                        "Pergunte como pode ajudar — NÃO liste serviços nem empurre planos."
-                    )
-                    logger.info(f"⚡ Primeiro contato → LLM vai gerar saudação para {nome_cliente}")
-
-            # Fast-path: listar unidades (prioridade ANTES do FAQ)
-            # Dado estruturado puro — resposta montada aqui mesmo, sem passar por LLM
-            # Funciona mesmo com múltiplas mensagens acumuladas
-            elif re.search(
-                r"(quais.{0,15}unidades?"          # quais as unidades / quais unidade
-                r"|quantas.{0,10}unidades?"        # quantas unidades
-                r"|tem.{0,20}unidades?"            # tem unidade em SP / vcs tem unidades
-                r"|unidades?.{0,10}tem"            # unidades que tem
-                r"|mais.{0,10}unidades?"           # mais unidades
-                r"|outras.{0,10}unidades?"         # outras unidades
-                r"|lista.{0,10}unidades?"          # lista de unidades
-                r"|onde.{0,10}academia"            # onde tem academia
-                r"|academia.{0,15}(sp|sao paulo|rio|rj|mg|bh)"  # academia em SP / RJ
-                r"|saber.{0,10}unidades?"          # queria saber as unidades
-                r"|todas.{0,10}unidades?"          # todas as unidades
-                r"|unidades?.{0,10}existem"        # quais unidades existem
-                r"|unidades?.{0,10}disponiveis"    # unidades disponíveis
-                r"|unidades?.{0,10}abertas"        # unidades abertas
-                r"|unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
-                texto_combinado_norm, re.IGNORECASE
-            ):
-                todas_ativas = await listar_unidades_ativas(empresa_id)
-                if todas_ativas:
-                    # Filtra por cidade se o cliente mencionou uma
-                    _cidade_filtro = None
-                    # 1. Verifica se alguma cidade do banco está na pergunta
-                    for _u in todas_ativas:
-                        _cid = normalizar(_u.get('cidade', '') or '')
-                        if _cid and len(_cid) > 3 and _cid in texto_combinado_norm:
-                            _cidade_filtro = _u.get('cidade')
-                            break
-                    # 2. Verifica abreviações de estado
-                    _ESTADO_MAP = {
-                        "sp": "São Paulo", "sao paulo": "São Paulo",
-                        "rj": "Rio de Janeiro", "rio": "Rio de Janeiro",
-                        "mg": "Minas Gerais", "bh": "Belo Horizonte",
-                        "brasilia": "Brasília", "campinas": "Campinas",
-                        "curitiba": "Curitiba",
-                    }
-                    if not _cidade_filtro:
-                        for _abbr, _cidade_nome in _ESTADO_MAP.items():
-                            if _abbr in texto_combinado_norm.split() or _abbr in texto_combinado_norm:
-                                _cid_norm = normalizar(_cidade_nome)
-                                _match = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '').startswith(_cid_norm[:5])]
-                                if _match:
-                                    _cidade_filtro = _match[0].get('cidade')
-                                    break
-
-                    if _cidade_filtro:
-                        _cid_norm = normalizar(_cidade_filtro)
-                        unidades_lista = [u for u in todas_ativas if normalizar(u.get('cidade', '') or '') == _cid_norm]
-                        if not unidades_lista:
-                            unidades_lista = todas_ativas
-                    else:
-                        unidades_lista = todas_ativas
-
-                    total = len(unidades_lista)
-                    # Só o nome — cidade não é exibida (evita repetição e poluição)
-                    lista_str = "\n".join([f"• {u['nome']}" for u in unidades_lista])
-
-                    if _cidade_filtro and total > 0:
-                        fast_reply = (
-                            f"📍 Temos {total} {'unidade' if total == 1 else 'unidades'} em {_cidade_filtro}:\n\n"
-                            f"{lista_str}\n\n"
-                            "Qual delas fica mais perto de você? 😊"
-                        )
-                    else:
-                        fast_reply = random.choice(RESPOSTAS_UNIDADES).format(
-                            total=total, lista_str=lista_str
-                        )
-                    logger.info(f"⚡ Fast-path: {total} unidade(s) — resposta direta (sem LLM)")
-                    await bd_registrar_evento_funil(
-                        conversation_id, "consulta_unidades",
-                        f"Cliente solicitou unidades{' em ' + _cidade_filtro if _cidade_filtro else ''}",
-                        score_incremento=1
-                    )
-                else:
-                    fast_reply = "No momento não há unidades cadastradas. 😕"
-
-            # Fast-path: FAQ — último fallback antes da IA
-            # Usa texto combinado para funcionar mesmo quando cliente envia 2+ mensagens
-            elif slug:
-                _faq_resposta = await buscar_resposta_faq(" ".join(textos), slug, empresa_id)
-                if _faq_resposta:
-                    contexto_precarregado = (
-                        f"[FAQ] Resposta cadastrada para esta pergunta:\n{_faq_resposta}\n\n"
-                        "(Use essa resposta como base — pode reformular de forma natural, "
-                        "mas não altere informações factuais nem adicione dados inexistentes.)"
-                    )
-                    logger.info(f"⚡ Fast-path: FAQ encontrado, LLM vai humanizar para conv {conversation_id}")
-                    if _PROMETHEUS_OK and hasattr(METRIC_FAST_PATH_TOTAL, 'labels'):
-                        METRIC_FAST_PATH_TOTAL.labels(tipo="faq").inc()
-
-            # Fast-path: planos — desabilitado quando há múltiplas mensagens acumuladas
-            # (a IA responde todas as perguntas de uma vez de forma mais coesa)
-            elif not _multi_intencao and re.search(
-                r"(preco|valor(es)?|quanto (custa|cobra|fica)"
-                r"|mensalidade|planos?|promocao|promoç"
-                r"|beneficio|benefícios|benefíci"
-                r"|quais.{0,10}planos|me (fala|mostra|manda).{0,15}planos?"
-                r"|tem planos?|ver planos?|quero (assinar|contratar|me matricular)"
-                r"|como (faço|faz|funciona).{0,10}(matric|assinar|contratar)"
-                r"|quanto (é|e|custa|vale) o plano"
-                r"|opcoes.{0,10}planos?|opções.{0,10}planos?)",
-                texto_combinado_norm
-            ):
-                if planos_ativos:
-                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
-                    if _PROMETHEUS_OK:
-                        METRIC_PLANOS_ENVIADOS.inc()
-                        METRIC_FAST_PATH_TOTAL.labels(tipo="planos").inc()
-                    await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado",
-                        "Link enviado via fast-path", score_incremento=2
-                    )
-                    logger.info(f"⚡ Fast-path: {len(fast_reply_lista)} plano(s) — enviando como mensagens separadas")
-
-            # Fast-path: endereço e/ou horário
-            # Detecta cada um independentemente e combina numa resposta só
-            elif unidade and re.search(
-                r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam"
-                r"|horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-                texto_combinado_norm
-            ):
-                _quer_end = bool(re.search(
-                    r"(endereco|enderco|localizacao|fica onde|onde fica|como chego|qual o local|onde voces ficam)",
-                    texto_combinado_norm
-                ))
-                _quer_hor = bool(re.search(
-                    r"(horario|funcionamento|abre|fecha|que horas|ta aberto|esta aberto)",
-                    texto_combinado_norm
-                ))
-
-                _ctx_partes = []
-
-                if _quer_end and end_banco and str(end_banco).strip().lower() not in ['não informado', 'none', '']:
-                    _ctx_partes.append(f"Endereço da unidade: {end_banco}")
-
-                if _quer_hor and hor_banco:
-                    _hor = hor_banco
-                    if isinstance(_hor, str):
-                        try:
-                            _hor = json.loads(_hor)
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                    if isinstance(_hor, dict):
-                        _hor_str = "\n".join([f"  {dia}: {h}" for dia, h in _hor.items()])
-                    else:
-                        _hor_str = str(_hor)
-                    _ctx_partes.append(f"Horários de funcionamento:\n{_hor_str}")
-
-                if _ctx_partes:
-                    contexto_precarregado = "\n\n".join(_ctx_partes)
-                    logger.info(f"⚡ Fast-path: endereço/horário pré-carregado, LLM vai humanizar")
-
-            # Fast-path: contato — passa número ao LLM para resposta humanizada
-            elif unidade and re.search(
-                r"(telefone|contato|whatsapp|numero|ligar|falar com alguem)",
-                texto_combinado_norm
-            ):
-                if tel_banco and str(tel_banco).strip().lower() not in ['não informado', 'none', '']:
-                    contexto_precarregado = f"Telefone/WhatsApp de contato da unidade: {tel_banco}"
-                    logger.info(f"⚡ Fast-path: contato pré-carregado, LLM vai humanizar")
-                    await bd_registrar_evento_funil(
-                        conversation_id, "solicitacao_telefone",
-                        "Cliente solicitou telefone", score_incremento=3
-                    )
-
-        # ===================================================
-
-        # Cache de intenção
-        intencao = detectar_intencao(primeira_mensagem) if primeira_mensagem else None
-        if intencao:
+        if _usa_cache_por_intencao:
             chave_cache_ia = f"cache:intent:{slug}:{intencao}"
         else:
             hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
@@ -2740,7 +3147,7 @@ async def processar_ia_e_responder(
 
         # Cache semântico (embedding) — consultado apenas se não houver cache exato nem contexto live
         _cache_sem = None
-        if not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
+        if USAR_CACHE_SEMANTICO and intencao == "llm" and not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
             _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug)
 
         if fast_reply:
@@ -2753,6 +3160,19 @@ async def processar_ia_e_responder(
             dados_cache = json.loads(resposta_cacheada)
             resposta_texto = dados_cache["resposta"]
             novo_estado = dados_cache["estado"]
+
+            # Proteção anti-loop: se a resposta cacheada parece saudação, só use
+            # quando a mensagem atual também for saudação.
+            _msg_eh_saudacao = eh_saudacao(primeira_mensagem or "")
+            _resp_norm = normalizar(resposta_texto or "")
+            _resp_parece_saudacao = any(
+                s in _resp_norm for s in [
+                    "como posso te ajudar", "bem-vindo", "eu sou o", "eu sou a"
+                ]
+            )
+            if _resp_parece_saudacao and not _msg_eh_saudacao:
+                logger.info("⏭️ Cache ignorado: resposta de saudação para pergunta não-saudação")
+                resposta_texto = ""
 
         elif _cache_sem and not imagens_urls and not mudou_unidade:
             logger.info("🧬 Cache Semântico HIT! Respondendo por similaridade.")
@@ -2780,6 +3200,9 @@ async def processar_ia_e_responder(
 
             # Detalhes de planos para o prompt (texto simples, sem markdown)
             planos_detalhados = formatar_planos_para_prompt(planos_ativos) if planos_ativos else "não informado"
+            modalidades_prompt = ", ".join(normalizar_lista_campo(unidade.get("modalidades"))) or "não informado"
+            pagamentos_prompt = ", ".join(normalizar_lista_campo(unidade.get("formas_pagamento"))) or "não informado"
+            convenios_prompt = ", ".join(normalizar_lista_campo(unidade.get("convenios"))) or "não informado"
 
             dados_unidade = f"""
 DADOS COMPLETOS DA UNIDADE
@@ -2794,10 +3217,10 @@ Planos (com links de matricula):
 {planos_detalhados}
 Site: {unidade.get('site') or 'não informado'}
 Instagram: {unidade.get('instagram') or 'não informado'}
-Modalidades: {', '.join(unidade.get('modalidades', [])) if unidade.get('modalidades') else 'não informado'}
+Modalidades: {modalidades_prompt}
 Infraestrutura: {json.dumps(unidade.get('infraestrutura', {}), ensure_ascii=False) if unidade.get('infraestrutura') else 'não informado'}
-Pagamentos: {', '.join(unidade.get('formas_pagamento', [])) if unidade.get('formas_pagamento') else 'não informado'}
-Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios') else 'não informado'}
+Pagamentos: {pagamentos_prompt}
+Convênios: {convenios_prompt}
 """
 
             # ── Campos conhecidos da personalidade_ia ──────────────────────────
@@ -2855,6 +3278,18 @@ Convênios: {', '.join(unidade.get('convenios', [])) if unidade.get('convenios')
                 f"\n[AVISO]: O cliente perguntou sobre a unidade {nome_unidade}. "
                 "Use os dados abaixo para responder."
             ) if mudou_unidade else ""
+
+            contexto_precarregado_bloco = ""
+            if contexto_precarregado:
+                contexto_precarregado_bloco = f"""
+DADOS JÁ CARREGADOS DO BANCO — USE EXATAMENTE ESSES, não invente nem altere:
+{contexto_precarregado}
+
+REGRA OBRIGATÓRIA: O cliente JÁ pediu esses dados — entregue-os DIRETAMENTE na resposta.
+NUNCA pergunte "Quer que eu te passe?", "Posso te enviar?" ou qualquer variação.
+NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo o caminho",
+"precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
+"""
 
             prompt_sistema = f"""
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
@@ -2963,15 +3398,7 @@ Você pretende treinar só hoje ou está pensando em começar academia?"
 DADOS DO ATENDIMENTO:
 Cliente: {nome_cliente}
 Estado emocional anterior: {estado_atual}
-{f"""
-DADOS JÁ CARREGADOS DO BANCO — USE EXATAMENTE ESSES, não invente nem altere:
-{contexto_precarregado}
-
-REGRA OBRIGATÓRIA: O cliente JÁ pediu esses dados — entregue-os DIRETAMENTE na resposta.
-NUNCA pergunte "Quer que eu te passe?", "Posso te enviar?" ou qualquer variação.
-NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo o caminho",
-"precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
-""" if contexto_precarregado else ""}
+{contexto_precarregado_bloco}
 MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
@@ -2981,17 +3408,16 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             conteudo_usuario = []
             for img_url in imagens_urls:
                 try:
-                    resp = await http_client.get(
+                    resp = await baixar_midia_com_retry(
                         img_url,
+                        timeout=12.0,
                         headers={"api_access_token": integracao_chatwoot['token']},
-                        follow_redirects=True
                     )
-                    if resp.status_code == 200:
-                        img_b64 = base64.b64encode(resp.content).decode("utf-8")
-                        conteudo_usuario.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                        })
+                    img_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    conteudo_usuario.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                    })
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
@@ -3000,9 +3426,26 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             )
             temperature = float(pers.get("temperatura") or 0.7)
 
+            # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
+            llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
+            if await redis_client.get(llm_provider_pause_key) == "1":
+                _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
+                resposta_texto = (
+                    f"{_nome_cb}, agora estamos com alto volume no atendimento automático 😕\n\n"
+                    "Se quiser, me manda sua dúvida em uma frase curta que priorizo aqui pra você."
+                )
+                novo_estado = estado_atual
+                goto_send = True
+            else:
+                goto_send = False
+
             # ── Circuit Breaker check ─────────────────────────────────────────
-            _cb_allowed = await cb_llm.is_allowed()
-            if not _cb_allowed:
+            if not goto_send:
+                _cb_allowed = await cb_llm.is_allowed()
+            else:
+                _cb_allowed = True
+
+            if not goto_send and not _cb_allowed:
                 logger.warning(f"🔴 CircuitBreaker OPEN — usando resposta padrão para conv {conversation_id}")
                 # Resposta de fallback quando LLM está indisponível
                 _nome_cb = nome_cliente.split()[0].capitalize() if nome_cliente else "você"
@@ -3013,8 +3456,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 novo_estado = estado_atual
                 # Pula o bloco IA e vai direto para envio
                 goto_send = True
-            else:
-                goto_send = False
+            if not goto_send:
+                if not cliente_ia:
+                    resposta_texto = "Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes? 😊"
+                    novo_estado = estado_atual
+                    goto_send = True
 
             if not goto_send:
                 # ── Chamada ao LLM com timeout global + circuit breaker ───────────
@@ -3079,30 +3525,56 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 "estado": estado_atual
                             })
                         except Exception as e2:
-                            logger.error(f"❌ Erro no fallback: {e2}")
+                            if _is_provider_unavailable_error(e2):
+                                logger.warning("⚠️ Fallback de IA indisponível temporariamente")
+                                await redis_client.setex(llm_provider_pause_key, 300, "1")
+                            else:
+                                logger.error("❌ Erro no fallback")
                             await cb_llm.record_failure()
                             resposta_bruta = json.dumps({
-                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
                             })
 
                     except Exception as e:
-                        logger.warning(f"⚠️ Erro LLM primário ({e}) — tentando fallback")
+                        erro_provedor = _is_provider_unavailable_error(e)
+                        if erro_provedor:
+                            logger.warning("⚠️ IA indisponível temporariamente (OpenRouter)")
+                            await redis_client.setex(llm_provider_pause_key, 300, "1")
+                        elif _is_openrouter_auth_error(e):
+                            logger.warning("⚠️ Falha de autenticação OpenRouter (verifique OPENROUTER_API_KEY)")
+                            await redis_client.setex(llm_provider_pause_key, 600, "1")
+                        else:
+                            logger.warning("⚠️ Erro LLM primário — tentando fallback")
                         await cb_llm.record_failure()
                         if _PROMETHEUS_OK:
                             METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
-                        try:
-                            modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
-                            response = await _chamar_llm(modelo_fallback, extra_timeout=20)
-                            resposta_bruta = response.choices[0].message.content
-                            await cb_llm.record_success()
-                        except Exception as e2:
-                            logger.error(f"❌ Fallback também falhou: {e2}")
-                            await cb_llm.record_failure()
+
+                        # Em indisponibilidade do provedor, evita nova tentativa imediata no fallback
+                        # para reduzir ruído de log e latência.
+                        if erro_provedor:
+                            await redis_client.setex(llm_provider_pause_key, 300, "1")
                             resposta_bruta = json.dumps({
-                                "resposta": "Tive um problema técnico. Pode repetir em instantes? 😊",
+                                "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
                                 "estado": estado_atual
                             })
+                        else:
+                            try:
+                                modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+                                response = await _chamar_llm(modelo_fallback, extra_timeout=20)
+                                resposta_bruta = response.choices[0].message.content
+                                await cb_llm.record_success()
+                            except Exception as e2:
+                                if _is_provider_unavailable_error(e2):
+                                    logger.warning("⚠️ Fallback de IA indisponível temporariamente")
+                                    await redis_client.setex(llm_provider_pause_key, 300, "1")
+                                else:
+                                    logger.error("❌ Fallback também falhou")
+                                await cb_llm.record_failure()
+                                resposta_bruta = json.dumps({
+                                    "resposta": "Estamos com alto volume de atendimentos agora 😕 Pode tentar novamente em instantes?",
+                                    "estado": estado_atual
+                                })
 
                 _latencia = time.time() - start_time
                 logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
@@ -3158,20 +3630,34 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     resposta_texto = "Desculpe, pode repetir sua pergunta? 😊"
                     novo_estado = estado_atual
 
-                # 🔧 Pós-processamento: se a IA gerou resposta com múltiplos planos → reformata
-                _qtd_precos = resposta_texto.count("R$")
-                _qtd_links  = resposta_texto.count("http")
-                if planos_ativos and (_qtd_precos >= 2 or _qtd_links >= 2):
-                    logger.info("🔧 Pós-processamento: resposta da IA contém planos — reformatando em msgs separadas")
-                    fast_reply_lista = formatar_planos_bonito(planos_ativos)
-                    resposta_texto = ""
-                    if _PROMETHEUS_OK:
-                        METRIC_PLANOS_ENVIADOS.inc()
+                # Pós-processamento de conversão: se o cliente já sinalizou compra,
+                # garante envio do link de matrícula e CTA de outros planos na mesma resposta.
+                if _intencao_compra and link_plano:
+                    _resp_norm_compra = normalizar(resposta_texto or "")
+                    _tem_link = ("http://" in (resposta_texto or "")) or ("https://" in (resposta_texto or ""))
+                    if not _tem_link:
+                        _base = resposta_texto.strip() if resposta_texto and resposta_texto.strip() else "Perfeito! Vamos fechar agora 🚀"
+                        resposta_texto = (
+                            f"{_base}\n\n"
+                            f"🔗 Para garantir sua matrícula agora: {link_plano}\n\n"
+                            "Se quiser, também te mostro *outros planos* para você comparar rapidinho."
+                        )
+                    elif "outros planos" not in _resp_norm_compra:
+                        resposta_texto = (
+                            f"{resposta_texto.rstrip()}\n\n"
+                            "Se quiser, também te mostro *outros planos* para você comparar rapidinho."
+                        )
+                    novo_estado = "conversao"
 
-                if not imagens_urls:
+                if not imagens_urls and resposta_texto:
                     _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
-                    await redis_client.setex(chave_cache_ia, 600, _cache_payload)
-                    if primeira_mensagem:
+                    # Não persiste cache para saudações curtas para evitar repetição
+                    # em consultas futuras de conteúdo diferente.
+                    _mensagem_eh_saudacao = eh_saudacao(primeira_mensagem or "")
+                    if not _mensagem_eh_saudacao:
+                        await redis_client.setex(chave_cache_ia, 600, _cache_payload)
+
+                    if USAR_CACHE_SEMANTICO and primeira_mensagem and not _mensagem_eh_saudacao:
                         await salvar_cache_semantico(
                             primeira_mensagem, slug,
                             {"resposta": resposta_texto, "estado": novo_estado},
@@ -3203,7 +3689,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
 
-        await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
+        salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
+        if salvar_resposta_unica:
+            await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
         is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
 
@@ -3217,6 +3705,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     break
                 if not bloco_plano.strip():
                     continue
+                await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
                 typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
@@ -3244,7 +3733,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # para conhecer..." em mensagem separada). O cliente recebe a resposta
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
-                _texto_final = _garantir_frase_completa(resposta_texto)
+                _texto_final = garantir_frase_completa(resposta_texto)
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
@@ -3260,7 +3749,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
         _drain_tentativas = 0
         while _drain_tentativas < 2:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.0)
             mensagens_pendentes = await redis_client.lrange(chave_buffet, 0, -1)
             if not mensagens_pendentes:
                 break
@@ -3286,8 +3775,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await redis_client.expire(chave_buffet, 60)
             _drain_tentativas += 1
 
-    except Exception as e:
-        logger.error(f"🔥 Erro Crítico: {e}", exc_info=True)
+    except Exception:
+        logger.exception("🔥 Erro Crítico no processamento")
     finally:
         watchdog.cancel()
         try:
@@ -3336,6 +3825,9 @@ async def chatwoot_webhook(
     if _PROMETHEUS_OK:
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
 
+    if not id_conv:
+        return {"status": "ignorado_sem_conversation_id"}
+
     # Rate limiting por conversa
     # Rate limit por conversa (anti-loop de webhook)
     rate_key = f"rl:conv:{id_conv}"
@@ -3371,17 +3863,20 @@ async def chatwoot_webhook(
         await redis_client.delete(
             f"pause_ia:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+            f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
             f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
 
     if event == "conversation_updated":
-        if conv_obj.get("status") == "resolved":
+        status_conv = conv_obj.get("status") or payload.get("status")
+        if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
                 f"pause_ia:{id_conv}", f"estado:{id_conv}",
                 f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
+                f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
                 f"atend_manual:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
@@ -3395,12 +3890,48 @@ async def chatwoot_webhook(
     content_attrs = payload.get("content_attributes") or {}
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
+
+    contato = payload.get("sender", {})
+    nome_contato_raw = contato.get("name")
+    nome_contato_limpo = limpar_nome(nome_contato_raw)
+    nome_contato_valido = nome_eh_valido(nome_contato_limpo)
+
+    if message_type == "incoming":
+        if nome_contato_valido:
+            await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
+        else:
+            _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
+            if _nome_informado:
+                await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
+                await redis_client.delete(f"aguardando_nome:{id_conv}")
+                await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
+            else:
+                _aguardando_nome = await redis_client.get(f"aguardando_nome:{id_conv}")
+                if not _aguardando_nome:
+                    msg_nome = (
+                        "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
+                        "Pode me responder só com seu primeiro nome."
+                    )
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao)
+                    await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
+                    return {"status": "aguardando_nome"}
+
+    # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
+    mensagem_id = payload.get("id")
+    if message_type == "incoming" and mensagem_id:
+        dedup_key = f"msg_incoming_processada:{id_conv}:{mensagem_id}"
+        if not await redis_client.set(dedup_key, "1", nx=True, ex=120):
+            logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
+            return {"status": "duplicado"}
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
-    slug = slug_redis or slug_label
+    # Regra de segurança: em operação multiunidade, NÃO usar label como fonte primária.
+    # A unidade só é assumida por escolha explícita (Redis) ou por detecção no texto.
+    slug = slug_redis
     slug_detectado = None
     esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
+    prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
 
     # Detecta unidade na mensagem APENAS em dois cenários:
     # 1) Já existe um slug definido (cliente quer trocar de unidade)
@@ -3424,13 +3955,16 @@ async def chatwoot_webhook(
             pass
 
         if _tem_geo_wh or esperando_unidade:
-            slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
+            slug_detectado = await buscar_unidade_na_pergunta(
+                conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
+            )
             if slug_detectado and slug_detectado != slug:
                 logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
                 slug = slug_detectado
                 await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                 if esperando_unidade:
                     await redis_client.delete(f"esperando_unidade:{id_conv}")
+                await redis_client.delete(prompt_unidade_key)
 
     # Sem unidade ainda — tenta definir
     if not slug and message_type == "incoming":
@@ -3444,98 +3978,113 @@ async def chatwoot_webhook(
             await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
 
         else:
-            # Múltiplas unidades — fluxo inteligente de identificação
-            texto_cliente = normalizar(conteudo_texto).strip()
+            if not slug:
+                # Múltiplas unidades — fluxo inteligente de identificação
+                texto_cliente = normalizar(conteudo_texto).strip()
 
-            # Tenta por número digitado (ex: "1", "2")
-            if not slug_detectado and texto_cliente.isdigit():
-                idx = int(texto_cliente) - 1
-                if 0 <= idx < len(unidades_ativas):
-                    slug_detectado = unidades_ativas[idx]["slug"]
+                # Tenta por nome/cidade/bairro já na primeira mensagem APENAS
+                # quando houver indicador geográfico claro.
+                _tem_geo_multi = False
+                for _u in unidades_ativas:
+                    for _campo in ["nome", "cidade", "bairro"]:
+                        _v = normalizar(_u.get(_campo, "") or "")
+                        if _v and len(_v) >= 4 and _v in texto_cliente:
+                            _tem_geo_multi = True
+                            break
+                    if _tem_geo_multi:
+                        break
 
-            if slug_detectado:
-                # Unidade identificada — confirma com mensagem humanizada e prossegue
-                slug = slug_detectado
-                await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-                await redis_client.delete(f"esperando_unidade:{id_conv}")
-                contato = payload.get("sender", {})
-                _nome_contato = limpar_nome(contato.get("name"))
-                await bd_iniciar_conversa(
-                    id_conv, slug, account_id,
-                    contato.get("id"), _nome_contato, empresa_id
-                )
-                await bd_registrar_evento_funil(
-                    id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
-                )
+                if not slug_detectado and _tem_geo_multi:
+                    slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
-                # Envia confirmação humanizada com dados da unidade
-                _unid_dados = await carregar_unidade(slug, empresa_id) or {}
-                _nome_unid = _unid_dados.get('nome') or slug
-                _end_unid = _unid_dados.get('endereco_completo') or _unid_dados.get('endereco') or ''
-                _hor_unid = _unid_dados.get('horarios')
-                _pers_temp = await carregar_personalidade(empresa_id) or {}
-                _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
+                # Tenta por número digitado (ex: "1", "2")
+                if not slug_detectado and texto_cliente.isdigit():
+                    idx = int(texto_cliente) - 1
+                    if 0 <= idx < len(unidades_ativas):
+                        slug_detectado = unidades_ativas[idx]["slug"]
 
-                _cumpr = saudacao_por_horario()
-                _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
-                _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
+                if slug_detectado:
+                    # Unidade identificada — confirma com mensagem humanizada e prossegue
+                    slug = slug_detectado
+                    await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+                    await redis_client.delete(f"esperando_unidade:{id_conv}")
+                    await redis_client.delete(prompt_unidade_key)
+                    contato = payload.get("sender", {})
+                    _nome_contato = limpar_nome(contato.get("name"))
+                    await bd_iniciar_conversa(
+                        id_conv, slug, account_id,
+                        contato.get("id"), _nome_contato, empresa_id
+                    )
+                    await bd_registrar_evento_funil(
+                        id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
+                    )
 
-                _horario_hoje = horario_hoje_formatado(_hor_unid)
-                _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
-                _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
+                    # Envia confirmação humanizada com dados da unidade
+                    _unid_dados = await carregar_unidade(slug, empresa_id) or {}
+                    _nome_unid = _unid_dados.get('nome') or slug
+                    _end_unid = extrair_endereco_unidade(_unid_dados) or ''
+                    _hor_unid = _unid_dados.get('horarios')
+                    _pers_temp = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
 
-                _msg_confirmacao = (
-                    f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
-                    f"{_linha_end}{_linha_horario}"
-                    f"\n\nComo posso te ajudar? 😊"
-                )
-                await enviar_mensagem_chatwoot(
-                    account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
-                )
+                    _cumpr = saudacao_por_horario()
+                    _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
+                    _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
-                lock_key = f"agendar_lock:{id_conv}"
-                if await redis_client.set(lock_key, "1", nx=True, ex=5):
-                    try:
-                        existe = await db_pool.fetchval(
-                            "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
-                            "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
-                        )
-                        if not existe:
-                            await agendar_followups(id_conv, account_id, slug, empresa_id)
-                    finally:
-                        await redis_client.delete(lock_key)
-                # Confirmação já enviada — NÃO cai no buffer/LLM
-                return {"status": "unidade_confirmada"}
-            else:
-                # Se já estamos esperando escolha de unidade, NÃO reenvia a saudação.
-                # Isso evita duplicata quando o cliente manda 2+ msgs antes de escolher.
-                if esperando_unidade:
-                    logger.info(f"⏭️ Já aguardando unidade para conv {id_conv}, ignorando '{conteudo_texto[:30]}'")
+                    _horario_hoje = horario_hoje_formatado(_hor_unid)
+                    _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                    _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
+
+                    _msg_confirmacao = (
+                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
+                        f"{_linha_end}{_linha_horario}"
+                        f"\n\nComo posso te ajudar? 😊"
+                    )
+                    await enviar_mensagem_chatwoot(
+                        account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
+                    )
+
+                    lock_key = f"agendar_lock:{id_conv}"
+                    if await redis_client.set(lock_key, "1", nx=True, ex=5):
+                        try:
+                            existe = await db_pool.fetchval(
+                                "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
+                                "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
+                            )
+                            if not existe:
+                                await agendar_followups(id_conv, account_id, slug, empresa_id)
+                        finally:
+                            await redis_client.delete(lock_key)
+                    # Confirmação já enviada — NÃO cai no buffer/LLM
+                    return {"status": "unidade_confirmada"}
+                else:
+                    # Evita loop de mensagens repetidas quando já pedimos a unidade
+                    # (ex.: múltiplos webhooks da mesma conversa em sequência).
+                    if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
+                        # Não fica em silêncio: envia lembrete curto com throttle
+                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
+                        if not await redis_client.get(throttle_key):
+                            msg_retry = (
+                                "Ainda não consegui localizar a unidade certinha 😅\n\n"
+                                "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
+                            )
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, "Assistente Virtual", integracao)
+                            await redis_client.setex(throttle_key, 30, "1")
+                        logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
+                        return {"status": "aguardando_escolha_unidade"}
+
+                    # Unidade não identificada — não assume uma unidade específica.
+                    _qtd_unidades = len(unidades_ativas)
+                    msg = (
+                        "Boa pergunta! Somos sim a Red Fitness 💪\n\n"
+                        f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
+                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
+                    )
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
+                    await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
+                    await redis_client.setex(prompt_unidade_key, 600, "1")
+                    background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                     return {"status": "aguardando_escolha_unidade"}
-
-                # Unidade não identificada — pergunta cidade/bairro de forma humanizada
-                cfg = await carregar_configuracao_global(empresa_id)
-                nome_empresa = cfg.get('nome_empresa') or 'nossa academia'
-                _pers_bv = await carregar_personalidade(empresa_id) or {}
-                _nome_ia_bv = _pers_bv.get('nome_ia') or 'Assistente Virtual'
-
-                # Saudação personalizada com nome e horário
-                _cumpr_bv = saudacao_por_horario()
-                _contato_bv = payload.get("sender", {})
-                _nome_bv = limpar_nome(_contato_bv.get("name"))
-                _primeiro_bv = _nome_bv.split()[0].capitalize() if _nome_bv and _nome_bv.lower() not in ("cliente", "contato", "") else ""
-                _saud_bv = f"{_cumpr_bv}, {_primeiro_bv}!" if _primeiro_bv else f"{_cumpr_bv}!"
-
-                msg = (
-                    f"{_saud_bv} Eu sou {'a' if _nome_ia_bv[-1:].lower() == 'a' else 'o'} {_nome_ia_bv} "
-                    f"da {nome_empresa}, tudo bem? 😊\n\n"
-                    "Para te direcionar ao melhor atendimento, me conta:\n\n"
-                    "Em qual *cidade* ou *bairro* você prefere treinar? 🎯"
-                )
-                await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
-                await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
-                background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
-                return {"status": "aguardando_escolha_unidade"}
 
     if not slug:
         return {"status": "erro_sem_unidade"}
@@ -3557,9 +4106,10 @@ async def chatwoot_webhook(
         return {"status": "ignorado"}
 
     contato = payload.get("sender", {})
+    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
     await bd_iniciar_conversa(
         id_conv, slug, account_id,
-        contato.get("id"), limpar_nome(contato.get("name")), empresa_id
+        contato.get("id"), _nome_para_bd, empresa_id
     )
 
     lock_key = f"agendar_lock:{id_conv}"
@@ -3597,7 +4147,7 @@ async def chatwoot_webhook(
         background_tasks.add_task(
             processar_ia_e_responder,
             account_id, id_conv, contato.get("id"), slug,
-            limpar_nome(contato.get("name")), lock_val, empresa_id, integracao
+            _nome_para_bd, lock_val, empresa_id, integracao
         )
         return {"status": "processando"}
 
@@ -3765,7 +4315,7 @@ async def status_endpoint():
         "redis": "✅ conectado" if redis_ok else "❌ offline",
         "postgres": "✅ conectado" if db_ok else "❌ offline",
         "prometheus": "✅ ativo" if _PROMETHEUS_OK else "⚠️ não instalado",
-        "versao": "2.5.0",
+        "versao": APP_VERSION,
     }
 
 
@@ -3779,5 +4329,5 @@ async def health():
     return {
         "status": "ok",
         "service": "Motor SaaS IA",
-        "version": "2.5.0"
+        "version": APP_VERSION
     }
