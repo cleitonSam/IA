@@ -2924,11 +2924,12 @@ async def worker_metricas_diarias():
     """
     try:
         while True:
-            await asyncio.sleep(3600)
             if not db_pool:
+                await asyncio.sleep(60)
                 continue
             if not await _is_worker_leader("metricas_diarias", ttl=3700):
                 logger.debug("⏭️ worker_metricas_diarias: não é líder, pulando ciclo")
+                await asyncio.sleep(3600)
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
@@ -3026,6 +3027,7 @@ async def worker_metricas_diarias():
                 logger.error(f"❌ Erro PostgreSQL no worker de métricas: {e}")
             except Exception as e:
                 logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
+            await asyncio.sleep(3600)
     except asyncio.CancelledError:
         logger.info("🛑 worker_metricas_diarias cancelado")
         raise
