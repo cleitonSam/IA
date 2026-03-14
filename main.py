@@ -1884,6 +1884,27 @@ def formatar_mensagem_saida(content: str) -> str:
     return txt.strip()
 
 
+def suavizar_personalizacao_nome(content: str, nome: Optional[str]) -> str:
+    """Evita vocativo artificial repetido e mantém menção natural ao nome."""
+    txt = (content or "").strip()
+    primeiro = primeiro_nome_cliente(nome)
+    if not primeiro or not txt:
+        return txt
+
+    linhas = txt.split("\n")
+    if linhas and re.fullmatch(rf"{re.escape(primeiro)}[,]?", linhas[0].strip(), flags=re.IGNORECASE):
+        linhas = linhas[1:]
+        while linhas and not linhas[0].strip():
+            linhas = linhas[1:]
+        txt = "\n".join(linhas).strip()
+
+    inicio = txt[:120].lower()
+    if primeiro.lower() not in inicio:
+        txt = f"{primeiro}, {txt}"
+
+    return txt.strip()
+
+
 async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome: str, integracao: dict) -> bool:
     """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
     if not contact_id or not nome_eh_valido(nome):
@@ -1926,16 +1947,12 @@ async def enviar_mensagem_chatwoot(
     # Padroniza formatação antes de enviar
     content = formatar_mensagem_saida(content)
 
-    # Personaliza condução com nome sempre que possível
+    # Personalização natural com nome (sem repetição artificial)
     try:
         _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
     except Exception:
         _nome_salvo = None
-    _primeiro = primeiro_nome_cliente(_nome_salvo)
-    if _primeiro:
-        _inicio = (content or "").strip().lower()
-        if not (_inicio.startswith(_primeiro.lower() + ",") or _inicio.startswith(_primeiro.lower() + " ")):
-            content = f"{_primeiro},\n\n{content.strip()}"
+    content = suavizar_personalizacao_nome(content, _nome_salvo)
 
     url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {
