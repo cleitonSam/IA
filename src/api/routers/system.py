@@ -7,7 +7,7 @@ import asyncpg
 from src.core.config import (
     logger, PROMETHEUS_OK, APP_VERSION, generate_latest, CONTENT_TYPE_LATEST,
 )
-from src.core.database import db_pool
+import src.core.database as _database
 from src.core.redis_client import redis_client
 from src.services.db_queries import sincronizar_planos_evo
 
@@ -37,7 +37,7 @@ async def metricas_diagnostico(
     data: Optional[str] = None,
     dias: int = 7
 ):
-    if not db_pool:
+    if not _database.db_pool:
         raise HTTPException(status_code=503, detail="Banco de dados indisponível")
 
     try:
@@ -54,7 +54,7 @@ async def metricas_diagnostico(
             "tokens_consumidos", "custo_estimado_usd",
         ]
 
-        colunas_banco = await db_pool.fetch("""
+        colunas_banco = await _database.db_pool.fetch("""
             SELECT column_name
             FROM information_schema.columns
             WHERE table_name = 'metricas_diarias'
@@ -70,7 +70,7 @@ async def metricas_diagnostico(
         if empresa_id:
             params_base.append(empresa_id)
 
-        registros = await db_pool.fetch(f"""
+        registros = await _database.db_pool.fetch(f"""
             SELECT *
             FROM metricas_diarias
             WHERE data >= (CURRENT_DATE - ($1 || ' days')::interval)::date
@@ -93,7 +93,7 @@ async def metricas_diagnostico(
                     "percentual": round(preenchidos / total_registros * 100, 1),
                 }
 
-        ultima_atualizacao = await db_pool.fetchval("""
+        ultima_atualizacao = await _database.db_pool.fetchval("""
             SELECT MAX(updated_at) FROM metricas_diarias
         """)
 
@@ -137,8 +137,8 @@ async def status_endpoint():
     except Exception:
         pass
     try:
-        if db_pool:
-            await db_pool.fetchval("SELECT 1")
+        if _database.db_pool:
+            await _database.db_pool.fetchval("SELECT 1")
             db_ok = True
     except Exception:
         pass

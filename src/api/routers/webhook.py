@@ -6,7 +6,7 @@ from src.core.config import (
     logger, PROMETHEUS_OK, METRIC_WEBHOOKS_TOTAL, METRIC_ERROS_TOTAL,
     APP_VERSION, EMPRESA_ID_PADRAO,
 )
-from src.core.database import db_pool
+import src.core.database as _database
 from src.core.redis_client import redis_client
 from src.services.db_queries import (
     buscar_empresa_por_account_id, carregar_integracao, bd_finalizar_conversa,
@@ -265,7 +265,7 @@ async def chatwoot_webhook(
                     lock_key = f"agendar_lock:{id_conv}"
                     if await redis_client.set(lock_key, "1", nx=True, ex=5):
                         try:
-                            existe = await db_pool.fetchval(
+                            existe = await _database.db_pool.fetchval(
                                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
                                 "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
                             )
@@ -305,8 +305,8 @@ async def chatwoot_webhook(
         if is_ai_message:
             return {"status": "ignorado"}
         await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
-        if db_pool:
-            await db_pool.execute(
+        if _database.db_pool:
+            await _database.db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
                 "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1) "
                 "AND status = 'pendente'", id_conv
@@ -326,7 +326,7 @@ async def chatwoot_webhook(
     lock_key = f"agendar_lock:{id_conv}"
     if await redis_client.set(lock_key, "1", nx=True, ex=5):
         try:
-            existe = await db_pool.fetchval(
+            existe = await _database.db_pool.fetchval(
                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
                 "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
             )
