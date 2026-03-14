@@ -2,7 +2,10 @@ import asyncio
 import json
 import uuid
 import time
-from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
+from src.core.config import (
+    logger, REDIS_URL, EMPRESA_ID_PADRAO,
+    PROMETHEUS_OK, METRIC_QUEUE_SIZE, METRIC_WORKER_LATENCY, METRIC_WORKER_PROCESSED
+)
 from src.core.redis_client import redis_client
 from src.services.bot_core import processar_ia_e_responder
 from src.services.db_queries import carregar_integracao
@@ -29,8 +32,11 @@ async def run_stream_worker():
 
     while True:
         try:
+            if PROMETHEUS_OK:
+                _size = await redis_client.xlen(STREAM_NAME)
+                METRIC_QUEUE_SIZE.set(_size)
+
             # Lendo mensagens pendentes ou novas
-            # id=">" significa ler apenas mensagens que ainda não foram entregues a ninguém
             streams = await redis_client.xreadgroup(
                 CONSUMER_GROUP, CONSUMER_NAME, {STREAM_NAME: ">"}, count=1, block=5000
             )
@@ -40,6 +46,7 @@ async def run_stream_worker():
 
             for stream_name, messages in streams:
                 for msg_id, payload in messages:
+                    _start = time.time()
                     try:
                         # Extrair dados do job
                         account_id = int(payload.get("account_id"))
@@ -49,27 +56,26 @@ async def run_stream_worker():
                         nome_cliente = payload.get("nome_cliente")
                         empresa_id = int(payload.get("empresa_id"))
                         
-                        # Lock e Integracao devem ser recuperados ou passados
-                        # Como o webhook já validou a integracao, podemos recarregar aqui
                         integracao = await carregar_integracao(empresa_id, 'chatwoot')
                         
                         lock_val = str(uuid.uuid4())
-                        # A aquisição do lock de processamento ainda é importante para o buffet
                         if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=180):
-                            # Chama o processador principal
                             await processar_ia_e_responder(
                                 account_id, conversation_id, contact_id, slug,
                                 nome_cliente, lock_val, empresa_id, integracao
                             )
                         
-                        # Confirmar processamento (Acknowledge)
                         await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
-                        # Deletar do stream para não crescer infinitamente
                         await redis_client.xdel(STREAM_NAME, msg_id)
+                        
+                        if PROMETHEUS_OK:
+                            METRIC_WORKER_PROCESSED.labels(status="success").inc()
+                            METRIC_WORKER_LATENCY.observe(time.time() - _start)
                         
                     except Exception as e:
                         logger.error(f"❌ Erro ao processar mensagem do stream {msg_id}: {e}", exc_info=True)
-                        # Opcional: Reenfileirar ou colocar em uma DLQ
+                        if PROMETHEUS_OK:
+                            METRIC_WORKER_PROCESSED.labels(status="error").inc()
                 
         except asyncio.CancelledError:
             break

@@ -46,6 +46,12 @@ try:
     METRIC_CONVERSAS_ATIVAS = Gauge("saas_conversas_ativas", "Conversas ativas no Redis")
     METRIC_PLANOS_ENVIADOS  = Counter("saas_planos_enviados_total", "Planos enviados ao cliente")
     METRIC_ALUNO_DETECTADO  = Counter("saas_tipo_cliente_total", "Tipo de cliente detectado", ["tipo"])
+    
+    # Métricas de Fila (Redis Streams)
+    METRIC_QUEUE_SIZE       = Gauge("saas_queue_size", "Tamanho atual da fila de mensagens")
+    METRIC_WORKER_LATENCY   = Histogram("saas_worker_latency_seconds", "Tempo total de processamento no worker",
+                                         buckets=[1, 2, 5, 10, 30, 60])
+    METRIC_WORKER_PROCESSED = Counter("saas_worker_messages_total", "Total de mensagens processadas pelo worker", ["status"])
 except ImportError:
     PROMETHEUS_OK = False
     generate_latest = None
