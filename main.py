@@ -462,13 +462,16 @@ def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
 
 
 def garantir_frase_completa(txt: str) -> str:
-    """Remove frase incompleta no final do texto para evitar resposta cortada."""
+    """Corta resposta truncada por max_tokens na última frase completa.
+    Só deve ser chamada quando finish_reason=='length'."""
     if not txt:
         return txt
     txt = txt.strip()
     if not txt:
         return txt
-    if txt[-1] in '.!?😊💪✅🏋🎯':
+    ultimo = txt[-1]
+    # Termina com pontuação ou qualquer emoji/símbolo unicode → está completo
+    if ultimo in '.!?' or unicodedata.category(ultimo) in ('So', 'Sm', 'Sk', 'Mn'):
         return txt
     for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
         _pos = txt.rfind(_sep)
@@ -3698,6 +3701,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
+                _resposta_foi_truncada = False
                 async with llm_semaphore:
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
@@ -3706,6 +3710,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         if _finish == "length" and resposta_bruta:
                             logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
+                            _resposta_foi_truncada = True
                             # Corta na última frase completa para não enviar frase pela metade
                             for _sep in ['. ', '! ', '? ', '\n']:
                                 _pos = resposta_bruta.rfind(_sep)
@@ -3940,7 +3945,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # para conhecer..." em mensagem separada). O cliente recebe a resposta
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
-                _texto_final = garantir_frase_completa(resposta_texto)
+                # Só corta se a LLM confirmou truncamento — nunca corta respostas completas
+                _texto_final = garantir_frase_completa(resposta_texto) if _resposta_foi_truncada else resposta_texto.strip()
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
