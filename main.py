@@ -2359,8 +2359,12 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
             faq_rows_db = await db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                WHERE f.empresa_id = $2 AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                      OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 50
             """, slug, empresa_id)
@@ -2416,19 +2420,23 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     if not db_pool:
         return ""
 
-    cache_key = f"cfg:faq:{slug}:v3"
+    cache_key = f"cfg:faq:{slug}:v4"
     cache = await redis_client.get(cache_key)
     if cache:
         return cache
 
     rows = []
     try:
-        # Query principal — com prioridade e visualizacoes
+        # Query principal — unidade específica, múltiplas unidades ou todas
         rows = await db_pool.fetch("""
             SELECT f.pergunta, f.resposta
             FROM faq f
-            JOIN unidades u ON u.id = f.unidade_id
-            WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+            WHERE f.empresa_id = $2 AND f.ativo = true
+              AND (
+                  f.todas_unidades = true
+                  OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                  OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+              )
             ORDER BY f.prioridade DESC NULLS LAST, f.visualizacoes DESC NULLS LAST
             LIMIT 30
         """, slug, empresa_id)
@@ -2438,8 +2446,12 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
             rows = await db_pool.fetch("""
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                WHERE f.empresa_id = $2 AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR f.unidade_id = (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2)
+                      OR (SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2) = ANY(f.unidades_ids)
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 30
             """, slug, empresa_id)
