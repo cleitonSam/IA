@@ -2,8 +2,31 @@ from fastapi import APIRouter, Request, Header, BackgroundTasks
 import json
 import uuid
 
-# Importações globais extraídas do core
-from src.services.bot_core import *
+from src.core.config import (
+    logger, PROMETHEUS_OK, METRIC_WEBHOOKS_TOTAL, METRIC_ERROS_TOTAL,
+    APP_VERSION, EMPRESA_ID_PADRAO,
+)
+from src.core.database import db_pool
+from src.core.redis_client import redis_client
+from src.services.db_queries import (
+    buscar_empresa_por_account_id, carregar_integracao, bd_finalizar_conversa,
+    bd_iniciar_conversa, bd_registrar_evento_funil, bd_atualizar_msg_cliente,
+    listar_unidades_ativas, buscar_unidade_na_pergunta, carregar_unidade,
+    carregar_personalidade,
+)
+from src.services.chatwoot_client import (
+    enviar_mensagem_chatwoot, validar_assinatura, atualizar_nome_contato_chatwoot,
+)
+from src.services.workers import agendar_followups
+from src.services.bot_core import (
+    processar_ia_e_responder, monitorar_escolha_unidade, rate_limit_middleware,
+    startup_event, shutdown_event,
+)
+from src.utils.text_helpers import (
+    normalizar, limpar_nome, nome_eh_valido, extrair_nome_do_texto,
+)
+from src.utils.time_helpers import saudacao_por_horario, horario_hoje_formatado
+from src.utils.intent_helpers import eh_saudacao
 
 router = APIRouter()
 
@@ -20,7 +43,7 @@ async def chatwoot_webhook(
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
 
-    if _PROMETHEUS_OK:
+    if PROMETHEUS_OK:
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
 
     if not id_conv:

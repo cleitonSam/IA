@@ -48,6 +48,15 @@ try:
     METRIC_ALUNO_DETECTADO  = Counter("saas_tipo_cliente_total", "Tipo de cliente detectado", ["tipo"])
 except ImportError:
     PROMETHEUS_OK = False
+    generate_latest = None
+    CONTENT_TYPE_LATEST = None
+    METRIC_WEBHOOKS_TOTAL = None
+    METRIC_IA_LATENCY = None
+    METRIC_FAST_PATH_TOTAL = None
+    METRIC_ERROS_TOTAL = None
+    METRIC_CONVERSAS_ATIVAS = None
+    METRIC_PLANOS_ENVIADOS = None
+    METRIC_ALUNO_DETECTADO = None
 
 # --- VARIÁVEIS DE AMBIENTE ---
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")

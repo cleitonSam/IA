@@ -4,8 +4,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import asyncpg
 
-# Importações do core/serviço (ajustado para * para não quebrar dependências ocultas criadas pelo monolito original)
-from src.services.bot_core import *
+from src.core.config import (
+    logger, PROMETHEUS_OK, APP_VERSION, generate_latest, CONTENT_TYPE_LATEST,
+)
+from src.core.database import db_pool
+from src.core.redis_client import redis_client
+from src.services.db_queries import sincronizar_planos_evo
 
 router = APIRouter()
 
@@ -16,7 +20,7 @@ async def metrics_endpoint():
     Requer: pip install prometheus-client
     Integra com Grafana, Datadog, etc.
     """
-    if not _PROMETHEUS_OK:
+    if not PROMETHEUS_OK:
         return {
             "erro": "prometheus-client não instalado",
             "instrucao": "Execute: pip install prometheus-client"
@@ -142,7 +146,7 @@ async def status_endpoint():
         "status": "online",
         "redis": "✅ conectado" if redis_ok else "❌ offline",
         "postgres": "✅ conectado" if db_ok else "❌ offline",
-        "prometheus": "✅ ativo" if _PROMETHEUS_OK else "⚠️ não instalado",
+        "prometheus": "✅ ativo" if PROMETHEUS_OK else "⚠️ não instalado",
         "versao": APP_VERSION,
     }
 
