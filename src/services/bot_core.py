@@ -30,11 +30,11 @@ from src.utils.text_helpers import (
 )
 from src.utils.intent_helpers import (
     SAUDACOES, eh_saudacao, eh_confirmacao_curta, classificar_intencao,
-    _faq_compativel_com_intencao
+    _faq_compativel_com_intencao, garantir_frase_completa
 )
 from src.utils.time_helpers import (
     saudacao_por_horario, horario_hoje_formatado, formatar_horarios_funcionamento,
-    esta_aberta_agora, garantir_frase_completa
+    esta_aberta_agora
 )
 from src.services.llm_service import cliente_ia, cliente_whisper, is_provider_unavailable_error, is_openrouter_auth_error
 
