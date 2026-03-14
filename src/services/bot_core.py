@@ -1037,6 +1037,7 @@ async def processar_ia_e_responder(
         else:
             # --- FLUXO IA ---
             faq = await carregar_faq_unidade(slug, empresa_id) or ""
+            logger.info(f"🧠 BotCore: FAQ carregado, montando prompt para conv {conversation_id}")
             historico = await bd_obter_historico_local(conversation_id, limit=12) or "Sem histórico."
 
             todas_unidades = await listar_unidades_ativas(empresa_id)
@@ -1365,6 +1366,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 _resposta_foi_truncada = False
                 async with llm_semaphore:
                     try:
+                        logger.info(f"📡 BotCore: Chamando LLM ({modelo_escolhido}) para conv {conversation_id}")
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
                         # Detecta resposta truncada por max_tokens
@@ -1588,15 +1590,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             pass  # IA pausada, não envia
 
         else:
-            # Buscar telefone para UazAPI se ainda não tivermos
-            contato_fone = None
-            if source == 'uazapi':
+            # Buscar telefone para UazAPI se ainda não tivermos (shadowing fixed)
+            if source == 'uazapi' and not contato_fone:
                 from src.services.db_queries import buscar_conversa_por_fone
                 # Como conversation_id pode ser fake/negativo na UazAPI, usamos o Redis ou DB
-                if not contato_fone:
-                    # Se não veio via parâmetro, busca no BD como fallback
-                    row = await _database.db_pool.fetchrow("SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id)
-                    contato_fone = row['contato_fone'] if row else None
+                # Se não veio via parâmetro, busca no BD como fallback
+                row = await _database.db_pool.fetchrow("SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id)
+                contato_fone = row['contato_fone'] if row else None
 
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────
