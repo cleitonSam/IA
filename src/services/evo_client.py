@@ -103,12 +103,13 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
         "email": email,
         "ddi": ddi,
         "cellphone": number,
-        "notes": lead_data.get('notes', 'Gerado via IA Antigravity'),
+        "notes": f"WhatsApp / IA - {lead_data.get('notes', 'Interesse detectado')}",
         "currentStep": "Contato Inicial (IA)",
-        "marketingType": "WhatsApp / IA"
+        "marketingType": "WhatsApp / IA",
+        "temperature": int(lead_data.get('temperature', 1))
     }
 
-    logger.debug(f"📤 [CRM EVO] Enviando prospect: {full_name} ({email}) para Unid {unidade_id}")
+    logger.debug(f"📤 [CRM EVO] Enviando prospect: {full_name} | Fone: {ddi}{number} | Temp: {payload['temperature']}")
 
     try:
         async with httpx.AsyncClient() as client:
