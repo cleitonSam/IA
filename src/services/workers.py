@@ -122,9 +122,9 @@ async def worker_followup():
                 """, agora)
 
                 for f in pendentes:
-                    conv_id = f['conv_id']
-                    acc_id = f['acc_id']
-                    emp_id = f['emp_id']
+                    conv_id = f['conversation_id']
+                    acc_id = f['account_id']
+                    emp_id = f['empresa_id']
 
                     if not conv_id or not acc_id:
                         await _database.db_pool.execute(
