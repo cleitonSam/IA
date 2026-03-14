@@ -47,13 +47,20 @@ async def run_stream_worker():
                 for msg_id, payload in messages:
                     _start = time.time()
                     try:
-                        # Extrair dados do job
-                        account_id = int(payload.get("account_id"))
-                        conversation_id = int(payload.get("conversation_id"))
-                        contact_id = int(payload.get("contact_id"))
-                        slug = payload.get("slug")
-                        nome_cliente = payload.get("nome_cliente")
-                        empresa_id = int(payload.get("empresa_id"))
+                        # Extrair dados do job (com proteção a campos None/string)
+                        account_id = int(payload.get("account_id") or 0)
+                        conversation_id = int(payload.get("conversation_id") or 0)
+                        _raw_contact = payload.get("contact_id")
+                        contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
+                        slug = payload.get("slug") or None
+                        nome_cliente = payload.get("nome_cliente") or None
+                        empresa_id = int(payload.get("empresa_id") or 0)
+
+                        if not account_id or not conversation_id or not empresa_id:
+                            logger.error(f"❌ Job inválido no stream {msg_id}: {payload}")
+                            await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+                            await redis_client.xdel(STREAM_NAME, msg_id)
+                            continue
                         
                         integracao = await carregar_integracao(empresa_id, 'chatwoot')
                         
