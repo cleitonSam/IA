@@ -933,13 +933,15 @@ async def bd_registrar_evento_funil(
             return
         conversa_id = conversa['id']
 
-        if tipo_evento == "interesse_detectado":
-            existe = await _database.db_pool.fetchval("""
-                SELECT 1 FROM eventos_funil
-                WHERE conversa_id = $1 AND tipo_evento = $2
-            """, conversa_id, tipo_evento)
-            if existe:
-                return
+        # Deduplicação: Garante que cada tipo de evento seja registrado apenas UMA vez por conversa
+        # Evita inflar métricas se a IA enviar o mesmo link/plano várias vezes.
+        existe = await _database.db_pool.fetchval("""
+            SELECT 1 FROM eventos_funil
+            WHERE conversa_id = $1 AND tipo_evento = $2
+        """, conversa_id, tipo_evento)
+        
+        if existe:
+            return
 
         await _database.db_pool.execute("""
             INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
