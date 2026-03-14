@@ -353,16 +353,27 @@ async def chatwoot_webhook(
     )
     await redis_client.expire(f"buffet:{id_conv}", 60)
 
-    lock_val = str(uuid.uuid4())
-    if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=180):
+    # Publicar job no Redis Streams para processamento assíncrono (Arquitetura guiada por eventos)
+    try:
+        job_data = {
+            "account_id": str(account_id),
+            "conversation_id": str(id_conv),
+            "contact_id": str(contato.get("id")),
+            "slug": str(slug),
+            "nome_cliente": str(_nome_para_bd),
+            "empresa_id": str(empresa_id)
+        }
+        await redis_client.xadd("ia:webhook:stream", job_data)
+        return {"status": "enfileirado"}
+    except Exception as e:
+        logger.error(f"❌ Erro ao enfileirar job: {e}")
+        # Fallback para execução direta em caso de falha catastrófica do stream
         background_tasks.add_task(
             processar_ia_e_responder,
             account_id, id_conv, contato.get("id"), slug,
-            _nome_para_bd, lock_val, empresa_id, integracao
+            _nome_para_bd, str(uuid.uuid4()), empresa_id, integracao
         )
-        return {"status": "processando"}
-
-    return {"status": "acumulando_no_buffet"}
+        return {"status": "processando_direto_fallback"}
 
 @router.get("/desbloquear/{conversation_id}")
 async def desbloquear_ia(conversation_id: int):

@@ -66,6 +66,7 @@ from src.services.workers import (
     agendar_followups, worker_followup, worker_metricas_diarias
 )
 import src.services.workers as _workers_module
+from src.services.stream_worker import run_stream_worker
 
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
 from dotenv import load_dotenv
@@ -536,6 +537,7 @@ async def startup_event():
             asyncio.create_task(worker_followup(), name="worker_followup"),
             asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
             asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
+            asyncio.create_task(run_stream_worker(), name="stream_worker"),
         ]
         for _task in worker_tasks:
             _task.add_done_callback(_log_worker_task_result)
