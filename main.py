@@ -2067,7 +2067,8 @@ async def worker_followup():
                 agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
                 pendentes = await db_pool.fetch("""
-                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
+                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id,
+                           u.nome AS nome_unidade, c.contato_nome
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
@@ -2100,8 +2101,14 @@ async def worker_followup():
                         )
                         continue
 
+                    nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
+                    nome_unidade = f['nome_unidade'] or ''
+                    mensagem = (f['mensagem'] or '')
+                    mensagem = mensagem.replace('{{nome}}', nome_contato)
+                    mensagem = mensagem.replace('{{unidade}}', nome_unidade)
+
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
+                        f['account_id'], f['conversation_id'], mensagem, "Assistente Virtual", integracao
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
