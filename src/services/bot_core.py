@@ -818,9 +818,9 @@ async def despachar_resposta(
             
         uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
         
-        # Simula digitação proporcional ao tamanho do texto via delay no próprio /send/text
-        # (mín 1.2s, máx 8s) — o /send/presence retorna 405 nessa instância UazAPI
-        tempo_digitacao = min(max(int(len(content) * 0.05 * 1000), 1200), 8000)
+        # Substitui proporção por um tempo de digitação rígido entre 400 e 1200 ms
+        import random
+        tempo_digitacao = random.randint(400, 1200)
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
         # Marca que o próximo fromMe=true nesse número é do BOT (não de atendente humano)
