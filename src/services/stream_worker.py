@@ -83,6 +83,7 @@ async def run_stream_worker():
                             _raw_contact = payload.get("contact_id")
                             contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
                             slug = payload.get("slug")
+                            nome_cliente = payload.get("nome_cliente")
                             contato_fone = payload.get("contato_fone")
                             
                             # Se não veio no payload, tenta buscar no BD se já conhecemos esse telefone
