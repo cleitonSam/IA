@@ -1550,6 +1550,7 @@ async def worker_followup():
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
+                    WHERE f.status = 'pendente' AND f.agendado_para <= $1
                 """, agora)
 
                 for f in pendentes:
