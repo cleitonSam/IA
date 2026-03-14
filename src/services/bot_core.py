@@ -1686,7 +1686,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 "estado": estado_atual
                             })
                         except Exception as e2:
-                            if _is_provider_unavailable_error(e2):
+                            if is_provider_unavailable_error(e2):
                                 logger.warning("⚠️ Fallback de IA indisponível temporariamente")
                                 await redis_client.setex(llm_provider_pause_key, 300, "1")
                             else:
@@ -1698,11 +1698,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             })
 
                     except Exception as e:
-                        erro_provedor = _is_provider_unavailable_error(e)
+                        erro_provedor = is_provider_unavailable_error(e)
                         if erro_provedor:
                             logger.warning("⚠️ IA indisponível temporariamente (OpenRouter)")
                             await redis_client.setex(llm_provider_pause_key, 300, "1")
-                        elif _is_openrouter_auth_error(e):
+                        elif is_openrouter_auth_error(e):
                             logger.warning("⚠️ Falha de autenticação OpenRouter (verifique OPENROUTER_API_KEY)")
                             await redis_client.setex(llm_provider_pause_key, 600, "1")
                         else:
@@ -1726,7 +1726,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 resposta_bruta = response.choices[0].message.content
                                 await cb_llm.record_success()
                             except Exception as e2:
-                                if _is_provider_unavailable_error(e2):
+                                if is_provider_unavailable_error(e2):
                                     logger.warning("⚠️ Fallback de IA indisponível temporariamente")
                                     await redis_client.setex(llm_provider_pause_key, 300, "1")
                                 else:
