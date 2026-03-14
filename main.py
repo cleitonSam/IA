@@ -9,6 +9,8 @@ from src.services.bot_core import startup_event, shutdown_event, rate_limit_midd
 from src.api.routers.system import router as system_router
 from src.api.routers.webhook import router as webhook_router
 from src.api.routers.uaz_webhook import router as uaz_webhook_router
+from src.api.routers.auth import router as auth_router
+from src.api.routers.dashboard import router as dashboard_router
 
 # Inicialização limpa e abstrata do FastAPI
 app = FastAPI(title="Motor SaaS IA Gym", version=APP_VERSION, docs_url=None, redoc_url=None)
@@ -35,6 +37,8 @@ app.add_event_handler("shutdown", shutdown_event)
 app.include_router(webhook_router, tags=["Webhooks Chatwoot"])
 app.include_router(uaz_webhook_router, tags=["Webhooks UazAPI"])
 app.include_router(system_router, tags=["Sistema Base SaaS"])
+app.include_router(auth_router)
+app.include_router(dashboard_router)
 
 if __name__ == "__main__":
     import uvicorn

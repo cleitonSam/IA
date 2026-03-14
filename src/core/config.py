@@ -85,6 +85,11 @@ if not OPENROUTER_API_KEY:
 if not REDIS_URL:
     raise RuntimeError("REDIS_URL não definido")
 
+# --- DASHBOARD SECURITY ---
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "uaz_ia_revolutionary_dashboard_secret_2026")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440)) # 24h
+
 EMPRESA_ID_PADRAO = 1
 APP_VERSION = "2.5.0"
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both

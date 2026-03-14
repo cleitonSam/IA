@@ -1191,3 +1191,28 @@ async def bd_atualizar_metricas_venda(conversation_id: int, link_venda_enviado: 
             logger.info(f"📊 Métricas atualizadas para conv={conversation_id}: link_enviado={link_venda_enviado}, intencao={intencao_de_compra}")
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar métricas de venda para conv {conversation_id}: {e}")
+
+# --- USUÁRIOS & DASHBOARD ---
+
+async def buscar_usuario_por_email(email: str) -> Optional[Dict[str, Any]]:
+    if not _database.db_pool:
+        return None
+    try:
+        row = await _database.db_pool.fetchrow("SELECT * FROM usuarios WHERE email = $1 AND ativo = true", email)
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Erro ao buscar usuário {email}: {e}")
+        return None
+
+async def criar_usuario(nome: str, email: str, senha_hash: str, empresa_id: int, perfil: str = 'atendente'):
+    if not _database.db_pool:
+        return None
+    try:
+        await _database.db_pool.execute("""
+            INSERT INTO usuarios (nome, email, senha_hash, empresa_id, perfil)
+            VALUES ($1, $2, $3, $4, $5)
+        """, nome, email, senha_hash, empresa_id, perfil)
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao criar usuário {email}: {e}")
+        return False
