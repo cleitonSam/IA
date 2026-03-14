@@ -992,13 +992,13 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     """
     # ── Conversas ──────────────────────────────────────────────────────
     total_conversas = await _database.db_pool.fetchval("""
-        SELECT COUNT(*) FROM conversas
+        SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
     """, empresa_id, unidade_id, hoje) or 0
 
     conversas_encerradas = await _database.db_pool.fetchval("""
-        SELECT COUNT(*) FROM conversas
+        SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND status IN ('encerrada', 'resolved', 'closed')
           AND DATE(updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
@@ -1042,7 +1042,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
 
     # ── Leads & Conversão ──────────────────────────────────────────────
     leads_qualificados = await _database.db_pool.fetchval("""
-        SELECT COUNT(*) FROM conversas
+        SELECT COUNT(DISTINCT contato_telefone) FROM conversas
         WHERE empresa_id = $1 AND unidade_id = $2
           AND lead_qualificado = true
           AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3
