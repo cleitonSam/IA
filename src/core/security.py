@@ -2,6 +2,7 @@ import time
 from typing import Optional
 from src.core.config import logger, PROMETHEUS_OK
 import redis.asyncio as redis
+from src.core.redis_client import redis_client
 
 # Optional prometheus imports, we will inject METRIC_ERROS_TOTAL if available
 try:
@@ -110,3 +111,13 @@ class CircuitBreaker:
             return bool(acquired)
         # OPEN — verifica se recovery_timeout já passou
         return False
+
+# Instância Global do Circuit Breaker para a IA
+cb_llm = CircuitBreaker(
+    name="LLM_GLOBAL",
+    redis_client=redis_client,
+    failure_threshold=5,
+    recovery_timeout=45,
+    success_threshold=2
+)
+
