@@ -78,3 +78,4 @@ if not REDIS_URL:
 
 EMPRESA_ID_PADRAO = 1
 APP_VERSION = "2.5.0"
+APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both

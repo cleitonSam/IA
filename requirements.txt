@@ -10,3 +10,7 @@ tenacity
 rapidfuzz
 prometheus-client
 loguru
+alembic
+sqlalchemy
+psycopg2-binary
+pyyaml

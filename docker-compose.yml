@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_MODE=api
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    restart: always
+
+  worker:
+    build: .
+    environment:
+      - APP_MODE=worker
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    restart: always

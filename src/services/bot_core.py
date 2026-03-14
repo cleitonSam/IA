@@ -525,13 +525,19 @@ async def startup_event():
     if OPENROUTER_API_KEY and cliente_ia:
         logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
 
-    worker_tasks = [
-        asyncio.create_task(worker_followup(), name="worker_followup"),
-        asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
-        asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
-    ]
-    for _task in worker_tasks:
-        _task.add_done_callback(_log_worker_task_result)
+    from src.core.config import APP_MODE
+    logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
+
+    if APP_MODE in ("worker", "both"):
+        worker_tasks = [
+            asyncio.create_task(worker_followup(), name="worker_followup"),
+            asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
+            asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
+        ]
+        for _task in worker_tasks:
+            _task.add_done_callback(_log_worker_task_result)
+    else:
+        logger.info("⏭️  Modo API: Workers de background desativados neste processo.")
 
     # ⚠️  Os workers usam _worker_leader_check() internamente para garantir que
     # apenas UM processo execute em ambientes multi-worker (uvicorn --workers N).
