@@ -3223,6 +3223,15 @@ async def processar_ia_e_responder(
                 fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
                 logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
 
+        # Pré-carrega horário no contexto para garantir que o LLM use o dado real do BD.
+        # Sem isso, quando a intenção é "horario" mas slug estava indefinido em algum momento,
+        # o LLM pode gerar resposta vaga ("nossos horários são ótimos") sem os dados concretos.
+        if intencao == "horario" and hor_banco:
+            horarios_formatados = formatar_horarios_funcionamento(hor_banco)
+            nome_unid_ctx = unidade.get('nome') or 'da unidade'
+            contexto_precarregado = f"Horário de funcionamento da unidade {nome_unid_ctx}:\n{horarios_formatados}"
+            logger.info("📋 Horário pré-carregado no contexto para LLM")
+
         _intencoes_cacheaveis = {
             "horario", "endereco"
         }
@@ -4037,13 +4046,21 @@ async def chatwoot_webhook(
     # (nome de unidade, cidade ou bairro). Mensagens genéricas NUNCA trocam o slug.
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
         _msg_norm_wh = normalizar(conteudo_texto)
+        _tokens_msg_wh = {t for t in _msg_norm_wh.split() if len(t) >= 4}
         _tem_geo_wh = False
         try:
             _units_wh = await listar_unidades_ativas(empresa_id)
             for _u in _units_wh:
                 for _campo in ['nome', 'cidade', 'bairro']:
                     _val = normalizar(_u.get(_campo, '') or '')
-                    if _val and len(_val) >= 4 and _val in _msg_norm_wh:
+                    if not _val or len(_val) < 4:
+                        continue
+                    # Match exato (substring) ou por tokens significativos
+                    if _val in _msg_norm_wh:
+                        _tem_geo_wh = True
+                        break
+                    _tokens_campo = {t for t in _val.split() if len(t) >= 4 and t not in {"fitness", "academia", "unidade"}}
+                    if _tokens_campo and _tokens_campo & _tokens_msg_wh:
                         _tem_geo_wh = True
                         break
                 if _tem_geo_wh:
@@ -4080,12 +4097,19 @@ async def chatwoot_webhook(
                 texto_cliente = normalizar(conteudo_texto).strip()
 
                 # Tenta por nome/cidade/bairro já na primeira mensagem APENAS
-                # quando houver indicador geográfico claro.
+                # quando houver indicador geográfico claro (match exato ou por tokens).
+                _tokens_msg_multi = {t for t in texto_cliente.split() if len(t) >= 4}
                 _tem_geo_multi = False
                 for _u in unidades_ativas:
                     for _campo in ["nome", "cidade", "bairro"]:
                         _v = normalizar(_u.get(_campo, "") or "")
-                        if _v and len(_v) >= 4 and _v in texto_cliente:
+                        if not _v or len(_v) < 4:
+                            continue
+                        if _v in texto_cliente:
+                            _tem_geo_multi = True
+                            break
+                        _tokens_campo = {t for t in _v.split() if len(t) >= 4 and t not in {"fitness", "academia", "unidade"}}
+                        if _tokens_campo and _tokens_campo & _tokens_msg_multi:
                             _tem_geo_multi = True
                             break
                     if _tem_geo_multi:
