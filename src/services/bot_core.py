@@ -66,7 +66,6 @@ from src.services.workers import (
     agendar_followups, worker_followup, worker_metricas_diarias
 )
 import src.services.workers as _workers_module
-from src.services.stream_worker import run_stream_worker
 import src.services.uaz_client as _uaz_module
 from src.services.uaz_client import UazAPIClient
 from src.services.ia_processor import (

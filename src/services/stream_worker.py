@@ -8,9 +8,6 @@ from src.core.config import (
 )
 from src.core.redis_client import redis_client
 from src.services.db_queries import carregar_integracao
-# Import lazy resolvido: bot_core depende de stream_worker indiretamente via startup,
-# mas processar_ia_e_responder não cria ciclo real — importar aqui é seguro e mais eficiente.
-from src.services.bot_core import processar_ia_e_responder
 
 STREAM_NAME = "ia:webhook:stream"
 CONSUMER_GROUP = "ia_workers_group"
