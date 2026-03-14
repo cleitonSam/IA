@@ -747,19 +747,22 @@ async def bd_iniciar_conversa(
     if not _database.db_pool:
         return
     try:
-        unidade = await _database.db_pool.fetchrow(
-            "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
-        )
-        if not unidade:
-            logger.error(f"Unidade {slug} não encontrada para empresa {empresa_id}")
-            return
-        unidade_id = unidade['id']
+        unidade_id = None
+        if slug:
+            unidade = await _database.db_pool.fetchrow(
+                "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
+            )
+            if unidade:
+                unidade_id = unidade['id']
+            else:
+                logger.warning(f"Unidade {slug} não encontrada para empresa {empresa_id}. Prosseguindo sem unidade_id.")
         await _database.db_pool.execute("""
             INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, primeira_mensagem, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'ativa')
             ON CONFLICT (conversation_id) DO UPDATE SET
                 contato_nome = COALESCE(NULLIF(EXCLUDED.contato_nome, ''), conversas.contato_nome),
                 contato_fone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_fone),
+                contato_telefone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_telefone),
                 unidade_id = EXCLUDED.unidade_id,
                 status = 'ativa',
                 updated_at = NOW()

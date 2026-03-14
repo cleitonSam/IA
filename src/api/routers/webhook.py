@@ -125,7 +125,14 @@ async def chatwoot_webhook(
     if contato_fone:
         logger.info(f"📱 Telefone identificado no webhook: {contato_fone} (conv={id_conv})")
     
-    # logger.info(f"🔍 DEBUG Chatwoot: conv={id_conv} | sender_data={json.dumps(contato)} | extracted_phone={contato_fone}") # Desativado para log limpo
+    # GARANTIA DE PERSISTÊNCIA: Inicia conversa no BD já com o que temos (fone, nome raw, etc)
+    # Isso evita que o fone se perca em retornos precoces (esperando nome ou escolhendo unidade)
+    _nome_temp = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else "Cliente"
+    await bd_iniciar_conversa(
+        id_conv, slug, account_id,
+        contato.get("id"), _nome_temp, empresa_id,
+        contato_fone=contato_fone
+    )
 
     if message_type == "incoming":
         if nome_contato_valido:
@@ -242,11 +249,6 @@ async def chatwoot_webhook(
                     await redis_client.delete(prompt_unidade_key)
                     contato = payload.get("sender", {})
                     _nome_contato = limpar_nome(contato.get("name"))
-                    await bd_iniciar_conversa(
-                        id_conv, slug, account_id,
-                        contato.get("id"), _nome_contato, empresa_id,
-                        contato_fone=contato_fone
-                    )
                     await bd_registrar_evento_funil(
                         id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
                     )
@@ -331,12 +333,7 @@ async def chatwoot_webhook(
 
     contato = payload.get("sender", {})
     _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
-    await bd_iniciar_conversa(
-        id_conv, slug, account_id,
-        contato.get("id"), _nome_para_bd, empresa_id,
-        contato_fone=contato_fone
-    )
-
+    
     lock_key = f"agendar_lock:{id_conv}"
     if await redis_client.set(lock_key, "1", nx=True, ex=5):
         try:
