@@ -3533,9 +3533,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
             )
             temperature = float(pers.get("temperatura") or 0.7)
-            max_tokens_llm = int(pers.get("max_tokens") or 1200)
-            # Garante mínimo de 1500 para evitar truncamento em prompts com dados da unidade
-            max_tokens_llm = max(max_tokens_llm, 1500)
+            max_tokens_llm = int(pers.get("max_tokens") or 2000)
+            # Garante mínimo de 2000 — suficiente para qualquer resposta de WhatsApp
+            # sem truncamento, sem incentivar respostas longas desnecessárias
+            max_tokens_llm = max(max_tokens_llm, 2000)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
