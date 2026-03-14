@@ -3345,7 +3345,7 @@ Convênios: {convenios_prompt}
                 'id', 'empresa_id', 'ativo', 'nome_ia', 'personalidade',
                 'tom_voz', 'estilo_comunicacao', 'saudacao_personalizada',
                 'instrucoes_base', 'regras_atendimento', 'modelo_preferido',
-                'temperatura', 'created_at', 'updated_at',
+                'temperatura', 'created_at', 'updated_at', 'max_tokens',
             }
             _LABEL_MAP = {
                 'objetivos_venda':     'OBJETIVOS DE VENDA',
@@ -3364,6 +3364,9 @@ Convênios: {convenios_prompt}
                 'idioma':              'IDIOMA',
                 'horario_ativo_inicio':'HORÁRIO ATIVO INÍCIO',
                 'horario_ativo_fim':   'HORÁRIO ATIVO FIM',
+                'exemplos':            'EXEMPLOS DE ATENDIMENTO',
+                'palavras_proibidas':  'PALAVRAS PROIBIDAS',
+                'despedida_personalizada': 'DESPEDIDA PERSONALIZADA',
             }
 
             _extras_prompt = ""
