@@ -27,7 +27,9 @@ async def init_db_pool():
             db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
             logger.info("✅ Conectado ao PostgreSQL com sucesso!")
         except Exception as e:
-            logger.error(f"❌ Erro ao conectar ao PostgreSQL: {e}")
+            # Mascarar senha para o log (por segurança)
+            safe_dsn = dsn.split("@")[-1] if "@" in dsn else dsn
+            logger.error(f"❌ Falha crítica ao conectar no PostgreSQL ({safe_dsn}): {type(e).__name__}: {e}")
     else:
         logger.warning("⚠️ DATABASE_URL não definido - modo sem banco de dados (limitado)")
 
