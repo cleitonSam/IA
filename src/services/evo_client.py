@@ -97,8 +97,8 @@ async def criar_prospect_evo(empresa_id: int, unidade_id: Optional[int], lead_da
         email = f"{number}@atendimento.com.br"
 
     payload = {
-        "name": full_name,
-        "lastName": last_name,
+        "name": first_name,
+        "lastName": last_name if last_name != first_name else "",
         "idBranch": int(id_branch),
         "email": email,
         "ddi": ddi,
