@@ -68,6 +68,8 @@ async def run_stream_worker():
                                 )
                                 conversa = await buscar_conversa_por_fone(phone, empresa_id)
                             
+                            contato_fone = phone
+                            
                             account_id = conversa.get("account_id", 0)
                             conversation_id = conversa.get("conversation_id")
                             contact_id = conversa.get("contato_id")
@@ -81,6 +83,12 @@ async def run_stream_worker():
                             contact_id = int(_raw_contact) if _raw_contact and _raw_contact != "None" else None
                             slug = payload.get("slug")
                             nome_cliente = payload.get("nome_cliente")
+                            contato_fone = payload.get("contato_fone")
+                            
+                            # NOVIDADE: Se vier do Chatwoot mas tiver telefone, responder via UazAPI (Modo Humano)
+                            if contato_fone:
+                                source = "uazapi"
+                                logger.info(f"🔄 Redirecionando resposta da conv {conversation_id} para UazAPI (fone: {contato_fone})")
 
                         if not conversation_id or not empresa_id:
                             logger.error(f"❌ Job inválido no stream {msg_id}: {payload}")
@@ -95,7 +103,8 @@ async def run_stream_worker():
                             await processar_ia_e_responder(
                                 account_id, conversation_id, contact_id, slug,
                                 nome_cliente, lock_val, empresa_id, integracao,
-                                source=source # Passamos a origem para o bot_core decidir como responder
+                                source=source, # Passamos a origem para o bot_core decidir como responder
+                                contato_fone=contato_fone
                             )
                         
                         await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)

@@ -815,6 +815,9 @@ async def despachar_resposta(
     if source == 'uazapi':
         # Para UazAPI, o conversation_id pode ser interno, usamos contato_fone como chatId
         chat_id = contato_fone if contato_fone else str(conversation_id)
+        # Limpa caracteres não numéricos para o formato JID do WhatsApp
+        chat_id = "".join(filter(str.isdigit, chat_id))
+        
         if "@" not in chat_id:
             chat_id = f"{chat_id}@s.whatsapp.net"
             
@@ -842,7 +845,8 @@ async def processar_ia_e_responder(
     lock_val: str,
     empresa_id: int,
     integracao: dict,
-    source: str = 'chatwoot'
+    source: str = 'chatwoot',
+    contato_fone: str = None
 ):
     chave_lock = f"lock:{conversation_id}"
     chave_buffet = f"buffet:{conversation_id}"
@@ -1556,10 +1560,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             if source == 'uazapi':
                 from src.services.db_queries import buscar_conversa_por_fone
                 # Como conversation_id pode ser fake/negativo na UazAPI, usamos o Redis ou DB
-                # Mas no worker já buscamos. Vamos garantir que temos o fone aqui.
-                # (Idealmente passaríamos o fone como parâmetro, vamos ajustar a assinatura se necessário)
-                row = await _database.db_pool.fetchrow("SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id)
-                contato_fone = row['contato_fone'] if row else None
+                if not contato_fone:
+                    # Se não veio via parâmetro, busca no BD como fallback
+                    row = await _database.db_pool.fetchrow("SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id)
+                    contato_fone = row['contato_fone'] if row else None
 
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────

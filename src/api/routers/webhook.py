@@ -114,6 +114,8 @@ async def chatwoot_webhook(
     nome_contato_raw = contato.get("name")
     nome_contato_limpo = limpar_nome(nome_contato_raw)
     nome_contato_valido = nome_eh_valido(nome_contato_limpo)
+    # Tenta pegar o telefone do contato (Chatwoot envia no sender)
+    contato_fone = contato.get("phone_number")
 
     if message_type == "incoming":
         if nome_contato_valido:
@@ -232,7 +234,8 @@ async def chatwoot_webhook(
                     _nome_contato = limpar_nome(contato.get("name"))
                     await bd_iniciar_conversa(
                         id_conv, slug, account_id,
-                        contato.get("id"), _nome_contato, empresa_id
+                        contato.get("id"), _nome_contato, empresa_id,
+                        contato_fone=contato_fone
                     )
                     await bd_registrar_evento_funil(
                         id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
@@ -320,7 +323,8 @@ async def chatwoot_webhook(
     _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
     await bd_iniciar_conversa(
         id_conv, slug, account_id,
-        contato.get("id"), _nome_para_bd, empresa_id
+        contato.get("id"), _nome_para_bd, empresa_id,
+        contato_fone=contato_fone
     )
 
     lock_key = f"agendar_lock:{id_conv}"
@@ -361,7 +365,8 @@ async def chatwoot_webhook(
             "contact_id": str(contato.get("id")),
             "slug": str(slug),
             "nome_cliente": str(_nome_para_bd),
-            "empresa_id": str(empresa_id)
+            "empresa_id": str(empresa_id),
+            "contato_fone": str(contato_fone if contato_fone else "")
         }
         await redis_client.xadd("ia:webhook:stream", job_data)
         return {"status": "enfileirado"}
