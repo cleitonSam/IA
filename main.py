@@ -462,13 +462,16 @@ def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
 
 
 def garantir_frase_completa(txt: str) -> str:
-    """Remove frase incompleta no final do texto para evitar resposta cortada."""
+    """Corta resposta truncada por max_tokens na última frase completa.
+    Só deve ser chamada quando finish_reason=='length'."""
     if not txt:
         return txt
     txt = txt.strip()
     if not txt:
         return txt
-    if txt[-1] in '.!?😊💪✅🏋🎯':
+    ultimo = txt[-1]
+    # Termina com pontuação ou qualquer emoji/símbolo unicode → está completo
+    if ultimo in '.!?' or unicodedata.category(ultimo) in ('So', 'Sm', 'Sk', 'Mn'):
         return txt
     for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
         _pos = txt.rfind(_sep)
@@ -3294,13 +3297,11 @@ async def processar_ia_e_responder(
             _texto_cliente_norm,
         ))
         if planos_ativos and intencao in {"planos", "preco"}:
+            # Sempre envia planos em blocos estruturados — nunca pelo LLM.
+            # O LLM trunca respostas longas com múltiplos planos.
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
-            if _quer_todos_planos or len(_planos_filtrados) != len(planos_ativos):
-                fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
-                logger.info("⚡ Planos: envio em blocos com filtro por contexto e destaque de melhor preço")
-            elif re.search(r"(quero saber dos planos|quais planos|planos)" , _texto_cliente_norm):
-                fast_reply_lista = formatar_planos_bonito(planos_ativos, destacar_melhor_preco=True)
-                logger.info("⚡ Planos: envio completo em blocos para pedido genérico")
+            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
+            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -3629,10 +3630,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
             )
             temperature = float(pers.get("temperatura") or 0.7)
-            max_tokens_llm = int(pers.get("max_tokens") or 2000)
-            # Garante mínimo de 2000 — suficiente para qualquer resposta de WhatsApp
-            # sem truncamento, sem incentivar respostas longas desnecessárias
-            max_tokens_llm = max(max_tokens_llm, 2000)
+            max_tokens_llm = int(pers.get("max_tokens") or 8000)
+            # Mínimo alto para nunca truncar respostas com múltiplos planos ou detalhes
+            max_tokens_llm = max(max_tokens_llm, 8000)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
@@ -3698,6 +3698,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
+                _resposta_foi_truncada = False
                 async with llm_semaphore:
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
@@ -3706,6 +3707,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         if _finish == "length" and resposta_bruta:
                             logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
+                            _resposta_foi_truncada = True
                             # Corta na última frase completa para não enviar frase pela metade
                             for _sep in ['. ', '! ', '? ', '\n']:
                                 _pos = resposta_bruta.rfind(_sep)
@@ -3940,7 +3942,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # para conhecer..." em mensagem separada). O cliente recebe a resposta
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
-                _texto_final = garantir_frase_completa(resposta_texto)
+                # Só corta se a LLM confirmou truncamento — nunca corta respostas completas
+                _texto_final = garantir_frase_completa(resposta_texto) if _resposta_foi_truncada else resposta_texto.strip()
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
