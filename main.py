@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Importações globais do Core Services
 from src.core.config import APP_VERSION
-from src.services.bot_core import startup_event, shutdown_event, global_rate_limit
+from src.services.bot_core import startup_event, shutdown_event, rate_limit_middleware
 
 # Importações dos novos Roteadores do Motor SaaS
 from src.api.routers.system import router as system_router
@@ -24,7 +24,7 @@ app.add_middleware(
 # Middleware HTTP centralizado extraído do bot_core
 @app.middleware("http")
 async def main_rate_limit(request: Request, call_next):
-    return await global_rate_limit(request, call_next)
+    return await rate_limit_middleware(request, call_next)
 
 # Registro de Eventos da Aplicação
 app.add_event_handler("startup", startup_event)
