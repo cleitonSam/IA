@@ -33,18 +33,29 @@ async def uazapi_webhook(
         data = body.get("data", {})
         message = data.get("message", {})
         key = message.get("key", {})
-        
-        # Ignora mensagens enviadas pelo próprio bot
-        if key.get("fromMe"):
-            return {"status": "ignored", "reason": "from_me"}
-            
         remote_jid = key.get("remoteJid", "")
+
         if not remote_jid or "@s.whatsapp.net" not in remote_jid:
             return {"status": "ignored", "reason": "not_personal_chat"}
-            
-        # Extrair telefone (ID do chat no WhatsApp)
+
         phone = remote_jid.split("@")[0]
-        
+
+        # fromMe=true pode ser o BOT (via API) ou um ATENDENTE HUMANO (via WhatsApp)
+        if key.get("fromMe"):
+            bot_sent_key = f"uaz_bot_sent:{phone}"
+            if await redis_client.exists(bot_sent_key):
+                # É o próprio bot — ignora sem pausar
+                await redis_client.delete(bot_sent_key)
+                return {"status": "ignored", "reason": "from_me_bot"}
+            else:
+                # É um atendente humano enviando manualmente — pausa a IA
+                conversa_humana = await buscar_conversa_por_fone(phone, empresa_id)
+                if conversa_humana:
+                    conv_id_humano = conversa_humana.get("conversation_id")
+                    await redis_client.setex(f"pause_ia:{conv_id_humano}", 43200, "1")
+                    logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
+                return {"status": "ignored", "reason": "from_me_human"}
+
         # Extrair conteúdo (texto ou legenda)
         content = ""
         conversation = message.get("message", {}).get("conversation")

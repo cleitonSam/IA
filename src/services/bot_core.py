@@ -823,6 +823,8 @@ async def despachar_resposta(
         tempo_digitacao = min(max(int(len(content) * 0.05 * 1000), 1200), 8000)
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
+        # Marca que o próximo fromMe=true nesse número é do BOT (não de atendente humano)
+        await redis_client.setex(f"uaz_bot_sent:{chat_id}", 30, "1")
         res = await uaz.send_text(chat_id, content, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res
