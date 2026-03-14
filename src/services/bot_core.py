@@ -525,8 +525,9 @@ async def startup_event():
     if OPENROUTER_API_KEY and cliente_ia:
         logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
 
-    from src.core.config import APP_MODE
-    logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
+    # Limpa cooldown de provedor no startup (destrava o bot se o usuário corrigiu a chave)
+    llm_provider_pause_key = f"llm:provider_pause:{EMPRESA_ID_PADRAO}"
+    await redis_client.delete(llm_provider_pause_key)
 
     if APP_MODE in ("worker", "both"):
         worker_tasks = [
