@@ -14,12 +14,14 @@ async def init_db_pool():
             if "://" in dsn and "@" in dsn:
                 try:
                     prefix, rest = dsn.split("://", 1)
+                    prefix = "postgresql" # asyncpg e sqlalchemy preferem postgresql
                     # Divide pelo ÚLTIMO '@' para separar credenciais de host
                     credentials, host_info = rest.rsplit("@", 1)
                     if ":" in credentials:
                         user, password = credentials.split(":", 1)
-                        # Encode apenas na senha
-                        encoded_password = urllib.parse.quote_plus(password)
+                        # UNQUOTE primeiro caso já venha escapado, depois QUOTE_PLUS para garantir
+                        raw_password = urllib.parse.unquote(password)
+                        encoded_password = urllib.parse.quote_plus(raw_password)
                         dsn = f"{prefix}://{user}:{encoded_password}@{host_info}"
                 except Exception:
                     pass # Fallback para original se falhar o parsing
