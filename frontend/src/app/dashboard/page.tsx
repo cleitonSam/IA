@@ -35,12 +35,11 @@ export default function DashboardPage() {
       }
 
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        
+
         const [userRes, unitsRes] = await Promise.all([
-          axios.get(`${apiUrl}/auth/me`, config),
-          axios.get(`${apiUrl}/dashboard/unidades`, config)
+          axios.get(`/api-backend/auth/me`, config),
+          axios.get(`/api-backend/dashboard/unidades`, config)
         ]);
 
         setUser(userRes.data);
@@ -66,12 +65,11 @@ export default function DashboardPage() {
       setLoading(true);
       const token = localStorage.getItem("token");
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        
+
         const [metricsRes, convLogRes] = await Promise.all([
-          axios.get(`${apiUrl}/dashboard/metrics?unidade_id=${selectedUnidadeId}`, config),
-          axios.get(`${apiUrl}/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
+          axios.get(`/api-backend/dashboard/metrics?unidade_id=${selectedUnidadeId}`, config),
+          axios.get(`/api-backend/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
         ]);
 
         setMetrics(metricsRes.data.metrics);

@@ -24,8 +24,7 @@ export default function LoginPage() {
       formData.append("username", email);
       formData.append("password", password);
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const response = await axios.post(`${apiUrl}/auth/login`, formData);
+      const response = await axios.post(`/api-backend/auth/login`, formData);
       const { access_token } = response.data;
 
       localStorage.setItem("token", access_token);
