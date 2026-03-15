@@ -297,6 +297,8 @@ async def criar_unidade(
             body.site, body.instagram, body.link_matricula,
             empresa_id,
         )
+        from src.core.redis_client import redis_client
+        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
         logger.info(f"✅ Unidade '{body.nome}' criada (id={row['id']}, empresa_id={empresa_id})")
         return {"id": row["id"], "slug": row["slug"], "nome": row["nome"], "empresa_id": empresa_id}
     except Exception as e:
@@ -375,6 +377,8 @@ async def atualizar_unidade(
             body.whatsapp, body.site, body.instagram, body.link_matricula,
             unidade_id, empresa_id
         )
+        from src.core.redis_client import redis_client
+        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
         return {"status": "success", "message": "Unidade atualizada"}
     except Exception as e:
         logger.error(f"Erro ao atualizar unidade: {e}")
@@ -404,6 +408,8 @@ async def excluir_unidade(
             "UPDATE unidades SET ativa = false, updated_at = NOW() WHERE id = $1 AND empresa_id = $2",
             unidade_id, empresa_id
         )
+        from src.core.redis_client import redis_client
+        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
         return {"status": "success", "message": "Unidade desativada"}
     except Exception as e:
         logger.error(f"Erro ao excluir unidade: {e}")
