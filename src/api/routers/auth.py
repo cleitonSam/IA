@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -17,6 +18,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 class CriarEmpresaRequest(BaseModel):
     nome: str
+    nome_fantasia: Optional[str] = None
+    cnpj: Optional[str] = None
+    email: Optional[EmailStr] = None
+    telefone: Optional[str] = None
+    website: Optional[str] = None
+    plano: Optional[str] = None
 
 class ConviteRequest(BaseModel):
     email: EmailStr
@@ -37,11 +44,17 @@ async def _buscar_empresa(empresa_id: int):
         return None
     return await _database.db_pool.fetchrow("SELECT * FROM empresas WHERE id = $1", empresa_id)
 
-async def _criar_empresa(nome: str) -> int:
+async def _criar_empresa(body: "CriarEmpresaRequest") -> int:
     from src.core.database import _database
+    import uuid as _uuid
     row = await _database.db_pool.fetchrow(
-        "INSERT INTO empresas (nome, status) VALUES ($1, 'active') RETURNING id",
-        nome
+        """
+        INSERT INTO empresas (uuid, nome, nome_fantasia, cnpj, email, telefone, website, plano, status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', NOW())
+        RETURNING id
+        """,
+        str(_uuid.uuid4()), body.nome, body.nome_fantasia, body.cnpj,
+        body.email, body.telefone, body.website, body.plano
     )
     return row["id"]
 
@@ -116,7 +129,9 @@ async def listar_empresas(token_payload: dict = Depends(get_current_user_token))
     if token_payload.get("perfil") != "admin_master":
         raise HTTPException(status_code=403, detail="Apenas admin_master pode listar empresas")
     from src.core.database import _database
-    rows = await _database.db_pool.fetch("SELECT id, nome, status FROM empresas ORDER BY id")
+    rows = await _database.db_pool.fetch(
+        "SELECT id, uuid, nome, nome_fantasia, cnpj, email, telefone, website, plano, status, created_at FROM empresas ORDER BY id"
+    )
     return [dict(r) for r in rows]
 
 
@@ -128,7 +143,7 @@ async def create_empresa(
     """Cria uma nova empresa. Apenas admin_master pode usar."""
     if token_payload.get("perfil") != "admin_master":
         raise HTTPException(status_code=403, detail="Apenas admin_master pode criar empresas")
-    empresa_id = await _criar_empresa(body.nome)
+    empresa_id = await _criar_empresa(body)
     logger.info(f"✅ Empresa '{body.nome}' criada (id={empresa_id})")
     return {"empresa_id": empresa_id, "nome": body.nome}
 
