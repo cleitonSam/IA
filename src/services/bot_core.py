@@ -169,6 +169,27 @@ async def startup_event():
     _workers_module.is_shutting_down = False
 
     await _database.init_db_pool()
+
+    # Garante que tabelas do painel admin existam
+    if _database.db_pool:
+        try:
+            await _database.db_pool.execute("""
+                CREATE TABLE IF NOT EXISTS convites (
+                    id SERIAL PRIMARY KEY,
+                    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+                    email VARCHAR(255) NOT NULL,
+                    token VARCHAR(64) NOT NULL UNIQUE,
+                    usado BOOLEAN NOT NULL DEFAULT false,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )
+            """)
+            await _database.db_pool.execute("CREATE INDEX IF NOT EXISTS ix_convites_token ON convites (token)")
+            await _database.db_pool.execute("CREATE INDEX IF NOT EXISTS ix_convites_email ON convites (email)")
+            logger.info("✅ Tabela 'convites' verificada/criada")
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar tabela convites: {e}")
+
     _chatwoot_module.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(20.0, connect=10.0),
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
