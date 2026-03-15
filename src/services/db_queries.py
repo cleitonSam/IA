@@ -82,14 +82,17 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
             # Tenta unidade específica primeiro
             row = await _database.db_pool.fetchrow("""
                 SELECT config FROM integracoes
-                WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3::text AND ativo = true
+                WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3 AND ativo = true
                 LIMIT 1
-            """, empresa_id, tipo, str(unidade_id))
+            """, empresa_id, tipo, unidade_id)
             if row:
                 config = row['config']
-                if isinstance(config, str): config = json.loads(config)
-                await redis_set_json(cache_key, config, 300)
-                return config
+                try:
+                    if isinstance(config, str): config = json.loads(config)
+                    await redis_set_json(cache_key, config, 300)
+                    return config
+                except Exception as e:
+                    logger.error(f"Erro ao parsear config de integração {tipo} da unidade {unidade_id}: {e}")
 
         # Fallback para global
         row = await _database.db_pool.fetchrow("""
@@ -154,15 +157,22 @@ async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = 
     url = (
         f"{api_base}/membership?take=100&skip=0&active=true"
         "&showAccessBranches=false&showOnlineSalesObservation=false"
-        "&showActivitiesGroups=false&externalSaleAvailable=false"
+        "&showActivitiesGroups=false&externalSaleAvailable=true"
     )
+    
+    # Se houver idBranch na config (multilocation), filtramos por ele
+    id_branch = integracao.get('idBranch')
+    if id_branch:
+        url += f"&idBranch={id_branch}"
 
     auth = base64.b64encode(f"{dns}:{secret_key}".encode()).decode()
     headers = {'Authorization': f'Basic {auth}', 'accept': 'application/json'}
 
     try:
         async with httpx.AsyncClient() as client:
+            logger.info(f"🔄 Chamando API Evo (Unid {unidade_id}): {url}")
             resp = await client.get(url, headers=headers, timeout=15)
+            logger.info(f"💾 Status API Evo: {resp.status_code}")
             resp.raise_for_status()
             data = resp.json()
 
@@ -228,10 +238,10 @@ async def sincronizar_planos_evo(empresa_id: int, unidade_id: Optional[int] = No
     if not planos_api:
         return 0
 
+    logger.info(f"✨ Encontrados {len(planos_api)} planos na API para empresa {empresa_id}")
     count = 0
     for p in planos_api:
-        if not p.get('link_venda'):
-            continue
+        # Removida exigência de link_venda para permitir que a IA conheça todos os planos ativos
 
         # Se estamos sincronizando para uma unidade específica, o plano deve ser vinculado a ela.
         # Caso contrário, se for global, unidade_id no banco fica nulo.

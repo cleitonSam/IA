@@ -14,7 +14,7 @@ interface Integration { id?: number; tipo: string; config: any; ativo: boolean; 
 interface EvoUnit {
   unidade_id: number;
   unidade_nome: string;
-  config: { dns: string; secret_key: string };
+  config: { dns: string; secret_key: string; idBranch?: string };
   ativo: boolean;
   configurado: boolean;
 }
@@ -31,7 +31,7 @@ export default function IntegrationsPage() {
   const [evoUnits, setEvoUnits] = useState<EvoUnit[]>([]);
   const [evoLoading, setEvoLoading] = useState(false);
   const [evoModal, setEvoModal] = useState<{ open: boolean; unit: EvoUnit | null }>({ open: false, unit: null });
-  const [evoForm, setEvoForm] = useState({ dns: "", secret_key: "", ativo: false });
+  const [evoForm, setEvoForm] = useState({ dns: "", secret_key: "", idBranch: "", ativo: false });
   const [evoSaving, setEvoSaving] = useState(false);
   const [evoSuccess, setEvoSuccess] = useState(false);
 
@@ -91,7 +91,12 @@ export default function IntegrationsPage() {
   };
 
   const openEvoModal = (unit: EvoUnit) => {
-    setEvoForm({ dns: unit.config.dns || "", secret_key: unit.config.secret_key || "", ativo: unit.ativo });
+    setEvoForm({ 
+      dns: unit.config.dns || "", 
+      secret_key: unit.config.secret_key || "", 
+      idBranch: unit.config.idBranch || "",
+      ativo: unit.ativo 
+    });
     setEvoModal({ open: true, unit });
     setEvoSuccess(false);
   };
@@ -102,7 +107,14 @@ export default function IntegrationsPage() {
     try {
       await axios.put(
         `/api-backend/management/integrations/evo/unit/${evoModal.unit.unidade_id}`,
-        { config: { dns: evoForm.dns, secret_key: evoForm.secret_key }, ativo: evoForm.ativo },
+        { 
+          config: { 
+            dns: evoForm.dns, 
+            secret_key: evoForm.secret_key,
+            idBranch: evoForm.idBranch 
+          }, 
+          ativo: evoForm.ativo 
+        },
         getToken()
       );
       setEvoSuccess(true);
@@ -437,6 +449,21 @@ export default function IntegrationsPage() {
                     className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all font-mono text-sm"
                     placeholder="••••••••••••••••••"
                   />
+                </div>
+
+                {/* idBranch */}
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                    <Building2 className="w-3 h-3 text-[#00d2ff]" /> ID Branch (Evo)
+                  </label>
+                  <input
+                    type="text"
+                    value={evoForm.idBranch}
+                    onChange={e => setEvoForm({ ...evoForm, idBranch: e.target.value })}
+                    className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all font-medium text-sm"
+                    placeholder="Ex: 1"
+                  />
+                  <p className="text-[9px] text-slate-600 pl-1 uppercase tracking-tight">Obrigatório para contas Multiunidade.</p>
                 </div>
               </div>
 
