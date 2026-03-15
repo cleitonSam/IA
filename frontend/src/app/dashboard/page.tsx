@@ -35,7 +35,7 @@ export default function DashboardPage() {
       }
 
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
         const config = { headers: { Authorization: `Bearer ${token}` } };
         
         const [userRes, unitsRes] = await Promise.all([
@@ -66,7 +66,7 @@ export default function DashboardPage() {
       setLoading(true);
       const token = localStorage.getItem("token");
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
         const config = { headers: { Authorization: `Bearer ${token}` } };
         
         const [metricsRes, convLogRes] = await Promise.all([
