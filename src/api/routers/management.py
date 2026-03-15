@@ -6,6 +6,7 @@ import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
 import json
+import asyncio
 
 router = APIRouter(prefix="/management", tags=["management"])
 
@@ -195,6 +196,70 @@ async def delete_personality(
         "DELETE FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
     )
     return {"status": "success"}
+
+
+class PlaygroundMessage(BaseModel):
+    role: str   # "user" | "assistant"
+    content: str
+
+class PlaygroundRequest(BaseModel):
+    model_name: str = "openai/gpt-4o"
+    instrucoes_base: str = ""
+    personalidade: str = ""
+    tom_voz: str = "Profissional"
+    temperature: float = 0.7
+    max_tokens: int = 1000
+    messages: List[PlaygroundMessage] = []
+
+
+@router.post("/personalities/playground")
+async def personality_playground(
+    body: PlaygroundRequest,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Executa uma mensagem real no LLM com a configuração de personalidade fornecida.
+    Usado pelo Playground no painel de Personalidade IA.
+    """
+    from src.services.llm_service import cliente_ia
+
+    if not cliente_ia:
+        raise HTTPException(status_code=503, detail="Serviço de IA não configurado (OPENROUTER_API_KEY ausente)")
+
+    # Monta system prompt combinando personalidade + instruções + tom
+    partes = []
+    if body.personalidade:
+        partes.append(f"Objetivo: {body.personalidade}")
+    if body.instrucoes_base:
+        partes.append(body.instrucoes_base)
+    if body.tom_voz:
+        partes.append(f"Tom de voz: {body.tom_voz}.")
+    system_prompt = "\n\n".join(partes) if partes else "Você é um assistente prestativo."
+
+    # Monta histórico de mensagens
+    msgs = [{"role": "system", "content": system_prompt}]
+    for m in body.messages:
+        if m.role in ("user", "assistant"):
+            msgs.append({"role": m.role, "content": m.content})
+
+    try:
+        response = await asyncio.wait_for(
+            cliente_ia.chat.completions.create(
+                model=body.model_name,
+                messages=msgs,
+                temperature=body.temperature,
+                max_tokens=min(body.max_tokens, 500),  # limita resposta no playground
+            ),
+            timeout=30
+        )
+        reply = response.choices[0].message.content or ""
+        return {"reply": reply, "model": body.model_name}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="IA demorou demais para responder. Tente novamente.")
+    except Exception as e:
+        logger.error(f"Playground LLM error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao chamar a IA: {str(e)[:200]}")
+
 
 # --- FAQ Endpoints ---
 

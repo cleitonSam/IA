@@ -121,19 +121,37 @@ export default function PersonalityPage() {
     } catch { alert("Erro ao excluir personalidade."); }
   };
 
-  const runTest = () => {
-    if (!testMessage.trim()) return;
+  const runTest = async () => {
+    if (!testMessage.trim() || testLoading) return;
     setTestLoading(true);
     const newHistory = [...playHistory, { role: "user", content: testMessage }];
     setPlayHistory(newHistory);
     setTestMessage("");
-    setTimeout(() => {
-      setPlayHistory([...newHistory, {
-        role: "bot",
-        content: "Modo simulação. Salve as configurações para ativar a IA no WhatsApp/Chatwoot."
-      }]);
+    try {
+      const res = await axios.post(
+        "/api-backend/management/personalities/playground",
+        {
+          model_name: formData.model_name,
+          instrucoes_base: formData.instrucoes_base,
+          personalidade: formData.personalidade,
+          tom_voz: formData.tom_voz,
+          temperature: formData.temperature,
+          max_tokens: formData.max_tokens,
+          // envia histórico convertendo "bot" → "assistant" para o backend
+          messages: newHistory.map(m => ({
+            role: m.role === "bot" ? "assistant" : m.role,
+            content: m.content,
+          })),
+        },
+        getConfig()
+      );
+      setPlayHistory(prev => [...prev, { role: "bot", content: res.data.reply }]);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || "Erro ao conectar com a IA.";
+      setPlayHistory(prev => [...prev, { role: "bot", content: `⚠️ ${detail}` }]);
+    } finally {
       setTestLoading(false);
-    }, 900);
+    }
   };
 
   const inputClass = "w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 focus:bg-slate-900/80 transition-all font-medium text-sm";
@@ -497,17 +515,27 @@ export default function PersonalityPage() {
 
                   {activeTab === "playground" && (
                     <div className="p-10">
-                      <div className="mb-6 p-4 bg-[#00d2ff]/5 border border-[#00d2ff]/10 rounded-2xl flex items-center gap-3">
-                        <Activity className="w-4 h-4 text-[#00d2ff] animate-pulse flex-shrink-0" />
-                        <p className="text-xs text-slate-400 font-bold">
-                          Simulador — salve para que o agente use estas configurações no WhatsApp/Chatwoot.
-                        </p>
+                      <div className="mb-6 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                          <p className="text-xs text-emerald-300 font-bold">
+                            IA real — conversando com <span className="text-white">{MODELS.find(m => m.id === formData.model_name)?.label || formData.model_name}</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPlayHistory([])}
+                          className="text-[10px] text-slate-500 hover:text-white font-bold uppercase tracking-widest transition-colors"
+                        >
+                          Limpar
+                        </button>
                       </div>
                       <div className="bg-slate-950/60 rounded-2xl p-5 min-h-[300px] mb-5 border border-white/5 flex flex-col gap-3">
                         {playHistory.length === 0 ? (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center opacity-30 py-12">
+                          <div className="flex-1 flex flex-col items-center justify-center text-center opacity-40 py-12">
                             <Bot className="w-12 h-12 mb-3" />
-                            <p className="text-sm font-bold">Teste o comportamento da IA.</p>
+                            <p className="text-sm font-bold">Converse com a IA agora mesmo.</p>
+                            <p className="text-xs mt-1 opacity-70">As configurações desta tela são usadas em tempo real.</p>
                           </div>
                         ) : playHistory.map((m, i) => (
                           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -520,7 +548,12 @@ export default function PersonalityPage() {
                             </div>
                           </div>
                         ))}
-                        {testLoading && <div className="text-xs text-[#00d2ff] animate-pulse">Neural processando...</div>}
+                        {testLoading && (
+                          <div className="flex items-center gap-2 text-xs text-[#00d2ff]">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span className="animate-pulse">Pensando...</span>
+                          </div>
+                        )}
                       </div>
                       <div className="relative">
                         <input
@@ -528,7 +561,7 @@ export default function PersonalityPage() {
                           value={testMessage}
                           onChange={e => setTestMessage(e.target.value)}
                           onKeyDown={e => e.key === "Enter" && runTest()}
-                          placeholder="Digite para testar o cérebro..."
+                          placeholder="Digite sua mensagem e pressione Enter..."
                           className={`${inputClass} pr-16`}
                         />
                         <button
