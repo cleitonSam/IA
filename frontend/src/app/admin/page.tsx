@@ -6,7 +6,8 @@ import axios from "axios";
 import { motion } from "framer-motion";
 import {
   Building2, Mail, Plus, Send, LogOut, LayoutDashboard,
-  Loader2, CheckCircle, AlertCircle, ChevronRight, Users
+  Loader2, CheckCircle, AlertCircle, ChevronRight, Users,
+  Pencil, Trash2, X
 } from "lucide-react";
 
 export default function AdminPage() {
@@ -19,6 +20,12 @@ export default function AdminPage() {
   const [novaEmpresa, setNovaEmpresa] = useState({ nome: "", nome_fantasia: "", cnpj: "", email: "", telefone: "" });
   const [criandoEmpresa, setCriandoEmpresa] = useState(false);
   const [msgEmpresa, setMsgEmpresa] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Editar empresa
+  const [editando, setEditando] = useState<any>(null);
+  const [salvando, setSalvando] = useState(false);
+  const [excluindoId, setExcluindoId] = useState<number | null>(null);
+  const [msgEdit, setMsgEdit] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Enviar convite
   const [convite, setConvite] = useState({ email: "", empresa_id: "" });
@@ -67,6 +74,34 @@ export default function AdminPage() {
       setMsgEmpresa({ ok: false, text: err.response?.data?.detail || "Erro ao criar empresa." });
     } finally {
       setCriandoEmpresa(false);
+    }
+  };
+
+  const handleSalvarEdicao = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSalvando(true);
+    setMsgEdit(null);
+    try {
+      await axios.put(`/api-backend/auth/empresas/${editando.id}`, editando, getConfig());
+      setMsgEdit({ ok: true, text: "Empresa atualizada com sucesso!" });
+      await fetchData();
+      setTimeout(() => { setEditando(null); setMsgEdit(null); }, 1200);
+    } catch (err: any) {
+      setMsgEdit({ ok: false, text: err.response?.data?.detail || "Erro ao atualizar empresa." });
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const handleExcluir = async (id: number) => {
+    setExcluindoId(id);
+    try {
+      await axios.delete(`/api-backend/auth/empresas/${id}`, getConfig());
+      await fetchData();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Erro ao excluir empresa.");
+    } finally {
+      setExcluindoId(null);
     }
   };
 
@@ -292,15 +327,88 @@ export default function AdminPage() {
                     </div>
                     <div>
                       <p className="font-bold text-sm">{emp.nome}</p>
-                      <p className="text-xs text-gray-500">{emp.cnpj || "CNPJ não informado"} · ID: {emp.id}</p>
+                      <p className="text-xs text-gray-500">{emp.cnpj || "CNPJ não informado"} · {emp.email || "sem e-mail"} · ID: {emp.id}</p>
                     </div>
                   </div>
-                  <span className={`text-xs font-bold px-3 py-1 rounded-full ${emp.status === "active" ? "bg-green-500/10 text-green-400" : "bg-gray-500/10 text-gray-400"}`}>
-                    {emp.status === "active" ? "Ativo" : emp.status}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold px-3 py-1 rounded-full ${emp.status === "active" ? "bg-green-500/10 text-green-400" : "bg-gray-500/10 text-gray-400"}`}>
+                      {emp.status === "active" ? "Ativo" : emp.status}
+                    </span>
+                    <button
+                      onClick={() => { setEditando({ ...emp }); setMsgEdit(null); }}
+                      className="p-2 rounded-lg text-gray-400 hover:text-primary hover:bg-primary/10 transition-all"
+                      title="Editar"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => { if (confirm(`Excluir a empresa "${emp.nome}"? Esta ação não pode ser desfeita.`)) handleExcluir(emp.id); }}
+                      disabled={excluindoId === emp.id}
+                      className="p-2 rounded-lg text-gray-400 hover:text-accent hover:bg-accent/10 transition-all disabled:opacity-50"
+                      title="Excluir"
+                    >
+                      {excluindoId === emp.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </motion.div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Modal editar empresa */}
+        {editando && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="glass-morphism p-8 rounded-2xl w-full max-w-lg"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <Pencil className="w-5 h-5 text-primary" />
+                  Editar Empresa
+                </h2>
+                <button onClick={() => setEditando(null)} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-all">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <form onSubmit={handleSalvarEdicao} className="space-y-4">
+                {[
+                  { key: "nome", label: "Nome *", required: true },
+                  { key: "nome_fantasia", label: "Nome Fantasia" },
+                  { key: "cnpj", label: "CNPJ" },
+                  { key: "email", label: "E-mail", type: "email" },
+                  { key: "telefone", label: "Telefone" },
+                  { key: "website", label: "Website" },
+                ].map(({ key, label, required, type }) => (
+                  <div key={key}>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1 block">{label}</label>
+                    <input
+                      type={type || "text"}
+                      value={editando[key] || ""}
+                      onChange={(e) => setEditando({ ...editando, [key]: e.target.value })}
+                      required={required}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 text-white placeholder:text-gray-600"
+                    />
+                  </div>
+                ))}
+                {msgEdit && (
+                  <div className={`flex items-center gap-2 text-sm p-3 rounded-lg ${msgEdit.ok ? "bg-green-500/10 text-green-400" : "bg-accent/10 text-accent"}`}>
+                    {msgEdit.ok ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                    {msgEdit.text}
+                  </div>
+                )}
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setEditando(null)} className="flex-1 py-3 rounded-xl border border-white/10 text-gray-400 hover:bg-white/5 transition-all font-bold">
+                    Cancelar
+                  </button>
+                  <button type="submit" disabled={salvando} className="flex-1 bg-primary hover:bg-primary/80 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-50">
+                    {salvando ? <Loader2 className="w-5 h-5 animate-spin" /> : "Salvar"}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
           </div>
         )}
       </main>

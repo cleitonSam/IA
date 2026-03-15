@@ -25,6 +25,17 @@ class CriarEmpresaRequest(BaseModel):
     website: Optional[str] = None
     plano: Optional[str] = None
 
+
+class AtualizarEmpresaRequest(BaseModel):
+    nome: Optional[str] = None
+    nome_fantasia: Optional[str] = None
+    cnpj: Optional[str] = None
+    email: Optional[str] = None
+    telefone: Optional[str] = None
+    website: Optional[str] = None
+    plano: Optional[str] = None
+    status: Optional[str] = None
+
 class ConviteRequest(BaseModel):
     email: str
     empresa_id: int
@@ -146,6 +157,53 @@ async def create_empresa(
     empresa_id = await _criar_empresa(body)
     logger.info(f"✅ Empresa '{body.nome}' criada (id={empresa_id})")
     return {"empresa_id": empresa_id, "nome": body.nome}
+
+
+@router.put("/empresas/{empresa_id}")
+async def atualizar_empresa(
+    empresa_id: int,
+    body: AtualizarEmpresaRequest,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Atualiza dados de uma empresa. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode editar empresas")
+
+    fields = {k: v for k, v in body.dict().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+
+    import src.core.database as _database
+    set_clause = ", ".join(f"{k} = ${i+1}" for i, k in enumerate(fields))
+    values = list(fields.values()) + [empresa_id]
+    await _database.db_pool.execute(
+        f"UPDATE empresas SET {set_clause} WHERE id = ${len(values)}",
+        *values
+    )
+    logger.info(f"✏️ Empresa id={empresa_id} atualizada")
+    return {"message": "Empresa atualizada com sucesso"}
+
+
+@router.delete("/empresas/{empresa_id}")
+async def excluir_empresa(
+    empresa_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Exclui uma empresa. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode excluir empresas")
+
+    import src.core.database as _database
+    row = await _database.db_pool.fetchrow("SELECT nome FROM empresas WHERE id = $1", empresa_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+
+    try:
+        await _database.db_pool.execute("DELETE FROM empresas WHERE id = $1", empresa_id)
+        logger.info(f"🗑️ Empresa '{row['nome']}' (id={empresa_id}) excluída")
+        return {"message": "Empresa excluída com sucesso"}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Não é possível excluir esta empresa pois ela possui dados vinculados.")
 
 
 @router.post("/invite", status_code=201)
