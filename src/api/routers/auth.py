@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from src.core.config import logger, ACCESS_TOKEN_EXPIRE_MINUTES
 from src.core.security import verify_password, get_password_hash, create_access_token, get_current_user_token
@@ -20,19 +20,19 @@ class CriarEmpresaRequest(BaseModel):
     nome: str
     nome_fantasia: Optional[str] = None
     cnpj: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     telefone: Optional[str] = None
     website: Optional[str] = None
     plano: Optional[str] = None
 
 class ConviteRequest(BaseModel):
-    email: EmailStr
+    email: str
     empresa_id: int
 
 class RegisterRequest(BaseModel):
     token: str
     nome: str
-    email: EmailStr
+    email: str
     senha: str
 
 
