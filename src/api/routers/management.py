@@ -304,22 +304,88 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
     empresa_id = token_payload.get("empresa_id")
     rows = await _database.db_pool.fetch(
-        "SELECT id, tipo, config, ativo FROM integracoes WHERE empresa_id = $1",
+        "SELECT id, tipo, config, ativo FROM integracoes WHERE empresa_id = $1 AND (unidade_id IS NULL OR unidade_id = '')",
         empresa_id
     )
     return [dict(r) for r in rows]
 
+
+@router.get("/integrations/evo/units")
+async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)):
+    """Retorna a configuração EVO para cada unidade ativa da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    units = await _database.db_pool.fetch(
+        "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
+        empresa_id
+    )
+    configs = await _database.db_pool.fetch(
+        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
+        empresa_id
+    )
+    config_map = {}
+    for r in configs:
+        c = r["config"]
+        if isinstance(c, str):
+            try: c = json.loads(c)
+            except Exception: c = {}
+        config_map[str(r["unidade_id"])] = {"config": c, "ativo": r["ativo"]}
+
+    result = []
+    for u in units:
+        entry = config_map.get(str(u["id"]))
+        result.append({
+            "unidade_id": u["id"],
+            "unidade_nome": u["nome"],
+            "config": entry["config"] if entry else {"dns": "", "secret_key": ""},
+            "ativo": entry["ativo"] if entry else False,
+            "configurado": bool(entry and entry["config"].get("dns")),
+        })
+    return result
+
+
+@router.put("/integrations/evo/unit/{unidade_id}")
+async def update_evo_unit(
+    unidade_id: int,
+    body: IntegrationUpdate,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Salva a configuração EVO de uma unidade específica."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    existing = await _database.db_pool.fetchval(
+        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2",
+        empresa_id, str(unidade_id)
+    )
+    config_json = json.dumps(body.config)
+    if existing:
+        await _database.db_pool.execute(
+            "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
+            config_json, body.ativo, existing
+        )
+    else:
+        await _database.db_pool.execute(
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2, $3, $4, NOW())",
+            empresa_id, config_json, body.ativo, str(unidade_id)
+        )
+    return {"status": "success"}
+
+
 @router.put("/integrations/{tipo}")
 async def update_integration(tipo: str, body: IntegrationUpdate, token_payload: dict = Depends(get_current_user_token)):
     empresa_id = token_payload.get("empresa_id")
-    
+
     existing = await _database.db_pool.fetchval(
-        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2",
+        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND (unidade_id IS NULL OR unidade_id = '')",
         empresa_id, tipo
     )
-    
+
     config_json = json.dumps(body.config)
-    
+
     if existing:
         await _database.db_pool.execute(
             "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
