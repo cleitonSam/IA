@@ -21,10 +21,13 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<any>(null);
   const [conversations, setConversations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const [unidades, setUnidades] = useState<any[]>([]);
+  const [selectedUnidadeId, setSelectedUnidadeId] = useState<number | null>(null);
 
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchUnidadesAndUser = async () => {
       const token = localStorage.getItem("token");
       if (!token) {
         window.location.href = "/login";
@@ -35,27 +38,55 @@ export default function DashboardPage() {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
         const config = { headers: { Authorization: `Bearer ${token}` } };
         
-        // Paralelizando busca de dados para performance
-        const [userRes, metricsRes, convLogRes] = await Promise.all([
+        const [userRes, unitsRes] = await Promise.all([
           axios.get(`${apiUrl}/auth/me`, config),
-          axios.get(`${apiUrl}/dashboard/metrics?unidade_id=19`, config),
-          axios.get(`${apiUrl}/dashboard/conversations?unidade_id=19&limit=5`, config)
+          axios.get(`${apiUrl}/dashboard/unidades`, config)
         ]);
 
         setUser(userRes.data);
+        setUnidades(unitsRes.data);
+        
+        if (unitsRes.data.length > 0) {
+          setSelectedUnidadeId(unitsRes.data[0].id);
+        }
+      } catch (err) {
+        console.error("Erro ao carregar dados iniciais:", err);
+      } finally {
+        setInitialLoading(false);
+      }
+    };
+
+    fetchUnidadesAndUser();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedUnidadeId) return;
+
+    const fetchDashboardData = async () => {
+      setLoading(true);
+      const token = localStorage.getItem("token");
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        
+        const [metricsRes, convLogRes] = await Promise.all([
+          axios.get(`${apiUrl}/dashboard/metrics?unidade_id=${selectedUnidadeId}`, config),
+          axios.get(`${apiUrl}/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
+        ]);
+
         setMetrics(metricsRes.data.metrics);
         setConversations(convLogRes.data);
       } catch (err) {
-        console.error("Erro ao carregar dashboard:", err);
+        console.error("Erro ao carregar métricas da unidade:", err);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-  }, []);
+    fetchDashboardData();
+  }, [selectedUnidadeId]);
 
-  if (loading) {
+  if (initialLoading) {
     return (
       <div className="min-h-screen bg-mesh flex items-center justify-center">
         <div className="relative">
@@ -117,6 +148,26 @@ export default function DashboardPage() {
             <p className="text-gray-400">Aqui está o que aconteceu no seu funil hoje.</p>
           </div>
           <div className="flex items-center gap-4">
+            {/* Unit Selector */}
+            {unidades.length > 1 && (
+              <div className="relative group mr-4">
+                <select 
+                  value={selectedUnidadeId || ""} 
+                  onChange={(e) => setSelectedUnidadeId(Number(e.target.value))}
+                  className="appearance-none glass pl-4 pr-10 py-2.5 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer bg-transparent hover:bg-white/5 transition-all"
+                >
+                  {unidades.map((u) => (
+                    <option key={u.id} value={u.id} className="bg-[#020617] text-white">
+                      {u.nome}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 group-hover:text-primary transition-colors">
+                  <ChevronRight className="w-4 h-4 rotate-90" />
+                </div>
+              </div>
+            )}
+            
             <button className="glass p-3 rounded-xl relative hover:bg-white/10 transition-all">
               <Bell className="w-6 h-6 text-gray-400" />
               <span className="absolute top-3 right-3 w-2 h-2 bg-accent rounded-full border-2 border-background"></span>

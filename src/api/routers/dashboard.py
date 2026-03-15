@@ -4,9 +4,28 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from src.core.config import logger
 from src.core.security import get_current_user_token
-from src.services.db_queries import _coletar_metricas_unidade, _database
+from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+@router.get("/unidades")
+async def get_unidades(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Lista todas as unidades ativas da empresa do usuário.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    try:
+        unidades = await listar_unidades_ativas(empresa_id)
+        # Retornamos apenas os campos necessários para o seletor
+        return [
+            {"id": u["id"], "nome": u["nome"], "slug": u["slug"]}
+            for u in unidades
+        ]
+    except Exception as e:
+        logger.error(f"Erro ao listar unidades para dashboard: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar lista de unidades")
 
 @router.get("/metrics")
 async def get_metrics(
