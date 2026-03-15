@@ -388,10 +388,7 @@ async def listar_unidades_ativas(empresa_id: int = 1) -> List[Dict[str, Any]]:
     cache_key = f"cfg:unidades:lista:empresa:{empresa_id}"
     cache = await redis_get_json(cache_key)
     if cache is not None:
-        logger.info(f"⚡ Cache HIT para unidades da empresa {empresa_id}")
         return cache
-
-    logger.info(f"🗄️ Cache MISS para unidades da empresa {empresa_id}. Buscando no banco...")
 
     try:
         query = """
