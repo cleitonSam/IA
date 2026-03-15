@@ -167,7 +167,7 @@ async def buscar_planos_evo_da_api(
     url = (
         f"{api_base}/membership?take=100&skip=0&active=true"
         "&showAccessBranches=false&showOnlineSalesObservation=false"
-        "&showActivitiesGroups=false&externalSaleAvailable=true"
+        "&showActivitiesGroups=false"
     )
     
     # Se houver idBranch na config (multilocation), filtramos por ele
@@ -189,6 +189,7 @@ async def buscar_planos_evo_da_api(
                 logger.info(f"💾 Status API Evo: {resp.status_code}")
                 resp.raise_for_status()
                 data = resp.json()
+                logger.debug(f"📦 Resposta completa EVO (Unid {unidade_id}): {json.dumps(data)[:500]}...") # Loga os primeiros 500 chars do JSON
                 break # Sucesso
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
             if attempt == max_retries - 1:
@@ -417,7 +418,7 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
         return False
 
 
-async def listar_unidades_ativas(empresa_id: int = 1) -> List[Dict[str, Any]]:
+async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
     if not _database.db_pool:
         return []
 

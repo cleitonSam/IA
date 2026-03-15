@@ -54,8 +54,8 @@ async def get_unidades(
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
     try:
-        if perfil == "admin_master" or not empresa_id:
-            # Retorna todas as unidades ativas de todas as empresas
+        if perfil == "admin_master":
+            # Retorna todas as unidades ativas de todas as empresas (legítimo para admin_master)
             rows = await _database.db_pool.fetch(
                 """
                 SELECT u.id, u.nome, u.slug, e.nome as empresa_nome
@@ -65,10 +65,11 @@ async def get_unidades(
                 ORDER BY e.nome, u.nome
                 """
             )
-            return [
-                {"id": r["id"], "nome": r["nome"], "slug": r["slug"], "empresa_nome": r["empresa_nome"]}
-                for r in rows
-            ]
+            return [dict(r) for r in rows]
+
+        if not empresa_id:
+            raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+
         unidades = await listar_unidades_ativas(empresa_id)
         return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
     except Exception as e:

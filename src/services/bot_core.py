@@ -217,8 +217,8 @@ async def startup_event():
         logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
 
     # Limpa cooldown de provedor no startup (destrava o bot se o usuário corrigiu a chave)
-    llm_provider_pause_key = f"llm:provider_pause:{EMPRESA_ID_PADRAO}"
-    await redis_client.delete(llm_provider_pause_key)
+    async for key in redis_client.scan_iter("llm:provider_pause:*"):
+        await redis_client.delete(key)
 
     logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
 
