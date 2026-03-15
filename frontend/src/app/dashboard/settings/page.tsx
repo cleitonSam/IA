@@ -30,9 +30,9 @@ interface Unit {
 
 interface Personality {
   nome_ia: string;
-  objetivo_geral: string;
-  instrucoes_comportamento: string;
-  tom_de_voz: string;
+  objetivos_venda: string;
+  instrucoes_base: string;
+  tom_voz: string;
   ativo: boolean;
 }
 
@@ -68,7 +68,7 @@ export default function SettingsPage() {
 
   // --- Personality State ---
   const [personality, setPersonality] = useState<Personality>({
-    nome_ia: "", objetivo_geral: "", instrucoes_comportamento: "", tom_de_voz: "Profissional", ativo: true
+    nome_ia: "", objetivos_venda: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true
   });
 
   // --- FAQ State ---
@@ -313,8 +313,8 @@ export default function SettingsPage() {
                   <div>
                     <label className="block text-sm font-medium text-gray-400 mb-2">Tom de Voz</label>
                     <select
-                      value={personality.tom_de_voz}
-                      onChange={(e) => setPersonality({ ...personality, tom_de_voz: e.target.value })}
+                      value={personality.tom_voz}
+                      onChange={(e) => setPersonality({ ...personality, tom_voz: e.target.value })}
                       className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="Profissional">Profissional</option>
@@ -328,8 +328,8 @@ export default function SettingsPage() {
                   <label className="block text-sm font-medium text-gray-400 mb-2">Objetivo Geral</label>
                   <textarea
                     rows={5}
-                    value={personality.objetivo_geral}
-                    onChange={(e) => setPersonality({ ...personality, objetivo_geral: e.target.value })}
+                    value={personality.objetivos_venda}
+                    onChange={(e) => setPersonality({ ...personality, objetivos_venda: e.target.value })}
                     className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
                     placeholder="Qual o principal objetivo da IA nas conversas?"
                   />
@@ -339,8 +339,8 @@ export default function SettingsPage() {
                 <label className="block text-sm font-medium text-gray-400 mb-2">Instruções de Comportamento</label>
                 <textarea
                   rows={8}
-                  value={personality.instrucoes_comportamento}
-                  onChange={(e) => setPersonality({ ...personality, instrucoes_comportamento: e.target.value })}
+                  value={personality.instrucoes_base}
+                  onChange={(e) => setPersonality({ ...personality, instrucoes_base: e.target.value })}
                   className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
                   placeholder="Instruções detalhadas de como a IA deve agir e o que evitar..."
                 />

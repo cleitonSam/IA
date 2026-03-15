@@ -819,16 +819,16 @@ async def bd_salvar_mensagem_local(
         return
     try:
         conversa = await _database.db_pool.fetchrow(
-            "SELECT id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
         )
         if not conversa:
             logger.error(f"Conversa {conversation_id} não encontrada para salvar mensagem.")
             return
         await _database.db_pool.execute("""
-            INSERT INTO mensagens (conversa_id, role, tipo, conteudo, url_midia, created_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
-        """, conversa['id'], role, tipo, content, url_midia)
-        logger.info(f"✅ Mensagem {role} salva para conversa {conversation_id} (id_db={conversa['id']})")
+            INSERT INTO mensagens (conversa_id, empresa_id, role, tipo, conteudo, url_midia, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        """, conversa['id'], conversa['empresa_id'], role, tipo, content, url_midia)
+        logger.info(f"✅ Mensagem {role} salva para conversa {conversation_id} (id_db={conversa['id']}, emp={conversa['empresa_id']})")
     except Exception as e:
         logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
 
@@ -941,14 +941,14 @@ async def bd_registrar_evento_funil(
         return
     try:
         conversa = await _database.db_pool.fetchrow(
-            "SELECT id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
         )
         if not conversa:
             return
         conversa_id = conversa['id']
+        empresa_id = conversa['empresa_id']
 
         # Deduplicação: Garante que cada tipo de evento seja registrado apenas UMA vez por conversa
-        # Evita inflar métricas se a IA enviar o mesmo link/plano várias vezes.
         existe = await _database.db_pool.fetchval("""
             SELECT 1 FROM eventos_funil
             WHERE conversa_id = $1 AND tipo_evento = $2
@@ -958,9 +958,9 @@ async def bd_registrar_evento_funil(
             return
 
         await _database.db_pool.execute("""
-            INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
-        """, conversa_id, tipo_evento, descricao, score_incremento)
+            INSERT INTO eventos_funil (conversa_id, empresa_id, tipo_evento, descricao, score_incremento, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+        """, conversa_id, empresa_id, tipo_evento, descricao, score_incremento)
 
         await _database.db_pool.execute("""
             UPDATE conversas
@@ -981,19 +981,24 @@ async def bd_finalizar_conversa(conversation_id: int):
     if not _database.db_pool:
         return
     try:
+        conversa = await _database.db_pool.fetchrow(
+            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
+        )
+        if not conversa:
+            return
+
         await _database.db_pool.execute("""
             UPDATE conversas
             SET status = 'encerrada', encerrada_em = NOW(), updated_at = NOW()
-            WHERE conversation_id = $1
-        """, conversation_id)
+            WHERE id = $1
+        """, conversa['id'])
+
         await _database.db_pool.execute("""
-            UPDATE followups SET status = 'cancelado'
-            WHERE (
-                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
-                OR conversation_id = $1
-            ) AND status = 'pendente'
-        """, conversation_id)
-        logger.info(f"✅ Conversa {conversation_id} finalizada")
+            UPDATE followups SET status = 'cancelado', updated_at = NOW()
+            WHERE conversa_id = $1 AND status = 'pendente'
+        """, conversa['id'])
+
+        logger.info(f"✅ Conversa {conversation_id} finalizada (emp={conversa['empresa_id']})")
     except Exception as e:
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 

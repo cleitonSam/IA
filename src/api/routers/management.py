@@ -13,9 +13,9 @@ router = APIRouter(prefix="/management", tags=["management"])
 
 class PersonalityUpdate(BaseModel):
     nome_ia: Optional[str] = None
-    objetivo_geral: Optional[str] = None
-    instrucoes_comportamento: Optional[str] = None
-    tom_de_voz: Optional[str] = None
+    objetivos_venda: Optional[str] = None
+    instrucoes_base: Optional[str] = None
+    tom_voz: Optional[str] = None
     ativo: Optional[bool] = None
 
 class FAQCreate(BaseModel):
@@ -38,12 +38,12 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
     row = await _database.db_pool.fetchrow(
-        "SELECT id, nome_ia, objetivo_geral, instrucoes_comportamento, tom_de_voz, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+        "SELECT id, nome_ia, objetivos_venda, instrucoes_base, tom_voz, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
         empresa_id
     )
     if not row:
         # Retorna um objeto vazio mas estruturado se não existir
-        return {"nome_ia": "", "objetivo_geral": "", "instrucoes_comportamento": "", "tom_de_voz": "Profissional", "ativo": False}
+        return {"nome_ia": "", "objetivos_venda": "", "instrucoes_base": "", "tom_voz": "Profissional", "ativo": False}
     return dict(row)
 
 @router.put("/personality")

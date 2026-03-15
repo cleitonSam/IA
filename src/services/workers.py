@@ -80,12 +80,12 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
         return
     try:
         await _database.db_pool.execute("""
-            UPDATE followups SET status = 'cancelado'
+            UPDATE followups SET status = 'cancelado', updated_at = NOW()
             WHERE (
                 conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
                 OR conversation_id = $1
-            ) AND status = 'pendente'
-        """, conversation_id)
+            ) AND empresa_id = $2 AND status = 'pendente'
+        """, conversation_id, empresa_id)
 
         templates = await _database.db_pool.fetch("""
             SELECT t.*
