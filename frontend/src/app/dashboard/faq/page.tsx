@@ -2,8 +2,9 @@
 
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, ArrowLeft, Globe, Building2, Brain } from "lucide-react";
+import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, Globe, Building2, Brain } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import DashboardSidebar from "@/components/DashboardSidebar";
 
 interface FAQItem {
   id?: number;
@@ -15,10 +16,9 @@ interface FAQItem {
   ativo: boolean;
 }
 
-interface Unidade {
-  id: number;
-  nome: string;
-}
+interface Unidade { id: number; nome: string; }
+
+const emptyFaq: FAQItem = { pergunta: "", resposta: "", unidade_id: null, todas_unidades: true, prioridade: 0, ativo: true };
 
 export default function FAQPage() {
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
@@ -28,317 +28,198 @@ export default function FAQPage() {
   const [editingFaq, setEditingFaq] = useState<FAQItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [formData, setFormData] = useState<FAQItem>(emptyFaq);
 
-  // Form State
-  const [formData, setFormData] = useState<FAQItem>({
-    pergunta: "",
-    resposta: "",
-    unidade_id: null,
-    todas_unidades: true,
-    prioridade: 0,
-    ativo: true,
-  });
-
-  const getConfig = () => {
-    const token = localStorage.getItem("token");
-    return { headers: { Authorization: `Bearer ${token}` } };
-  };
+  const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
   useEffect(() => {
-    fetchData();
+    Promise.all([
+      axios.get("/api-backend/management/faq", getConfig()),
+      axios.get("/api-backend/dashboard/unidades", getConfig())
+    ]).then(([faqRes, unitRes]) => { setFaqs(faqRes.data); setUnidades(unitRes.data); })
+      .catch(console.error).finally(() => setLoading(false));
   }, []);
 
   const fetchData = async () => {
-    try {
-      const [faqRes, unitRes] = await Promise.all([
-        axios.get("/api-backend/management/faq", getConfig()),
-        axios.get("/api-backend/dashboard/unidades", getConfig()),
-      ]);
-      setFaqs(faqRes.data);
-      setUnidades(unitRes.data);
-    } catch (error) {
-      console.error("Erro ao carregar dados:", error);
-    } finally {
-      setLoading(false);
-    }
+    const [faqRes] = await Promise.all([axios.get("/api-backend/management/faq", getConfig())]);
+    setFaqs(faqRes.data);
   };
 
   const handleOpenModal = (faq: FAQItem | null = null) => {
-    if (faq) {
-      setEditingFaq(faq);
-      setFormData(faq);
-    } else {
-      setEditingFaq(null);
-      setFormData({
-        pergunta: "",
-        resposta: "",
-        unidade_id: null,
-        todas_unidades: true,
-        prioridade: 0,
-        ativo: true,
-      });
-    }
+    setEditingFaq(faq);
+    setFormData(faq ? { ...faq } : emptyFaq);
     setIsModalOpen(true);
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    setSuccess(false);
     try {
-      if (editingFaq) {
+      if (editingFaq?.id) {
         await axios.put(`/api-backend/management/faq/${editingFaq.id}`, formData, getConfig());
       } else {
         await axios.post("/api-backend/management/faq", formData, getConfig());
       }
       setSuccess(true);
-      setTimeout(() => {
-        setSuccess(false);
-        setIsModalOpen(false);
-        fetchData();
-      }, 1000);
-    } catch (error) {
-      alert("Erro ao salvar FAQ");
-    } finally {
-      setSaving(false);
-    }
+      setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchData(); }, 1000);
+    } catch { alert("Erro ao salvar FAQ."); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm("Tem certeza que deseja excluir esta pergunta?")) return;
-    try {
-      await axios.delete(`/api-backend/management/faq/${id}`, getConfig());
-      fetchData();
-    } catch (error) {
-      alert("Erro ao excluir");
-    }
+    if (!confirm("Excluir esta pergunta?")) return;
+    await axios.delete(`/api-backend/management/faq/${id}`, getConfig()).catch(() => alert("Erro ao excluir."));
+    fetchData();
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-primary animate-spin" />
-      </div>
-    );
-  }
+  const inputClass = "w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all font-medium text-sm";
 
   return (
-    <div className="min-h-screen bg-mesh text-white p-6 md:p-12">
-      <div className="max-w-6xl mx-auto">
-        {/* Unitary Header Structure - Standardized */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16">
-          <div className="flex items-center gap-5">
-            <a href="/dashboard" className="p-3.5 bg-white/5 hover:bg-primary/10 rounded-2xl transition-all border border-white/10 hover:border-primary/30 group">
-              <ArrowLeft className="w-5 h-5 group-hover:text-primary transition-colors" />
-            </a>
+    <div className="min-h-screen bg-[#020617] text-white flex">
+      <DashboardSidebar activePage="faq" />
+      <main className="flex-1 min-w-0 overflow-auto">
+        <div className="fixed top-0 right-0 w-[500px] h-[400px] bg-[#00d2ff]/3 rounded-full blur-[120px] pointer-events-none" />
+        <div className="relative z-10 p-8 lg:p-10 max-w-6xl mx-auto pb-20">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
             <div>
-              <h1 className="text-4xl font-black flex items-center gap-3">
-                <HelpCircle className="w-10 h-10 text-primary neon-glow" />
-                <span className="text-gradient">Base de Conhecimento</span>
-              </h1>
-              <p className="text-gray-400 mt-1 font-medium italic opacity-80">Treine o cérebro do seu agente com dados específicos da sua operação.</p>
-            </div>
-          </div>
-          <button
-            onClick={() => handleOpenModal()}
-            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,210,255,0.3)]"
-          >
-            <Plus className="w-6 h-6" />
-            Novo Registro
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6">
-          {faqs.length === 0 ? (
-            <div className="text-center py-40 glass rounded-[3rem] border-dashed border-white/10">
-              <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8">
-                <Brain className="w-12 h-12 text-gray-700" />
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-1.5 h-5 bg-[#00d2ff] rounded-full" />
+                <span className="text-[10px] font-black text-[#00d2ff] uppercase tracking-[0.4em]">Fluxo Digital & Tech</span>
               </div>
-              <p className="text-gray-500 font-black uppercase tracking-[0.2em]">Cérebro vazio</p>
-              <p className="text-gray-600 text-sm mt-2">Adicione perguntas e respostas para começar.</p>
+              <h1 className="text-4xl font-black tracking-tight" style={{ background: "linear-gradient(135deg,#fff 0%,#00d2ff 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                Base de Conhecimento
+              </h1>
+              <p className="text-slate-500 mt-2 text-sm italic">Treine o cérebro do seu agente com dados específicos da operação.</p>
+            </div>
+            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} onClick={() => handleOpenModal()}
+              className="flex items-center gap-3 bg-[#00d2ff] text-black px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-[0_0_25px_rgba(0,210,255,0.3)]">
+              <Plus className="w-5 h-5" /> Novo Registro
+            </motion.button>
+          </div>
+
+          {/* List */}
+          {loading ? (
+            <div className="flex items-center justify-center py-40"><Loader2 className="w-8 h-8 text-[#00d2ff] animate-spin" /></div>
+          ) : faqs.length === 0 ? (
+            <div className="text-center py-40 rounded-[3rem] border border-dashed border-white/5">
+              <Brain className="w-16 h-16 text-slate-700 mx-auto mb-6" />
+              <p className="text-slate-400 font-black uppercase tracking-widest">Cérebro vazio</p>
+              <p className="text-slate-600 text-sm mt-2">Adicione perguntas e respostas para começar.</p>
             </div>
           ) : (
-            faqs.reverse().map((faq, i) => (
-              <motion.div
-                layout
-                key={faq.id}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.05 }}
-                className="glass rounded-[2.5rem] p-10 flex flex-col md:flex-row gap-10 md:items-center justify-between group hover:border-primary/40 transition-all relative overflow-hidden"
-              >
-                <div className="absolute top-0 left-0 w-1 h-full bg-primary/20 group-hover:bg-primary transition-colors" />
-                
-                <div className="flex-1">
-                  <div className="flex items-center gap-4 mb-6">
-                    {faq.todas_unidades ? (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-primary/10 text-primary px-4 py-1.5 rounded-full border border-primary/20">
-                        <Globe className="w-3.5 h-3.5" /> Inteligência Global
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-secondary/10 text-secondary px-4 py-1.5 rounded-full border border-secondary/20">
-                        <Building2 className="w-3.5 h-3.5" /> Unidade Específica
-                      </span>
-                    )}
-                    <span className="text-[10px] font-black uppercase tracking-widest bg-white/5 text-gray-500 px-4 py-1.5 rounded-full">
-                      Prio: {faq.prioridade}
-                    </span>
-                  </div>
-
-                  <h3 className="text-2xl font-bold text-white mb-4 group-hover:text-primary transition-colors line-clamp-2">{faq.pergunta}</h3>
-                  <div className="bg-slate-900/40 rounded-3xl p-6 border border-white/5 blue-tint">
-                    <p className="text-gray-400 text-base leading-relaxed italic">"{faq.resposta}"</p>
-                  </div>
-                </div>
-
-                <div className="flex flex-row md:flex-col items-center gap-4">
-                  <button
-                    onClick={() => handleOpenModal(faq)}
-                    className="p-5 bg-white/5 hover:bg-primary text-gray-500 hover:text-black rounded-[1.8rem] transition-all shadow-xl group/btn"
-                  >
-                    <Edit2 className="w-6 h-6 group-hover/btn:scale-110 transition-transform" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(faq.id!)}
-                    className="p-5 bg-white/5 hover:bg-red-500 text-gray-500 hover:text-white rounded-[1.8rem] transition-all shadow-xl group/btn"
-                  >
-                    <Trash2 className="w-6 h-6 group-hover/btn:scale-110 transition-transform" />
-                  </button>
-                </div>
-              </motion.div>
-            ))
+            <div className="grid grid-cols-1 gap-5">
+              <AnimatePresence mode="popLayout">
+                {[...faqs].reverse().map((faq, i) => (
+                  <motion.div layout key={faq.id} initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
+                    className="bg-slate-900/50 border border-white/5 hover:border-[#00d2ff]/20 rounded-3xl p-8 flex flex-col md:flex-row gap-8 md:items-center justify-between group transition-all relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1 h-full bg-[#00d2ff]/20 group-hover:bg-[#00d2ff] transition-colors rounded-l-3xl" />
+                    <div className="flex-1 pl-3">
+                      <div className="flex items-center gap-3 mb-5">
+                        {faq.todas_unidades ? (
+                          <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest bg-[#00d2ff]/10 text-[#00d2ff] px-3 py-1.5 rounded-full border border-[#00d2ff]/20">
+                            <Globe className="w-3.5 h-3.5" /> Global
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-400 px-3 py-1.5 rounded-full border border-indigo-500/20">
+                            <Building2 className="w-3.5 h-3.5" /> Unidade
+                          </span>
+                        )}
+                        <span className="text-[10px] font-black uppercase text-slate-600 bg-white/5 px-3 py-1 rounded-full">Prio: {faq.prioridade}</span>
+                      </div>
+                      <h3 className="text-xl font-bold text-white group-hover:text-[#00d2ff] transition-colors mb-4 line-clamp-2">{faq.pergunta}</h3>
+                      <div className="bg-slate-950/40 rounded-2xl p-5 border border-white/5">
+                        <p className="text-slate-400 text-sm leading-relaxed italic line-clamp-3">"{faq.resposta}"</p>
+                      </div>
+                    </div>
+                    <div className="flex md:flex-col gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => handleOpenModal(faq)} className="p-3.5 bg-white/5 hover:bg-[#00d2ff]/15 text-slate-500 hover:text-[#00d2ff] rounded-2xl transition-all border border-white/5 hover:border-[#00d2ff]/20">
+                        <Edit2 className="w-5 h-5" />
+                      </button>
+                      <button onClick={() => handleDelete(faq.id!)} className="p-3.5 bg-white/5 hover:bg-red-500/15 text-slate-500 hover:text-red-400 rounded-2xl transition-all border border-white/5 hover:border-red-500/20">
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
           )}
         </div>
-      </div>
+      </main>
 
-      {/* Modal - CRUD */}
+      {/* Modal */}
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
-              onClick={() => setIsModalOpen(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-slate-950 border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden relative shadow-2xl"
-            >
-              <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-                <div>
-                  <h2 className="text-2xl font-bold flex items-center gap-3">
-                    {editingFaq ? <Edit2 className="w-6 h-6 text-primary" /> : <Plus className="w-6 h-6 text-primary" />}
-                    {editingFaq ? "Editar Conhecimento" : "Novo Conhecimento"}
-                  </h2>
-                  <p className="text-sm text-gray-500 mt-1">Defina como a IA deve responder essa dúvida.</p>
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-[#020617]/90 backdrop-blur-2xl" onClick={() => setIsModalOpen(false)} />
+            <motion.div initial={{ opacity: 0, scale: 0.96, y: 16 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }}
+              className="bg-[#080f1e] border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden relative shadow-2xl flex flex-col">
+              <div className="px-10 py-8 border-b border-white/5 flex items-center justify-between bg-slate-900/30 flex-shrink-0">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center border border-[#00d2ff]/20">
+                    {editingFaq ? <Edit2 className="w-6 h-6 text-[#00d2ff]" /> : <Plus className="w-6 h-6 text-[#00d2ff]" />}
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black">{editingFaq ? "Editar Conhecimento" : "Novo Conhecimento"}</h2>
+                    <p className="text-slate-500 text-sm mt-0.5">Defina como a IA responde esta dúvida.</p>
+                  </div>
                 </div>
-                <button onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-white/10 rounded-2xl border border-white/5 transition-all">
-                  <X className="w-6 h-6" />
+                <button onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5 text-slate-500">
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <form onSubmit={handleSave} className="p-10 space-y-8">
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-xs font-black text-gray-500 uppercase tracking-widest mb-3 ml-1">Pergunta do Usuário</label>
-                    <input
-                      required
-                      type="text"
-                      value={formData.pergunta}
-                      onChange={(e) => setFormData({ ...formData, pergunta: e.target.value })}
-                      placeholder="Ex: Quais os horários de funcionamento?"
-                      className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-black text-gray-500 uppercase tracking-widest mb-3 ml-1">Resposta da Neural IA</label>
-                    <textarea
-                      required
-                      value={formData.resposta}
-                      onChange={(e) => setFormData({ ...formData, resposta: e.target.value })}
-                      rows={5}
-                      placeholder="Escreva a resposta detalhada..."
-                      className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none leading-relaxed font-medium"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-3">
-                      <label className="block text-xs font-black text-gray-500 uppercase tracking-widest ml-1">Abrangência</label>
-                      <div className="flex p-1.5 bg-slate-900/40 border border-white/10 rounded-2xl">
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, todas_unidades: true, unidade_id: null })}
-                          className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${
-                            formData.todas_unidades ? "bg-primary text-black shadow-lg shadow-primary/20" : "text-gray-500 hover:text-white"
-                          }`}
-                        >
-                          Global
+              <form onSubmit={handleSave} className="p-10 space-y-7 overflow-y-auto">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Pergunta do Usuário</label>
+                  <input required type="text" value={formData.pergunta} onChange={e => setFormData({ ...formData, pergunta: e.target.value })}
+                    placeholder="Ex: Quais são os horários?" className={inputClass} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Resposta da IA</label>
+                  <textarea required rows={5} value={formData.resposta} onChange={e => setFormData({ ...formData, resposta: e.target.value })}
+                    placeholder="Escreva a resposta detalhada..." className={`${inputClass} resize-none leading-relaxed`} />
+                </div>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Abrangência</label>
+                    <div className="flex p-1.5 bg-slate-900/50 border border-white/8 rounded-2xl">
+                      {["Global", "Unidade"].map(opt => (
+                        <button key={opt} type="button" onClick={() => setFormData({ ...formData, todas_unidades: opt === "Global", unidade_id: null })}
+                          className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${(opt === "Global") === formData.todas_unidades ? "bg-[#00d2ff] text-black" : "text-slate-500 hover:text-white"}`}>
+                          {opt}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, todas_unidades: false })}
-                          className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${
-                            !formData.todas_unidades ? "bg-primary text-black shadow-lg shadow-primary/20" : "text-gray-500 hover:text-white"
-                          }`}
-                        >
-                          Unidade
-                        </button>
-                      </div>
+                      ))}
                     </div>
-
-                    {!formData.todas_unidades && (
-                      <div className="space-y-3">
-                        <label className="block text-xs font-black text-gray-500 uppercase tracking-widest ml-1">Unidade</label>
-                        <select
-                          required={!formData.todas_unidades}
-                          value={formData.unidade_id || ""}
-                          onChange={(e) => setFormData({ ...formData, unidade_id: parseInt(e.target.value) })}
-                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
-                        >
-                          <option value="">Selecione...</option>
-                          {unidades.map((u) => (
-                            <option key={u.id} value={u.id}>
-                              {u.nome}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-
-                    <div className="space-y-3">
-                      <label className="block text-xs font-black text-gray-500 uppercase tracking-widest ml-1">Prioridade (0-100)</label>
-                      <input
-                        type="number"
-                        value={formData.prioridade}
-                        onChange={(e) => setFormData({ ...formData, prioridade: parseInt(e.target.value) })}
-                        className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
-                      />
-                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Prioridade</label>
+                    <input type="number" value={formData.prioridade} onChange={e => setFormData({ ...formData, prioridade: parseInt(e.target.value) })}
+                      className={`${inputClass} text-center`} min="0" max="100" />
                   </div>
                 </div>
-
-                <div className="pt-6 flex gap-4">
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(false)}
-                    className="flex-1 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all"
-                  >
-                    Descartar
+                {!formData.todas_unidades && (
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Selecionar Unidade</label>
+                    <select required value={formData.unidade_id || ""} onChange={e => setFormData({ ...formData, unidade_id: parseInt(e.target.value) })}
+                      className={`${inputClass} cursor-pointer`}>
+                      <option value="">Selecione...</option>
+                      {unidades.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                    </select>
+                  </div>
+                )}
+                <div className="flex gap-4 pt-2">
+                  <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-4 rounded-2xl font-bold text-sm text-slate-500 hover:text-white hover:bg-white/5 transition-all uppercase tracking-wider">
+                    Cancelar
                   </button>
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="flex-[2] bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-6 py-5 rounded-[2rem] font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,210,255,0.3)]"
-                  >
-                    {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
-                    {editingFaq ? "Salvar Alterações" : "Ativar Conhecimento"}
-                  </button>
+                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} type="submit" disabled={saving}
+                    className="flex-[2] bg-[#00d2ff] text-black py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 disabled:opacity-50">
+                    {saving ? <><Loader2 className="w-5 h-5 animate-spin" />Salvando...</>
+                      : success ? <><CheckCircle2 className="w-5 h-5" />Salvo!</>
+                      : <><Save className="w-5 h-5" />{editingFaq ? "Salvar Alterações" : "Ativar Conhecimento"}</>}
+                  </motion.button>
                 </div>
               </form>
             </motion.div>
