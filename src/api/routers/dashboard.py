@@ -28,7 +28,7 @@ class CriarUnidadeRequest(BaseModel):
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
-async def _get_empresa_id_da_unidade(unidade_id: int) -> int | None:
+async def _get_empresa_id_da_unidade(unidade_id: int) -> Optional[int]:
     """Resolve o empresa_id a partir do unidade_id."""
     row = await _database.db_pool.fetchrow(
         "SELECT empresa_id FROM unidades WHERE id = $1", unidade_id

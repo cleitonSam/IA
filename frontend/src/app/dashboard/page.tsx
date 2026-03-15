@@ -13,7 +13,12 @@ import {
   LayoutDashboard,
   Settings,
   LogOut,
-  Bell
+  Bell,
+  Cpu,
+  Brain,
+  HelpCircle,
+  Network,
+  History
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -148,6 +153,22 @@ export default function DashboardPage() {
           <a href="#" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
             <MessageSquare className="w-5 h-5" />
             <span className="font-medium">Conversas</span>
+          </a>
+          <a href="/dashboard/personality" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Brain className="w-5 h-5" />
+            <span className="font-medium">Personalidade IA</span>
+          </a>
+          <a href="/dashboard/faq" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <HelpCircle className="w-5 h-5" />
+            <span className="font-medium">FAQ</span>
+          </a>
+          <a href="/dashboard/integrations" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Network className="w-5 h-5" />
+            <span className="font-medium">Integrações</span>
+          </a>
+          <a href="/dashboard/logs" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <History className="w-5 h-5" />
+            <span className="font-medium">Logs de Conversa</span>
           </a>
           {user?.perfil === "admin_master" && (
             <a href="/admin" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">

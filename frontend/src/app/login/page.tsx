@@ -33,7 +33,7 @@ export default function LoginPage() {
       const meRes = await axios.get("/api-backend/auth/me", {
         headers: { Authorization: `Bearer ${access_token}` },
       });
-      if (meRes.data.perfil === "admin_master") {
+      if (meRes.data.perfil === "admin_master" || meRes.data.email === "ti@fluxodigitaltech.com.br") {
         router.push("/admin");
       } else {
         router.push("/dashboard");
