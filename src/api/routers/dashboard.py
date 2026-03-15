@@ -100,7 +100,7 @@ async def get_metrics(
         params_date = [empresa_id, unidade_id, hoje]
         if days > 1:
             where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4::text || ' days')::interval)::date AND $3"
-            params_date = [empresa_id, unidade_id, hoje, days]
+            params_date = [empresa_id, unidade_id, hoje, str(days)]
 
         row = await _database.db_pool.fetchrow(f"""
             SELECT
@@ -251,7 +251,7 @@ async def get_metrics_empresa(
               AND {where_date}
         """
         params = [empresa_id, hoje]
-        if days > 1: params.append(days)
+        if days > 1: params.append(str(days))
         
         row = await _database.db_pool.fetchrow(query_totals, *params)
 
