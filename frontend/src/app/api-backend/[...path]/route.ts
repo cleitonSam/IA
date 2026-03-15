@@ -2,13 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API_URL = process.env.API_URL || "http://localhost:8000";
 
-async function proxy(request: NextRequest, params: { path: string[] }) {
-  const path = params.path.join("/");
+async function proxy(request: NextRequest, params: Promise<{ path: string[] }>) {
+  const { path } = await params;
   const search = request.nextUrl.search;
-  const url = `${API_URL}/${path}${search}`;
+  const url = `${API_URL}/${path.join("/")}${search}`;
 
   const headers = new Headers();
-  // Repassa apenas headers relevantes, remove o host para evitar conflitos
   request.headers.forEach((value, key) => {
     if (!["host", "connection"].includes(key.toLowerCase())) {
       headers.set(key, value);
@@ -37,15 +36,15 @@ async function proxy(request: NextRequest, params: { path: string[] }) {
   });
 }
 
-export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, params);
 }
-export async function POST(req: NextRequest, { params }: { params: { path: string[] } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, params);
 }
-export async function PUT(req: NextRequest, { params }: { params: { path: string[] } }) {
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, params);
 }
-export async function DELETE(req: NextRequest, { params }: { params: { path: string[] } }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   return proxy(req, params);
 }
