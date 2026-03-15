@@ -194,6 +194,9 @@ def responder_endereco(unidade: dict) -> str:
     )
 
 
+def responder_telefone(unidade: dict) -> str:
+    nome = unidade.get("nome") or "da unidade"
+    telefone = extrair_telefone_unidade(unidade) or "não encontrado"
     return (
         f"📞 O contato da unidade *{nome}* é:\n{telefone}\n\n"
         "Se quiser, também posso te passar o endereço ou horário."
