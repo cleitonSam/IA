@@ -205,6 +205,10 @@ export default function AdminPage() {
             <History className="w-5 h-5" />
             <span className="font-medium">Logs de Conversa</span>
           </a>
+          <a href="/dashboard/units" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Building2 className="w-5 h-5" />
+            <span className="font-medium">Gerenciar Unidades</span>
+          </a>
         </nav>
         <div className="pt-6 border-t border-white/5">
           <div className="text-xs text-gray-500 mb-3 px-1">{user?.nome}</div>

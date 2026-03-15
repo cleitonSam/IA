@@ -18,7 +18,8 @@ import {
   Brain,
   HelpCircle,
   Network,
-  History
+  History,
+  Building2
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -169,6 +170,10 @@ export default function DashboardPage() {
           <a href="/dashboard/logs" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
             <History className="w-5 h-5" />
             <span className="font-medium">Logs de Conversa</span>
+          </a>
+          <a href="/dashboard/units" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Building2 className="w-5 h-5" />
+            <span className="font-medium">Gerenciar Unidades</span>
           </a>
           {user?.perfil === "admin_master" && (
             <a href="/admin" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">

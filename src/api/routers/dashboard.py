@@ -177,3 +177,80 @@ async def criar_unidade(
     except Exception as e:
         logger.error(f"Erro ao criar unidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao criar unidade")
+
+
+@router.put("/unidades/{unidade_id}")
+async def atualizar_unidade(
+    unidade_id: int,
+    body: CriarUnidadeRequest,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """
+    Atualiza dados de uma unidade. Verifica se pertence à empresa do admin.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    
+    # Se for admin_master e não tiver empresa_id no token, busca o da unidade
+    if perfil == "admin_master" and not empresa_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    # Verifica se a unidade pertence à empresa
+    existing = await _database.db_pool.fetchrow(
+        "SELECT id FROM unidades WHERE id = $1 AND empresa_id = $2",
+        unidade_id, empresa_id
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada ou acesso negado")
+
+    try:
+        await _database.db_pool.execute(
+            """
+            UPDATE unidades SET
+                nome = $1, nome_abreviado = $2, cidade = $3, bairro = $4,
+                estado = $5, endereco = $6, numero = $7, telefone_principal = $8,
+                whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
+                updated_at = NOW()
+            WHERE id = $13 AND empresa_id = $14
+            """,
+            body.nome, body.nome_abreviado, body.cidade, body.bairro,
+            body.estado, body.endereco, body.numero, body.telefone_principal,
+            body.whatsapp, body.site, body.instagram, body.link_matricula,
+            unidade_id, empresa_id
+        )
+        return {"status": "success", "message": "Unidade atualizada"}
+    except Exception as e:
+        logger.error(f"Erro ao atualizar unidade: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao atualizar unidade")
+
+
+@router.delete("/unidades/{unidade_id}")
+async def excluir_unidade(
+    unidade_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """
+    Desativa uma unidade (soft delete setando ativa=false).
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    
+    if perfil == "admin_master" and not empresa_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    try:
+        # Usamos soft delete para evitar quebra de logs/histórico
+        await _database.db_pool.execute(
+            "UPDATE unidades SET ativa = false, updated_at = NOW() WHERE id = $1 AND empresa_id = $2",
+            unidade_id, empresa_id
+        )
+        return {"status": "success", "message": "Unidade desativada"}
+    except Exception as e:
+        logger.error(f"Erro ao excluir unidade: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao excluir unidade")
