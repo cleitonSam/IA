@@ -311,20 +311,39 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 
 
 @router.get("/integrations/evo/units")
-async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)):
+async def get_evo_per_unit(
+    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
+    token_payload: dict = Depends(get_current_user_token),
+):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
     empresa_id = token_payload.get("empresa_id")
-    if not empresa_id:
-        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    perfil = token_payload.get("perfil", "")
 
-    units = await _database.db_pool.fetch(
-        "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
-        empresa_id
-    )
-    configs = await _database.db_pool.fetch(
-        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
-        empresa_id
-    )
+    # admin_master pode não ter empresa_id no token → aceita via query param
+    if not empresa_id:
+        if perfil == "admin_master":
+            empresa_id = empresa_id_param  # pode ser None → busca todas as unidades
+        else:
+            raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    if empresa_id:
+        units = await _database.db_pool.fetch(
+            "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
+            empresa_id
+        )
+        configs = await _database.db_pool.fetch(
+            "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
+            empresa_id
+        )
+    else:
+        # admin_master sem empresa_id específico → todas as unidades ativas
+        units = await _database.db_pool.fetch(
+            "SELECT id, nome FROM unidades WHERE ativa = true ORDER BY nome"
+        )
+        configs = await _database.db_pool.fetch(
+            "SELECT unidade_id, config, ativo FROM integracoes WHERE tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''"
+        )
+
     config_map = {}
     for r in configs:
         c = r["config"]
@@ -354,8 +373,18 @@ async def update_evo_unit(
 ):
     """Salva a configuração EVO de uma unidade específica."""
     empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil", "")
+
+    # admin_master sem empresa_id no token → resolve pelo unidade_id
     if not empresa_id:
-        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        if perfil == "admin_master":
+            empresa_id = await _database.db_pool.fetchval(
+                "SELECT empresa_id FROM unidades WHERE id = $1", unidade_id
+            )
+            if not empresa_id:
+                raise HTTPException(status_code=404, detail="Unidade não encontrada")
+        else:
+            raise HTTPException(status_code=400, detail="Empresa não vinculada")
 
     existing = await _database.db_pool.fetchval(
         "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2",
