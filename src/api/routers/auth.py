@@ -224,11 +224,16 @@ async def send_invite(
     token = await _criar_convite(empresa_id, body.email)
     enviado = await enviar_convite(body.email, empresa["nome"], token)
 
-    if not enviado:
-        raise HTTPException(status_code=500, detail="Falha ao enviar e-mail. Verifique as configurações SMTP.")
+    import os
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    link = f"{frontend_url}/register?token={token}"
 
-    logger.info(f"📨 Convite enviado para {body.email} (empresa_id={empresa_id})")
-    return {"message": f"Convite enviado para {body.email}"}
+    logger.info(f"📨 Convite criado para {body.email} (empresa_id={empresa_id}, email_enviado={enviado})")
+    return {
+        "message": f"Convite criado para {body.email}",
+        "email_enviado": enviado,
+        "link": link,
+    }
 
 
 @router.get("/invite/{token}")

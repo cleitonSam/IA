@@ -31,6 +31,7 @@ export default function AdminPage() {
   const [convite, setConvite] = useState({ email: "", empresa_id: "" });
   const [enviandoConvite, setEnviandoConvite] = useState(false);
   const [msgConvite, setMsgConvite] = useState<{ ok: boolean; text: string } | null>(null);
+  const [linkConvite, setLinkConvite] = useState<string | null>(null);
 
   const getConfig = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
@@ -113,13 +114,19 @@ export default function AdminPage() {
     }
     setEnviandoConvite(true);
     setMsgConvite(null);
+    setLinkConvite(null);
     try {
-      await axios.post(
+      const res = await axios.post(
         "/api-backend/auth/invite",
         { email: convite.email, empresa_id: Number(convite.empresa_id) },
         getConfig()
       );
-      setMsgConvite({ ok: true, text: `Convite enviado para ${convite.email}!` });
+      if (res.data.email_enviado) {
+        setMsgConvite({ ok: true, text: `Convite enviado por e-mail para ${convite.email}!` });
+      } else {
+        setMsgConvite({ ok: true, text: `Convite criado! E-mail não enviado (SMTP). Copie o link abaixo:` });
+        setLinkConvite(res.data.link);
+      }
       setConvite({ email: "", empresa_id: "" });
     } catch (err: any) {
       setMsgConvite({ ok: false, text: err.response?.data?.detail || "Erro ao enviar convite." });
@@ -290,6 +297,27 @@ export default function AdminPage() {
                 <div className={`flex items-center gap-2 text-sm p-3 rounded-lg ${msgConvite.ok ? "bg-green-500/10 text-green-400" : "bg-accent/10 text-accent"}`}>
                   {msgConvite.ok ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
                   {msgConvite.text}
+                </div>
+              )}
+              {linkConvite && (
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest block">Link de cadastro</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={linkConvite}
+                      className="flex-1 bg-white/5 border border-primary/30 rounded-xl py-2 px-3 text-xs text-primary font-mono"
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { navigator.clipboard.writeText(linkConvite); }}
+                      className="px-3 py-2 rounded-xl bg-primary/10 text-primary text-xs font-bold hover:bg-primary/20 transition-all"
+                    >
+                      Copiar
+                    </button>
+                  </div>
                 </div>
               )}
               <button
