@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, ArrowLeft, Globe, Building2 } from "lucide-react";
+import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, ArrowLeft, Globe, Building2, Brain } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface FAQItem {
@@ -117,41 +117,45 @@ export default function FAQPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-black text-white p-6 md:p-12">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-          <div className="flex items-center gap-4">
-            <a href="/dashboard" className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5">
-              <ArrowLeft className="w-5 h-5" />
+    <div className="min-h-screen bg-mesh text-white p-6 md:p-12">
+      <div className="max-w-6xl mx-auto">
+        {/* Unitary Header Structure - Standardized */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16">
+          <div className="flex items-center gap-5">
+            <a href="/dashboard" className="p-3.5 bg-white/5 hover:bg-primary/10 rounded-2xl transition-all border border-white/10 hover:border-primary/30 group">
+              <ArrowLeft className="w-5 h-5 group-hover:text-primary transition-colors" />
             </a>
             <div>
-              <h1 className="text-3xl font-bold flex items-center gap-3">
-                <HelpCircle className="w-8 h-8 text-blue-500" />
-                Base de Conhecimento Neural
+              <h1 className="text-4xl font-black flex items-center gap-3">
+                <HelpCircle className="w-10 h-10 text-primary neon-glow" />
+                <span className="text-gradient">Base de Conhecimento</span>
               </h1>
-              <p className="text-gray-400 mt-1">Ensine sua IA a responder perguntas frequentes com precisão.</p>
+              <p className="text-gray-400 mt-1 font-medium italic opacity-80">Treine o cérebro do seu agente com dados específicos da sua operação.</p>
             </div>
           </div>
           <button
             onClick={() => handleOpenModal()}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-blue-500/20"
+            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
           >
-            <Plus className="w-5 h-5" />
-            Nova Pergunta
+            <Plus className="w-6 h-6" />
+            Novo Registro
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-4">
+        <div className="grid grid-cols-1 gap-6">
           {faqs.length === 0 ? (
-            <div className="text-center py-32 bg-white/[0.02] border border-dashed border-white/10 rounded-[2.5rem]">
-              <HelpCircle className="w-16 h-16 text-gray-700 mx-auto mb-4" />
-              <p className="text-gray-500 font-medium">Nenhuma pergunta cadastrada ainda.</p>
+            <div className="text-center py-40 glass rounded-[3rem] border-dashed border-white/10">
+              <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8">
+                <Brain className="w-12 h-12 text-gray-700" />
+              </div>
+              <p className="text-gray-500 font-black uppercase tracking-[0.2em]">Cérebro vazio</p>
+              <p className="text-gray-600 text-sm mt-2">Adicione perguntas e respostas para começar.</p>
             </div>
           ) : (
             faqs.reverse().map((faq, i) => (
@@ -161,40 +165,44 @@ export default function FAQPage() {
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.05 }}
-                className="bg-white/[0.03] border border-white/10 rounded-3xl p-7 flex flex-col md:flex-row gap-8 md:items-center justify-between group hover:bg-white/[0.06] hover:border-blue-500/30 transition-all"
+                className="glass rounded-[2.5rem] p-10 flex flex-col md:flex-row gap-10 md:items-center justify-between group hover:border-primary/40 transition-all relative overflow-hidden"
               >
+                <div className="absolute top-0 left-0 w-1 h-full bg-primary/20 group-hover:bg-primary transition-colors" />
+                
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-4">
+                  <div className="flex items-center gap-4 mb-6">
                     {faq.todas_unidades ? (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-lg">
-                        <Globe className="w-3 h-3" /> Conhecimento Global
+                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-primary/10 text-primary px-4 py-1.5 rounded-full border border-primary/20">
+                        <Globe className="w-3.5 h-3.5" /> Inteligência Global
                       </span>
                     ) : (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-400 px-3 py-1 rounded-lg">
-                        <Building2 className="w-3 h-3" /> Unidade Específica
+                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-400 px-4 py-1.5 rounded-full border border-blue-500/20">
+                        <Building2 className="w-3.5 h-3.5" /> Unidade Específica
                       </span>
                     )}
-                    <span className="text-[10px] font-black uppercase tracking-widest bg-white/5 text-gray-500 px-3 py-1 rounded-lg">
-                      Prioridade {faq.prioridade}
+                    <span className="text-[10px] font-black uppercase tracking-widest bg-white/5 text-gray-500 px-4 py-1.5 rounded-full">
+                      Prio: {faq.prioridade}
                     </span>
                   </div>
-                  <h3 className="text-xl font-bold text-white mb-3 group-hover:text-blue-400 transition-colors">{faq.pergunta}</h3>
-                  <div className="bg-black/20 rounded-2xl p-5 border border-white/5">
-                    <p className="text-gray-400 text-sm leading-relaxed">{faq.resposta}</p>
+
+                  <h3 className="text-2xl font-bold text-white mb-4 group-hover:text-primary transition-colors line-clamp-2">{faq.pergunta}</h3>
+                  <div className="bg-black/40 rounded-3xl p-6 border border-white/5 blue-tint">
+                    <p className="text-gray-400 text-base leading-relaxed italic">"{faq.resposta}"</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+
+                <div className="flex flex-row md:flex-col items-center gap-4">
                   <button
                     onClick={() => handleOpenModal(faq)}
-                    className="p-4 bg-white/5 hover:bg-blue-500 hover:text-white rounded-2xl text-gray-500 transition-all shadow-lg"
+                    className="p-5 bg-white/5 hover:bg-primary text-gray-500 hover:text-black rounded-[1.8rem] transition-all shadow-xl group/btn"
                   >
-                    <Edit2 className="w-5 h-5" />
+                    <Edit2 className="w-6 h-6 group-hover/btn:scale-110 transition-transform" />
                   </button>
                   <button
                     onClick={() => handleDelete(faq.id!)}
-                    className="p-4 bg-white/5 hover:bg-red-500 hover:text-white rounded-2xl text-gray-500 transition-all shadow-lg"
+                    className="p-5 bg-white/5 hover:bg-red-500 text-gray-500 hover:text-white rounded-[1.8rem] transition-all shadow-xl group/btn"
                   >
-                    <Trash2 className="w-5 h-5" />
+                    <Trash2 className="w-6 h-6 group-hover/btn:scale-110 transition-transform" />
                   </button>
                 </div>
               </motion.div>
@@ -223,7 +231,7 @@ export default function FAQPage() {
               <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
                 <div>
                   <h2 className="text-2xl font-bold flex items-center gap-3">
-                    {editingFaq ? <Edit2 className="w-6 h-6 text-blue-500" /> : <Plus className="w-6 h-6 text-blue-500" />}
+                    {editingFaq ? <Edit2 className="w-6 h-6 text-primary" /> : <Plus className="w-6 h-6 text-primary" />}
                     {editingFaq ? "Editar Conhecimento" : "Novo Conhecimento"}
                   </h2>
                   <p className="text-sm text-gray-500 mt-1">Defina como a IA deve responder essa dúvida.</p>
@@ -243,7 +251,7 @@ export default function FAQPage() {
                       value={formData.pergunta}
                       onChange={(e) => setFormData({ ...formData, pergunta: e.target.value })}
                       placeholder="Ex: Quais os horários de funcionamento?"
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                     />
                   </div>
 
@@ -255,7 +263,7 @@ export default function FAQPage() {
                       onChange={(e) => setFormData({ ...formData, resposta: e.target.value })}
                       rows={5}
                       placeholder="Escreva a resposta detalhada..."
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all resize-none leading-relaxed"
+                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none leading-relaxed font-medium"
                     />
                   </div>
 
@@ -267,7 +275,7 @@ export default function FAQPage() {
                           type="button"
                           onClick={() => setFormData({ ...formData, todas_unidades: true, unidade_id: null })}
                           className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${
-                            formData.todas_unidades ? "bg-blue-600 text-white shadow-lg" : "text-gray-500 hover:text-white"
+                            formData.todas_unidades ? "bg-primary text-black shadow-lg shadow-primary/20" : "text-gray-500 hover:text-white"
                           }`}
                         >
                           Global
@@ -276,7 +284,7 @@ export default function FAQPage() {
                           type="button"
                           onClick={() => setFormData({ ...formData, todas_unidades: false })}
                           className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${
-                            !formData.todas_unidades ? "bg-blue-600 text-white shadow-lg" : "text-gray-500 hover:text-white"
+                            !formData.todas_unidades ? "bg-primary text-black shadow-lg shadow-primary/20" : "text-gray-500 hover:text-white"
                           }`}
                         >
                           Unidade
@@ -291,7 +299,7 @@ export default function FAQPage() {
                           required={!formData.todas_unidades}
                           value={formData.unidade_id || ""}
                           onChange={(e) => setFormData({ ...formData, unidade_id: parseInt(e.target.value) })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-bold text-sm"
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
                         >
                           <option value="">Selecione...</option>
                           {unidades.map((u) => (
@@ -309,7 +317,7 @@ export default function FAQPage() {
                         type="number"
                         value={formData.prioridade}
                         onChange={(e) => setFormData({ ...formData, prioridade: parseInt(e.target.value) })}
-                        className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-bold text-sm"
+                        className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
                       />
                     </div>
                   </div>
@@ -326,9 +334,9 @@ export default function FAQPage() {
                   <button
                     type="submit"
                     disabled={saving}
-                    className="flex-[2] bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-blue-500/20"
+                    className="flex-[2] bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-6 py-5 rounded-[2rem] font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
                   >
-                    {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5 text-emerald-300" /> : <Save className="w-5 h-5" />}
+                    {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
                     {editingFaq ? "Salvar Alterações" : "Ativar Conhecimento"}
                   </button>
                 </div>

@@ -104,6 +104,7 @@ export default function UnitsPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSuccess(false);
     try {
       if (editingUnit) {
         await axios.put(`/api-backend/dashboard/unidades/${editingUnit.id}`, formData, getConfig());
@@ -138,43 +139,46 @@ export default function UnitsPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-black text-white p-6 md:p-12">
+    <div className="min-h-screen bg-mesh text-white p-6 md:p-12">
       <div className="max-w-6xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-          <div className="flex items-center gap-4">
-            <a href="/dashboard" className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5">
-              <ArrowLeft className="w-5 h-5" />
+        {/* Unitary Header Structure - Standardized */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16">
+          <div className="flex items-center gap-5">
+            <a href="/dashboard" className="p-3.5 bg-white/5 hover:bg-primary/10 rounded-2xl transition-all border border-white/10 hover:border-primary/30 group">
+              <ArrowLeft className="w-5 h-5 group-hover:text-primary transition-colors" />
             </a>
             <div>
-              <h1 className="text-3xl font-bold flex items-center gap-3">
-                <Building2 className="w-8 h-8 text-blue-500" />
-                Gestão de Unidades
+              <h1 className="text-4xl font-black flex items-center gap-3">
+                <Building2 className="w-10 h-10 text-primary neon-glow" />
+                <span className="text-gradient">Gestão de Unidades</span>
               </h1>
-              <p className="text-gray-400 mt-1">Configure as filiais e pontos de atendimento da sua empresa.</p>
+              <p className="text-gray-400 mt-1 font-medium italic opacity-80">Configure os pontos de atendimento e filiais da sua operação digital.</p>
             </div>
           </div>
           
           <button
             onClick={() => handleOpenModal()}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-blue-500/20"
+            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-6 h-6" />
             Nova Unidade
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {units.length === 0 ? (
-            <div className="col-span-full text-center py-32 bg-white/[0.02] border border-dashed border-white/10 rounded-3xl">
-              <Building2 className="w-16 h-16 text-gray-700 mx-auto mb-4" />
-              <p className="text-gray-500 font-medium">Nenhuma unidade cadastrada.</p>
-              <p className="text-gray-600 text-sm mt-1">Comece adicionando sua primeira filial.</p>
+            <div className="col-span-full text-center py-40 glass rounded-[3rem] border-dashed border-white/10">
+              <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-8">
+                <Building2 className="w-12 h-12 text-gray-700" />
+              </div>
+              <p className="text-gray-500 font-black uppercase tracking-[0.2em]">Sem filiais cadastradas</p>
+              <p className="text-gray-600 text-sm mt-2">Adicione sua primeira unidade para começar a operar.</p>
             </div>
           ) : (
             units.map((unit, i) => (
@@ -184,45 +188,45 @@ export default function UnitsPage() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
-                className="bg-white/[0.03] border border-white/10 rounded-3xl p-7 hover:bg-white/[0.06] hover:border-blue-500/30 transition-all group relative overflow-hidden"
+                className="glass rounded-[2.5rem] p-8 hover:border-primary/40 transition-all group relative overflow-hidden"
               >
-                <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
                   <button
                     onClick={() => handleOpenModal(unit)}
-                    className="p-2.5 bg-white/10 hover:bg-blue-500 hover:text-white rounded-xl text-gray-400 transition-all"
+                    className="p-3 bg-white/10 hover:bg-primary hover:text-black rounded-xl text-gray-400 transition-all shadow-lg"
                   >
-                    <Pencil className="w-4 h-4" />
+                    <Pencil className="w-5 h-5" />
                   </button>
                   <button
                     onClick={() => handleDelete(unit.id)}
-                    className="p-2.5 bg-white/10 hover:bg-red-500 hover:text-white rounded-xl text-gray-400 transition-all"
+                    className="p-3 bg-white/10 hover:bg-red-500 hover:text-white rounded-xl text-gray-400 transition-all shadow-lg"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-5 h-5" />
                   </button>
                 </div>
 
-                <div className="w-14 h-14 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-500 mb-6 group-hover:scale-110 transition-transform">
-                  <Building2 className="w-7 h-7" />
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-8 group-hover:scale-110 transition-transform neon-border">
+                  <Building2 className="w-8 h-8" />
                 </div>
 
-                <h3 className="text-xl font-bold mb-1 group-hover:text-blue-400 transition-colors uppercase tracking-tight">{unit.nome}</h3>
-                <p className="text-xs font-bold text-gray-600 mb-6 uppercase tracking-widest">{unit.nome_abreviado || "Unidade"}</p>
+                <h3 className="text-2xl font-black mb-1 group-hover:text-primary transition-colors uppercase tracking-tight">{unit.nome}</h3>
+                <p className="text-[10px] font-black text-gray-500 mb-8 uppercase tracking-[0.2em]">{unit.nome_abreviado || "Unidade Digital"}</p>
                 
-                <div className="space-y-4 pt-6 border-t border-white/5">
-                  <div className="flex items-center gap-3 text-sm text-gray-400">
-                    <div className="p-2 rounded-lg bg-white/5"><MapPin className="w-4 h-4 text-blue-500/50" /></div>
+                <div className="space-y-4 pt-8 border-t border-white/5 bg-gradient-to-b from-transparent to-white/[0.02] -mx-8 px-8 pb-4">
+                  <div className="flex items-center gap-4 text-xs font-medium text-gray-400">
+                    <div className="p-2.5 rounded-xl bg-white/5"><MapPin className="w-4 h-4 text-primary/50" /></div>
                     <span className="line-clamp-1">{unit.endereco ? `${unit.endereco}, ${unit.numero}` : `${unit.cidade}, ${unit.estado}`}</span>
                   </div>
                   {unit.whatsapp && (
-                    <div className="flex items-center gap-3 text-sm text-gray-400">
-                      <div className="p-2 rounded-lg bg-white/5"><Phone className="w-4 h-4 text-blue-500/50" /></div>
-                      <span>{unit.whatsapp}</span>
+                    <div className="flex items-center gap-4 text-xs font-medium text-gray-400">
+                      <div className="p-2.5 rounded-xl bg-white/5"><Phone className="w-4 h-4 text-primary/50" /></div>
+                      <span className="font-bold tracking-wider">{unit.whatsapp}</span>
                     </div>
                   )}
                   {unit.site && (
-                    <div className="flex items-center gap-3 text-sm text-blue-400/80 hover:text-blue-400 transition-colors cursor-pointer">
-                      <div className="p-2 rounded-lg bg-blue-500/5"><Globe className="w-4 h-4" /></div>
-                      <span className="line-clamp-1 text-xs font-bold">{unit.site.replace('https://', '')}</span>
+                    <div className="flex items-center gap-4 text-[10px] font-black uppercase tracking-widest text-primary/70 hover:text-primary transition-colors cursor-pointer group/link">
+                      <div className="p-2.5 rounded-xl bg-primary/5 group-hover/link:bg-primary/10"><Globe className="w-4 h-4" /></div>
+                      <span className="line-clamp-1">{unit.site.replace('https://', '')}</span>
                     </div>
                   )}
                 </div>
@@ -232,7 +236,7 @@ export default function UnitsPage() {
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modal - CRUD */}
       <AnimatePresence>
         {isModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -244,145 +248,136 @@ export default function UnitsPage() {
               onClick={() => setIsModalOpen(false)}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 30 }}
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 30 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-3xl overflow-hidden relative shadow-2xl flex flex-col max-h-[90vh]"
             >
               <form onSubmit={handleSave} className="flex flex-col h-full">
-                <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
                   <div>
-                    <h2 className="text-3xl font-bold flex items-center gap-4">
-                      {editingUnit ? <Pencil className="w-8 h-8 text-blue-500" /> : <Plus className="w-8 h-8 text-blue-500" />}
+                    <h2 className="text-3xl font-black flex items-center gap-4">
+                      {editingUnit ? <Pencil className="w-8 h-8 text-primary" /> : <Plus className="w-8 h-8 text-primary" />}
                       {editingUnit ? "Editar Unidade" : "Nova Unidade"}
                     </h2>
-                    <p className="text-gray-500 mt-2 text-sm">Preencha os dados abaixo para configurar sua unidade.</p>
+                    <p className="text-gray-500 mt-2 text-sm font-medium">Configure os parâmetros técnicos e de contato desta filial.</p>
                   </div>
                   <button type="button" onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-white/10 rounded-2xl transition-all border border-white/5">
                     <X className="w-6 h-6" />
                   </button>
                 </div>
 
-                <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
-                  <div className="space-y-6">
-                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Informações Básicas</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nome oficial *</label>
+                <div className="p-10 space-y-10 overflow-y-auto custom-scrollbar blue-tint">
+                  <div className="space-y-8">
+                    <h4 className="text-[10px] font-black text-primary uppercase tracking-[0.3em] flex items-center gap-3">
+                      <span className="w-8 h-[1px] bg-primary/30"></span> Identidade Operacional
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Nome oficial *</label>
                         <input
                           type="text"
                           required
                           value={formData.nome}
                           onChange={(e) => setFormData({ ...formData, nome: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                          placeholder="Ex: Red Fitness Tatuapé"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          placeholder="Ex: Fluxo Tatuapé"
                         />
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nome exibição (Curto)</label>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Nome exibição (Curto)</label>
                         <input
                           type="text"
                           value={formData.nome_abreviado}
                           onChange={(e) => setFormData({ ...formData, nome_abreviado: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                           placeholder="Ex: Tatuapé"
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div className="space-y-6">
-                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Localização</h4>
+                  <div className="space-y-8">
+                    <h4 className="text-[10px] font-black text-primary uppercase tracking-[0.3em] flex items-center gap-3">
+                      <span className="w-8 h-[1px] bg-primary/30"></span> Geolocalização Neural
+                    </h4>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                      <div className="md:col-span-3 space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Logradouro</label>
+                      <div className="md:col-span-3 space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Logradouro / Endereço</label>
                         <input
                           type="text"
                           value={formData.endereco}
                           onChange={(e) => setFormData({ ...formData, endereco: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                          placeholder="Ex: Av. Álvaro Ramos"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nº</label>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Nº</label>
                         <input
                           type="text"
                           value={formData.numero}
                           onChange={(e) => setFormData({ ...formData, numero: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                          placeholder="123"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold text-center"
                         />
                       </div>
-                      <div className="md:col-span-2 space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Bairro</label>
+                      <div className="md:col-span-2 space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Bairro</label>
                         <input
                           type="text"
                           value={formData.bairro}
                           onChange={(e) => setFormData({ ...formData, bairro: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Cidade</label>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Cidade</label>
                         <input
                           type="text"
                           value={formData.cidade}
                           onChange={(e) => setFormData({ ...formData, cidade: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">UF</label>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Estado (UF)</label>
                         <input
                           type="text"
                           value={formData.estado}
                           onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-center"
                           placeholder="SP"
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div className="space-y-6">
-                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Contato & Digital</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">WhatsApp Principal</label>
+                  <div className="space-y-8 pb-4">
+                    <h4 className="text-[10px] font-black text-primary uppercase tracking-[0.3em] flex items-center gap-3">
+                      <span className="w-8 h-[1px] bg-primary/30"></span> Canais Digitais & Conversão
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">WhatsApp Business</label>
                         <div className="relative">
-                          <Phone className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                          <Phone className="absolute left-6 top-1/2 -translate-y-1/2 w-4 h-4 text-primary/40" />
                           <input
                             type="text"
                             value={formData.whatsapp}
                             onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                            placeholder="(11) 99999-9999"
+                            className="w-full bg-black/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold tracking-widest"
+                            placeholder="(11) 9..."
                           />
                         </div>
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Instagram @</label>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-500 ml-1 uppercase tracking-widest">Instagram @user</label>
                         <div className="relative">
-                          <Instagram className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                          <Instagram className="absolute left-6 top-1/2 -translate-y-1/2 w-4 h-4 text-primary/40" />
                           <input
                             type="text"
                             value={formData.instagram}
                             onChange={(e) => setFormData({ ...formData, instagram: e.target.value })}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                          />
-                        </div>
-                      </div>
-                      <div className="md:col-span-2 space-y-2">
-                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Link para Vendas / Matrícula</label>
-                        <div className="relative">
-                          <LinkIcon className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                          <input
-                            type="text"
-                            value={formData.link_matricula}
-                            onChange={(e) => setFormData({ ...formData, link_matricula: e.target.value })}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                            placeholder="https://..."
+                            className="w-full bg-black/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                           />
                         </div>
                       </div>
@@ -390,27 +385,27 @@ export default function UnitsPage() {
                   </div>
                 </div>
 
-                <div className="p-10 bg-white/[0.02] border-t border-white/5 flex justify-end gap-5">
+                <div className="p-10 bg-white/[0.01] border-t border-white/5 flex justify-end gap-6">
                   <button
                     type="button"
                     onClick={() => setIsModalOpen(false)}
-                    className="px-8 py-4 rounded-2xl font-bold text-gray-500 hover:text-white hover:bg-white/5 transition-all"
+                    className="px-8 py-5 rounded-2xl font-black uppercase tracking-widest text-[10px] text-gray-500 hover:text-white hover:bg-white/5 transition-all"
                   >
                     Descartar
                   </button>
                   <button
                     type="submit"
                     disabled={saving}
-                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white px-12 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]"
+                    className="bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-xs flex items-center gap-3 transition-all shadow-[0_0_30px_rgba(0,242,255,0.3)] hover:scale-[1.02] active:scale-[0.98]"
                   >
                     {saving ? (
                       <Loader2 className="w-5 h-5 animate-spin" />
                     ) : success ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-300" />
+                      <CheckCircle2 className="w-5 h-5" />
                     ) : (
                       <Save className="w-5 h-5" />
                     )}
-                    {saving ? "Processando..." : success ? "Salvamento Concluído!" : "Confirmar Unidade"}
+                    {saving ? "Protocolando..." : success ? "Dados Sincronizados" : "Efetivar Unidade"}
                   </button>
                 </div>
               </form>
@@ -422,8 +417,8 @@ export default function UnitsPage() {
       <style jsx global>{`
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0, 242, 255, 0.1); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0, 242, 255, 0.2); }
       `}</style>
     </div>
   );

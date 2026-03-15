@@ -6,7 +6,8 @@ import {
   TrendingUp, Users, MessageSquare, Clock, Target, ArrowUpRight,
   ChevronRight, LayoutDashboard, Settings, LogOut, Bell,
   Building2, Brain, HelpCircle, Network, Zap, ChevronDown,
-  Activity, Star, ArrowRight, Sparkles, MessageSquare as MsgIcon
+  Activity, Star, ArrowRight, Sparkles, MessageSquare as MsgIcon,
+  BarChart3
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -109,6 +110,7 @@ export default function DashboardPage() {
 
   const navItems = [
     { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", active: true },
+    { label: "Insights IA", icon: BarChart3, href: "/dashboard/insights" },
     { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas" },
     { label: "Unidades", icon: Building2, href: "/dashboard/units" },
     { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality" },
@@ -382,10 +384,10 @@ export default function DashboardPage() {
             <p className="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">Acesso Rápido</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
+                { label: "Insights", icon: BarChart3, href: "/dashboard/insights", desc: "Análise de conversão" },
                 { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas", desc: "Central de leads" },
                 { label: "Unidades", icon: Building2, href: "/dashboard/units", desc: "Gerenciar filiais" },
-                { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality", desc: "Configurar IA" },
-                { label: "Integrações", icon: Network, href: "/dashboard/integrations", desc: "Chatwoot, EVO..." },
+                { label: "Personalidade", icon: Brain, href: "/dashboard/personality", desc: "Cérebro da IA" },
               ].map(item => (
                 <a key={item.label} href={item.href}
                   className="bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-blue-500/20 rounded-2xl p-4 transition-all group">

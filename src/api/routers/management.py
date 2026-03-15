@@ -16,6 +16,9 @@ class PersonalityUpdate(BaseModel):
     personalidade: Optional[str] = None
     instrucoes_base: Optional[str] = None
     tom_voz: Optional[str] = None
+    model_name: Optional[str] = "openai/gpt-4o"
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 1000
     ativo: Optional[bool] = None
 
 class FAQCreate(BaseModel):
@@ -38,12 +41,21 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
     row = await _database.db_pool.fetchrow(
-        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, model_name, temperature, max_tokens, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
         empresa_id
     )
     if not row:
         # Retorna um objeto vazio mas estruturado se não existir
-        return {"nome_ia": "", "personalidade": "", "instrucoes_base": "", "tom_voz": "Profissional", "ativo": False}
+        return {
+            "nome_ia": "", 
+            "personalidade": "", 
+            "instrucoes_base": "", 
+            "tom_voz": "Profissional", 
+            "model_name": "openai/gpt-4o",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+            "ativo": False
+        }
     return dict(row)
 
 @router.put("/personality")

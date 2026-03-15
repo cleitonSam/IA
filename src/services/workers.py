@@ -184,6 +184,12 @@ async def worker_followup():
                     nome_unidade = f['nome_unidade'] or ''
                     template_base = (f['mensagem'] or '').replace('{{nome}}', nome_contato).replace('{{unidade}}', nome_unidade)
                     
+                    # Carrega personalidade para usar modelo escolhido pelo cliente
+                    from src.services.db_queries import carregar_personalidade
+                    pers = await carregar_personalidade(emp_id)
+                    modelo_followup = pers.get("model_name") or "gpt-4o-mini"
+                    temp_followup = float(pers.get("temperature") or 0.7)
+                    
                     # ── Lógica do Score e Geração IA ────────────────────────
                     eventos = await _database.db_pool.fetch("SELECT tipo_evento, score_incremento FROM eventos_funil WHERE conversa_id = $1", f['conversa_id'])
                     score_total = sum((e['score_incremento'] or 1) for e in eventos)
@@ -205,10 +211,10 @@ async def worker_followup():
                     
                     try:
                         resp_llm = await cliente_ia.chat.completions.create(
-                            model="gpt-4o-mini",
+                            model=modelo_followup,
                             messages=[{"role": "system", "content": prompt_sistema}],
-                            temperature=0.7,
-                            max_tokens=150
+                            temperature=temp_followup,
+                            max_tokens=250
                         )
                         mensagem_final = resp_llm.choices[0].message.content.strip()
                     except Exception as e_llm:

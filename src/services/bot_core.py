@@ -1312,10 +1312,14 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            modelo_escolhido = pers.get("modelo_preferido") or (
-                "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
+            modelo_escolhido = pers.get("model_name") or pers.get("modelo_preferido") or (
+                "google/gemini-2.0-flash" if imagens_urls else "google/gemini-2.0-flash-lite"
             )
-            temperature = float(pers.get("temperatura") or 0.7)
+            # Se tiver imagens, força gemini-2.0-flash para melhor suporte multimodal
+            if imagens_urls and not modelo_escolhido.startswith("google/"):
+                 modelo_escolhido = "google/gemini-2.0-flash"
+
+            temperature = float(pers.get("temperature") or pers.get("temperatura") or 0.7)
             max_tokens_llm = int(pers.get("max_tokens") or 8000)
             # Mínimo alto para nunca truncar respostas com múltiplos planos ou detalhes
             max_tokens_llm = max(max_tokens_llm, 8000)
