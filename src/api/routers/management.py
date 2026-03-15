@@ -298,16 +298,73 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
     await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
     return {"status": "success"}
 
+# --- Debug Endpoint (temporário) ---
+
+@router.get("/debug/me")
+async def debug_me(token_payload: dict = Depends(get_current_user_token)):
+    """Diagnóstico: retorna o que o JWT contém e o que há no banco para esse usuário."""
+    email = token_payload.get("sub")
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+
+    # Busca empresa_id direto do banco pelo email
+    db_empresa_id = await _database.db_pool.fetchval(
+        "SELECT empresa_id FROM usuarios WHERE email = $1", email
+    )
+    db_perfil = await _database.db_pool.fetchval(
+        "SELECT perfil FROM usuarios WHERE email = $1", email
+    )
+
+    # Conta integrações para o empresa_id do banco
+    count_int = await _database.db_pool.fetchval(
+        "SELECT COUNT(*) FROM integracoes WHERE empresa_id = $1", db_empresa_id
+    ) if db_empresa_id else 0
+
+    # Conta unidades para o empresa_id do banco
+    count_units = await _database.db_pool.fetchval(
+        "SELECT COUNT(*) FROM unidades WHERE empresa_id = $1 AND ativa = true", db_empresa_id
+    ) if db_empresa_id else 0
+
+    # Lista tipos de integração
+    tipos = await _database.db_pool.fetch(
+        "SELECT tipo, unidade_id, ativo FROM integracoes WHERE empresa_id = $1", db_empresa_id
+    ) if db_empresa_id else []
+
+    return {
+        "jwt": {"email": email, "empresa_id": empresa_id, "perfil": perfil},
+        "db": {"empresa_id": db_empresa_id, "perfil": db_perfil},
+        "integracoes_count": count_int,
+        "unidades_ativas_count": count_units,
+        "integracoes_tipos": [{"tipo": r["tipo"], "unidade_id": r["unidade_id"], "ativo": r["ativo"]} for r in tipos],
+    }
+
+
 # --- Integrations Endpoints ---
+
+async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
+    """Resolve empresa_id do JWT; se nulo, busca no banco pelo email do usuário."""
+    empresa_id = token_payload.get("empresa_id")
+    if empresa_id:
+        return int(empresa_id)
+    email = token_payload.get("sub")
+    if email:
+        empresa_id = await _database.db_pool.fetchval(
+            "SELECT empresa_id FROM usuarios WHERE email = $1 AND ativo = true", email
+        )
+        if empresa_id:
+            return int(empresa_id)
+    return None
+
 
 @router.get("/integrations")
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
-    empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
 
     # admin_master não gerencia integrações de empresa específica
     if perfil == "admin_master":
         return []
+
+    empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         return []
 
@@ -326,38 +383,25 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 
 
 @router.get("/integrations/evo/units")
-async def get_evo_per_unit(
-    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
-    token_payload: dict = Depends(get_current_user_token),
-):
+async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
-    empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
 
-    # admin_master pode não ter empresa_id no token → aceita via query param
-    if not empresa_id:
-        if perfil == "admin_master":
-            empresa_id = empresa_id_param  # pode ser None → busca todas as unidades
-        else:
-            raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    if perfil == "admin_master":
+        return []  # admin_master não gerencia integrações de empresa
 
-    if empresa_id:
-        units = await _database.db_pool.fetch(
-            "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
-            empresa_id
-        )
-        configs = await _database.db_pool.fetch(
-            "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
-            empresa_id
-        )
-    else:
-        # admin_master sem empresa_id específico → todas as unidades ativas
-        units = await _database.db_pool.fetch(
-            "SELECT id, nome FROM unidades WHERE ativa = true ORDER BY nome"
-        )
-        configs = await _database.db_pool.fetch(
-            "SELECT unidade_id, config, ativo FROM integracoes WHERE tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''"
-        )
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    units = await _database.db_pool.fetch(
+        "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
+        empresa_id
+    )
+    configs = await _database.db_pool.fetch(
+        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
+        empresa_id
+    )
 
     config_map = {}
     for r in configs:
@@ -387,19 +431,13 @@ async def update_evo_unit(
     token_payload: dict = Depends(get_current_user_token),
 ):
     """Salva a configuração EVO de uma unidade específica."""
-    empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
 
-    # admin_master sem empresa_id no token → resolve pelo unidade_id
+    empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
-        if perfil == "admin_master":
-            empresa_id = await _database.db_pool.fetchval(
-                "SELECT empresa_id FROM unidades WHERE id = $1", unidade_id
-            )
-            if not empresa_id:
-                raise HTTPException(status_code=404, detail="Unidade não encontrada")
-        else:
-            raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
 
     existing = await _database.db_pool.fetchval(
         "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2",
@@ -425,11 +463,11 @@ async def update_integration(
     body: IntegrationUpdate,
     token_payload: dict = Depends(get_current_user_token),
 ):
-    empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
-
     if perfil == "admin_master":
         raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
 
