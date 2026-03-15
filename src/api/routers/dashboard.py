@@ -64,6 +64,10 @@ async def get_unidades(
         logger.info(f"🔍 Listando unidades para dashboard. empresa_id={empresa_id}, perfil={perfil}")
         unidades = await listar_unidades_ativas(empresa_id)
         logger.info(f"✅ Unidades encontradas: {len(unidades)}")
+        
+        if not unidades:
+             return [{"id": 999, "nome": "⚠️ DIAGNÓSTICO: Endpoint OK, mas lista VAZIA no banco", "slug": "debug-empty"}]
+             
         return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
     except Exception as e:
         logger.error(f"Erro ao listar unidades para dashboard: {e}")
