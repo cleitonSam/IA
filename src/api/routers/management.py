@@ -21,6 +21,16 @@ class PersonalityUpdate(BaseModel):
     max_tokens: Optional[int] = 1000
     ativo: Optional[bool] = None
 
+class PersonalityCreate(BaseModel):
+    nome_ia: str
+    personalidade: str = ""
+    instrucoes_base: str = ""
+    tom_voz: str = "Profissional"
+    model_name: str = "openai/gpt-4o"
+    temperature: float = 0.7
+    max_tokens: int = 1000
+    ativo: bool = False
+
 class FAQCreate(BaseModel):
     pergunta: str
     resposta: str
@@ -60,11 +70,11 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
 
 @router.post("/personality")
 async def update_personality(
-    data: PersonalityUpdate, 
+    data: PersonalityUpdate,
     token_payload: dict = Depends(get_current_user_token)
 ):
     empresa_id = token_payload.get("empresa_id")
-    
+
     # Mapeamento para nomes de colunas reais no banco
     update_data = data.model_dump(exclude_unset=True)
     if "model_name" in update_data:
@@ -75,7 +85,10 @@ async def update_personality(
     if not update_data:
         return {"status": "no_changes"}
 
-    # Gerar a query dinâmica
+    existing = await _database.db_pool.fetchval(
+        "SELECT id FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1", empresa_id
+    )
+
     keys = list(update_data.keys())
     fields = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(keys))
     values = [empresa_id] + [update_data[k] for k in keys]
@@ -91,10 +104,97 @@ async def update_personality(
         vals = ", ".join(f"${i+1}" for i in range(len(update_data)))
         await _database.db_pool.execute(
             f"INSERT INTO personalidade_ia ({cols}) VALUES ({vals})",
-            *update_data.values()
+            *list(update_data.values())
         )
-    
+
     return {"status": "success", "message": "Personalidade atualizada"}
+
+
+# --- Personality CRUD (multi-personality por empresa) ---
+
+@router.get("/personalities")
+async def list_personalities(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as personalidades da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    rows = await _database.db_pool.fetch(
+        """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                  modelo_preferido AS model_name, temperatura AS temperature,
+                  max_tokens, ativo
+           FROM personalidade_ia
+           WHERE empresa_id = $1
+           ORDER BY ativo DESC, id DESC""",
+        empresa_id
+    )
+    return [dict(r) for r in rows]
+
+
+@router.post("/personalities", status_code=201)
+async def create_personality(
+    data: PersonalityCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Cria uma nova personalidade para a empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    try:
+        row = await _database.db_pool.fetchrow(
+            """INSERT INTO personalidade_ia
+               (empresa_id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                modelo_preferido, temperatura, max_tokens, ativo, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+               RETURNING id""",
+            empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
+            data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo
+        )
+        return {"id": row["id"], "status": "success"}
+    except Exception as e:
+        logger.error(f"Erro ao criar personalidade: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao criar personalidade")
+
+
+@router.put("/personalities/{pid}")
+async def update_personality_by_id(
+    pid: int,
+    data: PersonalityCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Atualiza uma personalidade pelo ID."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    existing = await _database.db_pool.fetchval(
+        "SELECT id FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Personalidade não encontrada")
+    await _database.db_pool.execute(
+        """UPDATE personalidade_ia
+           SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
+               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, updated_at=NOW()
+           WHERE id=$9 AND empresa_id=$10""",
+        data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
+        data.model_name, data.temperature, data.max_tokens, data.ativo,
+        pid, empresa_id
+    )
+    return {"status": "success"}
+
+
+@router.delete("/personalities/{pid}")
+async def delete_personality(
+    pid: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Remove uma personalidade pelo ID."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    await _database.db_pool.execute(
+        "DELETE FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
+    )
+    return {"status": "success"}
 
 # --- FAQ Endpoints ---
 
