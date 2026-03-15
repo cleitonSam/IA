@@ -30,7 +30,7 @@ interface Unit {
 
 interface Personality {
   nome_ia: string;
-  objetivos_venda: string;
+  personalidade: string;
   instrucoes_base: string;
   tom_voz: string;
   ativo: boolean;
@@ -68,7 +68,7 @@ export default function SettingsPage() {
 
   // --- Personality State ---
   const [personality, setPersonality] = useState<Personality>({
-    nome_ia: "", objetivos_venda: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true
+    nome_ia: "", personalidade: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true
   });
 
   // --- FAQ State ---
@@ -328,8 +328,8 @@ export default function SettingsPage() {
                   <label className="block text-sm font-medium text-gray-400 mb-2">Objetivo Geral</label>
                   <textarea
                     rows={5}
-                    value={personality.objetivos_venda}
-                    onChange={(e) => setPersonality({ ...personality, objetivos_venda: e.target.value })}
+                    value={personality.personalidade}
+                    onChange={(e) => setPersonality({ ...personality, personalidade: e.target.value })}
                     className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
                     placeholder="Qual o principal objetivo da IA nas conversas?"
                   />
