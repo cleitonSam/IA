@@ -1,10 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Dict, Any
+import uuid as _uuid
+import re
+from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+
 from src.core.config import logger
 from src.core.security import get_current_user_token
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
+
+
+class CriarUnidadeRequest(BaseModel):
+    nome: str
+    nome_abreviado: Optional[str] = None
+    cidade: Optional[str] = None
+    bairro: Optional[str] = None
+    estado: Optional[str] = None
+    endereco: Optional[str] = None
+    numero: Optional[str] = None
+    telefone_principal: Optional[str] = None
+    whatsapp: Optional[str] = None
+    site: Optional[str] = None
+    instagram: Optional[str] = None
+    link_matricula: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -79,3 +99,57 @@ async def get_recent_conversations(
     except Exception as e:
         logger.error(f"Erro ao listar conversas para dashboard: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar histórico de conversas")
+
+
+@router.post("/unidades", status_code=201)
+async def criar_unidade(
+    body: CriarUnidadeRequest,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """
+    Cria uma unidade vinculada à empresa do usuário logado.
+    O empresa_id vem do JWT — o usuário não pode criar unidade em outra empresa.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+
+    # Gera slug a partir do nome
+    slug = re.sub(r"[^a-z0-9]+", "-", body.nome.lower()).strip("-")
+
+    # Garante slug único dentro da empresa
+    existing = await _database.db_pool.fetchval(
+        "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2",
+        slug, empresa_id
+    )
+    if existing:
+        slug = f"{slug}-{_uuid.uuid4().hex[:6]}"
+
+    try:
+        row = await _database.db_pool.fetchrow(
+            """
+            INSERT INTO unidades (
+                uuid, slug, nome, nome_abreviado,
+                cidade, bairro, estado, endereco, numero,
+                telefone_principal, whatsapp,
+                site, instagram, link_matricula,
+                empresa_id, ativa, created_at
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6, $7, $8, $9,
+                $10, $11,
+                $12, $13, $14,
+                $15, true, NOW()
+            ) RETURNING id, slug, nome
+            """,
+            str(_uuid.uuid4()), slug, body.nome, body.nome_abreviado,
+            body.cidade, body.bairro, body.estado, body.endereco, body.numero,
+            body.telefone_principal, body.whatsapp,
+            body.site, body.instagram, body.link_matricula,
+            empresa_id,
+        )
+        logger.info(f"✅ Unidade '{body.nome}' criada (id={row['id']}, empresa_id={empresa_id})")
+        return {"id": row["id"], "slug": row["slug"], "nome": row["nome"], "empresa_id": empresa_id}
+    except Exception as e:
+        logger.error(f"Erro ao criar unidade: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao criar unidade")
