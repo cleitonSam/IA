@@ -383,7 +383,7 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 
 
 @router.get("/integrations/evo/units")
-async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)):
+async def get_evo_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
     perfil = token_payload.get("perfil", "")
 
@@ -399,7 +399,7 @@ async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)
         empresa_id
     )
     configs = await _database.db_pool.fetch(
-        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
+        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL",
         empresa_id
     )
 
@@ -409,6 +409,7 @@ async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)
         if isinstance(c, str):
             try: c = json.loads(c)
             except Exception: c = {}
+        # Ensure unidade_id is treated as string for the map key
         config_map[str(r["unidade_id"])] = {"config": c, "ativo": r["ativo"]}
 
     result = []
@@ -441,7 +442,7 @@ async def update_evo_unit(
 
     existing = await _database.db_pool.fetchval(
         "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2",
-        empresa_id, str(unidade_id)
+        empresa_id, unidade_id
     )
     config_json = json.dumps(body.config)
     if existing:
@@ -452,7 +453,7 @@ async def update_evo_unit(
     else:
         await _database.db_pool.execute(
             "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2, $3, $4, NOW())",
-            empresa_id, config_json, body.ativo, str(unidade_id)
+            empresa_id, config_json, body.ativo, unidade_id
         )
     return {"status": "success"}
 
@@ -542,90 +543,4 @@ async def export_leads(
     
     return [dict(r) for r in rows]
 
-# --- Per-Unit Integration Endpoints ---
-
-@router.get("/integrations/evo/{unidade_id}")
-async def get_evo_per_unit(
-    unidade_id: str, 
-    token_payload: dict = Depends(get_current_user_token)
-):
-    """
-    Busca configuração da Evolution API para uma unidade específica.
-    """
-    empresa_id = token_payload.get("empresa_id")
-    
-    # Validação robusta do ID da unidade para evitar erro de casting (empty string ou undefined)
-    if not unidade_id or unidade_id == "undefined" or not unidade_id.isdigit():
-        return {"config": {}, "ativo": False}
-        
-    uid = int(unidade_id)
-    
-    row = await _database.db_pool.fetchrow(
-        "SELECT config, ativo FROM integracoes_unidade WHERE empresa_id = $1 AND unidade_id = $2 AND tipo = 'evo'",
-        empresa_id, uid
-    )
-    
-    if not row:
-        return {"config": {}, "ativo": False}
-        
-    return {
-        "config": json.loads(row['config']) if isinstance(row['config'], str) else row['config'],
-        "ativo": row['ativo']
-    }
-
-@router.put("/integrations/evo/{unidade_id}")
-async def update_evo_per_unit(
-    unidade_id: str,
-    body: IntegrationUpdate,
-    token_payload: dict = Depends(get_current_user_token)
-):
-    """
-    Salva ou atualiza a integração Evolution para uma unidade.
-    """
-    empresa_id = token_payload.get("empresa_id")
-    if not unidade_id or not unidade_id.isdigit():
-        raise HTTPException(status_code=400, detail="ID da unidade inválido")
-        
-    uid = int(unidade_id)
-    config_json = json.dumps(body.config)
-    
-    existing = await _database.db_pool.fetchval(
-        "SELECT id FROM integracoes_unidade WHERE empresa_id = $1 AND unidade_id = $2 AND tipo = 'evo'",
-        empresa_id, uid
-    )
-    
-    if existing:
-        await _database.db_pool.execute(
-            "UPDATE integracoes_unidade SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
-            config_json, body.ativo, existing
-        )
-    else:
-        await _database.db_pool.execute(
-            "INSERT INTO integracoes_unidade (empresa_id, unidade_id, tipo, config, ativo, created_at) VALUES ($1, $2, 'evo', $3, $4, NOW())",
-            empresa_id, uid, config_json, body.ativo
-        )
-        
-    return {"status": "success"}
-
-@router.post("/integrations/evo/sync/{unidade_id}")
-async def sync_evo_unit(
-    unidade_id: str,
-    token_payload: dict = Depends(get_current_user_token)
-) -> dict:
-    """
-    Força a sincronização de planos da EVO para esta unidade específica.
-    """
-    from src.services.db_queries import sincronizar_planos_evo
-    
-    empresa_id = token_payload.get("empresa_id")
-    if not unidade_id or not unidade_id.isdigit():
-         raise HTTPException(status_code=400, detail="ID da unidade inválido")
-         
-    uid = int(unidade_id)
-    
-    try:
-        count = await sincronizar_planos_evo(empresa_id, unidade_id=uid)
-        return {"status": "success", "count": count}
-    except Exception as e:
-        logger.error(f"Erro ao sincronizar EVO para unidade {uid}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# --- End Management ---
