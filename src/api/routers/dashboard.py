@@ -332,7 +332,9 @@ async def get_unidade(
         """
         SELECT id, nome, nome_abreviado, cidade, bairro, estado,
                endereco, numero, telefone_principal, whatsapp,
-               site, instagram, link_matricula, slug, ativa
+               site, instagram, link_matricula, slug, ativa,
+               horarios, modalidades, planos, formas_pagamento,
+               convenios, infraestrutura, servicos, palavras_chave
         FROM unidades
         WHERE id = $1 AND empresa_id = $2
         """,
