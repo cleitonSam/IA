@@ -178,14 +178,32 @@ async def buscar_planos_evo_da_api(
     auth = base64.b64encode(f"{dns}:{secret_key}".encode()).decode()
     headers = {'Authorization': f'Basic {auth}', 'accept': 'application/json'}
 
-    try:
-        async with httpx.AsyncClient() as client:
-            logger.info(f"🔄 Chamando API Evo (Unid {unidade_id}): {url}")
-            resp = await client.get(url, headers=headers, timeout=15)
-            logger.info(f"💾 Status API Evo: {resp.status_code}")
-            resp.raise_for_status()
-            data = resp.json()
+    data = None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Forçamos HTTP/1.1 para evitar erros de chunked read comuns
+            async with httpx.AsyncClient(http1=True) as client:
+                logger.info(f"🔄 Chamando API Evo (Unid {unidade_id}, Tentativa {attempt+1}/{max_retries}): {url}")
+                resp = await client.get(url, headers=headers, timeout=30.0)
+                logger.info(f"💾 Status API Evo: {resp.status_code}")
+                resp.raise_for_status()
+                data = resp.json()
+                break # Sucesso
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+            if attempt == max_retries - 1:
+                logger.error(f"❌ Falha definitiva após {max_retries} tentativas: {e}")
+                return None
+            logger.warning(f"⚠️ Erro de conexão/protocolo ({e}). Tentando novamente em 1s...")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar planos Evo: {e}")
+            return None
+    
+    if data is None:
+        return None
 
+    try:
         items = None
         if isinstance(data, list):
             items = data
