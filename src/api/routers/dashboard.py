@@ -97,7 +97,7 @@ async def get_metrics(
         where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3"
         params_date = [empresa_id, unidade_id, hoje]
         if days > 1:
-            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4 || ' days')::interval)::date AND $3"
+            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4::text || ' days')::interval)::date AND $3"
             params_date = [empresa_id, unidade_id, hoje, days]
 
         row = await _database.db_pool.fetchrow(f"""
@@ -228,7 +228,7 @@ async def get_metrics_empresa(
     # Se dias > 1, calculamos o range. Se for 1, usamos apenas o dia 'hoje'.
     where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
     if days > 1:
-        where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3 || ' days')::interval)::date AND $2"
+        where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3::text || ' days')::interval)::date AND $2"
 
     try:
         # 1. Métricas de Conversas e Lead Scoring
