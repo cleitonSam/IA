@@ -96,33 +96,127 @@ async def get_metrics(
         raise HTTPException(status_code=500, detail="Erro interno ao processar métricas")
 
 @router.get("/conversations")
-async def get_recent_conversations(
-    unidade_id: int = Query(..., description="ID da unidade"),
-    limit: int = Query(10, le=50),
+async def get_conversations(
+    unidade_id: Optional[int] = Query(None, description="Filtrar por unidade (omitir = todas da empresa)"),
+    limit: int = Query(20, le=100),
+    offset: int = Query(0),
+    status: Optional[str] = Query(None, description="Filtro de status: open, resolved, closed"),
+    busca: Optional[str] = Query(None, description="Busca por nome ou telefone"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Retorna a lista de conversas mais recentes com seus scores e intensões.
+    Lista conversas da empresa com paginação e filtros.
     """
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
-    if perfil == "admin_master" or not empresa_id:
+    if perfil == "admin_master" and not empresa_id and unidade_id:
         empresa_id = await _get_empresa_id_da_unidade(unidade_id)
 
+    conditions = ["c.empresa_id = $1"]
+    params: list = [empresa_id]
+
+    if unidade_id:
+        params.append(unidade_id)
+        conditions.append(f"c.unidade_id = ${len(params)}")
+
+    if status:
+        params.append(status)
+        conditions.append(f"c.status = ${len(params)}")
+
+    if busca:
+        params.append(f"%{busca}%")
+        conditions.append(f"(c.contato_nome ILIKE ${len(params)} OR c.contato_fone ILIKE ${len(params)} OR c.contato_telefone ILIKE ${len(params)})")
+
+    where = " AND ".join(conditions)
+
     try:
-        query = """
-            SELECT conversation_id, contato_nome, contato_fone, score_lead,
-                   lead_qualificado, intencao_de_compra, updated_at, status
-            FROM conversas
-            WHERE empresa_id = $1 AND unidade_id = $2
-            ORDER BY updated_at DESC
-            LIMIT $3
+        query = f"""
+            SELECT c.id, c.conversation_id, c.contato_nome, c.contato_fone, c.contato_telefone,
+                   c.score_lead, c.lead_qualificado, c.intencao_de_compra, c.status,
+                   c.updated_at, c.created_at, c.total_mensagens_cliente, c.total_mensagens_ia,
+                   c.resumo_ia, c.canal, u.nome as unidade_nome
+            FROM conversas c
+            LEFT JOIN unidades u ON u.id = c.unidade_id
+            WHERE {where}
+            ORDER BY c.updated_at DESC
+            LIMIT ${len(params)+1} OFFSET ${len(params)+2}
         """
-        rows = await _database.db_pool.fetch(query, empresa_id, unidade_id, limit)
-        return [dict(r) for r in rows]
+        params.extend([limit, offset])
+        rows = await _database.db_pool.fetch(query, *params)
+
+        total_query = f"SELECT COUNT(*) FROM conversas c WHERE {where}"
+        total = await _database.db_pool.fetchval(total_query, *params[:-2])
+
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "data": [dict(r) for r in rows]
+        }
     except Exception as e:
-        logger.error(f"Erro ao listar conversas para dashboard: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao buscar histórico de conversas")
+        logger.error(f"Erro ao listar conversas: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar conversas")
+
+
+@router.get("/metrics/empresa")
+async def get_metrics_empresa(
+    data: date = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna métricas agregadas de TODAS as unidades da empresa para um dia.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+
+    try:
+        row = await _database.db_pool.fetchrow("""
+            SELECT
+                COUNT(DISTINCT c.id)                                                      AS total_conversas,
+                COUNT(DISTINCT CASE WHEN c.lead_qualificado THEN c.id END)               AS leads_qualificados,
+                COUNT(DISTINCT CASE WHEN c.intencao_de_compra THEN c.id END)             AS intencao_compra,
+                COALESCE(AVG(
+                    EXTRACT(EPOCH FROM (c.primeira_resposta_em - c.primeira_mensagem))
+                ) FILTER (WHERE c.primeira_resposta_em IS NOT NULL), 0)                   AS tempo_medio_resposta,
+                COUNT(DISTINCT CASE WHEN c.status IN ('encerrada','resolved','closed') THEN c.id END) AS conversas_encerradas,
+                COUNT(DISTINCT c.unidade_id)                                              AS total_unidades_ativas
+            FROM conversas c
+            WHERE c.empresa_id = $1
+              AND DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2
+        """, empresa_id, hoje)
+
+        # Per-unit breakdown
+        units_rows = await _database.db_pool.fetch("""
+            SELECT
+                u.id, u.nome,
+                COUNT(DISTINCT c.id)                                             AS total_conversas,
+                COUNT(DISTINCT CASE WHEN c.lead_qualificado THEN c.id END)      AS leads_qualificados,
+                COUNT(DISTINCT CASE WHEN c.intencao_de_compra THEN c.id END)    AS intencao_compra
+            FROM unidades u
+            LEFT JOIN conversas c ON c.unidade_id = u.id
+                AND DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2
+            WHERE u.empresa_id = $1 AND u.ativa = true
+            GROUP BY u.id, u.nome
+            ORDER BY total_conversas DESC
+        """, empresa_id, hoje)
+
+        total = dict(row) if row else {}
+        total_conv = total.get("total_conversas") or 0
+        leads = total.get("leads_qualificados") or 0
+        total["taxa_conversao"] = round((leads / total_conv * 100), 1) if total_conv > 0 else 0
+        total["tempo_medio_resposta"] = round(float(total.get("tempo_medio_resposta") or 0), 1)
+
+        return {
+            "date": hoje.isoformat(),
+            "totals": total,
+            "por_unidade": [dict(r) for r in units_rows]
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar métricas da empresa: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar métricas da empresa")
 
 
 @router.post("/unidades", status_code=201)

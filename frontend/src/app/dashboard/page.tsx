@@ -6,12 +6,14 @@ import {
   TrendingUp, Users, MessageSquare, Clock, Target, ArrowUpRight,
   ChevronRight, LayoutDashboard, Settings, LogOut, Bell,
   Building2, Brain, HelpCircle, Network, Zap, ChevronDown,
-  Activity, Star, ArrowRight, Sparkles
+  Activity, Star, ArrowRight, Sparkles, MessageSquare as MsgIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<any>(null);
+  const [empresaMetrics, setEmpresaMetrics] = useState<any>(null);
+  const [perUnit, setPerUnit] = useState<any[]>([]);
   const [conversations, setConversations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -29,12 +31,15 @@ export default function DashboardPage() {
       if (!token) { window.location.href = "/login"; return; }
       try {
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        const [userRes, unitsRes] = await Promise.all([
+        const [userRes, unitsRes, empMetRes] = await Promise.all([
           axios.get(`/api-backend/auth/me`, config),
-          axios.get(`/api-backend/dashboard/unidades`, config)
+          axios.get(`/api-backend/dashboard/unidades`, config),
+          axios.get(`/api-backend/dashboard/metrics/empresa`, config)
         ]);
         setUser(userRes.data);
         setUnidades(unitsRes.data);
+        setEmpresaMetrics(empMetRes.data?.totals || null);
+        setPerUnit(empMetRes.data?.por_unidade || []);
         if (unitsRes.data.length > 0) setSelectedUnidadeId(unitsRes.data[0].id);
       } catch (err) {
         console.error(err);
@@ -57,7 +62,7 @@ export default function DashboardPage() {
           axios.get(`/api-backend/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
         ]);
         setMetrics(metricsRes.data.metrics);
-        setConversations(convRes.data);
+        setConversations(convRes.data?.data || convRes.data || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -104,10 +109,11 @@ export default function DashboardPage() {
 
   const navItems = [
     { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", active: true },
-    { label: "Unidades", icon: Building2, href: "/dashboard/settings?tab=units" },
-    { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings?tab=personality" },
-    { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings?tab=faq" },
-    { label: "Integrações", icon: Network, href: "/dashboard/settings?tab=integrations" },
+    { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas" },
+    { label: "Unidades", icon: Building2, href: "/dashboard/settings" },
+    { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings" },
+    { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings" },
+    { label: "Integrações", icon: Network, href: "/dashboard/settings" },
   ];
 
   return (
@@ -256,13 +262,13 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* KPI Cards */}
+          {/* KPI Cards: company-wide + per-unit selected */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: "Total Conversas", value: metrics?.total_conversas ?? "—", icon: MessageSquare, color: "violet", delta: "+12%" },
-              { label: "Leads Qualificados", value: metrics?.leads_qualificados ?? "—", icon: Star, color: "indigo", delta: "+5%" },
-              { label: "Taxa de Conversão", value: metrics?.taxa_conversao ? `${metrics.taxa_conversao}%` : "—", icon: TrendingUp, color: "emerald", delta: "+2%" },
-              { label: "Tempo Médio", value: metrics?.tempo_medio_resposta ? `${metrics.tempo_medio_resposta}s` : "—", icon: Clock, color: "amber", delta: "-20%" },
+              { label: "Total Conversas", value: (empresaMetrics?.total_conversas ?? metrics?.total_conversas) ?? "—", icon: MsgIcon, color: "violet", delta: undefined },
+              { label: "Leads Qualificados", value: (empresaMetrics?.leads_qualificados ?? metrics?.leads_qualificados) ?? "—", icon: Star, color: "indigo", delta: undefined },
+              { label: "Taxa de Conversão", value: empresaMetrics?.taxa_conversao != null ? `${empresaMetrics.taxa_conversao}%` : (metrics?.taxa_conversao ? `${metrics.taxa_conversao}%` : "—"), icon: TrendingUp, color: "emerald", delta: undefined },
+              { label: "Tempo Médio", value: (empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta) ? `${Math.round(empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta)}s` : "—", icon: Clock, color: "amber", delta: undefined },
             ].map((card, i) => (
               <motion.div
                 key={card.label}
@@ -274,9 +280,6 @@ export default function DashboardPage() {
                   <div className={`p-2 rounded-lg bg-${card.color}-500/10`}>
                     <card.icon className={`w-4 h-4 text-${card.color}-400`} />
                   </div>
-                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full flex items-center gap-0.5">
-                    <ArrowUpRight className="w-2.5 h-2.5" />{card.delta}
-                  </span>
                 </div>
                 <p className="text-xs text-gray-500 mb-1">{card.label}</p>
                 <p className="text-2xl font-bold tracking-tight">{loading ? <span className="inline-block w-12 h-6 bg-white/5 rounded animate-pulse" /> : card.value}</p>
@@ -368,8 +371,8 @@ export default function DashboardPage() {
                   ))
                 )}
               </div>
-              <button className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/5 hover:bg-white/5 text-xs font-bold text-gray-500 hover:text-white transition-all">
-                Ver todos os leads <ArrowRight className="w-3 h-3" />
+              <button className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/5 hover:bg-white/5 text-xs font-bold text-gray-500 hover:text-white transition-all" onClick={() => { window.location.href = "/dashboard/conversas"; }}>
+                Ver todas as conversas <ArrowRight className="w-3 h-3" />
               </button>
             </div>
           </div>
@@ -379,9 +382,9 @@ export default function DashboardPage() {
             <p className="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">Acesso Rápido</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
+                { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas", desc: "Central de leads" },
                 { label: "Unidades", icon: Building2, href: "/dashboard/settings", desc: "Gerenciar filiais" },
                 { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings", desc: "Configurar IA" },
-                { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings", desc: "Respostas prontas" },
                 { label: "Integrações", icon: Network, href: "/dashboard/settings", desc: "Chatwoot, EVO..." },
               ].map(item => (
                 <a key={item.label} href={item.href}
