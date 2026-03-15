@@ -301,21 +301,25 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
 # --- Integrations Endpoints ---
 
 @router.get("/integrations")
-async def get_integrations(
-    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
-    token_payload: dict = Depends(get_current_user_token),
-):
+async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
 
+    # admin_master não gerencia integrações de empresa específica
+    if perfil == "admin_master":
+        return []
     if not empresa_id:
-        if perfil == "admin_master" and empresa_id_param:
-            empresa_id = empresa_id_param
-        else:
-            return []  # admin_master sem empresa selecionada → lista vazia
+        return []
 
+    # Retorna a melhor config por tipo (prefere unidade_id NULL, mas aceita qualquer).
+    # EVO é excluído — gerenciado pelo endpoint /evo/units.
     rows = await _database.db_pool.fetch(
-        "SELECT id, tipo, config, ativo FROM integracoes WHERE empresa_id = $1 AND (unidade_id IS NULL OR unidade_id = '')",
+        """
+        SELECT DISTINCT ON (tipo) id, tipo, config, ativo
+        FROM integracoes
+        WHERE empresa_id = $1 AND tipo != 'evo'
+        ORDER BY tipo, (unidade_id IS NULL) DESC, id DESC
+        """,
         empresa_id
     )
     return [dict(r) for r in rows]
@@ -419,20 +423,19 @@ async def update_evo_unit(
 async def update_integration(
     tipo: str,
     body: IntegrationUpdate,
-    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
     token_payload: dict = Depends(get_current_user_token),
 ):
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil", "")
 
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
     if not empresa_id:
-        if perfil == "admin_master" and empresa_id_param:
-            empresa_id = empresa_id_param
-        else:
-            raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
 
+    # Busca o registro global (sem unidade_id), preferindo NULL
     existing = await _database.db_pool.fetchval(
-        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND (unidade_id IS NULL OR unidade_id = '')",
+        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND (unidade_id IS NULL OR unidade_id = '') ORDER BY (unidade_id IS NULL) DESC LIMIT 1",
         empresa_id, tipo
     )
 

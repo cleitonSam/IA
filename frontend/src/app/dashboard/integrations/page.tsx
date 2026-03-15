@@ -18,7 +18,6 @@ interface EvoUnit {
   ativo: boolean;
   configurado: boolean;
 }
-interface Company { id: number; nome: string; }
 
 export default function IntegrationsPage() {
   const [loading, setLoading] = useState(true);
@@ -26,13 +25,7 @@ export default function IntegrationsPage() {
   const [success, setSuccess] = useState(false);
   const [activeTab, setActiveTab] = useState("chatwoot");
   const [integrations, setIntegrations] = useState<Record<string, Integration>>({});
-
-  // Perfil do usuário
-  const [userPerfil, setUserPerfil] = useState("");
-  const [userEmpresaId, setUserEmpresaId] = useState<number | null>(null);
-  // Seletor de empresa para admin_master sem empresa vinculada
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [selectedEmpresaId, setSelectedEmpresaId] = useState<number | null>(null);
+  const [isAdminMaster, setIsAdminMaster] = useState(false);
 
   // EVO per-unit state
   const [evoUnits, setEvoUnits] = useState<EvoUnit[]>([]);
@@ -44,53 +37,34 @@ export default function IntegrationsPage() {
 
   const getToken = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
-  // empresa_id efetivo: token > selecionado pelo admin_master
-  const effectiveEmpresaId = userEmpresaId ?? selectedEmpresaId;
-  const buildQs = (extra?: Record<string, any>) => {
-    const params: Record<string, any> = { ...(extra || {}) };
-    if (!userEmpresaId && effectiveEmpresaId) params.empresa_id = effectiveEmpresaId;
-    const qs = new URLSearchParams(params).toString();
-    return qs ? `?${qs}` : "";
-  };
-
-  // 1. Busca perfil do usuário
+  // 1. Verifica perfil e carrega integrações
   useEffect(() => {
     axios.get("/api-backend/auth/me", getToken()).then(r => {
-      setUserPerfil(r.data.perfil || "");
-      setUserEmpresaId(r.data.empresa_id || null);
-      // admin_master sem empresa → busca lista de empresas
-      if (r.data.perfil === "admin_master" && !r.data.empresa_id) {
-        axios.get("/api-backend/auth/empresas", getToken()).then(e => setCompanies(e.data)).catch(console.error);
+      if (r.data.perfil === "admin_master") {
+        setIsAdminMaster(true);
+        setLoading(false);
+        return;
       }
-    }).catch(console.error);
+      // admin normal → carrega integrações da sua empresa
+      axios.get("/api-backend/management/integrations", getToken())
+        .then(res => {
+          const mapped = res.data.reduce((acc: any, item: any) => {
+            acc[item.tipo] = { ...item, config: typeof item.config === "string" ? JSON.parse(item.config) : item.config };
+            return acc;
+          }, {});
+          setIntegrations(mapped);
+        }).catch(console.error).finally(() => setLoading(false));
+    }).catch(() => setLoading(false));
   }, []);
 
-  // 2. Carrega integrações quando tiver empresa_id definido
   useEffect(() => {
-    if (!effectiveEmpresaId && userPerfil === "admin_master") { setLoading(false); return; }
-    if (!userPerfil) return; // aguarda perfil ser carregado
-    setLoading(true);
-    axios.get(`/api-backend/management/integrations${buildQs()}`, getToken())
-      .then(r => {
-        const mapped = r.data.reduce((acc: any, item: any) => {
-          acc[item.tipo] = { ...item, config: typeof item.config === "string" ? JSON.parse(item.config) : item.config };
-          return acc;
-        }, {});
-        setIntegrations(mapped);
-      }).catch(console.error).finally(() => setLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveEmpresaId, userPerfil]);
-
-  useEffect(() => {
-    if (activeTab !== "evo") return;
-    if (!effectiveEmpresaId && userPerfil === "admin_master") return;
+    if (activeTab !== "evo" || isAdminMaster) return;
     setEvoLoading(true);
-    axios.get(`/api-backend/management/integrations/evo/units${buildQs()}`, getToken())
+    axios.get("/api-backend/management/integrations/evo/units", getToken())
       .then(r => setEvoUnits(r.data))
       .catch(console.error)
       .finally(() => setEvoLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, effectiveEmpresaId]);
+  }, [activeTab, isAdminMaster]);
 
   const currentConfig = integrations[activeTab] || {
     tipo: activeTab,
@@ -109,7 +83,7 @@ export default function IntegrationsPage() {
     e.preventDefault();
     setSaving(true);
     try {
-      await axios.put(`/api-backend/management/integrations/${activeTab}${buildQs()}`, currentConfig, getToken());
+      await axios.put(`/api-backend/management/integrations/${activeTab}`, currentConfig, getToken());
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch { alert("Erro ao salvar integração."); }
@@ -168,7 +142,7 @@ export default function IntegrationsPage() {
               </h1>
               <p className="text-slate-500 mt-2 text-sm italic">Gerencie as pontes entre seus canais de atendimento e o EVO.</p>
             </div>
-            {activeTab !== "evo" && (
+            {!isAdminMaster && activeTab !== "evo" && (
               <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
                 onClick={handleSave} disabled={saving}
                 className="bg-[#00d2ff] text-black px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center gap-3 shadow-[0_0_25px_rgba(0,210,255,0.3)] disabled:opacity-50">
@@ -178,29 +152,6 @@ export default function IntegrationsPage() {
               </motion.button>
             )}
           </div>
-
-          {/* Seletor de empresa para admin_master sem empresa vinculada */}
-          {userPerfil === "admin_master" && !userEmpresaId && companies.length > 0 && (
-            <div className="mb-8 bg-slate-900/60 border border-[#00d2ff]/15 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center">
-                  <Building2 className="w-4 h-4 text-[#00d2ff]" />
-                </div>
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Visualizando empresa</p>
-                  <p className="text-[10px] text-slate-600 font-bold mt-0.5">Selecione para gerenciar integrações</p>
-                </div>
-              </div>
-              <select
-                value={selectedEmpresaId ?? ""}
-                onChange={e => setSelectedEmpresaId(e.target.value ? Number(e.target.value) : null)}
-                className="flex-1 bg-slate-900/80 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm font-bold focus:outline-none focus:border-[#00d2ff]/40 transition-all"
-              >
-                <option value="">— Selecione uma empresa —</option>
-                {companies.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-              </select>
-            </div>
-          )}
 
           {/* Tabs */}
           <div className="flex flex-wrap gap-3 mb-8">
@@ -217,12 +168,14 @@ export default function IntegrationsPage() {
             ))}
           </div>
 
-          {/* admin_master sem empresa selecionada */}
-          {userPerfil === "admin_master" && !userEmpresaId && !selectedEmpresaId ? (
+          {/* admin_master não tem acesso a esta página */}
+          {isAdminMaster ? (
             <div className="flex flex-col items-center justify-center py-32 rounded-3xl border border-dashed border-white/5 bg-white/[0.01]">
-              <Building2 className="w-12 h-12 text-slate-700 mb-4" />
-              <p className="text-slate-400 font-bold">Selecione uma empresa acima</p>
-              <p className="text-slate-600 text-sm mt-1">para gerenciar as integrações.</p>
+              <Network className="w-12 h-12 text-slate-700 mb-4" />
+              <p className="text-slate-400 font-bold">Acesso restrito</p>
+              <p className="text-slate-600 text-sm mt-1 text-center max-w-xs">
+                As integrações são gerenciadas pelo administrador de cada empresa.
+              </p>
             </div>
           ) : loading ? (
             <div className="flex items-center justify-center py-40"><Loader2 className="w-8 h-8 text-[#00d2ff] animate-spin" /></div>
