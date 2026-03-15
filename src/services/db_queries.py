@@ -116,6 +116,20 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
         return None
 
 
+async def bd_salvar_resumo_ia(conversation_id: int, resumo: str):
+    """
+    Salva o resumo gerado pela IA para uma conversa específica.
+    """
+    if not _database.db_pool:
+        return
+    try:
+        await _database.db_pool.execute(
+            "UPDATE conversas SET resumo_ia = $1, updated_at = NOW() WHERE conversation_id = $2",
+            resumo, conversation_id
+        )
+    except Exception as e:
+        logger.error(f"Erro ao salvar resumo IA para conversa {conversation_id}: {e}")
+
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 
 async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[List[Dict]]:

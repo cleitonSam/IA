@@ -92,4 +92,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440)
 
 EMPRESA_ID_PADRAO = 1
 APP_VERSION = "2.5.0"
+
+# --- EMAIL / SMTP ---
+SMTP_ADDRESS = os.getenv("SMTP_ADDRESS", "smtp.hostinger.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Antigravity IA <ti@fluxodigitaltech.com.br>")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both
