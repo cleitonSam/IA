@@ -228,7 +228,7 @@ async def send_invite(
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
     link = f"{frontend_url}/register?token={token}"
 
-    logger.info(f"📨 Convite criado para {body.email} (empresa_id={empresa_id}, email_enviado={enviado})")
+    logger.info(f"📨 Convite criado para {body.email} (empresa_id={empresa_id}, email_enviado={enviado}) link={link}")
     return {
         "message": f"Convite criado para {body.email}",
         "email_enviado": enviado,
