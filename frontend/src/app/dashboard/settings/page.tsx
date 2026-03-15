@@ -448,16 +448,65 @@ export default function SettingsPage() {
         {isUnitModalOpen && (
            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
              <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsUnitModalOpen(false)} />
-             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-2xl relative p-8">
+             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-2xl relative p-8 max-h-[90vh] overflow-y-auto">
                <form onSubmit={handleSaveUnit}>
-                 <h2 className="text-2xl font-bold mb-8">{editingUnit ? "Editar Unidade" : "Nova Unidade"}</h2>
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                    <input required placeholder="Nome *" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
-                    <input placeholder="Cidade" value={unitFormData.cidade} onChange={e => setUnitFormData({...unitFormData, cidade: e.target.value})} className="bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                 <h2 className="text-2xl font-bold mb-6">{editingUnit ? "Editar Unidade" : "Nova Unidade"}</h2>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div className="col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">Nome *</label>
+                      <input required placeholder="Ex: Red Fitness – Centro" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Nome Abreviado</label>
+                      <input placeholder="Ex: RF Centro" value={unitFormData.nome_abreviado} onChange={e => setUnitFormData({...unitFormData, nome_abreviado: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Cidade</label>
+                      <input placeholder="Ex: São Paulo" value={unitFormData.cidade} onChange={e => setUnitFormData({...unitFormData, cidade: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Bairro</label>
+                      <input placeholder="Ex: Vila Mariana" value={unitFormData.bairro} onChange={e => setUnitFormData({...unitFormData, bairro: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Estado (UF)</label>
+                      <input placeholder="SP" maxLength={2} value={unitFormData.estado} onChange={e => setUnitFormData({...unitFormData, estado: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Endereço</label>
+                      <input placeholder="Rua, Av..." value={unitFormData.endereco} onChange={e => setUnitFormData({...unitFormData, endereco: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Número</label>
+                      <input placeholder="123" value={unitFormData.numero} onChange={e => setUnitFormData({...unitFormData, numero: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Telefone Principal</label>
+                      <input placeholder="(11) 99999-0000" value={unitFormData.telefone_principal} onChange={e => setUnitFormData({...unitFormData, telefone_principal: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">WhatsApp</label>
+                      <input placeholder="(11) 99999-0000" value={unitFormData.whatsapp} onChange={e => setUnitFormData({...unitFormData, whatsapp: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Site</label>
+                      <input placeholder="https://..." value={unitFormData.site} onChange={e => setUnitFormData({...unitFormData, site: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Instagram</label>
+                      <input placeholder="@usuario" value={unitFormData.instagram} onChange={e => setUnitFormData({...unitFormData, instagram: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-xs text-gray-400 mb-1">Link de Matrícula</label>
+                      <input placeholder="https://..." value={unitFormData.link_matricula} onChange={e => setUnitFormData({...unitFormData, link_matricula: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                    </div>
                  </div>
                  <div className="flex justify-end gap-4">
                     <button type="button" onClick={() => setIsUnitModalOpen(false)} className="px-6 py-2 text-gray-400">Cancelar</button>
-                    <button type="submit" className="bg-blue-600 px-8 py-2 rounded-xl font-bold">Salvar</button>
+                    <button type="submit" disabled={saving} className="bg-blue-600 hover:bg-blue-500 px-8 py-2 rounded-xl font-bold flex items-center gap-2">
+                      {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                      Salvar
+                    </button>
                  </div>
                </form>
              </motion.div>
