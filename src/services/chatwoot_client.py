@@ -3,7 +3,7 @@ import re
 import hmac
 import hashlib
 import httpx
-from typing import Optional
+from typing import Optional, Any
 
 from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL, CHATWOOT_WEBHOOK_SECRET
 from src.core.redis_client import redis_client
