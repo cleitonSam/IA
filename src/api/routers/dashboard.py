@@ -179,6 +179,35 @@ async def criar_unidade(
         raise HTTPException(status_code=500, detail="Erro ao criar unidade")
 
 
+@router.get("/unidades/{unidade_id}")
+async def get_unidade(
+    unidade_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """
+    Retorna dados completos de uma unidade para edição.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+
+    if perfil == "admin_master" and not empresa_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+
+    row = await _database.db_pool.fetchrow(
+        """
+        SELECT id, nome, nome_abreviado, cidade, bairro, estado,
+               endereco, numero, telefone_principal, whatsapp,
+               site, instagram, link_matricula, slug, ativa
+        FROM unidades
+        WHERE id = $1 AND empresa_id = $2
+        """,
+        unidade_id, empresa_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada")
+    return dict(row)
+
+
 @router.put("/unidades/{unidade_id}")
 async def atualizar_unidade(
     unidade_id: int,

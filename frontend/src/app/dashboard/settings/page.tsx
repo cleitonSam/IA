@@ -126,16 +126,30 @@ export default function SettingsPage() {
   };
 
   // --- Handlers: Units ---
-  const handleOpenUnitModal = (unit: Unit | null = null) => {
+  const handleOpenUnitModal = async (unit: Unit | null = null) => {
     if (unit) {
       setEditingUnit(unit);
-      setUnitFormData({
-        nome: unit.nome, nome_abreviado: unit.nome_abreviado || "",
-        cidade: unit.cidade || "", bairro: unit.bairro || "", estado: unit.estado || "",
-        endereco: unit.endereco || "", numero: unit.numero || "",
-        telefone_principal: unit.telefone_principal || "", whatsapp: unit.whatsapp || "",
-        site: unit.site || "", instagram: unit.instagram || "", link_matricula: unit.link_matricula || "",
-      });
+      // Fetch full unit data to pre-fill all form fields
+      try {
+        const res = await axios.get(`/api-backend/dashboard/unidades/${unit.id}`, getConfig());
+        const u = res.data;
+        setUnitFormData({
+          nome: u.nome || "", nome_abreviado: u.nome_abreviado || "",
+          cidade: u.cidade || "", bairro: u.bairro || "", estado: u.estado || "",
+          endereco: u.endereco || "", numero: u.numero || "",
+          telefone_principal: u.telefone_principal || "", whatsapp: u.whatsapp || "",
+          site: u.site || "", instagram: u.instagram || "", link_matricula: u.link_matricula || "",
+        });
+      } catch {
+        // Fallback to what we already have from the list
+        setUnitFormData({
+          nome: unit.nome, nome_abreviado: unit.nome_abreviado || "",
+          cidade: unit.cidade || "", bairro: unit.bairro || "", estado: unit.estado || "",
+          endereco: unit.endereco || "", numero: unit.numero || "",
+          telefone_principal: unit.telefone_principal || "", whatsapp: unit.whatsapp || "",
+          site: unit.site || "", instagram: unit.instagram || "", link_matricula: unit.link_matricula || "",
+        });
+      }
     } else {
       setEditingUnit(null);
       setUnitFormData({
