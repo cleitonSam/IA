@@ -189,7 +189,10 @@ async def buscar_planos_evo_da_api(
                 logger.info(f"💾 Status API Evo: {resp.status_code}")
                 resp.raise_for_status()
                 data = resp.json()
-                logger.debug(f"📦 Resposta completa EVO (Unid {unidade_id}): {json.dumps(data)[:500]}...") # Loga os primeiros 500 chars do JSON
+                # Logamos as chaves e o início da resposta para depuração (nível INFO para o usuário ver)
+                logger.info(f"📦 Resposta EVO (Unid {unidade_id}) - Chaves: {list(data.keys()) if isinstance(data, dict) else 'Lista'}")
+                if isinstance(data, dict) and 'data' in data:
+                    logger.info(f"📊 Total de items na chave 'data': {len(data['data'])}")
                 break # Sucesso
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
             if attempt == max_retries - 1:
@@ -1013,7 +1016,9 @@ async def bd_registrar_evento_funil(
 
         await _database.db_pool.execute("""
             UPDATE conversas
-            SET score_interesse = score_interesse + $2, updated_at = NOW()
+            SET score_interesse = COALESCE(score_interesse, 0) + $2,
+                score_lead = LEAST(5, COALESCE(score_lead, 0) + $2),
+                updated_at = NOW()
             WHERE id = $1
         """, conversa_id, score_incremento)
 
