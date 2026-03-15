@@ -97,14 +97,15 @@ async def enviar_mensagem_chatwoot(
     if source == "uazapi" and fone:
         from src.services.uaz_client import UazAPIClient
         # No worker, a integração (dict) contém base_url e token
+        _cfg = url_base_ou_integracao if isinstance(url_base_ou_integracao, dict) else {}
         client = UazAPIClient(
-            base_url=integracao.get("url") or integracao.get("base_url") or "",
-            token=integracao.get("token") or "",
-            instance_name=integracao.get("instance_name") or "lead"
+            base_url=_cfg.get("url") or _cfg.get("base_url") or "",
+            token=_cfg.get("token") or token or "",
+            instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
             if is_direct_url:
-                await client.send_media(fone, content, caption="Grade da Unidade", media_type="image")
+                await client.send_media(fone, content, media_type="image")
             else:
                 await client.send_text(fone, content)
             return True
