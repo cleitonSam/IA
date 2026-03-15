@@ -28,21 +28,41 @@ class CriarUnidadeRequest(BaseModel):
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
+async def _get_empresa_id_da_unidade(unidade_id: int) -> int | None:
+    """Resolve o empresa_id a partir do unidade_id."""
+    row = await _database.db_pool.fetchrow(
+        "SELECT empresa_id FROM unidades WHERE id = $1", unidade_id
+    )
+    return row["empresa_id"] if row else None
+
+
 @router.get("/unidades")
 async def get_unidades(
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Lista todas as unidades ativas da empresa do usuário.
+    Lista unidades ativas. admin_master vê todas; outros veem só da sua empresa.
     """
     empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
     try:
+        if perfil == "admin_master" or not empresa_id:
+            # Retorna todas as unidades ativas de todas as empresas
+            rows = await _database.db_pool.fetch(
+                """
+                SELECT u.id, u.nome, u.slug, e.nome as empresa_nome
+                FROM unidades u
+                JOIN empresas e ON e.id = u.empresa_id
+                WHERE u.ativa = true
+                ORDER BY e.nome, u.nome
+                """
+            )
+            return [
+                {"id": r["id"], "nome": r["nome"], "slug": r["slug"], "empresa_nome": r["empresa_nome"]}
+                for r in rows
+            ]
         unidades = await listar_unidades_ativas(empresa_id)
-        # Retornamos apenas os campos necessários para o seletor
-        return [
-            {"id": u["id"], "nome": u["nome"], "slug": u["slug"]}
-            for u in unidades
-        ]
+        return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
     except Exception as e:
         logger.error(f"Erro ao listar unidades para dashboard: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar lista de unidades")
@@ -57,11 +77,12 @@ async def get_metrics(
     Retorna as métricas consolidadas de uma unidade para uma data específica.
     """
     empresa_id = token_payload.get("empresa_id")
-    # Verificação básica de permissão: usuário comum só vê dados da sua empresa
-    # (Futuramente podemos refinar por unidade_id se o perfil for 'atendente')
-    
+    perfil = token_payload.get("perfil")
+    if perfil == "admin_master" or not empresa_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+
     hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-    
+
     try:
         metrics = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
         return {
@@ -84,10 +105,13 @@ async def get_recent_conversations(
     Retorna a lista de conversas mais recentes com seus scores e intensões.
     """
     empresa_id = token_payload.get("empresa_id")
-    
+    perfil = token_payload.get("perfil")
+    if perfil == "admin_master" or not empresa_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+
     try:
         query = """
-            SELECT conversation_id, contato_nome, contato_fone, score_lead, 
+            SELECT conversation_id, contato_nome, contato_fone, score_lead,
                    lead_qualificado, intencao_de_compra, updated_at, status
             FROM conversas
             WHERE empresa_id = $1 AND unidade_id = $2
