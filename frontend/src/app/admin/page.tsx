@@ -163,16 +163,16 @@ export default function AdminPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-mesh flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-mesh text-white flex">
+    <div className="min-h-screen bg-background text-white flex">
       {/* Sidebar */}
-      <aside className="w-64 border-r border-white/5 bg-black/20 backdrop-blur-xl hidden lg:flex flex-col p-6">
+      <aside className="w-64 border-r border-white/5 bg-slate-950/20 backdrop-blur-xl hidden lg:flex flex-col p-6">
         <div className="mb-10 flex items-center gap-3">
           <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-neon-primary">
             <Building2 className="w-6 h-6 text-white" />
@@ -301,9 +301,9 @@ export default function AdminPage() {
                   className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 text-white"
                   required
                 >
-                  <option value="" className="bg-[#020617]">Selecione a empresa...</option>
+                  <option value="" className="bg-background">Selecione a empresa...</option>
                   {empresas.map((emp) => (
-                    <option key={emp.id} value={emp.id} className="bg-[#020617]">
+                    <option key={emp.id} value={emp.id} className="bg-background">
                       {emp.nome}
                     </option>
                   ))}
@@ -482,7 +482,7 @@ export default function AdminPage() {
 
         {/* Modal editar empresa */}
         {editando && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}

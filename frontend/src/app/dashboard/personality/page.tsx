@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { Brain, Save, Loader2, CheckCircle2, ArrowLeft, MessageSquare, Mic2, Sparkles, Smile, Target, Cpu, Thermometer, Hash, Send, User, Bot, PlayCircle } from "lucide-react";
+import { Brain, Save, Loader2, CheckCircle2, ArrowLeft, MessageSquare, Mic2, Sparkles, Smile, Target, Cpu, Thermometer, Hash, Send, User, Bot, PlayCircle, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface Personality {
@@ -60,7 +60,7 @@ export default function PersonalityPage() {
     setSaving(true);
     setSuccess(false);
     try {
-      await axios.put("/api-backend/management/personality", personality, getConfig());
+      await axios.post("/api-backend/management/personality", personality, getConfig());
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (error) {
@@ -88,7 +88,7 @@ export default function PersonalityPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
@@ -114,7 +114,7 @@ export default function PersonalityPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(0,242,255,0.3)] hover:scale-[1.02] active:scale-[0.98]"
+            className="bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(0,210,255,0.3)] hover:scale-[1.02] active:scale-[0.98]"
           >
             {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
             {saving ? "Deploying..." : success ? "Estratégia Ativa" : "Salvar Configurações"}
@@ -127,7 +127,7 @@ export default function PersonalityPage() {
             <motion.div 
               initial={{ opacity: 0, scale: 0.98 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="glass rounded-[3rem] p-10 relative overflow-hidden group border-white/10"
+              className="glass rounded-[3rem] p-10 relative overflow-hidden group border-white/5"
             >
               <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 blur-[100px] rounded-full -mr-20 -mt-20 group-hover:bg-primary/10 transition-colors" />
               
@@ -145,7 +145,7 @@ export default function PersonalityPage() {
                     rows={3}
                     value={personality.personalidade}
                     onChange={(e) => setPersonality({ ...personality, personalidade: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none text-lg font-bold leading-relaxed"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none text-lg font-bold leading-relaxed"
                     placeholder="Defina o propósito vital desta IA..."
                   />
                 </div>
@@ -158,7 +158,7 @@ export default function PersonalityPage() {
                     rows={10}
                     value={personality.instrucoes_base}
                     onChange={(e) => setPersonality({ ...personality, instrucoes_base: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-3xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none font-mono text-sm leading-relaxed text-blue-100/70 custom-scrollbar"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-3xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none font-mono text-sm leading-relaxed text-blue-100/70 custom-scrollbar"
                     placeholder="Diretrizes técnicas, limites éticos e fluxos de conversa..."
                   />
                   <div className="mt-4 p-5 bg-primary/5 border border-primary/10 rounded-[1.5rem] flex items-center gap-4">
@@ -177,15 +177,15 @@ export default function PersonalityPage() {
             <motion.div 
                initial={{ opacity: 0, y: 20 }}
                animate={{ opacity: 1, y: 0 }}
-               className="glass rounded-[3rem] p-10 border-blue-500/20 shadow-2xl shadow-blue-500/5"
+               className="glass rounded-[3rem] p-10 border-white/5 shadow-2xl"
             >
                <h3 className="text-xl font-black flex items-center gap-4 mb-8">
-                  <PlayCircle className="w-7 h-7 text-blue-400" />
+                  <PlayCircle className="w-7 h-7 text-primary" />
                   Neural Playground
-                  <span className="text-[10px] font-black bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full ml-auto">SANDBOX MODO</span>
+                  <span className="text-[10px] font-black bg-primary/10 text-primary px-3 py-1 rounded-full ml-auto uppercase tracking-widest">Simulação Ativa</span>
                </h3>
 
-               <div className="bg-black/60 rounded-3xl p-6 min-h-[300px] mb-8 border border-white/5 relative overflow-hidden flex flex-col gap-4">
+               <div className="bg-slate-950/60 rounded-3xl p-6 min-h-[300px] mb-8 border border-white/5 relative overflow-hidden flex flex-col gap-4">
                   {playHistory.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-center opacity-30">
                        <Bot className="w-16 h-16 mb-4" />
@@ -211,11 +211,11 @@ export default function PersonalityPage() {
                     onChange={(e) => setTestMessage(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && runTest()}
                     placeholder="Digite para testar o cérebro..."
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-5 pr-20 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-5 pr-20 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-medium"
                   />
                   <button 
                     onClick={runTest}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-blue-600 hover:bg-blue-500 rounded-xl transition-all"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-primary text-black hover:bg-primary/90 rounded-xl transition-all"
                   >
                     <Send className="w-5 h-5" />
                   </button>

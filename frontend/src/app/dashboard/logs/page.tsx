@@ -47,14 +47,14 @@ export default function LogsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white p-6 md:p-12">
+    <div className="min-h-screen bg-background text-white p-6 md:p-12">
       <div className="max-w-6xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
           <div className="flex items-center gap-4">
@@ -63,7 +63,7 @@ export default function LogsPage() {
             </a>
             <div>
               <h1 className="text-3xl font-bold flex items-center gap-3">
-                <History className="w-8 h-8 text-blue-500" />
+                <History className="w-8 h-8 text-primary" />
                 Logs de Conversa
               </h1>
               <p className="text-gray-400 mt-1">Histórico completo das interações da IA.</p>
@@ -77,7 +77,7 @@ export default function LogsPage() {
               placeholder="Buscar por nome ou telefone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+              className="w-full bg-slate-950/40 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-medium"
             />
           </div>
         </div>
@@ -100,7 +100,7 @@ export default function LogsPage() {
               >
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6 flex-1">
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 font-bold uppercase">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold uppercase">
                       {log.contato_nome?.charAt(0) || <User className="w-5 h-5" />}
                     </div>
                     <div>
@@ -142,7 +142,7 @@ export default function LogsPage() {
                   </div>
                 </div>
                 
-                <ChevronRight className="w-6 h-6 text-gray-600 group-hover:text-blue-500 transition-colors" />
+                <ChevronRight className="w-6 h-6 text-gray-600 group-hover:text-primary transition-colors" />
               </motion.div>
             ))
           )}
@@ -157,18 +157,18 @@ export default function LogsPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+              className="absolute inset-0 bg-background/80 backdrop-blur-md"
               onClick={() => setSelectedLog(null)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.9, y: 30 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 30 }}
-              className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-3xl overflow-hidden relative shadow-2xl"
+              className="bg-slate-950 border border-white/10 rounded-3xl w-full max-w-3xl overflow-hidden relative shadow-2xl"
             >
               <div className="p-8 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
                 <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-bold text-xl uppercase shadow-lg shadow-blue-500/20">
+                  <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center text-black font-bold text-xl uppercase shadow-lg shadow-primary/20">
                     {selectedLog.contato_nome?.charAt(0) || "U"}
                   </div>
                   <div>

@@ -116,7 +116,7 @@ export default function FAQPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
@@ -141,7 +141,7 @@ export default function FAQPage() {
           </div>
           <button
             onClick={() => handleOpenModal()}
-            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
+            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,210,255,0.3)]"
           >
             <Plus className="w-6 h-6" />
             Novo Registro
@@ -176,7 +176,7 @@ export default function FAQPage() {
                         <Globe className="w-3.5 h-3.5" /> Inteligência Global
                       </span>
                     ) : (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-400 px-4 py-1.5 rounded-full border border-blue-500/20">
+                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-secondary/10 text-secondary px-4 py-1.5 rounded-full border border-secondary/20">
                         <Building2 className="w-3.5 h-3.5" /> Unidade Específica
                       </span>
                     )}
@@ -186,7 +186,7 @@ export default function FAQPage() {
                   </div>
 
                   <h3 className="text-2xl font-bold text-white mb-4 group-hover:text-primary transition-colors line-clamp-2">{faq.pergunta}</h3>
-                  <div className="bg-black/40 rounded-3xl p-6 border border-white/5 blue-tint">
+                  <div className="bg-slate-900/40 rounded-3xl p-6 border border-white/5 blue-tint">
                     <p className="text-gray-400 text-base leading-relaxed italic">"{faq.resposta}"</p>
                   </div>
                 </div>
@@ -219,14 +219,14 @@ export default function FAQPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/90 backdrop-blur-xl"
+              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
               onClick={() => setIsModalOpen(false)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden relative shadow-2xl"
+              className="bg-slate-950 border border-white/10 rounded-[2.5rem] w-full max-w-2xl overflow-hidden relative shadow-2xl"
             >
               <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
                 <div>
@@ -251,7 +251,7 @@ export default function FAQPage() {
                       value={formData.pergunta}
                       onChange={(e) => setFormData({ ...formData, pergunta: e.target.value })}
                       placeholder="Ex: Quais os horários de funcionamento?"
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                      className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                     />
                   </div>
 
@@ -263,14 +263,14 @@ export default function FAQPage() {
                       onChange={(e) => setFormData({ ...formData, resposta: e.target.value })}
                       rows={5}
                       placeholder="Escreva a resposta detalhada..."
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none leading-relaxed font-medium"
+                      className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-none leading-relaxed font-medium"
                     />
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-3">
                       <label className="block text-xs font-black text-gray-500 uppercase tracking-widest ml-1">Abrangência</label>
-                      <div className="flex p-1.5 bg-white/[0.03] border border-white/10 rounded-2xl">
+                      <div className="flex p-1.5 bg-slate-900/40 border border-white/10 rounded-2xl">
                         <button
                           type="button"
                           onClick={() => setFormData({ ...formData, todas_unidades: true, unidade_id: null })}
@@ -299,7 +299,7 @@ export default function FAQPage() {
                           required={!formData.todas_unidades}
                           value={formData.unidade_id || ""}
                           onChange={(e) => setFormData({ ...formData, unidade_id: parseInt(e.target.value) })}
-                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
                         >
                           <option value="">Selecione...</option>
                           {unidades.map((u) => (
@@ -317,7 +317,7 @@ export default function FAQPage() {
                         type="number"
                         value={formData.prioridade}
                         onChange={(e) => setFormData({ ...formData, prioridade: parseInt(e.target.value) })}
-                        className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
+                        className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-3.5 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-sm"
                       />
                     </div>
                   </div>
@@ -334,7 +334,7 @@ export default function FAQPage() {
                   <button
                     type="submit"
                     disabled={saving}
-                    className="flex-[2] bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-6 py-5 rounded-[2rem] font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
+                    className="flex-[2] bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-6 py-5 rounded-[2rem] font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,210,255,0.3)]"
                   >
                     {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
                     {editingFaq ? "Salvar Alterações" : "Ativar Conhecimento"}

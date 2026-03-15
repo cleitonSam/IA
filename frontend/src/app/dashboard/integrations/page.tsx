@@ -86,7 +86,7 @@ export default function IntegrationsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
@@ -113,7 +113,7 @@ export default function IntegrationsPage() {
           <button
              onClick={handleSave}
              disabled={saving}
-             className="bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(0,242,255,0.3)] hover:scale-[1.02] active:scale-[0.98]"
+             className="bg-primary hover:bg-primary/90 disabled:bg-primary/50 text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all shadow-[0_0_30px_rgba(0,210,255,0.3)] hover:scale-[1.02] active:scale-[0.98]"
           >
              {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
              {saving ? "Handshaking..." : success ? "Canais Sincronizados" : "Salvar Configuração"}
@@ -121,7 +121,7 @@ export default function IntegrationsPage() {
         </div>
 
         {/* Dynamic Selector */}
-        <div className="flex flex-wrap p-2 bg-black/40 border border-white/10 rounded-[2.5rem] mb-12 blue-tint">
+        <div className="flex flex-wrap p-2 bg-slate-900/40 border border-white/10 rounded-[2.5rem] mb-12 blue-tint">
           {[
             { id: "chatwoot", label: "Chatwoot (WhatsApp)", icon: MessageSquare },
             { id: "evo", label: "EVO W12 (CRM)", icon: Zap },
@@ -145,7 +145,7 @@ export default function IntegrationsPage() {
           key={activeTab}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-[3rem] p-12 border-primary/10 relative overflow-hidden group"
+          className="glass rounded-[3rem] p-12 border-primary/10 relative overflow-hidden group mb-20"
         >
           {/* Decorative background intensity */}
           <div className="absolute -top-24 -right-24 w-64 h-64 bg-primary/10 blur-[120px] pointer-events-none group-hover:bg-primary/20 transition-colors" />
@@ -158,7 +158,7 @@ export default function IntegrationsPage() {
                  </h3>
                  <p className="text-xs text-gray-500 font-bold uppercase tracking-widest mt-1">Status de Comunicação em tempo real</p>
               </div>
-              <div className="flex items-center gap-4 bg-black/40 px-6 py-3 rounded-2xl border border-white/5 shadow-inner self-start">
+              <div className="flex items-center gap-4 bg-slate-900/40 px-6 py-3 rounded-2xl border border-white/5 shadow-inner self-start">
                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Integração Ativa</span>
                  <button
                     type="button"
@@ -185,7 +185,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.url || ""}
                     onChange={(e) => updateConfigField("url", e.target.value)}
                     placeholder="https://chat.fluxodigitaltech.com.br"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
                   />
                 </div>
                 <div className="space-y-4">
@@ -197,7 +197,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.account_id || ""}
                     onChange={(e) => updateConfigField("account_id", e.target.value)}
                     placeholder="Ex: 5"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
                   />
                 </div>
                 <div className="md:col-span-2 space-y-4">
@@ -209,7 +209,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.access_token || ""}
                     onChange={(e) => updateConfigField("access_token", e.target.value)}
                     placeholder="••••••••••••••••••••••••••••••••"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono"
                   />
                 </div>
               </div>
@@ -226,7 +226,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.dns || ""}
                     onChange={(e) => updateConfigField("dns", e.target.value)}
                     placeholder="Ex: fluxodigital"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold text-lg"
                   />
                 </div>
                 <div className="md:col-span-2 space-y-4">
@@ -238,7 +238,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.secret_key || ""}
                     onChange={(e) => updateConfigField("secret_key", e.target.value)}
                     placeholder="••••••••••••••••••••••••"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono text-primary/80"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono text-primary/80"
                   />
                 </div>
               </div>
@@ -255,7 +255,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.api_url || ""}
                     onChange={(e) => updateConfigField("api_url", e.target.value)}
                     placeholder="https://api.uazapi.com/v1"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold"
                   />
                 </div>
                 <div className="space-y-4">
@@ -265,7 +265,7 @@ export default function IntegrationsPage() {
                     value={currentConfig.config.token || ""}
                     onChange={(e) => updateConfigField("token", e.target.value)}
                     placeholder="Token UazAPI"
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono"
+                    className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-mono"
                   />
                 </div>
               </div>

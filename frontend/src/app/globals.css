@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --background: #000000; /* Pure Black for Tech/Neon feel */
+  --background: #020617; /* Official Deep Blue/Black */
   --foreground: #f8fafc;
-  --primary: #00f2ff;   /* Neon Blue */
-  --secondary: #0066ff; /* Deep Tech Blue */
-  --accent: #ffffff;    /* White for Contrast */
-  --card: rgba(10, 10, 10, 0.7); /* Darker glass effect */
-  --border: rgba(0, 242, 255, 0.1);
+  --primary: #00d2ff;   /* Neon Cyan */
+  --secondary: #3a86ff; /* Electric Blue */
+  --accent: #4ade80;    /* Emerald for success states */
+  --card: rgba(15, 23, 42, 0.6); /* Slate glass effect */
+  --border: rgba(0, 210, 255, 0.1);
 }
 
 @theme inline {
@@ -50,6 +50,7 @@ body {
 
 .text-gradient {
   background: linear-gradient(135deg, var(--primary), var(--secondary));
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }

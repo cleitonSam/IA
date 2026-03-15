@@ -147,9 +147,9 @@ export default function ConversasPage() {
   };
 
   return (
-    <div className="min-h-screen bg-mesh text-white flex flex-col">
+    <div className="min-h-screen bg-background text-white flex flex-col">
       {/* Normalized Header */}
-      <header className="sticky top-0 z-30 bg-black/40 backdrop-blur-xl border-b border-white/5 px-6 py-4 flex items-center justify-between gap-4">
+      <header className="sticky top-0 z-30 bg-background/40 backdrop-blur-xl border-b border-white/5 px-6 py-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <a href="/dashboard" className="p-2.5 bg-white/5 hover:bg-primary/10 rounded-xl transition-all border border-white/10 group">
             <ArrowLeft className="w-5 h-5 group-hover:text-primary transition-colors" />
@@ -178,7 +178,7 @@ export default function ConversasPage() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* List Panel */}
-        <div className={`flex flex-col w-full bg-black/20 backdrop-blur-md ${selected ? "hidden lg:flex lg:w-2/5 xl:w-[400px]" : ""}`}>
+        <div className={`flex flex-col w-full bg-background/20 backdrop-blur-md ${selected ? "hidden lg:flex lg:w-2/5 xl:w-[400px]" : ""}`}>
           {/* Filters */}
           <div className="p-4 space-y-4 bg-white/[0.02] border-b border-white/5 shadow-2xl shadow-black/40">
             <form onSubmit={handleSearch} className="relative group">
@@ -187,21 +187,21 @@ export default function ConversasPage() {
                  value={buscaInput}
                  onChange={e => setBuscaInput(e.target.value)}
                  placeholder="Filtrar por nome ou fone..."
-                 className="w-full bg-black/40 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all"
+                 className="w-full bg-slate-950/40 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 transition-all"
                />
             </form>
             <div className="flex gap-2 flex-wrap">
               <select
                 value={filterUnidade}
                 onChange={e => { setFilterUnidade(e.target.value ? Number(e.target.value) : ""); setOffset(0); }}
-                className="bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 focus:outline-none focus:text-white transition-all cursor-pointer">
+                className="bg-slate-950/40 border border-white/10 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 focus:outline-none focus:text-white transition-all cursor-pointer">
                 <option value="">Unidade: Todas</option>
                 {unidades.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
               </select>
               <select
                 value={filterStatus}
                 onChange={e => { setFilterStatus(e.target.value); setOffset(0); }}
-                className="bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 focus:outline-none focus:text-white transition-all cursor-pointer">
+                className="bg-slate-950/40 border border-white/10 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-gray-400 focus:outline-none focus:text-white transition-all cursor-pointer">
                 <option value="">Status: Todos</option>
                 <option value="open">Abertas</option>
                 <option value="resolved">Atendidas</option>
@@ -247,7 +247,7 @@ export default function ConversasPage() {
                   {selected?.id === conv.id && <div className="absolute left-0 top-6 bottom-6 w-1 bg-primary rounded-r-full shadow-[0_0_10px_rgba(0,242,255,0.8)]" />}
                   
                   <div className="flex items-start gap-4">
-                    <div className="w-14 h-14 rounded-3xl bg-black/40 border border-white/5 flex items-center justify-center text-lg font-black flex-shrink-0 group-hover:border-primary/40 transition-colors">
+                    <div className="w-14 h-14 rounded-3xl bg-slate-950/40 border border-white/5 flex items-center justify-center text-lg font-black flex-shrink-0 group-hover:border-primary/40 transition-colors">
                       {conv.contato_nome?.charAt(0) || "?"}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -280,7 +280,7 @@ export default function ConversasPage() {
 
           {/* Pagination */}
           {totalPages > 1 && (
-            <div className="p-4 border-t border-white/5 bg-black/40 flex items-center justify-between backdrop-blur-xl">
+            <div className="p-4 border-t border-white/5 bg-background/40 flex items-center justify-between backdrop-blur-xl">
                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{currentPage} / {totalPages}</span>
                <div className="flex gap-2">
                  <button onClick={() => setOffset(Math.max(0, offset - limit))} disabled={offset === 0} className="p-2.5 bg-white/5 rounded-xl hover:bg-white/10 border border-white/5 disabled:opacity-20 transition-all">
@@ -301,7 +301,7 @@ export default function ConversasPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col bg-black/40 backdrop-blur-xl border-l border-white/5 overflow-hidden">
+              className="flex-1 flex flex-col bg-background/40 backdrop-blur-xl border-l border-white/5 overflow-hidden">
               
               <div className="p-8 border-b border-white/5 bg-white/[0.01]">
                 <div className="flex items-center justify-between mb-8 lg:hidden">

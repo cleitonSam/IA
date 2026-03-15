@@ -38,7 +38,7 @@ export default function InsightsPage() {
 
   if (loading && !data) {
     return (
-       <div className="min-h-screen bg-black flex items-center justify-center">
+       <div className="min-h-screen bg-background flex items-center justify-center">
          <div className="flex flex-col items-center gap-4">
            <Zap className="w-10 h-10 text-primary animate-pulse" />
            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500">Sincronizando Dados...</p>
@@ -51,7 +51,7 @@ export default function InsightsPage() {
   const porUnidade = data?.por_unidade || [];
 
   return (
-    <div className="min-h-screen bg-mesh text-white p-6 md:p-12 pb-40">
+    <div className="min-h-screen bg-background text-white p-6 md:p-12 pb-40">
       <div className="max-w-7xl mx-auto">
         
         {/* Unitary Header Structure - Standardized */}
@@ -69,7 +69,7 @@ export default function InsightsPage() {
             </div>
           </div>
 
-          <div className="flex p-2 bg-black/40 border border-white/10 rounded-[2rem] blue-tint">
+          <div className="flex p-2 bg-slate-950/40 border border-white/10 rounded-[2rem] blue-tint">
              {["hoje", "7 dias", "30 dias"].map((range) => (
                <button
                  key={range}

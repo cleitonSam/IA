@@ -41,7 +41,7 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
     row = await _database.db_pool.fetchrow(
-        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, model_name, temperature, max_tokens, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, modelo_preferido as model_name, temperatura as temperature, max_tokens, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
         empresa_id
     )
     if not row:
@@ -51,38 +51,47 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
             "personalidade": "", 
             "instrucoes_base": "", 
             "tom_voz": "Profissional", 
-            "model_name": "openai/gpt-4o",
+            "model_name": "gpt-4o-mini",
             "temperature": 0.7,
             "max_tokens": 1000,
             "ativo": False
         }
     return dict(row)
 
-@router.put("/personality")
-async def update_personality(body: PersonalityUpdate, token_payload: dict = Depends(get_current_user_token)):
+@router.post("/personality")
+async def update_personality(
+    data: PersonalityUpdate, 
+    token_payload: dict = Depends(get_current_user_token)
+):
     empresa_id = token_payload.get("empresa_id")
     
-    # Verifica se já existe
-    existing = await _database.db_pool.fetchval("SELECT id FROM personalidade_ia WHERE empresa_id = $1", empresa_id)
-    
-    update_data = body.dict(exclude_unset=True)
+    # Mapeamento para nomes de colunas reais no banco
+    update_data = data.model_dump(exclude_unset=True)
+    if "model_name" in update_data:
+        update_data["modelo_preferido"] = update_data.pop("model_name")
+    if "temperature" in update_data:
+        update_data["temperatura"] = update_data.pop("temperature")
+
     if not update_data:
-        raise HTTPException(status_code=400, detail="Sem dados para atualizar")
+        return {"status": "no_changes"}
+
+    # Gerar a query dinâmica
+    keys = list(update_data.keys())
+    fields = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(keys))
+    values = [empresa_id] + [update_data[k] for k in keys]
 
     if existing:
-        set_clause = ", ".join(f"{k} = ${i+1}" for i, k in enumerate(update_data))
-        values = list(update_data.values()) + [empresa_id]
         await _database.db_pool.execute(
-            f"UPDATE personalidade_ia SET {set_clause}, updated_at = NOW() WHERE empresa_id = ${len(values)}",
+            f"UPDATE personalidade_ia SET {fields}, updated_at = NOW() WHERE empresa_id = $1",
             *values
         )
     else:
-        columns = ["empresa_id", "created_at"] + list(update_data.keys())
-        placeholders = [f"${i+1}" for i in range(len(columns))]
-        values = [empresa_id, datetime.now()] + list(update_data.values())
+        update_data["empresa_id"] = empresa_id
+        cols = ", ".join(update_data.keys())
+        vals = ", ".join(f"${i+1}" for i in range(len(update_data)))
         await _database.db_pool.execute(
-            f"INSERT INTO personalidade_ia ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
-            *values
+            f"INSERT INTO personalidade_ia ({cols}) VALUES ({vals})",
+            *update_data.values()
         )
     
     return {"status": "success", "message": "Personalidade atualizada"}

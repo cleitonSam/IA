@@ -215,8 +215,8 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
   }
@@ -229,7 +229,7 @@ export default function SettingsPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white p-4 md:p-12">
+    <div className="min-h-screen bg-background text-white p-4 md:p-12">
       <div className="max-w-6xl mx-auto">
         <div className="mb-12 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -238,7 +238,7 @@ export default function SettingsPage() {
             </a>
             <div>
               <h1 className="text-3xl font-bold flex items-center gap-3">
-                <Settings className="w-8 h-8 text-blue-500" />
+                <Settings className="w-8 h-8 text-primary" />
                 Central de Gestão
               </h1>
               <p className="text-gray-400 mt-1">Configure todos os aspectos da sua inteligência e operação.</p>
@@ -254,7 +254,7 @@ export default function SettingsPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition-all ${
                 activeTab === tab.id 
-                ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20" 
+                ? "bg-primary text-black shadow-lg shadow-primary/20" 
                 : "text-gray-400 hover:text-white hover:bg-white/5"
               }`}
             >
@@ -277,7 +277,7 @@ export default function SettingsPage() {
                 <h2 className="text-xl font-bold">Unidades Cadastradas ({units.length})</h2>
                 <button
                   onClick={() => handleOpenUnitModal()}
-                  className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all"
+                  className="bg-primary hover:bg-primary/90 text-black px-6 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-all"
                 >
                   <Plus className="w-5 h-5" /> Nova Unidade
                 </button>
@@ -290,9 +290,9 @@ export default function SettingsPage() {
                   </div>
                 ) : (
                   units.map((u) => (
-                    <div key={u.id} className="bg-white/5 border border-white/10 p-6 rounded-2xl hover:border-blue-500/30 transition-all group">
+                    <div className="bg-slate-900/40 border border-white/10 p-6 rounded-2xl hover:border-primary/30 transition-all group">
                       <div className="flex justify-between mb-4">
-                        <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
+                        <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
                           <Building2 className="w-5 h-5" />
                         </div>
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -320,7 +320,7 @@ export default function SettingsPage() {
                       type="text"
                       value={personality.nome_ia}
                       onChange={(e) => setPersonality({ ...personality, nome_ia: e.target.value })}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                      className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary"
                       placeholder="Ex: Maya"
                     />
                   </div>
@@ -329,7 +329,7 @@ export default function SettingsPage() {
                     <select
                       value={personality.tom_voz}
                       onChange={(e) => setPersonality({ ...personality, tom_voz: e.target.value })}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                      className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary"
                     >
                       <option value="Profissional">Profissional</option>
                       <option value="Amigável">Amigável</option>
@@ -344,7 +344,7 @@ export default function SettingsPage() {
                     rows={5}
                     value={personality.personalidade}
                     onChange={(e) => setPersonality({ ...personality, personalidade: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary"
                     placeholder="Qual o principal objetivo da IA nas conversas?"
                   />
                 </div>
@@ -355,12 +355,12 @@ export default function SettingsPage() {
                   rows={8}
                   value={personality.instrucoes_base}
                   onChange={(e) => setPersonality({ ...personality, instrucoes_base: e.target.value })}
-                  className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary"
                   placeholder="Instruções detalhadas de como a IA deve agir e o que evitar..."
                 />
               </div>
               <div className="flex justify-end">
-                <button type="submit" disabled={saving} className="bg-blue-600 hover:bg-blue-500 text-white px-10 py-3 rounded-xl font-bold flex items-center gap-2">
+                <button type="submit" disabled={saving} className="bg-primary hover:bg-primary/90 text-black px-10 py-3 rounded-xl font-bold flex items-center gap-2">
                   {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
                   Salvar Alterações
                 </button>
@@ -375,7 +375,7 @@ export default function SettingsPage() {
                 <h2 className="text-xl font-bold">Perguntas Frequentes ({faqs.length})</h2>
                 <button
                   onClick={() => { setEditingFaq(null); setFaqFormData({ pergunta: "", resposta: "", unidade_id: "", todas_unidades: true, prioridade: 0 }); setIsFaqModalOpen(true); }}
-                  className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-xl font-bold flex items-center gap-2"
+                  className="bg-primary hover:bg-primary/90 text-black px-6 py-2.5 rounded-xl font-bold flex items-center gap-2"
                 >
                   <Plus className="w-5 h-5" /> Nova Pergunta
                 </button>
@@ -387,7 +387,7 @@ export default function SettingsPage() {
                       <h4 className="font-bold mb-1">{f.pergunta}</h4>
                       <p className="text-sm text-gray-400 line-clamp-1">{f.resposta}</p>
                       <div className="mt-2 flex gap-2">
-                        <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-blue-500/10 text-blue-500">
+                        <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
                           {f.todas_unidades ? "Global" : "Unidade Específica"}
                         </span>
                       </div>
@@ -414,7 +414,7 @@ export default function SettingsPage() {
                   <h3 className="text-xl font-bold">Chatwoot</h3>
                 </div>
                 <div className="space-y-4">
-                  <input placeholder="URL" value={integrationConfigs.chatwoot.url} onChange={e => setIntegrationConfigs({ ...integrationConfigs, chatwoot: { ...integrationConfigs.chatwoot, url: e.target.value }})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3" />
+                  <input placeholder="URL" value={integrationConfigs.chatwoot.url} onChange={e => setIntegrationConfigs({ ...integrationConfigs, chatwoot: { ...integrationConfigs.chatwoot, url: e.target.value }})} className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3" />
                   <input placeholder="API Token" type="password" value={integrationConfigs.chatwoot.token} onChange={e => setIntegrationConfigs({ ...integrationConfigs, chatwoot: { ...integrationConfigs.chatwoot, token: e.target.value }})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3" />
                   <input placeholder="Account ID" value={integrationConfigs.chatwoot.account_id} onChange={e => setIntegrationConfigs({ ...integrationConfigs, chatwoot: { ...integrationConfigs.chatwoot, account_id: e.target.value }})} className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3" />
                 </div>
@@ -461,14 +461,14 @@ export default function SettingsPage() {
       <AnimatePresence>
         {isUnitModalOpen && (
            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-             <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsUnitModalOpen(false)} />
-             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-2xl relative p-8 max-h-[90vh] overflow-y-auto">
+             <div className="absolute inset-0 bg-background/80 backdrop-blur-md" onClick={() => setIsUnitModalOpen(false)} />
+             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-slate-950 border border-white/10 rounded-3xl w-full max-w-2xl relative p-8 max-h-[90vh] overflow-y-auto">
                <form onSubmit={handleSaveUnit}>
                  <h2 className="text-2xl font-bold mb-6">{editingUnit ? "Editar Unidade" : "Nova Unidade"}</h2>
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     <div className="col-span-2">
                       <label className="block text-xs text-gray-400 mb-1">Nome *</label>
-                      <input required placeholder="Ex: Red Fitness – Centro" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                      <input required placeholder="Ex: Red Fitness – Centro" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3" />
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Nome Abreviado</label>
@@ -529,8 +529,8 @@ export default function SettingsPage() {
 
         {isFaqModalOpen && (
            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-             <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsFaqModalOpen(false)} />
-             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-2xl relative p-8">
+             <div className="absolute inset-0 bg-background/80 backdrop-blur-md" onClick={() => setIsFaqModalOpen(false)} />
+             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-slate-950 border border-white/10 rounded-3xl w-full max-w-2xl relative p-8">
                <form onSubmit={handleSaveFaq}>
                  <h2 className="text-2xl font-bold mb-8">{editingFaq ? "Editar Pergunta" : "Nova Pergunta"}</h2>
                  <div className="space-y-6 mb-8">

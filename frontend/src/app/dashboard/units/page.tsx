@@ -138,7 +138,7 @@ export default function UnitsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
       </div>
     );
@@ -164,7 +164,7 @@ export default function UnitsPage() {
           
           <button
             onClick={() => handleOpenModal()}
-            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,242,255,0.3)]"
+            className="bg-primary hover:bg-primary/90 text-black px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-sm flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(0,210,255,0.3)]"
           >
             <Plus className="w-6 h-6" />
             Nova Unidade
@@ -188,7 +188,7 @@ export default function UnitsPage() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
-                className="glass rounded-[2.5rem] p-8 hover:border-primary/40 transition-all group relative overflow-hidden"
+                className="glass rounded-[2.5rem] p-8 hover:border-primary/40 transition-all group relative overflow-hidden text-slate-100"
               >
                 <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
                   <button
@@ -244,14 +244,14 @@ export default function UnitsPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/90 backdrop-blur-xl"
+              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
               onClick={() => setIsModalOpen(false)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-3xl overflow-hidden relative shadow-2xl flex flex-col max-h-[90vh]"
+              className="bg-slate-950 border border-white/10 rounded-[2.5rem] w-full max-w-3xl overflow-hidden relative shadow-2xl flex flex-col max-h-[90vh]"
             >
               <form onSubmit={handleSave} className="flex flex-col h-full">
                 <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
@@ -280,7 +280,7 @@ export default function UnitsPage() {
                           required
                           value={formData.nome}
                           onChange={(e) => setFormData({ ...formData, nome: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                           placeholder="Ex: Fluxo Tatuapé"
                         />
                       </div>
@@ -290,7 +290,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.nome_abreviado}
                           onChange={(e) => setFormData({ ...formData, nome_abreviado: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                           placeholder="Ex: Tatuapé"
                         />
                       </div>
@@ -308,7 +308,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.endereco}
                           onChange={(e) => setFormData({ ...formData, endereco: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
                       <div className="space-y-3">
@@ -317,7 +317,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.numero}
                           onChange={(e) => setFormData({ ...formData, numero: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold text-center"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold text-center"
                         />
                       </div>
                       <div className="md:col-span-2 space-y-3">
@@ -326,7 +326,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.bairro}
                           onChange={(e) => setFormData({ ...formData, bairro: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
                       <div className="space-y-3">
@@ -335,7 +335,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.cidade}
                           onChange={(e) => setFormData({ ...formData, cidade: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                         />
                       </div>
                       <div className="space-y-3">
@@ -344,7 +344,7 @@ export default function UnitsPage() {
                           type="text"
                           value={formData.estado}
                           onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-center"
+                          className="w-full bg-slate-900/40 border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-black text-center"
                           placeholder="SP"
                         />
                       </div>
@@ -364,7 +364,7 @@ export default function UnitsPage() {
                             type="text"
                             value={formData.whatsapp}
                             onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold tracking-widest"
+                            className="w-full bg-slate-900/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold tracking-widest"
                             placeholder="(11) 9..."
                           />
                         </div>
@@ -377,7 +377,7 @@ export default function UnitsPage() {
                             type="text"
                             value={formData.instagram}
                             onChange={(e) => setFormData({ ...formData, instagram: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
+                            className="w-full bg-slate-900/40 border border-white/10 rounded-2xl pl-16 pr-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold"
                           />
                         </div>
                       </div>
