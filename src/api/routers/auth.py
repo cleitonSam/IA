@@ -20,6 +20,7 @@ class CriarEmpresaRequest(BaseModel):
 
 class ConviteRequest(BaseModel):
     email: EmailStr
+    empresa_id: int
 
 class RegisterRequest(BaseModel):
     token: str
@@ -110,6 +111,16 @@ async def read_users_me(token_payload: dict = Depends(get_current_user_token)):
     }
 
 
+@router.get("/empresas")
+async def listar_empresas(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as empresas. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode listar empresas")
+    from src.core.database import _database
+    rows = await _database.db_pool.fetch("SELECT id, name, slug FROM empresas ORDER BY id")
+    return [dict(r) for r in rows]
+
+
 @router.post("/create-empresa", status_code=201)
 async def create_empresa(
     body: CriarEmpresaRequest,
@@ -128,14 +139,15 @@ async def send_invite(
     body: ConviteRequest,
     token_payload: dict = Depends(get_current_user_token),
 ):
-    """Envia convite por e-mail vinculado à empresa do usuário logado."""
-    empresa_id = token_payload.get("empresa_id")
-    if not empresa_id:
-        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+    """Envia convite por e-mail para uma empresa existente. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode enviar convites")
 
-    empresa = await _buscar_empresa(empresa_id)
+    empresa = await _buscar_empresa(body.empresa_id)
     if not empresa:
-        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+        raise HTTPException(status_code=404, detail="Empresa não encontrada. Crie a empresa antes de enviar o convite.")
+
+    empresa_id = body.empresa_id
 
     token = await _criar_convite(empresa_id, body.email)
     enviado = await enviar_convite(body.email, empresa["name"], token)
