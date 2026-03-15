@@ -1081,6 +1081,49 @@ async def processar_ia_e_responder(
             todas_unidades = await listar_unidades_ativas(empresa_id)
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
 
+            # Resumo compacto de TODAS as unidades (endereço, infraestrutura, horários, modalidades)
+            # para que a IA possa responder perguntas sobre qualquer unidade da rede
+            def _resumo_unidade(u: dict) -> str:
+                partes = [f"• {u.get('nome', '?')}"]
+                cidade = u.get('cidade') or u.get('bairro') or ''
+                estado = u.get('estado') or ''
+                if cidade or estado:
+                    partes.append(f"  Localização: {cidade}{', ' + estado if estado else ''}")
+                end = u.get('endereco_completo') or u.get('endereco') or ''
+                if end:
+                    partes.append(f"  Endereço: {end}")
+                tel = u.get('telefone') or u.get('whatsapp') or ''
+                if tel:
+                    partes.append(f"  Telefone: {tel}")
+                hor = u.get('horarios')
+                if hor:
+                    hor_str = hor if isinstance(hor, str) else json.dumps(hor, ensure_ascii=False)
+                    partes.append(f"  Horários: {hor_str}")
+                infra = u.get('infraestrutura')
+                if infra:
+                    if isinstance(infra, dict):
+                        itens = [k for k, v in infra.items() if v]
+                        infra_str = ", ".join(itens) if itens else json.dumps(infra, ensure_ascii=False)
+                    else:
+                        infra_str = str(infra)
+                    if infra_str:
+                        partes.append(f"  Infraestrutura: {infra_str}")
+                mods = u.get('modalidades')
+                if mods:
+                    if isinstance(mods, list):
+                        mods_str = ", ".join(str(m) for m in mods if m)
+                    elif isinstance(mods, dict):
+                        mods_str = ", ".join(k for k, v in mods.items() if v)
+                    else:
+                        mods_str = str(mods)
+                    if mods_str:
+                        partes.append(f"  Modalidades: {mods_str}")
+                return "\n".join(partes)
+
+            resumo_todas_unidades = "\n\n".join(
+                _resumo_unidade(u) for u in todas_unidades
+            ) if todas_unidades else lista_unidades_nomes
+
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
 
@@ -1227,8 +1270,12 @@ INFORMAÇÕES DA UNIDADE
 {dados_unidade}
 
 UNIDADES DA REDE {nome_empresa.upper()}:
-{lista_unidades_nomes}
-(Se o cliente perguntar quais unidades existem, liste esses nomes. Para detalhes de endereço/horário de outra unidade, pergunte qual delas ele prefere para você buscar as informações.)
+{resumo_todas_unidades}
+
+REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da rede.
+Se o cliente perguntar sobre qualquer unidade (endereço, horário, infraestrutura, estacionamento, modalidades etc.), responda diretamente usando os dados acima.
+Só diga que não tem a informação se ela realmente não estiver nos dados fornecidos.
+NÃO peça ao cliente para escolher uma unidade antes de responder — responda com os dados que você já tem.
 
 FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
