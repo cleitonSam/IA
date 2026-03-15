@@ -72,6 +72,8 @@ async def get_unidades(
 
         unidades = await listar_unidades_ativas(empresa_id)
         return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro ao listar unidades para dashboard: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar lista de unidades")
@@ -146,9 +148,11 @@ async def get_metrics(
             "unidade_id": unidade_id,
             "metrics": metrics
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro ao buscar métricas para dashboard: {e}")
-        raise HTTPException(status_code=500, detail="Erro interno ao processar métricas")
+        raise HTTPException(status_code=500, detail="Erro ao buscar métricas")
 
 @router.get("/conversations")
 async def get_conversations(

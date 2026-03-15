@@ -43,6 +43,14 @@ class IntegrationUpdate(BaseModel):
     config: Dict[str, Any]
     ativo: bool = True
 
+class FollowupTemplateCreate(BaseModel):
+    tipo: str = "recarga"
+    mensagem: str
+    delay_minutos: int
+    ordem: int = 1
+    unidade_id: Optional[int] = None
+    ativo: bool = True
+
 # --- Personality Endpoints ---
 
 @router.get("/personality")
@@ -564,5 +572,92 @@ async def sync_evo_unit(
     except Exception as e:
         logger.error(f"Erro ao sincronizar EVO para unidade {unidade_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Followup Endpoints ---
+
+@router.get("/followups/templates")
+async def list_followup_templates(token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    
+    rows = await _database.db_pool.fetch(
+        """SELECT id, tipo, mensagem, delay_minutos, ordem, unidade_id, ativo 
+           FROM templates_followup 
+           WHERE empresa_id = $1 
+           ORDER BY unidade_id NULLS LAST, ordem ASC""",
+        empresa_id
+    )
+    return [dict(r) for r in rows]
+
+@router.post("/followups/templates")
+async def create_followup_template(
+    body: FollowupTemplateCreate, 
+    token_payload: dict = Depends(get_current_user_token)
+):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        
+    await _database.db_pool.execute(
+        """INSERT INTO templates_followup 
+           (empresa_id, tipo, mensagem, delay_minutos, ordem, unidade_id, ativo)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+        empresa_id, body.tipo, body.mensagem, body.delay_minutos, body.ordem, body.unidade_id, body.ativo
+    )
+    return {"status": "success"}
+
+@router.put("/followups/templates/{tid}")
+async def update_followup_template(
+    tid: int,
+    body: FollowupTemplateCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        
+    await _database.db_pool.execute(
+        """UPDATE templates_followup 
+           SET tipo=$1, mensagem=$2, delay_minutos=$3, ordem=$4, unidade_id=$5, ativo=$6, updated_at=NOW()
+           WHERE id=$7 AND empresa_id=$8""",
+        body.tipo, body.mensagem, body.delay_minutos, body.ordem, body.unidade_id, body.ativo, tid, empresa_id
+    )
+    return {"status": "success"}
+
+@router.delete("/followups/templates/{tid}")
+async def delete_followup_template(tid: int, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        
+    await _database.db_pool.execute(
+        "DELETE FROM templates_followup WHERE id=$1 AND empresa_id=$2",
+        tid, empresa_id
+    )
+    return {"status": "success"}
+
+@router.get("/followups/history")
+async def get_followup_history(
+    limit: int = Query(50, le=200),
+    offset: int = Query(0),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        
+    rows = await _database.db_pool.fetch(
+        """SELECT f.id, f.conversa_id, f.tipo, f.mensagem, f.status, f.agendado_para, f.enviado_em, 
+                  f.erro_log, c.contato_nome, u.nome as unidade_nome
+           FROM followups f
+           JOIN conversas c ON c.id = f.conversa_id
+           LEFT JOIN unidades u ON u.id = f.unidade_id
+           WHERE f.empresa_id = $1
+           ORDER BY f.created_at DESC
+           LIMIT $2 OFFSET $3""",
+        empresa_id, limit, offset
+    )
+    return [dict(r) for r in rows]
 
 # --- End Management ---
