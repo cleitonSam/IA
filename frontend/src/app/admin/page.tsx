@@ -16,7 +16,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
 
   // Criar empresa
-  const [novaEmpresa, setNovaEmpresa] = useState({ nome: "", cnpj: "", telefone: "" });
+  const [novaEmpresa, setNovaEmpresa] = useState({ nome: "", nome_fantasia: "", cnpj: "", email: "", telefone: "" });
   const [criandoEmpresa, setCriandoEmpresa] = useState(false);
   const [msgEmpresa, setMsgEmpresa] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -61,7 +61,7 @@ export default function AdminPage() {
     try {
       await axios.post("/api-backend/auth/create-empresa", novaEmpresa, getConfig());
       setMsgEmpresa({ ok: true, text: `Empresa "${novaEmpresa.nome}" criada com sucesso!` });
-      setNovaEmpresa({ nome: "", cnpj: "", telefone: "" });
+      setNovaEmpresa({ nome: "", nome_fantasia: "", cnpj: "", email: "", telefone: "" });
       await fetchData();
     } catch (err: any) {
       setMsgEmpresa({ ok: false, text: err.response?.data?.detail || "Erro ao criar empresa." });
@@ -159,12 +159,32 @@ export default function AdminPage() {
                 />
               </div>
               <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1 block">Nome Fantasia</label>
+                <input
+                  type="text"
+                  value={novaEmpresa.nome_fantasia}
+                  onChange={(e) => setNovaEmpresa({ ...novaEmpresa, nome_fantasia: e.target.value })}
+                  placeholder="Academia XYZ"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 text-white placeholder:text-gray-600"
+                />
+              </div>
+              <div>
                 <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1 block">CNPJ</label>
                 <input
                   type="text"
                   value={novaEmpresa.cnpj}
                   onChange={(e) => setNovaEmpresa({ ...novaEmpresa, cnpj: e.target.value })}
                   placeholder="00.000.000/0001-00"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 text-white placeholder:text-gray-600"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-1 block">E-mail</label>
+                <input
+                  type="email"
+                  value={novaEmpresa.email}
+                  onChange={(e) => setNovaEmpresa({ ...novaEmpresa, email: e.target.value })}
+                  placeholder="contato@empresa.com"
                   className="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary/50 text-white placeholder:text-gray-600"
                 />
               </div>
