@@ -173,3 +173,38 @@ async def get_logs(
         empresa_id, limit, offset
     )
     return [dict(r) for r in rows]
+
+@router.get("/export-leads")
+async def export_leads(
+    unidade_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna todos os leads da empresa em formato JSON para exportação completa.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    
+    conditions = ["c.empresa_id = $1"]
+    params = [empresa_id]
+    
+    if unidade_id:
+        params.append(unidade_id)
+        conditions.append(f"c.unidade_id = ${len(params)}")
+    if status:
+        params.append(status)
+        conditions.append(f"c.status = ${len(params)}")
+        
+    where = " AND ".join(conditions)
+    
+    rows = await _database.db_pool.fetch(f"""
+        SELECT c.contato_nome, c.contato_fone, c.contato_telefone, c.score_lead, 
+               c.lead_qualificado, c.intencao_de_compra, c.status, u.nome as unidade_nome,
+               c.total_mensagens_cliente, c.total_mensagens_ia, c.created_at
+        FROM conversas c
+        LEFT JOIN unidades u ON u.id = c.unidade_id
+        WHERE {where}
+        ORDER BY c.created_at DESC
+    """, *params)
+    
+    return [dict(r) for r in rows]

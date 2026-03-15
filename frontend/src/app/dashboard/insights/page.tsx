@@ -26,8 +26,8 @@ export default function InsightsPage() {
   const fetchInsights = async () => {
     setLoading(true);
     try {
-      // Usando o endpoint de métricas agregadas da empresa
-      const res = await axios.get("/api-backend/dashboard/metrics/empresa", getConfig());
+      const days = selectedRange === "hoje" ? 1 : selectedRange === "7 dias" ? 7 : 30;
+      const res = await axios.get(`/api-backend/dashboard/metrics/empresa?days=${days}`, getConfig());
       setData(res.data);
     } catch (error) {
       console.error("Erro ao carregar insights:", error);
@@ -100,13 +100,13 @@ export default function InsightsPage() {
                className="glass rounded-[2rem] p-8 relative overflow-hidden group"
              >
                 <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
-                  <kpi.icon className="w-20 h-20" />
+                   <kpi.icon className="w-20 h-20" />
                 </div>
                 <div className="flex items-center justify-between mb-4">
-                  <div className={`p-4 rounded-2xl bg-${kpi.color === 'primary' ? 'primary' : kpi.color + '-500'}/10 border border-${kpi.color === 'primary' ? 'primary' : kpi.color + '-500'}/20`}>
-                    <kpi.icon className={`w-6 h-6 text-${kpi.color === 'primary' ? 'primary' : kpi.color + '-400'}`} />
-                  </div>
-                  <span className="text-[10px] font-black text-emerald-400 bg-emerald-400/10 px-3 py-1 rounded-full">{kpi.trend}</span>
+                   <div className={`p-4 rounded-2xl bg-${kpi.color === 'primary' ? 'primary' : kpi.color + '-500'}/10 border border-${kpi.color === 'primary' ? 'primary' : kpi.color + '-500'}/20`}>
+                     <kpi.icon className={`w-6 h-6 text-${kpi.color === 'primary' ? 'primary' : kpi.color + '-400'}`} />
+                   </div>
+                   <span className="text-[10px] font-black text-emerald-400 bg-emerald-400/10 px-3 py-1 rounded-full">{kpi.trend}</span>
                 </div>
                 <p className="text-gray-500 text-[10px] font-black uppercase tracking-widest mb-1">{kpi.label}</p>
                 <h3 className="text-3xl font-black">{kpi.value}</h3>
@@ -173,34 +173,40 @@ export default function InsightsPage() {
                         <Cpu className="w-6 h-6 text-primary" />
                       </div>
                       <div>
-                        <h4 className="font-black text-sm uppercase tracking-widest">Cérebro Neural Ativo</h4>
-                        <p className="text-[10px] text-gray-500 font-bold uppercase">gpt-4o-mini (Optimized)</p>
+                        <h4 className="font-black text-sm uppercase tracking-widest">Motor Neural Ativo</h4>
+                        <p className="text-[10px] text-gray-500 font-bold uppercase">{selectedRange === "hoje" ? "Desempenho Real-time" : "Média de Processamento"}</p>
                       </div>
                    </div>
                    <div className="space-y-4">
                       <div className="flex items-center justify-between text-[11px] font-bold">
-                        <span className="text-gray-500 uppercase">Uptime Cognitivo</span>
-                        <span className="text-emerald-400">99.98%</span>
+                        <span className="text-gray-500 uppercase">Tokens Consumidos</span>
+                        <span className="text-primary">{totals.total_tokens || 0}</span>
                       </div>
-                      <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                        <div className="w-[99%] h-full bg-emerald-500" />
+                      <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div 
+                           initial={{ width: 0 }}
+                           animate={{ width: "70%" }}
+                           className="h-full bg-primary" 
+                        />
                       </div>
                    </div>
                 </div>
 
-                <div className="glass rounded-[2rem] p-8 border-amber-500/10">
+                <div className="glass rounded-[2rem] p-8 border-amber-500/10 shadow-lg shadow-amber-500/5">
                    <div className="flex items-center gap-4 mb-8">
                       <div className="w-12 h-12 rounded-2xl bg-amber-500/10 flex items-center justify-center">
                         <DollarSign className="w-6 h-6 text-amber-500" />
                       </div>
                       <div>
-                        <h4 className="font-black text-sm uppercase tracking-widest">Investimento IA</h4>
-                        <p className="text-[10px] text-gray-500 font-bold uppercase">Estimativa USD (Moeda Base)</p>
+                        <h4 className="font-black text-sm uppercase tracking-widest">Investimento Estimado</h4>
+                        <p className="text-[10px] text-gray-500 font-bold uppercase">USD (Equivalente LLM)</p>
                       </div>
                    </div>
                    <div className="flex items-baseline gap-2">
-                      <span className="text-3xl font-black text-amber-400">$12.45</span>
-                      <span className="text-[10px] text-gray-500 font-black uppercase">Acumulado Mes</span>
+                      <span className="text-3xl font-black text-amber-400">
+                        ${totals.custo_total_usd ? totals.custo_total_usd.toFixed(2) : "0.00"}
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-black uppercase">Acumulado {selectedRange === "hoje" ? "Hoje" : selectedRange}</span>
                    </div>
                 </div>
              </div>

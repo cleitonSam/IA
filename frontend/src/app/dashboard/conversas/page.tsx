@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   MessageSquare, Search, Filter, ChevronLeft, ChevronRight,
   Building2, Star, Flame, Clock, User, X, ArrowLeft, RefreshCw,
-  Download, FileSpreadsheet, Zap
+  Download, FileSpreadsheet, Zap, Bot, BarChart3, Target, Brain
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -31,6 +31,7 @@ interface Conversation {
 export default function ConversasPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -86,31 +87,47 @@ export default function ConversasPage() {
     setBusca(""); setBuscaInput(""); setFilterStatus(""); setFilterUnidade(""); setOffset(0);
   };
 
-  const exportLeads = () => {
-    const headers = ["Nome", "Telefone", "Score", "Qualificado", "Intencao", "Status", "Unidade", "Mensagens Cliente", "IA", "Data"];
-    const rows = conversations.map(c => [
-      c.contato_nome || "Anônimo",
-      c.contato_fone || c.contato_telefone || "",
-      c.score_lead || 0,
-      c.lead_qualificado ? "Sim" : "Não",
-      c.intencao_de_compra ? "Sim" : "Não",
-      c.status,
-      c.unidade_nome || "",
-      c.total_mensagens_cliente || 0,
-      c.total_mensagens_ia || 0,
-      c.created_at ? new Date(c.created_at).toLocaleDateString() : ""
-    ]);
+  const exportLeads = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterUnidade) params.append("unidade_id", filterUnidade.toString());
+      if (filterStatus) params.append("status", filterStatus);
+      
+      const res = await axios.get(`/api-backend/management/export-leads?${params}`, config);
+      const allLeads = res.data || [];
 
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `leads_fluxo_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const headers = ["Nome", "Telefone", "Score", "Qualificado", "Intencao", "Status", "Unidade", "Mensagens Cliente", "IA", "Data"];
+      const rows = allLeads.map((c: any) => [
+        c.contato_nome || "Anônimo",
+        c.contato_fone || c.contato_telefone || "",
+        c.score_lead || 0,
+        c.lead_qualificado ? "Sim" : "Não",
+        c.intencao_de_compra ? "Sim" : "Não",
+        c.status,
+        c.unidade_nome || "",
+        c.total_mensagens_cliente || 0,
+        c.total_mensagens_ia || 0,
+        c.created_at ? new Date(c.created_at).toLocaleString() : ""
+      ]);
+
+      const csvContent = [headers, ...rows]
+        .map(e => e.map((val: any) => `"${String(val).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.setAttribute("href", url);
+      link.setAttribute("download", `leads_elite_full_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Erro ao exportar leads:", err);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const totalPages = Math.ceil(total / limit);

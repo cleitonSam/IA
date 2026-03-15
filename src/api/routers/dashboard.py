@@ -160,20 +160,27 @@ async def get_conversations(
 
 @router.get("/metrics/empresa")
 async def get_metrics_empresa(
-    data: date = Query(None),
+    data: Optional[date] = Query(None),
+    days: int = Query(1, description="Número de dias para retroceder (1=hoje, 7, 30)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Retorna métricas agregadas de TODAS as unidades da empresa para um dia.
+    Retorna métricas agregadas de TODAS as unidades da empresa para um período.
     """
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não identificada")
 
     hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    
+    # Se dias > 1, calculamos o range. Se for 1, usamos apenas o dia 'hoje'.
+    where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
+    if days > 1:
+        where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3 || ' days')::interval)::date AND $2"
 
     try:
-        row = await _database.db_pool.fetchrow("""
+        # 1. Métricas de Conversas e Lead Scoring
+        query_totals = f"""
             SELECT
                 COUNT(DISTINCT c.id)                                                      AS total_conversas,
                 COUNT(DISTINCT CASE WHEN c.lead_qualificado THEN c.id END)               AS leads_qualificados,
@@ -185,11 +192,27 @@ async def get_metrics_empresa(
                 COUNT(DISTINCT c.unidade_id)                                              AS total_unidades_ativas
             FROM conversas c
             WHERE c.empresa_id = $1
-              AND DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2
-        """, empresa_id, hoje)
+              AND {where_date}
+        """
+        params = [empresa_id, hoje]
+        if days > 1: params.append(days)
+        
+        row = await _database.db_pool.fetchrow(query_totals, *params)
 
-        # Per-unit breakdown
-        units_rows = await _database.db_pool.fetch("""
+        # 2. Métricas de Uso de IA (Tokens e Custos)
+        where_ia = where_date.replace("c.", "ui.")
+        query_ia = f"""
+            SELECT 
+                COALESCE(SUM(tokens_prompt + tokens_completion), 0) as total_tokens,
+                COALESCE(SUM(custo_usd), 0) as custo_total
+            FROM uso_ia ui
+            WHERE ui.empresa_id = $1
+              AND {where_ia}
+        """
+        row_ia = await _database.db_pool.fetchrow(query_ia, *params)
+
+        # 3. Distribuição por Unidade
+        query_units = f"""
             SELECT
                 u.id, u.nome,
                 COUNT(DISTINCT c.id)                                             AS total_conversas,
@@ -197,20 +220,28 @@ async def get_metrics_empresa(
                 COUNT(DISTINCT CASE WHEN c.intencao_de_compra THEN c.id END)    AS intencao_compra
             FROM unidades u
             LEFT JOIN conversas c ON c.unidade_id = u.id
-                AND DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2
+                AND {where_date}
             WHERE u.empresa_id = $1 AND u.ativa = true
             GROUP BY u.id, u.nome
             ORDER BY total_conversas DESC
-        """, empresa_id, hoje)
+        """
+        units_rows = await _database.db_pool.fetch(query_units, *params)
 
         total = dict(row) if row else {}
+        ia_data = dict(row_ia) if row_ia else {"total_tokens": 0, "custo_total": 0}
+        
         total_conv = total.get("total_conversas") or 0
         leads = total.get("leads_qualificados") or 0
         total["taxa_conversao"] = round((leads / total_conv * 100), 1) if total_conv > 0 else 0
         total["tempo_medio_resposta"] = round(float(total.get("tempo_medio_resposta") or 0), 1)
+        
+        # Merge AI data
+        total["total_tokens"] = ia_data["total_tokens"]
+        total["custo_total_usd"] = round(float(ia_data["custo_total"]), 4)
 
         return {
             "date": hoje.isoformat(),
+            "days": days,
             "totals": total,
             "por_unidade": [dict(r) for r in units_rows]
         }
