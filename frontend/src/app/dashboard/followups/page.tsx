@@ -358,25 +358,55 @@ export default function FollowupsPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-6">
-                  <div className="space-y-2">
+                  <div className="space-y-4">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest pl-1">
-                      Delay (Minutos)
+                      Tempo de Espera (Delay)
                     </label>
-                    <input 
-                      type="number"
-                      value={editingTemplate?.delay_minutos || 0}
-                      onChange={e => setEditingTemplate({ ...editingTemplate, delay_minutos: parseInt(e.target.value) })}
-                      className="w-full bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00d2ff]/50"
-                    />
+                    <div className="flex gap-2 p-1 bg-slate-900 border border-slate-800 rounded-2xl relative">
+                      <input 
+                        type="number"
+                        min="1"
+                        value={(() => {
+                            const minVal = editingTemplate?.delay_minutos || 0;
+                            const unit = (typeof window !== "undefined" ? window.localStorage.getItem("f_unit") : "m") || "m";
+                            if (unit === "h") return Math.floor(minVal / 60);
+                            if (unit === "d") return Math.floor(minVal / 1440);
+                            return minVal;
+                        })()}
+                        onChange={e => {
+                            const val = parseInt(e.target.value) || 0;
+                            const unit = (typeof window !== "undefined" ? window.localStorage.getItem("f_unit") : "m") || "m";
+                            let finalMin = val;
+                            if (unit === "h") finalMin = val * 60;
+                            if (unit === "d") finalMin = val * 1440;
+                            setEditingTemplate({ ...editingTemplate, delay_minutos: finalMin });
+                        }}
+                        className="flex-1 bg-transparent border-none px-4 py-2 text-white font-bold text-lg focus:outline-none"
+                      />
+                      <select 
+                        defaultValue={typeof window !== "undefined" ? window.localStorage.getItem("f_unit") || "m" : "m"}
+                        onChange={e => {
+                            const unit = e.target.value;
+                            if (typeof window !== "undefined") window.localStorage.setItem("f_unit", unit);
+                            // Recalcula o valor atual para a nova unidade
+                            fetchData(); // Simplificado: apenas força re-render para ver o novo estado calculado
+                        }}
+                        className="bg-slate-800 border-none rounded-xl px-3 py-2 text-xs font-bold text-[#00d2ff] focus:outline-none focus:ring-2 focus:ring-[#00d2ff]/20 cursor-pointer"
+                      >
+                        <option value="m">Minutos</option>
+                        <option value="h">Horas</option>
+                        <option value="d">Dias</option>
+                      </select>
+                    </div>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest pl-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest pl-1 pt-2 inline-block">
                       Unidade Alvo
                     </label>
                     <select 
                       value={editingTemplate?.unidade_id || ""}
                       onChange={e => setEditingTemplate({ ...editingTemplate, unidade_id: e.target.value ? parseInt(e.target.value) : null })}
-                      className="w-full bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00d2ff]/50 appearance-none"
+                      className="w-full bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-[13px] text-white focus:outline-none focus:border-[#00d2ff]/50 appearance-none mt-2"
                     >
                       <option value="">Global (Todas)</option>
                       {unidades.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
