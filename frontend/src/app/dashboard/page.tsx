@@ -32,13 +32,14 @@ export default function DashboardPage() {
       }
 
       try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
         const config = { headers: { Authorization: `Bearer ${token}` } };
         
         // Paralelizando busca de dados para performance
         const [userRes, metricsRes, convLogRes] = await Promise.all([
-          axios.get("http://localhost:8000/auth/me", config),
-          axios.get("http://localhost:8000/dashboard/metrics?unidade_id=19", config),
-          axios.get("http://localhost:8000/dashboard/conversations?unidade_id=19&limit=5", config)
+          axios.get(`${apiUrl}/auth/me`, config),
+          axios.get(`${apiUrl}/dashboard/metrics?unidade_id=19`, config),
+          axios.get(`${apiUrl}/dashboard/conversations?unidade_id=19&limit=5`, config)
         ]);
 
         setUser(userRes.data);
