@@ -96,8 +96,7 @@ export default function PersonalityPage() {
     setIsModalOpen(true);
   };
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSave = async () => {
     setSaving(true);
     try {
       if (editing) {
@@ -114,6 +113,8 @@ export default function PersonalityPage() {
       setSaving(false);
     }
   };
+
+  const handleSave = (e: React.FormEvent) => { e.preventDefault(); doSave(); };
 
   const handleDelete = async (id: number) => {
     if (!confirm("Excluir esta personalidade?")) return;
@@ -562,7 +563,13 @@ export default function PersonalityPage() {
                           type="text"
                           value={testMessage}
                           onChange={e => setTestMessage(e.target.value)}
-                          onKeyDown={e => e.key === "Enter" && runTest()}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              runTest();
+                            }
+                          }}
                           placeholder="Digite sua mensagem e pressione Enter..."
                           className={`${inputClass} pr-16`}
                         />
@@ -591,9 +598,9 @@ export default function PersonalityPage() {
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  form="personalityForm"
-                  type="submit"
+                  type="button"
                   disabled={saving}
+                  onClick={doSave}
                   className="bg-[#00d2ff] text-black px-12 py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center gap-3 transition-all shadow-[0_0_25px_rgba(0,210,255,0.25)] disabled:opacity-50"
                 >
                   {saving
