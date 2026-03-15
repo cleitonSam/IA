@@ -308,6 +308,7 @@ export default function DashboardPage() {
                  {[
                   { label: "Contatos Totais", count: metrics?.total_conversas || 0, total: metrics?.total_conversas || 1, color: "blue" },
                   { label: "Interesse Detectado", count: metrics?.leads_qualificados || 0, total: metrics?.total_conversas || 1, color: "sky" },
+                  { label: "Oportunidades", count: metrics?.intencao_compra || 0, total: metrics?.total_conversas || 1, color: "violet" },
                   { label: "Link de Venda Enviado", count: metrics?.total_links_enviados || 0, total: metrics?.total_conversas || 1, color: "cyan" },
                   { label: "Matrículas Finalizadas", count: metrics?.total_matriculas || 0, total: metrics?.total_conversas || 1, color: "emerald" },
                 ].map((step, i) => {

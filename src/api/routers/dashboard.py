@@ -218,23 +218,49 @@ async def get_conversations(
 async def get_metrics_empresa(
     data: Optional[date] = Query(None),
     days: int = Query(30, description="Número de dias para retroceder (padrão 30)"),
+    empresa_id_param: Optional[int] = Query(None, alias="empresa_id", description="Filtrar por empresa (admin_master only)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
     Retorna métricas agregadas de TODAS as unidades da empresa para um período.
+    admin_master sem empresa_id no token agrega TODAS as empresas (ou filtra por empresa_id query param).
     """
     empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    is_admin_master = perfil == "admin_master"
+
+    # admin_master pode não ter empresa_id no token — usa query param ou agrega tudo
     if not empresa_id:
-        raise HTTPException(status_code=400, detail="Empresa não identificada")
+        if is_admin_master:
+            empresa_id = empresa_id_param  # pode ser None = agrega tudo
+        else:
+            raise HTTPException(status_code=400, detail="Empresa não identificada")
 
     hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-    
-    # Se dias > 1, calculamos o range. Se for 1, usamos apenas o dia 'hoje'.
-    where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
-    if days > 1:
-        where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3::text || ' days')::interval)::date AND $2"
 
     try:
+        # Monta filtro de empresa_id e datas dinamicamente
+        # Os índices dos parâmetros mudam dependendo se há empresa_id
+        if empresa_id:
+            empresa_cond = "c.empresa_id = $1 AND"
+            unit_empresa_cond = "u.empresa_id = $1 AND"
+            params: list = [empresa_id, hoje]
+            if days > 1:
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3::text || ' days')::interval)::date AND $2"
+                params.append(str(days))
+            else:
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
+        else:
+            # admin_master sem filtro de empresa — agrega TODAS as empresas
+            empresa_cond = ""
+            unit_empresa_cond = ""
+            params = [hoje]
+            if days > 1:
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($1::date - ($2::text || ' days')::interval)::date AND $1"
+                params.append(str(days))
+            else:
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $1"
+
         # 1. Métricas de Conversas e Lead Scoring
         query_totals = f"""
             SELECT
@@ -247,23 +273,21 @@ async def get_metrics_empresa(
                 COUNT(DISTINCT CASE WHEN c.status IN ('encerrada','resolved','closed') THEN c.id END) AS conversas_encerradas,
                 COUNT(DISTINCT c.unidade_id)                                              AS total_unidades_ativas
             FROM conversas c
-            WHERE c.empresa_id = $1
-              AND {where_date}
+            WHERE {empresa_cond}
+              {where_date}
         """
-        params = [empresa_id, hoje]
-        if days > 1: params.append(str(days))
-        
         row = await _database.db_pool.fetchrow(query_totals, *params)
 
         # 2. Métricas de Uso de IA (Tokens e Custos)
         where_ia = where_date.replace("c.", "ui.")
+        ia_empresa_cond = empresa_cond.replace("c.", "ui.")
         query_ia = f"""
-            SELECT 
+            SELECT
                 COALESCE(SUM(tokens_prompt + tokens_completion), 0) as total_tokens,
                 COALESCE(SUM(custo_usd), 0) as custo_total
             FROM uso_ia ui
-            WHERE ui.empresa_id = $1
-              AND {where_ia}
+            WHERE {ia_empresa_cond}
+              {where_ia}
         """
         row_ia = await _database.db_pool.fetchrow(query_ia, *params)
 
@@ -277,7 +301,7 @@ async def get_metrics_empresa(
             FROM unidades u
             LEFT JOIN conversas c ON c.unidade_id = u.id
                 AND {where_date}
-            WHERE u.empresa_id = $1 AND u.ativa = true
+            WHERE {unit_empresa_cond} u.ativa = true
             GROUP BY u.id, u.nome
             ORDER BY total_conversas DESC
         """
