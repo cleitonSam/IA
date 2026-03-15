@@ -89,6 +89,8 @@ async def get_metrics(
     perfil = token_payload.get("perfil")
     if perfil == "admin_master" or not empresa_id:
         empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+    if not empresa_id:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada")
 
     hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
 
@@ -163,6 +165,8 @@ async def get_conversations(
     perfil = token_payload.get("perfil")
     if perfil == "admin_master" and not empresa_id and unidade_id:
         empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+    if not empresa_id:
+        raise HTTPException(status_code=404, detail="Unidade não encontrada")
 
     conditions = ["c.empresa_id = $1"]
     params: list = [empresa_id]
