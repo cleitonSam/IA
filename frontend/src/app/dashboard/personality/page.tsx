@@ -36,8 +36,9 @@ const emptyForm = {
 const MODELS = [
   { id: "openai/gpt-4o", label: "GPT-4o", sub: "Elite Performance" },
   { id: "anthropic/claude-3.5-sonnet", label: "Claude 3.5", sub: "Creative Deep" },
-  { id: "google/gemini-2.0-flash-001", label: "Gemini 2.0", sub: "Fast & Multi" },
-  { id: "google/gemini-2.5-flash", label: "Gemini 2.5", sub: "Latest & Fast" },
+  { id: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash", sub: "Fast & Multi" },
+  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", sub: "Latest & Fast" },
+  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", sub: "Most Capable" },
 ];
 
 const TONES = ["Profissional", "Amigável", "Entusiasta"];
