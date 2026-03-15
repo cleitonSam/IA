@@ -39,13 +39,13 @@ class RegisterRequest(BaseModel):
 # ---------- helpers ----------
 
 async def _buscar_empresa(empresa_id: int):
-    from src.core.database import _database
+    import src.core.database as _database
     if not _database.db_pool:
         return None
     return await _database.db_pool.fetchrow("SELECT * FROM empresas WHERE id = $1", empresa_id)
 
 async def _criar_empresa(body: "CriarEmpresaRequest") -> int:
-    from src.core.database import _database
+    import src.core.database as _database
     import uuid as _uuid
     row = await _database.db_pool.fetchrow(
         """
@@ -59,7 +59,7 @@ async def _criar_empresa(body: "CriarEmpresaRequest") -> int:
     return row["id"]
 
 async def _criar_convite(empresa_id: int, email: str) -> str:
-    from src.core.database import _database
+    import src.core.database as _database
     token = secrets.token_hex(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=48)
     await _database.db_pool.execute(
@@ -73,7 +73,7 @@ async def _criar_convite(empresa_id: int, email: str) -> str:
     return token
 
 async def _buscar_convite(token: str):
-    from src.core.database import _database
+    import src.core.database as _database
     if not _database.db_pool:
         return None
     return await _database.db_pool.fetchrow(
@@ -82,7 +82,7 @@ async def _buscar_convite(token: str):
     )
 
 async def _marcar_convite_usado(token: str):
-    from src.core.database import _database
+    import src.core.database as _database
     await _database.db_pool.execute(
         "UPDATE convites SET usado = true WHERE token = $1",
         token
@@ -128,7 +128,7 @@ async def listar_empresas(token_payload: dict = Depends(get_current_user_token))
     """Lista todas as empresas. Apenas admin_master."""
     if token_payload.get("perfil") != "admin_master":
         raise HTTPException(status_code=403, detail="Apenas admin_master pode listar empresas")
-    from src.core.database import _database
+    import src.core.database as _database
     rows = await _database.db_pool.fetch(
         "SELECT id, uuid, nome, nome_fantasia, cnpj, email, telefone, website, plano, status, created_at FROM empresas ORDER BY id"
     )

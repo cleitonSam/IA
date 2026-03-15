@@ -31,18 +31,22 @@ export default function AdminPage() {
 
   const fetchData = async () => {
     try {
-      const [meRes, empRes] = await Promise.all([
-        axios.get("/api-backend/auth/me", getConfig()),
-        axios.get("/api-backend/auth/empresas", getConfig()),
-      ]);
+      const meRes = await axios.get("/api-backend/auth/me", getConfig());
       if (meRes.data.perfil !== "admin_master") {
         router.push("/dashboard");
         return;
       }
       setUser(meRes.data);
-      setEmpresas(empRes.data);
     } catch {
       router.push("/login");
+      return;
+    }
+
+    try {
+      const empRes = await axios.get("/api-backend/auth/empresas", getConfig());
+      setEmpresas(empRes.data);
+    } catch (err: any) {
+      setMsgEmpresa({ ok: false, text: err.response?.data?.detail || "Erro ao carregar empresas." });
     } finally {
       setLoading(false);
     }

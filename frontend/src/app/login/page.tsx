@@ -28,7 +28,16 @@ export default function LoginPage() {
       const { access_token } = response.data;
 
       localStorage.setItem("token", access_token);
-      router.push("/dashboard");
+
+      // Redireciona admin_master direto para o painel de gestão
+      const meRes = await axios.get("/api-backend/auth/me", {
+        headers: { Authorization: `Bearer ${access_token}` },
+      });
+      if (meRes.data.perfil === "admin_master") {
+        router.push("/admin");
+      } else {
+        router.push("/dashboard");
+      }
     } catch (err: any) {
       console.error(err);
       setError("E-mail ou senha incorretos. Tente novamente.");
