@@ -301,8 +301,19 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
 # --- Integrations Endpoints ---
 
 @router.get("/integrations")
-async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
+async def get_integrations(
+    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
+    token_payload: dict = Depends(get_current_user_token),
+):
     empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil", "")
+
+    if not empresa_id:
+        if perfil == "admin_master" and empresa_id_param:
+            empresa_id = empresa_id_param
+        else:
+            return []  # admin_master sem empresa selecionada → lista vazia
+
     rows = await _database.db_pool.fetch(
         "SELECT id, tipo, config, ativo FROM integracoes WHERE empresa_id = $1 AND (unidade_id IS NULL OR unidade_id = '')",
         empresa_id
@@ -405,8 +416,20 @@ async def update_evo_unit(
 
 
 @router.put("/integrations/{tipo}")
-async def update_integration(tipo: str, body: IntegrationUpdate, token_payload: dict = Depends(get_current_user_token)):
+async def update_integration(
+    tipo: str,
+    body: IntegrationUpdate,
+    empresa_id_param: Optional[int] = Query(None, alias="empresa_id"),
+    token_payload: dict = Depends(get_current_user_token),
+):
     empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil", "")
+
+    if not empresa_id:
+        if perfil == "admin_master" and empresa_id_param:
+            empresa_id = empresa_id_param
+        else:
+            raise HTTPException(status_code=400, detail="Empresa não vinculada")
 
     existing = await _database.db_pool.fetchval(
         "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND (unidade_id IS NULL OR unidade_id = '')",
