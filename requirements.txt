@@ -14,3 +14,7 @@ alembic
 sqlalchemy
 psycopg2-binary
 pyyaml
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==3.2.2
+python-multipart
