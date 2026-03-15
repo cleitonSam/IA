@@ -59,8 +59,8 @@ export default function LoginPage() {
           <div className="absolute -top-24 -right-24 w-48 h-48 bg-primary opacity-10 rounded-full blur-3xl animate-pulse"></div>
           
           <div className="mb-8 text-center">
-            <h1 className="text-4xl font-bold text-gradient mb-2 tracking-tight">Antigravity IA</h1>
-            <p className="text-gray-400 text-sm">Dashboard de Gestão Revolucionária</p>
+            <h1 className="text-4xl font-bold text-gradient mb-2 tracking-tight">Fluxo Digital & Tech</h1>
+            <p className="text-gray-400 text-sm">Inteligência Tecnológica & Gestão Digital</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-6">

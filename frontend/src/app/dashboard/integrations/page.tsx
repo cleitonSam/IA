@@ -86,14 +86,14 @@ export default function IntegrationsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white p-6 md:p-12">
+    <div className="min-h-screen bg-black text-white p-6 md:p-12">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-4 mb-10">
           <a href="/dashboard" className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5">
@@ -102,9 +102,9 @@ export default function IntegrationsPage() {
           <div>
             <h1 className="text-3xl font-bold flex items-center gap-3">
               <Network className="w-8 h-8 text-blue-500" />
-              Ecossistema de Integrações
+              Ecossistema Digital Fluxo
             </h1>
-            <p className="text-gray-400 mt-1">Conecte seus canais de atendimento e sistemas de gestão.</p>
+            <p className="text-gray-400 mt-1">Conecte seus canais de atendimento à inteligência do Fluxo Digital & Tech.</p>
           </div>
         </div>
 

@@ -116,14 +116,14 @@ export default function FAQPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white p-6 md:p-12">
+    <div className="min-h-screen bg-black text-white p-6 md:p-12">
       <div className="max-w-5xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
           <div className="flex items-center gap-4">
@@ -170,7 +170,7 @@ export default function FAQPage() {
                         <Globe className="w-3 h-3" /> Conhecimento Global
                       </span>
                     ) : (
-                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-violet-500/10 text-violet-400 px-3 py-1 rounded-lg">
+                      <span className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-blue-500/10 text-blue-400 px-3 py-1 rounded-lg">
                         <Building2 className="w-3 h-3" /> Unidade Específica
                       </span>
                     )}
@@ -243,7 +243,7 @@ export default function FAQPage() {
                       value={formData.pergunta}
                       onChange={(e) => setFormData({ ...formData, pergunta: e.target.value })}
                       placeholder="Ex: Quais os horários de funcionamento?"
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
                     />
                   </div>
 

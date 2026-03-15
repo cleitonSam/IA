@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Motor SaaS IA - Dashboard",
-  description: "Painel de gestão revolucionário para sua academia",
+  title: "Fluxo Digital & Tech - Dashboard",
+  description: "O fluxo definitivo para inteligência digital e tecnológica",
 };
 
 export default function RootLayout({

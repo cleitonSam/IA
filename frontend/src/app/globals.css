@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --background: #020617; /* Deep Navy Black */
+  --background: #000000; /* Pure Black for Tech/Neon feel */
   --foreground: #f8fafc;
-  --primary: #06b6d4;   /* Cyan 500 */
-  --secondary: #8b5cf6; /* Violet 500 */
-  --accent: #f43f5e;    /* Rose 500 */
-  --card: rgba(15, 23, 42, 0.6); /* Glass effect base */
-  --border: rgba(255, 255, 255, 0.1);
+  --primary: #00f2ff;   /* Neon Blue */
+  --secondary: #0066ff; /* Deep Tech Blue */
+  --accent: #ffffff;    /* White for Contrast */
+  --card: rgba(10, 10, 10, 0.7); /* Darker glass effect */
+  --border: rgba(0, 242, 255, 0.1);
 }
 
 @theme inline {
@@ -19,8 +19,8 @@
   --color-glass-card: var(--card);
   --color-glass-border: var(--border);
   
-  --shadow-neon-primary: 0 0 15px rgba(6, 182, 212, 0.4);
-  --shadow-neon-secondary: 0 0 15px rgba(139, 92, 246, 0.4);
+  --shadow-neon-primary: 0 0 15px rgba(0, 242, 255, 0.4);
+  --shadow-neon-secondary: 0 0 15px rgba(0, 102, 255, 0.4);
 }
 
 body {
@@ -54,6 +54,6 @@ body {
 .bg-mesh {
   background-color: var(--background);
   background-image: 
-    radial-gradient(at 0% 0%, rgba(6, 182, 212, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
+    radial-gradient(at 0% 0%, rgba(0, 242, 255, 0.1) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(0, 102, 255, 0.1) 0px, transparent 50%);
 }

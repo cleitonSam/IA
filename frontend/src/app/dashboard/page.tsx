@@ -74,14 +74,14 @@ export default function DashboardPage() {
 
   if (initialLoading) {
     return (
-      <div className="min-h-screen bg-[#080810] flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="relative w-16 h-16">
-            <div className="absolute inset-0 rounded-full border-2 border-violet-500/20 animate-ping" />
-            <div className="absolute inset-0 rounded-full border-2 border-t-violet-500 animate-spin" />
-            <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-violet-400" />
+            <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-ping" />
+            <div className="absolute inset-0 rounded-full border-2 border-t-primary animate-spin" />
+            <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-primary" />
           </div>
-          <p className="text-sm text-gray-500 font-medium tracking-widest uppercase">Carregando</p>
+          <p className="text-sm text-gray-500 font-medium tracking-widest uppercase">Fluxo Digital & Tech</p>
         </div>
       </div>
     );
@@ -89,17 +89,17 @@ export default function DashboardPage() {
 
   if (!initialLoading && unidades.length === 0) {
     return (
-      <div className="min-h-screen bg-[#080810] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="bg-white/5 border border-white/10 rounded-3xl p-12 text-center max-w-md w-full backdrop-blur-xl">
-          <div className="w-16 h-16 bg-violet-500/10 border border-violet-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Building2 className="w-8 h-8 text-violet-400" />
+          <div className="w-16 h-16 bg-blue-500/10 border border-blue-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Building2 className="w-8 h-8 text-blue-400" />
           </div>
           <h2 className="text-2xl font-bold text-white mb-3">Nenhuma unidade ativa</h2>
           <p className="text-gray-400 mb-8 text-sm leading-relaxed">
-            Configure sua primeira unidade para começar a ver dados no painel.
+            Configure sua primeira unidade no Fluxo Digital & Tech para começar.
           </p>
-          <a href="/dashboard/settings"
-            className="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white font-bold py-3 px-6 rounded-xl transition-all">
+          <a href="/dashboard/units"
+            className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-xl transition-all">
             <Settings className="w-4 h-4" /> Configurar Agora
           </a>
         </div>
@@ -117,23 +117,23 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#080810] text-white flex overflow-hidden">
+    <div className="min-h-screen bg-black text-white flex overflow-hidden">
       {/* ── Sidebar ── */}
       <aside className={`
         fixed lg:relative inset-y-0 left-0 z-40 w-64 flex flex-col
-        bg-[#0d0d1a] border-r border-white/5
+        bg-[#050505] border-r border-white/5
         transform transition-transform duration-300 ease-in-out
         ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
       `}>
         {/* Logo */}
         <div className="px-6 py-6 border-b border-white/5">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-500/30">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/30">
               <Zap className="w-5 h-5 text-white" />
             </div>
             <div>
-              <p className="font-bold text-sm tracking-tight">Antigravity IA</p>
-              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Dashboard</p>
+              <p className="font-bold text-sm tracking-tight">Fluxo Digital & Tech</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Painel de Controle</p>
             </div>
           </div>
         </div>
@@ -145,12 +145,12 @@ export default function DashboardPage() {
             <a key={item.href} href={item.href}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all group ${
                 item.active
-                  ? "bg-violet-600/15 text-violet-300 border border-violet-500/20"
+                  ? "bg-blue-600/15 text-blue-300 border border-blue-500/20"
                   : "text-gray-400 hover:text-white hover:bg-white/5"
               }`}>
-              <item.icon className={`w-4 h-4 flex-shrink-0 ${item.active ? "text-violet-400" : "group-hover:text-white"}`} />
+              <item.icon className={`w-4 h-4 flex-shrink-0 ${item.active ? "text-blue-400" : "group-hover:text-white"}`} />
               {item.label}
-              {item.active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-violet-400" />}
+              {item.active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400" />}
             </a>
           ))}
 
@@ -169,12 +169,12 @@ export default function DashboardPage() {
         {/* User Footer */}
         <div className="px-3 py-4 border-t border-white/5">
           <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl mb-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-xs font-bold flex-shrink-0">
               {user?.nome?.charAt(0)}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold truncate">{user?.nome}</p>
-              <p className="text-[10px] text-violet-400 font-medium truncate">{user?.perfil === 'admin_master' ? 'Gestor Master' : user?.perfil}</p>
+              <p className="text-[10px] text-blue-400 font-medium truncate">{user?.perfil === 'admin_master' ? 'Gestor Master' : user?.perfil}</p>
             </div>
           </div>
           <button
@@ -194,9 +194,9 @@ export default function DashboardPage() {
       {/* ── Main ── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Bar */}
-        <header className="sticky top-0 z-20 bg-[#080810]/80 backdrop-blur-xl border-b border-white/5 px-6 py-3.5 flex items-center justify-between gap-4">
+        <header className="sticky top-0 z-20 bg-black/80 backdrop-blur-xl border-b border-white/5 px-6 py-3.5 flex items-center justify-between gap-4">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 rounded-lg hover:bg-white/5">
-            <LayoutDashboard className="w-5 h-5" />
+            <LayoutDashboard className="w-5 h-5 text-blue-400" />
           </button>
 
           {/* Unit Selector */}
@@ -220,7 +220,7 @@ export default function DashboardPage() {
                       <button key={u.id}
                         onClick={() => { setSelectedUnidadeId(u.id); setUnitDropdownOpen(false); }}
                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
-                          u.id === selectedUnidadeId ? "bg-violet-600/20 text-violet-300" : "hover:bg-white/5 text-gray-300"
+                          u.id === selectedUnidadeId ? "bg-blue-600/20 text-blue-300" : "hover:bg-white/5 text-gray-300"
                         }`}>
                         <Building2 className="w-4 h-4 flex-shrink-0" />
                         {u.nome}
@@ -229,7 +229,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="px-3 pb-2">
                     <a href="/dashboard/units"
-                      className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-violet-400 hover:bg-violet-600/10 transition-all w-full">
+                      className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-blue-400 hover:bg-blue-600/10 transition-all w-full">
                       <Settings className="w-3 h-3" /> Gerenciar unidades
                     </a>
                   </div>
@@ -240,7 +240,7 @@ export default function DashboardPage() {
 
           <div className="flex items-center gap-3 ml-auto">
             <a href="/dashboard/units"
-              className="hidden sm:flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all">
+              className="hidden sm:flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-500/20">
               <Settings className="w-4 h-4" /> Configurações
             </a>
             <button className="relative p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-all border border-white/5">
@@ -265,8 +265,8 @@ export default function DashboardPage() {
           {/* KPI Cards: company-wide + per-unit selected */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: "Total Conversas", value: (empresaMetrics?.total_conversas ?? metrics?.total_conversas) ?? "—", icon: MsgIcon, color: "violet", delta: undefined },
-              { label: "Leads Qualificados", value: (empresaMetrics?.leads_qualificados ?? metrics?.leads_qualificados) ?? "—", icon: Star, color: "indigo", delta: undefined },
+              { label: "Total Conversas", value: (empresaMetrics?.total_conversas ?? metrics?.total_conversas) ?? "—", icon: MsgIcon, color: "blue", delta: undefined },
+              { label: "Leads Qualificados", value: (empresaMetrics?.leads_qualificados ?? metrics?.leads_qualificados) ?? "—", icon: Star, color: "sky", delta: undefined },
               { label: "Taxa de Conversão", value: empresaMetrics?.taxa_conversao != null ? `${empresaMetrics.taxa_conversao}%` : (metrics?.taxa_conversao ? `${metrics.taxa_conversao}%` : "—"), icon: TrendingUp, color: "emerald", delta: undefined },
               { label: "Tempo Médio", value: (empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta) ? `${Math.round(empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta)}s` : "—", icon: Clock, color: "amber", delta: undefined },
             ].map((card, i) => (
@@ -301,10 +301,10 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="space-y-5">
-                {[
-                  { label: "Contatos Totais", count: metrics?.total_conversas || 0, total: metrics?.total_conversas || 1, color: "violet" },
-                  { label: "Interesse Detectado", count: metrics?.leads_qualificados || 0, total: metrics?.total_conversas || 1, color: "indigo" },
-                  { label: "Link de Venda Enviado", count: metrics?.total_links_enviados || 0, total: metrics?.total_conversas || 1, color: "blue" },
+                 {[
+                  { label: "Contatos Totais", count: metrics?.total_conversas || 0, total: metrics?.total_conversas || 1, color: "blue" },
+                  { label: "Interesse Detectado", count: metrics?.leads_qualificados || 0, total: metrics?.total_conversas || 1, color: "sky" },
+                  { label: "Link de Venda Enviado", count: metrics?.total_links_enviados || 0, total: metrics?.total_conversas || 1, color: "cyan" },
                   { label: "Matrículas Finalizadas", count: metrics?.total_matriculas || 0, total: metrics?.total_conversas || 1, color: "emerald" },
                 ].map((step, i) => {
                   const pct = Math.min(100, (step.count / step.total) * 100);
@@ -318,7 +318,7 @@ export default function DashboardPage() {
                         <motion.div
                           initial={{ width: 0 }} animate={{ width: `${pct}%` }}
                           transition={{ duration: 1, delay: 0.2 + i * 0.1 }}
-                          className={`h-full rounded-full bg-${step.color}-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]`}
+                          className={`h-full rounded-full bg-${step.color}-500 shadow-[0_0_8px_rgba(0,242,255,0.5)]`}
                         />
                       </div>
                     </div>
@@ -350,7 +350,7 @@ export default function DashboardPage() {
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05 }}
                       className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all group cursor-pointer border border-transparent hover:border-white/5">
-                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600/30 to-indigo-600/30 border border-white/10 flex items-center justify-center text-sm font-bold flex-shrink-0">
+                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600/30 to-cyan-600/30 border border-white/10 flex items-center justify-center text-sm font-bold flex-shrink-0">
                         {conv.contato_nome?.charAt(0) || "?"}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -360,7 +360,7 @@ export default function DashboardPage() {
                       <div className="text-right flex-shrink-0">
                         <div className="flex items-center gap-1 mb-1 justify-end">
                           {[1,2,3,4,5].map(s => (
-                            <div key={s} className={`w-1.5 h-1.5 rounded-full ${s <= (conv.score_lead || 0) ? "bg-violet-400" : "bg-white/10"}`} />
+                            <div key={s} className={`w-1.5 h-1.5 rounded-full ${s <= (conv.score_lead || 0) ? "bg-blue-400" : "bg-white/10"}`} />
                           ))}
                         </div>
                         {conv.intencao_de_compra && (
@@ -388,8 +388,8 @@ export default function DashboardPage() {
                 { label: "Integrações", icon: Network, href: "/dashboard/integrations", desc: "Chatwoot, EVO..." },
               ].map(item => (
                 <a key={item.label} href={item.href}
-                  className="bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-violet-500/20 rounded-2xl p-4 transition-all group">
-                  <item.icon className="w-5 h-5 text-gray-500 group-hover:text-violet-400 mb-3 transition-colors" />
+                  className="bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-blue-500/20 rounded-2xl p-4 transition-all group">
+                  <item.icon className="w-5 h-5 text-gray-500 group-hover:text-blue-400 mb-3 transition-colors" />
                   <p className="text-sm font-bold mb-0.5">{item.label}</p>
                   <p className="text-xs text-gray-600">{item.desc}</p>
                 </a>

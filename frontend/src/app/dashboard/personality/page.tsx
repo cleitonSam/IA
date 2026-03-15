@@ -62,8 +62,8 @@ export default function PersonalityPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
       </div>
     );
   }
@@ -78,10 +78,10 @@ export default function PersonalityPage() {
           </a>
           <div>
             <h1 className="text-3xl font-bold flex items-center gap-3">
-              <Brain className="w-8 h-8 text-violet-500" />
-              Personalidade da IA
+              <Brain className="w-8 h-8 text-blue-500" />
+              Estratégia Neural da IA
             </h1>
-            <p className="text-gray-400 mt-1">Configure o comportamento, voz e objetivos do seu assistente neural.</p>
+            <p className="text-gray-400 mt-1">Modele o comportamento e a lógica de interação do seu agente Fluxo.</p>
           </div>
         </div>
 
@@ -91,10 +91,10 @@ export default function PersonalityPage() {
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="bg-white/5 border border-white/10 rounded-3xl p-8 backdrop-blur-xl"
+              className="bg-white/[0.03] border border-white/10 rounded-3xl p-8 backdrop-blur-xl"
             >
               <h3 className="text-lg font-bold flex items-center gap-2 mb-6">
-                <Sparkles className="w-5 h-5 text-violet-400" />
+                <Sparkles className="w-5 h-5 text-blue-400" />
                 Instruções Centrais
               </h3>
               
@@ -107,8 +107,8 @@ export default function PersonalityPage() {
                     rows={4}
                     value={personality.personalidade}
                     onChange={(e) => setPersonality({ ...personality, personalidade: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all resize-none"
-                    placeholder="Qual o principal objetivo da IA? Ex: Agendar visitas, tirar dúvidas sobre planos..."
+                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all resize-none"
+                    placeholder="Qual o principal objetivo da IA? Ex: Vendas diretas, suporte técnico, agendamentos..."
                   />
                   <p className="text-[10px] text-gray-500 mt-2 px-1">Este objetivo orienta todas as decisões que a IA toma durante a conversa.</p>
                 </div>
@@ -121,8 +121,8 @@ export default function PersonalityPage() {
                     rows={10}
                     value={personality.instrucoes_base}
                     onChange={(e) => setPersonality({ ...personality, instrucoes_base: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all resize-none font-mono text-sm"
-                    placeholder="Instruções detalhadas de como agir. Utilize tópicos para melhor clareza. Ex: - Seja cordial - Não fale de concorrência - Peça o WhatsApp..."
+                    className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all resize-none font-mono text-sm"
+                    placeholder="Diretrizes específicas. Ex: - Foco em conversão tecnológica - Linguagem moderna e direta - Coletar leads qualificados..."
                   />
                   <p className="text-[10px] text-gray-500 mt-2 px-1">Defina diretrizes rígidas, restrições e o estilo de interação desejado.</p>
                 </div>
@@ -138,7 +138,7 @@ export default function PersonalityPage() {
               className="bg-white/5 border border-white/10 rounded-3xl p-8 backdrop-blur-xl"
             >
               <h3 className="text-lg font-bold flex items-center gap-2 mb-6">
-                <Mic2 className="w-5 h-5 text-violet-400" />
+                <Mic2 className="w-5 h-5 text-blue-400" />
                 Voz & Identidade
               </h3>
 
@@ -149,8 +149,8 @@ export default function PersonalityPage() {
                     type="text"
                     value={personality.nome_ia}
                     onChange={(e) => setPersonality({ ...personality, nome_ia: e.target.value })}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all"
-                    placeholder="Ex: Maya, Atendimento Virtual..."
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                    placeholder="Ex: Fluxo IA, Assistente Tech..."
                   />
                 </div>
 
@@ -166,7 +166,7 @@ export default function PersonalityPage() {
                         onClick={() => setPersonality({ ...personality, tom_voz: tom })}
                         className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-sm font-medium ${
                           personality.tom_voz === tom 
-                            ? "bg-violet-600/20 border-violet-500 text-violet-100 shadow-lg shadow-violet-500/10" 
+                            ? "bg-blue-600/20 border-blue-500 text-blue-100 shadow-lg shadow-blue-500/10" 
                             : "bg-black/20 border-white/5 text-gray-500 hover:text-gray-300 hover:border-white/10"
                         }`}
                       >
@@ -187,7 +187,7 @@ export default function PersonalityPage() {
                       type="button"
                       onClick={() => setPersonality({ ...personality, ativo: !personality.ativo })}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                        personality.ativo ? "bg-violet-600" : "bg-gray-700"
+                        personality.ativo ? "bg-blue-600" : "bg-gray-700"
                       }`}
                     >
                       <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -202,7 +202,7 @@ export default function PersonalityPage() {
             <button
               type="submit"
               disabled={saving}
-              className="w-full bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-xl shadow-violet-500/20 hover:scale-[1.02] active:scale-[0.98]"
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]"
             >
               {saving ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
