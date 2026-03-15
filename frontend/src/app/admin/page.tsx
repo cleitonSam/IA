@@ -7,7 +7,8 @@ import { motion } from "framer-motion";
 import {
   Building2, Mail, Plus, Send, LogOut, LayoutDashboard,
   Loader2, CheckCircle, AlertCircle, ChevronRight, Users,
-  Pencil, Trash2, X, UserCheck, UserX, ShieldCheck
+  Pencil, Trash2, X, UserCheck, UserX, ShieldCheck,
+  Brain, HelpCircle, Network, History
 } from "lucide-react";
 
 export default function AdminPage() {
@@ -186,6 +187,23 @@ export default function AdminPage() {
           <a href="/admin" className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 text-primary border border-primary/20 transition-all">
             <Building2 className="w-5 h-5" />
             <span className="font-medium">Painel de Gestão</span>
+          </a>
+          <div className="pt-4 pb-2 text-[10px] font-black text-gray-500 uppercase tracking-widest px-4">Gestão da Empresa</div>
+          <a href="/dashboard/personality" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Brain className="w-5 h-5" />
+            <span className="font-medium">Personalidade IA</span>
+          </a>
+          <a href="/dashboard/faq" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <HelpCircle className="w-5 h-5" />
+            <span className="font-medium">FAQ</span>
+          </a>
+          <a href="/dashboard/integrations" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <Network className="w-5 h-5" />
+            <span className="font-medium">Integrações</span>
+          </a>
+          <a href="/dashboard/logs" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+            <History className="w-5 h-5" />
+            <span className="font-medium">Logs de Conversa</span>
           </a>
         </nav>
         <div className="pt-6 border-t border-white/5">
