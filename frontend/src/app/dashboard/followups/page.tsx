@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   MessageSquare, History, Layout, Clock, Play, Plus, Trash2, 
   RefreshCw, CheckCircle2, AlertCircle, Calendar, Settings2,
-  Brain, Send, Sparkles, ChevronRight
+  Brain, Send, Sparkles, ChevronRight, X
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
