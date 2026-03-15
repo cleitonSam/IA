@@ -399,7 +399,7 @@ async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)
         empresa_id
     )
     configs = await _database.db_pool.fetch(
-        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL AND unidade_id <> ''",
+        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id IS NOT NULL",
         empresa_id
     )
 
@@ -473,7 +473,7 @@ async def update_integration(
 
     # Busca o registro global (sem unidade_id), preferindo NULL
     existing = await _database.db_pool.fetchval(
-        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND (unidade_id IS NULL OR unidade_id = '') ORDER BY (unidade_id IS NULL) DESC LIMIT 1",
+        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND unidade_id IS NULL ORDER BY id DESC LIMIT 1",
         empresa_id, tipo
     )
 
