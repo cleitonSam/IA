@@ -7,14 +7,16 @@ import { motion } from "framer-motion";
 import {
   Building2, Mail, Plus, Send, LogOut, LayoutDashboard,
   Loader2, CheckCircle, AlertCircle, ChevronRight, Users,
-  Pencil, Trash2, X
+  Pencil, Trash2, X, UserCheck, UserX, ShieldCheck
 } from "lucide-react";
 
 export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [empresas, setEmpresas] = useState<any[]>([]);
+  const [usuarios, setUsuarios] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filtroEmpresa, setFiltroEmpresa] = useState<string>("");
 
   // Criar empresa
   const [novaEmpresa, setNovaEmpresa] = useState({ nome: "", nome_fantasia: "", cnpj: "", email: "", telefone: "" });
@@ -51,10 +53,14 @@ export default function AdminPage() {
     }
 
     try {
-      const empRes = await axios.get("/api-backend/auth/empresas", getConfig());
+      const [empRes, usersRes] = await Promise.all([
+        axios.get("/api-backend/auth/empresas", getConfig()),
+        axios.get("/api-backend/auth/usuarios", getConfig()),
+      ]);
       setEmpresas(empRes.data);
+      setUsuarios(usersRes.data);
     } catch (err: any) {
-      setMsgEmpresa({ ok: false, text: err.response?.data?.detail || "Erro ao carregar empresas." });
+      setMsgEmpresa({ ok: false, text: err.response?.data?.detail || "Erro ao carregar dados." });
     } finally {
       setLoading(false);
     }
@@ -103,6 +109,25 @@ export default function AdminPage() {
       alert(err.response?.data?.detail || "Erro ao excluir empresa.");
     } finally {
       setExcluindoId(null);
+    }
+  };
+
+  const handleToggleUsuario = async (id: number) => {
+    try {
+      await axios.patch(`/api-backend/auth/usuarios/${id}`, {}, getConfig());
+      await fetchData();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Erro ao alterar usuário.");
+    }
+  };
+
+  const handleExcluirUsuario = async (id: number, nome: string) => {
+    if (!confirm(`Excluir o usuário "${nome}"? Esta ação não pode ser desfeita.`)) return;
+    try {
+      await axios.delete(`/api-backend/auth/usuarios/${id}`, getConfig());
+      await fetchData();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || "Erro ao excluir usuário.");
     }
   };
 
@@ -380,6 +405,72 @@ export default function AdminPage() {
                   </div>
                 </motion.div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Lista de usuários */}
+        {usuarios.length > 0 && (
+          <div className="glass-morphism p-8 rounded-2xl mt-8">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Users className="w-5 h-5 text-secondary" />
+                Usuários ({usuarios.length})
+              </h2>
+              <select
+                value={filtroEmpresa}
+                onChange={(e) => setFiltroEmpresa(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-xl py-2 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="" className="bg-[#020617]">Todas as empresas</option>
+                {empresas.map((emp) => (
+                  <option key={emp.id} value={String(emp.id)} className="bg-[#020617]">{emp.nome}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-3">
+              {usuarios
+                .filter((u) => !filtroEmpresa || String(u.empresa_id) === filtroEmpresa)
+                .map((u) => (
+                  <motion.div
+                    key={u.id}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className={`flex items-center justify-between p-4 rounded-xl border transition-all ${u.ativo ? "bg-white/5 border-white/5 hover:border-secondary/20" : "bg-white/2 border-white/5 opacity-50"}`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold ${u.ativo ? "bg-secondary/10 text-secondary" : "bg-gray-500/10 text-gray-500"}`}>
+                        {u.nome?.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm">{u.nome}</p>
+                        <p className="text-xs text-gray-500">{u.email} · {u.empresa_nome}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 bg-white/5 px-2 py-1 rounded-full flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3" />{u.perfil}
+                      </span>
+                      <span className={`text-xs font-bold px-3 py-1 rounded-full ${u.ativo ? "bg-green-500/10 text-green-400" : "bg-gray-500/10 text-gray-400"}`}>
+                        {u.ativo ? "Ativo" : "Inativo"}
+                      </span>
+                      <button
+                        onClick={() => handleToggleUsuario(u.id)}
+                        className={`p-2 rounded-lg transition-all ${u.ativo ? "text-gray-400 hover:text-yellow-400 hover:bg-yellow-400/10" : "text-gray-400 hover:text-green-400 hover:bg-green-400/10"}`}
+                        title={u.ativo ? "Desativar" : "Ativar"}
+                      >
+                        {u.ativo ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                      </button>
+                      <button
+                        onClick={() => handleExcluirUsuario(u.id, u.nome)}
+                        className="p-2 rounded-lg text-gray-400 hover:text-accent hover:bg-accent/10 transition-all"
+                        title="Excluir"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
             </div>
           </div>
         )}

@@ -282,3 +282,73 @@ async def register(body: RegisterRequest):
 
     logger.info(f"✅ Usuário registrado: {body.email} (empresa_id={convite['empresa_id']})")
     return {"message": "Conta criada com sucesso. Faça login."}
+
+
+@router.get("/usuarios")
+async def listar_usuarios(
+    empresa_id: Optional[int] = None,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Lista usuários. admin_master vê todos (ou filtra por empresa_id); outros veem só da sua empresa."""
+    perfil = token_payload.get("perfil")
+    if perfil != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode listar usuários")
+
+    import src.core.database as _database
+    if empresa_id:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT u.id, u.nome, u.email, u.perfil, u.ativo, u.empresa_id, e.nome as empresa_nome
+            FROM usuarios u JOIN empresas e ON e.id = u.empresa_id
+            WHERE u.empresa_id = $1 ORDER BY u.nome
+            """, empresa_id
+        )
+    else:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT u.id, u.nome, u.email, u.perfil, u.ativo, u.empresa_id, e.nome as empresa_nome
+            FROM usuarios u JOIN empresas e ON e.id = u.empresa_id
+            ORDER BY e.nome, u.nome
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+@router.patch("/usuarios/{usuario_id}")
+async def toggle_usuario(
+    usuario_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Ativa ou desativa um usuário. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode alterar usuários")
+
+    import src.core.database as _database
+    row = await _database.db_pool.fetchrow("SELECT id, nome, ativo FROM usuarios WHERE id = $1", usuario_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    novo_status = not row["ativo"]
+    await _database.db_pool.execute("UPDATE usuarios SET ativo = $1 WHERE id = $2", novo_status, usuario_id)
+    acao = "ativado" if novo_status else "desativado"
+    logger.info(f"👤 Usuário '{row['nome']}' (id={usuario_id}) {acao}")
+    return {"ativo": novo_status, "message": f"Usuário {acao} com sucesso"}
+
+
+@router.delete("/usuarios/{usuario_id}")
+async def excluir_usuario(
+    usuario_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Exclui um usuário. Apenas admin_master."""
+    if token_payload.get("perfil") != "admin_master":
+        raise HTTPException(status_code=403, detail="Apenas admin_master pode excluir usuários")
+
+    import src.core.database as _database
+    row = await _database.db_pool.fetchrow("SELECT nome FROM usuarios WHERE id = $1", usuario_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    await _database.db_pool.execute("DELETE FROM usuarios WHERE id = $1", usuario_id)
+    logger.info(f"🗑️ Usuário '{row['nome']}' (id={usuario_id}) excluído")
+    return {"message": "Usuário excluído com sucesso"}
