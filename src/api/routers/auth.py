@@ -39,10 +39,9 @@ async def _buscar_empresa(empresa_id: int):
 
 async def _criar_empresa(nome: str) -> int:
     from src.core.database import _database
-    slug = nome.lower().replace(" ", "-")
     row = await _database.db_pool.fetchrow(
-        "INSERT INTO empresas (name, slug) VALUES ($1, $2) RETURNING id",
-        nome, slug
+        "INSERT INTO empresas (nome, status) VALUES ($1, 'active') RETURNING id",
+        nome
     )
     return row["id"]
 
@@ -117,7 +116,7 @@ async def listar_empresas(token_payload: dict = Depends(get_current_user_token))
     if token_payload.get("perfil") != "admin_master":
         raise HTTPException(status_code=403, detail="Apenas admin_master pode listar empresas")
     from src.core.database import _database
-    rows = await _database.db_pool.fetch("SELECT id, name, slug FROM empresas ORDER BY id")
+    rows = await _database.db_pool.fetch("SELECT id, nome, status FROM empresas ORDER BY id")
     return [dict(r) for r in rows]
 
 
@@ -150,7 +149,7 @@ async def send_invite(
     empresa_id = body.empresa_id
 
     token = await _criar_convite(empresa_id, body.email)
-    enviado = await enviar_convite(body.email, empresa["name"], token)
+    enviado = await enviar_convite(body.email, empresa["nome"], token)
 
     if not enviado:
         raise HTTPException(status_code=500, detail="Falha ao enviar e-mail. Verifique as configurações SMTP.")
@@ -170,7 +169,7 @@ async def check_invite(token: str):
     return {
         "email": convite["email"],
         "empresa_id": convite["empresa_id"],
-        "empresa_nome": empresa["name"] if empresa else "",
+        "empresa_nome": empresa["nome"] if empresa else "",
     }
 
 
