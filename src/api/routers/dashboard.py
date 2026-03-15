@@ -12,6 +12,17 @@ from src.core.security import get_current_user_token
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
 
 
+class CriarUnidadeRequest(BaseModel):
+    nome: str
+    nome_abreviado: Optional[str] = None
+    cidade: Optional[str] = None
+    bairro: Optional[str] = None
+    estado: Optional[str] = None
+    endereco: Optional[str] = None
+    numero: Optional[str] = None
+    telefone_principal: Optional[str] = None
+    whatsapp: Optional[str] = None
+    site: Optional[str] = None
     instagram: Optional[str] = None
     link_matricula: Optional[str] = None
     horarios: Optional[str] = None
