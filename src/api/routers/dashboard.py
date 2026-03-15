@@ -26,14 +26,14 @@ class CriarUnidadeRequest(BaseModel):
     site: Optional[str] = None
     instagram: Optional[str] = None
     link_matricula: Optional[str] = None
-    horarios: Optional[str] = None
-    modalidades: Optional[str] = None
-    planos: Optional[Dict[str, Any]] = None
-    formas_pagamento: Optional[Dict[str, Any]] = None
-    convenios: Optional[Dict[str, Any]] = None
-    infraestrutura: Optional[Dict[str, Any]] = None
-    servicos: Optional[Dict[str, Any]] = None
-    palavras_chave: Optional[List[str]] = None
+    horarios: Optional[Any] = None
+    modalidades: Optional[Any] = None
+    planos: Optional[Any] = None
+    formas_pagamento: Optional[Any] = None
+    convenios: Optional[Any] = None
+    infraestrutura: Optional[Any] = None
+    servicos: Optional[Any] = None
+    palavras_chave: Optional[Any] = None
     foto_grade: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
