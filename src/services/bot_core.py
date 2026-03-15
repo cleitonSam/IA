@@ -190,6 +190,23 @@ async def startup_event():
         except Exception as e:
             logger.error(f"❌ Erro ao criar tabela convites: {e}")
 
+        # Corrige IDs de modelo inválidos que possam existir em registros antigos
+        try:
+            model_fixes = {
+                "google/gemini-2.0-flash": "google/gemini-2.0-flash-001",
+                "google/gemini-2.5-flash-preview": "google/gemini-2.5-flash",
+                "google/gemini-pro": "google/gemini-2.0-flash-001",
+            }
+            for old_id, new_id in model_fixes.items():
+                updated = await _database.db_pool.execute(
+                    "UPDATE personalidade_ia SET modelo_preferido = $1 WHERE modelo_preferido = $2",
+                    new_id, old_id
+                )
+                if updated != "UPDATE 0":
+                    logger.info(f"🔧 Migração modelo: '{old_id}' → '{new_id}' ({updated})")
+        except Exception as e:
+            logger.error(f"❌ Erro ao migrar model IDs: {e}")
+
     _chatwoot_module.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(20.0, connect=10.0),
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
