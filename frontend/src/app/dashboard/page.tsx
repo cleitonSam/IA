@@ -266,13 +266,17 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* KPI Cards: company-wide + per-unit selected */}
+          {/* KPI Cards — filtra pela unidade selecionada */}
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">Métricas dos últimos 30 dias</span>
+            {selectedUnit && <span className="text-[10px] font-bold text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-full">{selectedUnit.nome}</span>}
+          </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: "Total Conversas", value: (empresaMetrics?.total_conversas ?? metrics?.total_conversas) ?? "—", icon: MsgIcon, color: "blue", delta: undefined },
-              { label: "Leads Qualificados", value: (empresaMetrics?.leads_qualificados ?? metrics?.leads_qualificados) ?? "—", icon: Star, color: "sky", delta: undefined },
-              { label: "Taxa de Conversão", value: empresaMetrics?.taxa_conversao != null ? `${empresaMetrics.taxa_conversao}%` : (metrics?.taxa_conversao ? `${metrics.taxa_conversao}%` : "—"), icon: TrendingUp, color: "emerald", delta: undefined },
-              { label: "Tempo Médio", value: (empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta) ? `${Math.round(empresaMetrics?.tempo_medio_resposta ?? metrics?.tempo_medio_resposta)}s` : "—", icon: Clock, color: "amber", delta: undefined },
+              { label: "Total Conversas", value: (metrics?.total_conversas ?? empresaMetrics?.total_conversas) ?? "—", icon: MsgIcon, color: "blue", delta: undefined },
+              { label: "Leads Qualificados", value: (metrics?.leads_qualificados ?? empresaMetrics?.leads_qualificados) ?? "—", icon: Star, color: "sky", delta: undefined },
+              { label: "Taxa de Conversão", value: metrics?.taxa_conversao != null ? `${metrics.taxa_conversao}%` : (empresaMetrics?.taxa_conversao != null ? `${empresaMetrics.taxa_conversao}%` : "—"), icon: TrendingUp, color: "emerald", delta: undefined },
+              { label: "Tempo Médio", value: (metrics?.tempo_medio_resposta != null ? metrics.tempo_medio_resposta : empresaMetrics?.tempo_medio_resposta) != null ? `${Math.round(metrics?.tempo_medio_resposta ?? empresaMetrics?.tempo_medio_resposta)}s` : "—", icon: Clock, color: "amber", delta: undefined },
             ].map((card, i) => (
               <motion.div
                 key={card.label}
