@@ -84,12 +84,41 @@ async def enviar_mensagem_chatwoot(
     account_id: int,
     conversation_id: int,
     content: str,
-    nome_ia: str,
-    integracao: dict,
-    evitar_prefixo_nome: bool = False
+    url_base_ou_integracao: Any, # Aceita URL string ou dict de integração
+    token: str = None,
+    contact_id: int = None,
+    nome_ia: str = "Assistente",
+    evitar_prefixo_nome: bool = False,
+    source: str = "chatwoot",
+    fone: str = None,
+    is_direct_url: bool = False
 ):
-    url_base = integracao.get('url')
-    token = integracao.get('token')
+    # Se for via UAZAPI (WhatsApp Direto)
+    if source == "uazapi" and fone:
+        from src.services.uaz_client import UazAPIClient
+        # No worker, a integração (dict) contém base_url e token
+        client = UazAPIClient(
+            base_url=integracao.get("url") or integracao.get("base_url") or "",
+            token=integracao.get("token") or "",
+            instance_name=integracao.get("instance_name") or "lead"
+        )
+        try:
+            if is_direct_url:
+                await client.send_media(fone, content, caption="Grade da Unidade", media_type="image")
+            else:
+                await client.send_text(fone, content)
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao enviar via UAZAPI: {e}")
+            return False
+
+    # Fluxo Chatwoot clássico
+    if isinstance(url_base_ou_integracao, dict):
+        url_base = url_base_ou_integracao.get('url')
+        token = url_base_ou_integracao.get('token')
+    else:
+        url_base = url_base_ou_integracao
+
     if not url_base or not token:
         logger.error("Integração Chatwoot incompleta: url ou token ausentes")
         return None
@@ -106,15 +135,31 @@ async def enviar_mensagem_chatwoot(
         content = suavizar_personalizacao_nome(content, _nome_salvo)
 
     url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
-    payload = {
-        "content": content,
-        "message_type": "outgoing",
-        "content_attributes": {
-            "origin": "ai",
-            "ai_agent": nome_ia,
-            "ignore_webhook": True
+    
+    if is_direct_url:
+        # Chatwoot suporta attachments via multipart/form-data ou URL direta no content (depende da config)
+        # Aqui enviamos a URL no content, o Chatwoot costuma fazer o unfurl ou podemos usar attachments.
+        # Por simplicidade, enviamos como conteúdo.
+        payload = {
+            "content": content,
+            "message_type": "outgoing",
+            "content_attributes": {
+                "origin": "ai",
+                "ai_agent": nome_ia,
+                "ignore_webhook": True,
+                "external_url": content
+            }
         }
-    }
+    else:
+        payload = {
+            "content": content,
+            "message_type": "outgoing",
+            "content_attributes": {
+                "origin": "ai",
+                "ai_agent": nome_ia,
+                "ignore_webhook": True
+            }
+        }
     headers = {"api_access_token": token}
 
     try:

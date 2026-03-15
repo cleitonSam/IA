@@ -4,12 +4,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from src.core.config import logger
 from src.core.security import get_current_user_token
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
+from src.utils.imagekit import upload_to_imagekit
 
 
 class CriarUnidadeRequest(BaseModel):
@@ -33,6 +34,7 @@ class CriarUnidadeRequest(BaseModel):
     infraestrutura: Optional[Dict[str, Any]] = None
     servicos: Optional[Dict[str, Any]] = None
     palavras_chave: Optional[List[str]] = None
+    foto_grade: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -366,10 +368,10 @@ async def criar_unidade(
                 estado, endereco, numero, telefone_principal, whatsapp, site,
                 instagram, link_matricula, horarios, modalidades, planos,
                 formas_pagamento, convenios, infraestrutura, servicos, palavras_chave,
-                ativa, created_at, updated_at
+                foto_grade, ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -379,7 +381,8 @@ async def criar_unidade(
             body.telefone_principal, body.whatsapp, body.site, body.instagram,
             body.link_matricula, body.horarios, body.modalidades,
             body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
-            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or []
+            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or [],
+            body.foto_grade
         )
         from src.core.redis_client import redis_client
         await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
@@ -388,6 +391,30 @@ async def criar_unidade(
     except Exception as e:
         logger.error(f"Erro ao criar unidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao criar unidade")
+
+@router.post("/unidades/upload")
+async def upload_unidade_foto(
+    file: UploadFile = File(...),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Realiza o upload de uma imagem para o ImageKit.
+    Retorna a URL da imagem.
+    """
+    # Validação simples de tipo
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="O arquivo deve ser uma imagem")
+    
+    try:
+        content = await file.read()
+        url = await upload_to_imagekit(content, file.filename)
+        if not url:
+            raise HTTPException(status_code=500, detail="Erro ao fazer upload para o ImageKit")
+        
+        return {"url": url}
+    except Exception as e:
+        logger.error(f"Erro no endpoint de upload: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno no upload")
 
 
 @router.get("/unidades/{unidade_id}")
@@ -410,7 +437,7 @@ async def get_unidade(
                endereco, numero, telefone_principal, whatsapp,
                site, instagram, link_matricula, slug, ativa,
                horarios, modalidades, planos, formas_pagamento,
-               convenios, infraestrutura, servicos, palavras_chave
+               convenios, infraestrutura, servicos, palavras_chave, foto_grade
         FROM unidades
         WHERE id = $1 AND empresa_id = $2
         """,
@@ -457,16 +484,16 @@ async def atualizar_unidade(
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
                 horarios = $13, modalidades = $14, planos = $15, 
                 formas_pagamento = $16, convenios = $17, infraestrutura = $18,
-                servicos = $19, palavras_chave = $20,
+                servicos = $19, palavras_chave = $20, foto_grade = $21,
                 updated_at = NOW()
-            WHERE id = $21 AND empresa_id = $22
+            WHERE id = $22 AND empresa_id = $23
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
             body.horarios, body.modalidades, body.planos or {}, 
             body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
-            body.servicos or {}, body.palavras_chave or [],
+            body.servicos or {}, body.palavras_chave or [], body.foto_grade,
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client

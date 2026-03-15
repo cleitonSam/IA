@@ -1452,7 +1452,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
-                _resposta_foi_truncada = False
+              # Envia para OpenAI/OpenRouter
+            try:
+                # Injeta informação sobre imagem de grade se existir
+                _foto_grade = unidade.get("foto_grade")
+                if _foto_grade:
+                    prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM uma imagem da grade de aulas/horários disponível em: {_foto_grade}\n"
+                    prompt_sistema += "Se o cliente quiser ver a grade ou horários, você pode dizer que está enviando a imagem agora.\n"
+                    prompt_sistema += "IMPORTANTE: Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
+
                 async with llm_semaphore:
                     try:
                         logger.info(f"📡 BotCore: Chamando LLM ({modelo_escolhido}) para conv {conversation_id}")
@@ -1550,7 +1558,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 def _garantir_frase_completa(txt: str) -> str:
                     """Remove frase incompleta no final do texto.
                     Procura o último terminador de frase (. ! ? ou quebra de linha)
-                    e descarta tudo depois, evitando enviar 'horários super est'."""
+                    e descarta tudo depois, evitando enviar 'horários super est.'"""
                     if not txt:
                         return txt
                     txt = txt.strip()
@@ -1590,11 +1598,40 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 else:
                     novo_estado = estado_atual
 
-                if not resposta_texto:
-                    resposta_texto = "Desculpe, pode repetir sua pergunta? 😊"
-                    novo_estado = estado_atual
-
-                # Pós-processamento de conversão: se o cliente já sinalizou compra,
+                # _log_token_usage(resp) # This line was removed as `resp` is not available here anymore.
+                # resposta_texto = resp.choices[0].message.content or "" # This line was removed as `resp` is not available here anymore.
+                # novo_estado = estado_atual # LLM stateless por padrão # This line was removed as `resp` is not available here anymore.
+                
+                # Se a IA usou a tag <SEND_IMAGE> e temos a URL
+                _foto_grade = unidade.get("foto_grade")
+                if "<SEND_IMAGE>" in resposta_texto:
+                    if _foto_grade:
+                        # Remove a tag da resposta visível
+                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
+                        # Envia a imagem como mensagem separada
+                        try:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                f"Enviando a grade da unidade *{unidade.get('nome')}*... 🖼️",
+                                integracao, 
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone
+                            )
+                            # Pequeno delay antes da imagem
+                            await asyncio.sleep(0.5)
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                _foto_grade,
+                                integracao,
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone,
+                                is_direct_url=True 
+                            )
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar imagem da grade: {e}")
+                    else:
+                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
+            # Pós-processamento de conversão: se o cliente já sinalizou compra,
                 # garante envio do link de matrícula e CTA de outros planos na mesma resposta.
                 if _intencao_compra and link_plano:
                     _resp_norm_compra = normalizar(resposta_texto or "")
@@ -1741,9 +1778,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
                     await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                 
-                await despachar_resposta(
-                    account_id, conversation_id, resposta_texto, nome_ia, integracao,
-                    source=source, contato_fone=contato_fone
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, resposta_texto,
+                    integracao, nome_ia=nome_ia, contact_id=contact_id,
+                    source=source, fone=contato_fone
                 )
                 await bd_atualizar_msg_ia(conversation_id)
                 await bd_registrar_primeira_resposta(conversation_id)
