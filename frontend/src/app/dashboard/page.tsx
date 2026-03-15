@@ -2,26 +2,13 @@
 
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { 
-  TrendingUp, 
-  Users, 
-  MessageSquare, 
-  Clock, 
-  Target, 
-  ArrowUpRight,
-  ChevronRight,
-  LayoutDashboard,
-  Settings,
-  LogOut,
-  Bell,
-  Cpu,
-  Brain,
-  HelpCircle,
-  Network,
-  History,
-  Building2
+import {
+  TrendingUp, Users, MessageSquare, Clock, Target, ArrowUpRight,
+  ChevronRight, LayoutDashboard, Settings, LogOut, Bell,
+  Building2, Brain, HelpCircle, Network, Zap, ChevronDown,
+  Activity, Star, ArrowRight, Sparkles
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<any>(null);
@@ -31,73 +18,65 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [selectedUnidadeId, setSelectedUnidadeId] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [unitDropdownOpen, setUnitDropdownOpen] = useState(false);
+
+  const selectedUnit = unidades.find(u => u.id === selectedUnidadeId);
 
   useEffect(() => {
-    const fetchUnidadesAndUser = async () => {
+    const fetchInitial = async () => {
       const token = localStorage.getItem("token");
-      if (!token) {
-        window.location.href = "/login";
-        return;
-      }
-
+      if (!token) { window.location.href = "/login"; return; }
       try {
         const config = { headers: { Authorization: `Bearer ${token}` } };
-
         const [userRes, unitsRes] = await Promise.all([
           axios.get(`/api-backend/auth/me`, config),
           axios.get(`/api-backend/dashboard/unidades`, config)
         ]);
-
         setUser(userRes.data);
         setUnidades(unitsRes.data);
-        
-        if (unitsRes.data.length > 0) {
-          setSelectedUnidadeId(unitsRes.data[0].id);
-        }
+        if (unitsRes.data.length > 0) setSelectedUnidadeId(unitsRes.data[0].id);
       } catch (err) {
-        console.error("Erro ao carregar dados iniciais:", err);
+        console.error(err);
       } finally {
         setInitialLoading(false);
       }
     };
-
-    fetchUnidadesAndUser();
+    fetchInitial();
   }, []);
 
   useEffect(() => {
     if (!selectedUnidadeId) return;
-
-    const fetchDashboardData = async () => {
+    const fetchData = async () => {
       setLoading(true);
       const token = localStorage.getItem("token");
       try {
         const config = { headers: { Authorization: `Bearer ${token}` } };
-
-        const [metricsRes, convLogRes] = await Promise.all([
+        const [metricsRes, convRes] = await Promise.all([
           axios.get(`/api-backend/dashboard/metrics?unidade_id=${selectedUnidadeId}`, config),
           axios.get(`/api-backend/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
         ]);
-
         setMetrics(metricsRes.data.metrics);
-        setConversations(convLogRes.data);
+        setConversations(convRes.data);
       } catch (err) {
-        console.error("Erro ao carregar métricas da unidade:", err);
+        console.error(err);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchDashboardData();
+    fetchData();
   }, [selectedUnidadeId]);
 
   if (initialLoading) {
     return (
-      <div className="min-h-screen bg-mesh flex items-center justify-center">
-        <div className="relative">
-          <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin"></div>
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-2 h-2 bg-primary rounded-full animate-ping"></div>
+      <div className="min-h-screen bg-[#080810] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="relative w-16 h-16">
+            <div className="absolute inset-0 rounded-full border-2 border-violet-500/20 animate-ping" />
+            <div className="absolute inset-0 rounded-full border-2 border-t-violet-500 animate-spin" />
+            <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-violet-400" />
           </div>
+          <p className="text-sm text-gray-500 font-medium tracking-widest uppercase">Carregando</p>
         </div>
       </div>
     );
@@ -105,262 +84,316 @@ export default function DashboardPage() {
 
   if (!initialLoading && unidades.length === 0) {
     return (
-      <div className="min-h-screen bg-mesh flex items-center justify-center p-4">
-        <div className="glass-morphism p-10 rounded-2xl text-center max-w-md w-full">
-          <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <LayoutDashboard className="w-8 h-8 text-primary" />
+      <div className="min-h-screen bg-[#080810] flex items-center justify-center p-4">
+        <div className="bg-white/5 border border-white/10 rounded-3xl p-12 text-center max-w-md w-full backdrop-blur-xl">
+          <div className="w-16 h-16 bg-violet-500/10 border border-violet-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Building2 className="w-8 h-8 text-violet-400" />
           </div>
-          <h2 className="text-2xl font-bold text-white mb-3">Nenhuma unidade cadastrada</h2>
+          <h2 className="text-2xl font-bold text-white mb-3">Nenhuma unidade ativa</h2>
           <p className="text-gray-400 mb-8 text-sm leading-relaxed">
-            Para visualizar o dashboard, você precisa ter pelo menos uma unidade ativa.
-            {user?.perfil === "admin_master" && " Acesse o painel de gestão para criar empresas e enviar convites."}
+            Configure sua primeira unidade para começar a ver dados no painel.
           </p>
-          {user?.perfil === "admin_master" ? (
-            <a
-              href="/admin"
-              className="inline-flex items-center gap-2 bg-primary hover:bg-primary/80 text-white font-bold py-3 px-6 rounded-xl transition-all"
-            >
-              <Settings className="w-5 h-5" />
-              Painel de Gestão
-            </a>
-          ) : (
-            <p className="text-gray-500 text-xs">Aguarde o administrador cadastrar uma unidade.</p>
-          )}
+          <a href="/dashboard/settings"
+            className="inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white font-bold py-3 px-6 rounded-xl transition-all">
+            <Settings className="w-4 h-4" /> Configurar Agora
+          </a>
         </div>
       </div>
     );
   }
 
+  const navItems = [
+    { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", active: true },
+    { label: "Unidades", icon: Building2, href: "/dashboard/settings?tab=units" },
+    { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings?tab=personality" },
+    { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings?tab=faq" },
+    { label: "Integrações", icon: Network, href: "/dashboard/settings?tab=integrations" },
+  ];
+
   return (
-    <div className="min-h-screen bg-mesh text-white flex">
-      {/* Sidebar - Sleek and Glassy */}
-      <aside className="w-64 border-r border-white/5 bg-black/20 backdrop-blur-xl hidden lg:flex flex-col p-6">
-        <div className="mb-10 flex items-center gap-3">
-          <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-neon-primary">
-            <LayoutDashboard className="w-6 h-6 text-white" />
+    <div className="min-h-screen bg-[#080810] text-white flex overflow-hidden">
+      {/* ── Sidebar ── */}
+      <aside className={`
+        fixed lg:relative inset-y-0 left-0 z-40 w-64 flex flex-col
+        bg-[#0d0d1a] border-r border-white/5
+        transform transition-transform duration-300 ease-in-out
+        ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
+      `}>
+        {/* Logo */}
+        <div className="px-6 py-6 border-b border-white/5">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-500/30">
+              <Zap className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <p className="font-bold text-sm tracking-tight">Antigravity IA</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Dashboard</p>
+            </div>
           </div>
-          <span className="font-bold text-xl tracking-tight">Antigravity IA</span>
         </div>
 
-        <nav className="flex-1 space-y-2">
-          <a href="#" className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 text-primary border border-primary/20 transition-all">
-            <LayoutDashboard className="w-5 h-5" />
-            <span className="font-medium">Dashboard</span>
-          </a>
-          <a href="#" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
-            <Users className="w-5 h-5" />
-            <span className="font-medium">Leads Qualificados</span>
-          </a>
-          <a href="#" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
-            <MessageSquare className="w-5 h-5" />
-            <span className="font-medium">Conversas</span>
-          </a>
-          <a href="/dashboard/settings" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
-            <Settings className="w-5 h-5" />
-            <span className="font-medium">Central de Gestão</span>
-          </a>
-          {user?.perfil === "admin_master" && (
-            <a href="/admin" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
-              <Settings className="w-5 h-5" />
-              <span className="font-medium">Painel de Gestão</span>
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-600">Principal</p>
+          {navItems.map((item) => (
+            <a key={item.href} href={item.href}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all group ${
+                item.active
+                  ? "bg-violet-600/15 text-violet-300 border border-violet-500/20"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              }`}>
+              <item.icon className={`w-4 h-4 flex-shrink-0 ${item.active ? "text-violet-400" : "group-hover:text-white"}`} />
+              {item.label}
+              {item.active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-violet-400" />}
             </a>
+          ))}
+
+          {user?.perfil === "admin_master" && (
+            <>
+              <p className="px-3 py-2 pt-4 text-[10px] font-bold uppercase tracking-widest text-gray-600">Admin</p>
+              <a href="/admin"
+                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all group">
+                <Settings className="w-4 h-4 flex-shrink-0 group-hover:text-white" />
+                Painel Master
+              </a>
+            </>
           )}
         </nav>
 
-        <div className="pt-6 border-t border-white/5">
-          <button 
+        {/* User Footer */}
+        <div className="px-3 py-4 border-t border-white/5">
+          <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl mb-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
+              {user?.nome?.charAt(0)}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold truncate">{user?.nome}</p>
+              <p className="text-[10px] text-violet-400 font-medium truncate">{user?.perfil === 'admin_master' ? 'Gestor Master' : user?.perfil}</p>
+            </div>
+          </div>
+          <button
             onClick={() => { localStorage.removeItem("token"); window.location.href = "/login"; }}
-            className="flex items-center gap-3 px-4 py-3 rounded-xl text-accent hover:bg-accent/10 transition-all w-full"
-          >
-            <LogOut className="w-5 h-5" />
-            <span className="font-medium">Sair</span>
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-all">
+            <LogOut className="w-4 h-4" />
+            Sair da conta
           </button>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 p-8 lg:p-12 overflow-y-auto">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-          <div>
-            <h2 className="text-3xl font-bold mb-2">Bem-vindo, {user?.nome?.split(' ')[0]} 👋</h2>
-            <p className="text-gray-400">Aqui está o que aconteceu no seu funil hoje.</p>
-          </div>
-          <div className="flex items-center gap-4">
-            {/* Unit Selector */}
-            {unidades.length > 1 && (
-              <div className="relative group mr-4">
-                <select 
-                  value={selectedUnidadeId || ""} 
-                  onChange={(e) => setSelectedUnidadeId(Number(e.target.value))}
-                  className="appearance-none glass pl-4 pr-10 py-2.5 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer bg-transparent hover:bg-white/5 transition-all"
-                >
-                  {unidades.map((u) => (
-                    <option key={u.id} value={u.id} className="bg-[#020617] text-white">
-                      {u.nome}
-                    </option>
-                  ))}
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 group-hover:text-primary transition-colors">
-                  <ChevronRight className="w-4 h-4 rotate-90" />
-                </div>
-              </div>
-            )}
-            
-            <button className="glass p-3 rounded-xl relative hover:bg-white/10 transition-all">
-              <Bell className="w-6 h-6 text-gray-400" />
-              <span className="absolute top-3 right-3 w-2 h-2 bg-accent rounded-full border-2 border-background"></span>
+      {/* Backdrop (Mobile) */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* ── Main ── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Top Bar */}
+        <header className="sticky top-0 z-20 bg-[#080810]/80 backdrop-blur-xl border-b border-white/5 px-6 py-3.5 flex items-center justify-between gap-4">
+          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 rounded-lg hover:bg-white/5">
+            <LayoutDashboard className="w-5 h-5" />
+          </button>
+
+          {/* Unit Selector */}
+          <div className="relative">
+            <button
+              onClick={() => setUnitDropdownOpen(!unitDropdownOpen)}
+              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2 text-sm font-medium transition-all">
+              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+              <span className="max-w-[200px] truncate">{selectedUnit?.nome || "Selecione"}</span>
+              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${unitDropdownOpen ? "rotate-180" : ""}`} />
             </button>
-            <div className="flex items-center gap-3 pl-4 border-l border-white/10">
-              <div className="text-right hidden sm:block">
-                <p className="text-sm font-bold">{user?.nome}</p>
-                <p className="text-xs text-primary bg-primary/10 px-2 py-0.5 rounded-full inline-block mt-1">{user?.perfil === 'admin_master' ? 'Gestor Master' : user?.perfil}</p>
-              </div>
-              <div className="w-12 h-12 bg-gradient-to-tr from-primary to-secondary rounded-xl flex items-center justify-center font-bold text-white shadow-lg">
-                {user?.nome?.charAt(0)}
-              </div>
-            </div>
+            <AnimatePresence>
+              {unitDropdownOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -8, scale: 0.95 }}
+                  className="absolute top-full mt-2 left-0 w-64 bg-[#0d0d1a] border border-white/10 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50">
+                  <div className="p-2">
+                    {unidades.map((u) => (
+                      <button key={u.id}
+                        onClick={() => { setSelectedUnidadeId(u.id); setUnitDropdownOpen(false); }}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
+                          u.id === selectedUnidadeId ? "bg-violet-600/20 text-violet-300" : "hover:bg-white/5 text-gray-300"
+                        }`}>
+                        <Building2 className="w-4 h-4 flex-shrink-0" />
+                        {u.nome}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="px-3 pb-2">
+                    <a href="/dashboard/settings"
+                      className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-violet-400 hover:bg-violet-600/10 transition-all w-full">
+                      <Settings className="w-3 h-3" /> Gerenciar unidades
+                    </a>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <div className="flex items-center gap-3 ml-auto">
+            <a href="/dashboard/settings"
+              className="hidden sm:flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all">
+              <Settings className="w-4 h-4" /> Central de Gestão
+            </a>
+            <button className="relative p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-all border border-white/5">
+              <Bell className="w-4 h-4 text-gray-400" />
+              <span className="absolute top-2 right-2 w-1.5 h-1.5 bg-rose-500 rounded-full" />
+            </button>
           </div>
         </header>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-          <StatCard 
-            title="Total de Conversas" 
-            value={metrics?.total_conversas || 0} 
-            icon={<MessageSquare className="w-6 h-6" />}
-            trend="+12%"
-            color="primary"
-          />
-          <StatCard 
-            title="Leads Qualificados" 
-            value={metrics?.leads_qualificados || 0} 
-            icon={<Target className="w-6 h-6" />}
-            trend="+5%"
-            color="secondary"
-          />
-          <StatCard 
-            title="Tempo Médio Resposta" 
-            value={`${metrics?.tempo_medio_resposta || 0}s`} 
-            icon={<Clock className="w-6 h-6" />}
-            trend="-20%"
-            color="accent"
-          />
-          <StatCard 
-            title="Taxa de Conversão" 
-            value={`${metrics?.taxa_conversao || 0}%`} 
-            icon={<TrendingUp className="w-6 h-6" />}
-            trend="+2.1%"
-            color="primary"
-          />
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Funnel Neural Preview */}
-          <div className="lg:col-span-2 glass-morphism p-8 rounded-2xl relative overflow-hidden">
-             <div className="flex items-center justify-between mb-8">
-                <h3 className="text-xl font-bold flex items-center gap-2">
-                   <Target className="w-5 h-5 text-primary" />
-                   Funil Neural de Vendas
-                </h3>
-                <span className="text-xs text-gray-500 uppercase tracking-widest font-bold">Tempo Real</span>
-             </div>
-             
-             <div className="space-y-6">
-                <FunnelStep label="Contatos Iniciais" count={metrics?.total_conversas || 0} percentage={100} color="primary" />
-                <FunnelStep label="Interesse Detectado" count={metrics?.leads_qualificados || 0} percentage={Math.min(100, ((metrics?.leads_qualificados || 0) / (metrics?.total_conversas || 1)) * 100)} color="secondary" />
-                <FunnelStep label="Link de Venda Enviado" count={metrics?.total_links_enviados || 0} percentage={Math.min(100, ((metrics?.total_links_enviados || 0) / (metrics?.total_conversas || 1)) * 100)} color="primary" />
-                <FunnelStep label="Matrículas Finalizadas" count={metrics?.total_matriculas || 0} percentage={Math.min(100, ((metrics?.total_matriculas || 0) / (metrics?.total_conversas || 1)) * 100)} color="accent" />
-             </div>
+        {/* Content */}
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8">
+          {/* Page title */}
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold mb-1">
+              Olá, {user?.nome?.split(" ")[0]} 👋
+            </h1>
+            <p className="text-sm text-gray-500">
+              {new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })} · {selectedUnit?.nome}
+            </p>
           </div>
 
-          {/* Recent Conversations */}
-          <div className="glass-morphism p-8 rounded-2xl">
-            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-              <Users className="w-5 h-5 text-secondary" />
-              Oportunidades
-            </h3>
-            <div className="space-y-4">
-              {conversations.map((conv: any) => (
-                <div key={conv.conversation_id} className="group flex items-center justify-between p-4 rounded-xl hover:bg-white/5 transition-all border border-transparent hover:border-white/10">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-white/10 rounded-lg flex items-center justify-center font-bold text-gray-300 group-hover:text-primary transition-colors">
-                      {conv.contato_nome?.charAt(0) || "U"}
-                    </div>
-                    <div>
-                      <p className="font-bold text-sm">{conv.contato_nome || "Anônimo"}</p>
-                      <p className="text-xs text-gray-500">{conv.contato_fone}</p>
-                    </div>
+          {/* KPI Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            {[
+              { label: "Total Conversas", value: metrics?.total_conversas ?? "—", icon: MessageSquare, color: "violet", delta: "+12%" },
+              { label: "Leads Qualificados", value: metrics?.leads_qualificados ?? "—", icon: Star, color: "indigo", delta: "+5%" },
+              { label: "Taxa de Conversão", value: metrics?.taxa_conversao ? `${metrics.taxa_conversao}%` : "—", icon: TrendingUp, color: "emerald", delta: "+2%" },
+              { label: "Tempo Médio", value: metrics?.tempo_medio_resposta ? `${metrics.tempo_medio_resposta}s` : "—", icon: Clock, color: "amber", delta: "-20%" },
+            ].map((card, i) => (
+              <motion.div
+                key={card.label}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.07 }}
+                className="bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] hover:border-white/10 rounded-2xl p-5 transition-all group">
+                <div className="flex items-start justify-between mb-4">
+                  <div className={`p-2 rounded-lg bg-${card.color}-500/10`}>
+                    <card.icon className={`w-4 h-4 text-${card.color}-400`} />
                   </div>
-                  <div className="text-right">
-                    <div className="flex items-center gap-1 text-primary mb-1">
-                      <Target className="w-3 h-3" />
-                      <span className="text-xs font-bold">{conv.score_lead}/5</span>
-                    </div>
-                    {conv.intencao_de_compra && (
-                      <span className="text-[10px] bg-accent/20 text-accent px-2 py-0.5 rounded-full font-bold animate-pulse">QUENTE</span>
-                    )}
-                  </div>
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full flex items-center gap-0.5">
+                    <ArrowUpRight className="w-2.5 h-2.5" />{card.delta}
+                  </span>
                 </div>
-              ))}
-              <button className="w-full mt-4 py-3 rounded-xl border border-white/5 hover:bg-white/5 text-gray-500 text-sm font-bold flex items-center justify-center gap-2 transition-all">
-                Ver todos os leads
-                <ChevronRight className="w-4 h-4" />
+                <p className="text-xs text-gray-500 mb-1">{card.label}</p>
+                <p className="text-2xl font-bold tracking-tight">{loading ? <span className="inline-block w-12 h-6 bg-white/5 rounded animate-pulse" /> : card.value}</p>
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Main Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* Funil */}
+            <div className="lg:col-span-3 bg-white/[0.03] border border-white/[0.06] rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="font-bold text-base">Funil de Vendas</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Evolução dos leads em tempo real</p>
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2.5 py-1.5 rounded-full">
+                  <Activity className="w-3 h-3" /> AO VIVO
+                </div>
+              </div>
+              <div className="space-y-5">
+                {[
+                  { label: "Contatos Totais", count: metrics?.total_conversas || 0, total: metrics?.total_conversas || 1, color: "violet" },
+                  { label: "Interesse Detectado", count: metrics?.leads_qualificados || 0, total: metrics?.total_conversas || 1, color: "indigo" },
+                  { label: "Link de Venda Enviado", count: metrics?.total_links_enviados || 0, total: metrics?.total_conversas || 1, color: "blue" },
+                  { label: "Matrículas Finalizadas", count: metrics?.total_matriculas || 0, total: metrics?.total_conversas || 1, color: "emerald" },
+                ].map((step, i) => {
+                  const pct = Math.min(100, (step.count / step.total) * 100);
+                  return (
+                    <div key={step.label}>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-medium text-gray-300">{step.label}</span>
+                        <span className="text-xs font-bold text-gray-500">{step.count} · {Math.round(pct)}%</span>
+                      </div>
+                      <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }} animate={{ width: `${pct}%` }}
+                          transition={{ duration: 1, delay: 0.2 + i * 0.1 }}
+                          className={`h-full rounded-full bg-${step.color}-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]`}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Leads Quentes */}
+            <div className="lg:col-span-2 bg-white/[0.03] border border-white/[0.06] rounded-2xl p-6 flex flex-col">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="font-bold text-base">Leads Recentes</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Oportunidades em aberto</p>
+                </div>
+                <Users className="w-4 h-4 text-gray-600" />
+              </div>
+              <div className="flex-1 space-y-2">
+                {conversations.length === 0 && !loading ? (
+                  <div className="flex-1 flex flex-col items-center justify-center py-8 text-center">
+                    <MessageSquare className="w-8 h-8 text-gray-700 mb-2" />
+                    <p className="text-sm text-gray-600">Nenhum lead ainda</p>
+                  </div>
+                ) : (
+                  conversations.map((conv: any, i) => (
+                    <motion.div
+                      key={conv.conversation_id || i}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all group cursor-pointer border border-transparent hover:border-white/5">
+                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600/30 to-indigo-600/30 border border-white/10 flex items-center justify-center text-sm font-bold flex-shrink-0">
+                        {conv.contato_nome?.charAt(0) || "?"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold truncate">{conv.contato_nome || "Anônimo"}</p>
+                        <p className="text-xs text-gray-500 truncate">{conv.contato_fone}</p>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="flex items-center gap-1 mb-1 justify-end">
+                          {[1,2,3,4,5].map(s => (
+                            <div key={s} className={`w-1.5 h-1.5 rounded-full ${s <= (conv.score_lead || 0) ? "bg-violet-400" : "bg-white/10"}`} />
+                          ))}
+                        </div>
+                        {conv.intencao_de_compra && (
+                          <span className="text-[9px] font-bold bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded-full uppercase">Quente</span>
+                        )}
+                      </div>
+                    </motion.div>
+                  ))
+                )}
+              </div>
+              <button className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-white/5 hover:bg-white/5 text-xs font-bold text-gray-500 hover:text-white transition-all">
+                Ver todos os leads <ArrowRight className="w-3 h-3" />
               </button>
             </div>
           </div>
-        </div>
-      </main>
-    </div>
-  );
-}
 
-function StatCard({ title, value, icon, trend, color }: any) {
-  const colorMap: any = {
-    primary: "text-primary bg-primary/10 border-primary/20",
-    secondary: "text-secondary bg-secondary/10 border-secondary/20",
-    accent: "text-accent bg-accent/10 border-accent/20",
-  };
-
-  return (
-    <motion.div 
-      whileHover={{ y: -5 }}
-      className="glass p-6 rounded-2xl border border-white/5"
-    >
-      <div className="flex items-center justify-between mb-4">
-        <div className={`p-3 rounded-xl ${colorMap[color]}`}>
-          {icon}
-        </div>
-        <div className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full">
-          <ArrowUpRight className="w-3 h-3" />
-          {trend}
-        </div>
-      </div>
-      <h3 className="text-gray-400 text-sm font-medium mb-1">{title}</h3>
-      <p className="text-3xl font-bold tracking-tight">{value}</p>
-    </motion.div>
-  );
-}
-
-function FunnelStep({ label, count, percentage, color }: any) {
-  const colorMap: any = {
-    primary: "bg-primary shadow-[0_0_10px_rgba(6,182,212,0.5)]",
-    secondary: "bg-secondary shadow-[0_0_10px_rgba(139,92,246,0.5)]",
-    accent: "bg-accent shadow-[0_0_10px_rgba(244,63,94,0.5)]",
-  };
-
-  return (
-    <div className="relative">
-      <div className="flex justify-between items-center mb-2">
-        <span className="text-sm font-bold text-gray-300">{label}</span>
-        <span className="text-xs font-bold text-gray-500">{count} leads ({Math.round(percentage)}%)</span>
-      </div>
-      <div className="h-4 bg-white/5 rounded-full overflow-hidden border border-white/10">
-        <motion.div 
-          initial={{ width: 0 }}
-          animate={{ width: `${percentage}%` }}
-          transition={{ duration: 1, delay: 0.2 }}
-          className={`h-full rounded-full ${colorMap[color]}`}
-        />
+          {/* Quick Access */}
+          <div className="mt-6">
+            <p className="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">Acesso Rápido</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: "Unidades", icon: Building2, href: "/dashboard/settings", desc: "Gerenciar filiais" },
+                { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings", desc: "Configurar IA" },
+                { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings", desc: "Respostas prontas" },
+                { label: "Integrações", icon: Network, href: "/dashboard/settings", desc: "Chatwoot, EVO..." },
+              ].map(item => (
+                <a key={item.label} href={item.href}
+                  className="bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-violet-500/20 rounded-2xl p-4 transition-all group">
+                  <item.icon className="w-5 h-5 text-gray-500 group-hover:text-violet-400 mb-3 transition-colors" />
+                  <p className="text-sm font-bold mb-0.5">{item.label}</p>
+                  <p className="text-xs text-gray-600">{item.desc}</p>
+                </a>
+              ))}
+            </div>
+          </div>
+        </main>
       </div>
     </div>
   );
