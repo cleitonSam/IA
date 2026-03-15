@@ -12,19 +12,16 @@ from src.core.security import get_current_user_token
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
 
 
-class CriarUnidadeRequest(BaseModel):
-    nome: str
-    nome_abreviado: Optional[str] = None
-    cidade: Optional[str] = None
-    bairro: Optional[str] = None
-    estado: Optional[str] = None
-    endereco: Optional[str] = None
-    numero: Optional[str] = None
-    telefone_principal: Optional[str] = None
-    whatsapp: Optional[str] = None
-    site: Optional[str] = None
     instagram: Optional[str] = None
     link_matricula: Optional[str] = None
+    horarios: Optional[str] = None
+    modalidades: Optional[str] = None
+    planos: Optional[Dict[str, Any]] = None
+    formas_pagamento: Optional[Dict[str, Any]] = None
+    convenios: Optional[Dict[str, Any]] = None
+    infraestrutura: Optional[Dict[str, Any]] = None
+    servicos: Optional[Dict[str, Any]] = None
+    palavras_chave: Optional[List[str]] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -278,29 +275,29 @@ async def criar_unidade(
         row = await _database.db_pool.fetchrow(
             """
             INSERT INTO unidades (
-                uuid, slug, nome, nome_abreviado,
-                cidade, bairro, estado, endereco, numero,
-                telefone_principal, whatsapp,
-                site, instagram, link_matricula,
-                empresa_id, ativa, created_at
+                uuid, empresa_id, slug, nome, nome_abreviado, cidade, bairro,
+                estado, endereco, numero, telefone_principal, whatsapp, site,
+                instagram, link_matricula, horarios, modalidades, planos,
+                formas_pagamento, convenios, infraestrutura, servicos, palavras_chave,
+                ativa, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4,
-                $5, $6, $7, $8, $9,
-                $10, $11,
-                $12, $13, $14,
-                $15, true, NOW()
-            ) RETURNING id, slug, nome
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+                true, NOW(), NOW()
+            )
+            RETURNING id
             """,
-            str(_uuid.uuid4()), slug, body.nome, body.nome_abreviado,
+            str(_uuid.uuid4()), empresa_id, slug, body.nome, body.nome_abreviado,
             body.cidade, body.bairro, body.estado, body.endereco, body.numero,
-            body.telefone_principal, body.whatsapp,
-            body.site, body.instagram, body.link_matricula,
-            empresa_id,
+            body.telefone_principal, body.whatsapp, body.site, body.instagram,
+            body.link_matricula, body.horarios, body.modalidades,
+            body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
+            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or []
         )
         from src.core.redis_client import redis_client
         await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
         logger.info(f"✅ Unidade '{body.nome}' criada (id={row['id']}, empresa_id={empresa_id})")
-        return {"id": row["id"], "slug": row["slug"], "nome": row["nome"], "empresa_id": empresa_id}
+        return {"id": row["id"], "slug": slug, "nome": body.nome, "empresa_id": empresa_id}
     except Exception as e:
         logger.error(f"Erro ao criar unidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao criar unidade")
@@ -369,12 +366,18 @@ async def atualizar_unidade(
                 nome = $1, nome_abreviado = $2, cidade = $3, bairro = $4,
                 estado = $5, endereco = $6, numero = $7, telefone_principal = $8,
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
+                horarios = $13, modalidades = $14, planos = $15, 
+                formas_pagamento = $16, convenios = $17, infraestrutura = $18,
+                servicos = $19, palavras_chave = $20,
                 updated_at = NOW()
-            WHERE id = $13 AND empresa_id = $14
+            WHERE id = $21 AND empresa_id = $22
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
+            body.horarios, body.modalidades, body.planos or {}, 
+            body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
+            body.servicos or {}, body.palavras_chave or [],
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client
