@@ -97,6 +97,34 @@ export default function DashboardPage() {
     );
   }
 
+  if (!initialLoading && unidades.length === 0) {
+    return (
+      <div className="min-h-screen bg-mesh flex items-center justify-center p-4">
+        <div className="glass-morphism p-10 rounded-2xl text-center max-w-md w-full">
+          <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <LayoutDashboard className="w-8 h-8 text-primary" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-3">Nenhuma unidade cadastrada</h2>
+          <p className="text-gray-400 mb-8 text-sm leading-relaxed">
+            Para visualizar o dashboard, você precisa ter pelo menos uma unidade ativa.
+            {user?.perfil === "admin_master" && " Acesse o painel de gestão para criar empresas e enviar convites."}
+          </p>
+          {user?.perfil === "admin_master" ? (
+            <a
+              href="/admin"
+              className="inline-flex items-center gap-2 bg-primary hover:bg-primary/80 text-white font-bold py-3 px-6 rounded-xl transition-all"
+            >
+              <Settings className="w-5 h-5" />
+              Painel de Gestão
+            </a>
+          ) : (
+            <p className="text-gray-500 text-xs">Aguarde o administrador cadastrar uma unidade.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-mesh text-white flex">
       {/* Sidebar - Sleek and Glassy */}
@@ -121,10 +149,12 @@ export default function DashboardPage() {
             <MessageSquare className="w-5 h-5" />
             <span className="font-medium">Conversas</span>
           </a>
-          <a href="#" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
-            <Settings className="w-5 h-5" />
-            <span className="font-medium">Configurações</span>
-          </a>
+          {user?.perfil === "admin_master" && (
+            <a href="/admin" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">
+              <Settings className="w-5 h-5" />
+              <span className="font-medium">Painel de Gestão</span>
+            </a>
+          )}
         </nav>
 
         <div className="pt-6 border-t border-white/5">
