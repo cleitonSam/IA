@@ -99,8 +99,8 @@ async def get_metrics(
         where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3"
         params_date = [empresa_id, unidade_id, hoje]
         if days > 1:
-            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4::text || ' days')::interval)::date AND $3"
-            params_date = [empresa_id, unidade_id, hoje, str(days)]
+            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4 * interval '1 day')) AND $3"
+            params_date = [empresa_id, unidade_id, hoje, days]
 
         row = await _database.db_pool.fetchrow(f"""
             SELECT
@@ -237,7 +237,6 @@ async def get_metrics_empresa(
             raise HTTPException(status_code=400, detail="Empresa não identificada")
 
     hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-
     try:
         # Monta filtro de empresa_id e datas dinamicamente
         # Os índices dos parâmetros mudam dependendo se há empresa_id
@@ -246,8 +245,8 @@ async def get_metrics_empresa(
             unit_empresa_cond = "u.empresa_id = $1 AND"
             params: list = [empresa_id, hoje]
             if days > 1:
-                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3::text || ' days')::interval)::date AND $2"
-                params.append(str(days))
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3 * interval '1 day')) AND $2"
+                params.append(days)
             else:
                 where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
         else:
@@ -256,8 +255,8 @@ async def get_metrics_empresa(
             unit_empresa_cond = ""
             params = [hoje]
             if days > 1:
-                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($1::date - ($2::text || ' days')::interval)::date AND $1"
-                params.append(str(days))
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($1::date - ($2 * interval '1 day')) AND $1"
+                params.append(days)
             else:
                 where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $1"
 
