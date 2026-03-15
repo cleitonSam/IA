@@ -543,4 +543,26 @@ async def export_leads(
     
     return [dict(r) for r in rows]
 
+@router.post("/integrations/evo/sync/{unidade_id}")
+async def sync_evo_unit(
+    unidade_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+) -> dict:
+    """
+    Força a sincronização de planos da EVO para esta unidade específica.
+    Bypassing cache para usar a config mais recente.
+    """
+    from src.services.db_queries import sincronizar_planos_evo
+    
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+        
+    try:
+        count = await sincronizar_planos_evo(empresa_id, unidade_id=unidade_id, bypass_cache=True)
+        return {"status": "success", "count": count}
+    except Exception as e:
+        logger.error(f"Erro ao sincronizar EVO para unidade {unidade_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- End Management ---

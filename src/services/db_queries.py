@@ -64,7 +64,12 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return None
 
 
-async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+async def carregar_integracao(
+    empresa_id: int, 
+    tipo: str = 'chatwoot', 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> Optional[Dict[str, Any]]:
     """
     Carrega a configuração de integração ativa de uma empresa.
     Tenta primeiro por unidade, se não houver, busca a global da empresa.
@@ -73,9 +78,10 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
         return None
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}:{unidade_id or 'global'}"
-    cache = await redis_get_json(cache_key)
-    if cache is not None:
-        return cache
+    if not bypass_cache:
+        cache = await redis_get_json(cache_key)
+        if cache is not None:
+            return cache
 
     try:
         if unidade_id:
@@ -135,14 +141,18 @@ async def bd_salvar_resumo_ia(conversation_id: int, resumo: str):
 
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 
-async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[List[Dict]]:
+async def buscar_planos_evo_da_api(
+    empresa_id: int, 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> Optional[List[Dict]]:
     """
     Busca os planos (memberships) da academia via API Evo diretamente.
     """
     if not _database.db_pool:
         return None
 
-    integracao = await carregar_integracao(empresa_id, 'evo', unidade_id=unidade_id)
+    integracao = await carregar_integracao(empresa_id, 'evo', unidade_id=unidade_id, bypass_cache=bypass_cache)
     if not integracao:
         logger.info(f"ℹ️ Empresa {empresa_id} (Unid {unidade_id}) não tem integração Evo ativa")
         return None
@@ -227,14 +237,18 @@ async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = 
         return None
 
 
-async def sincronizar_planos_evo(empresa_id: int, unidade_id: Optional[int] = None) -> int:
+async def sincronizar_planos_evo(
+    empresa_id: int, 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> int:
     """
     Busca planos da API Evo e insere/atualiza na tabela planos.
     """
     if not _database.db_pool:
         return 0
 
-    planos_api = await buscar_planos_evo_da_api(empresa_id, unidade_id=unidade_id)
+    planos_api = await buscar_planos_evo_da_api(empresa_id, unidade_id=unidade_id, bypass_cache=bypass_cache)
     if not planos_api:
         return 0
 

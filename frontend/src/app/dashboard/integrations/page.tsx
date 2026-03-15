@@ -120,12 +120,29 @@ export default function IntegrationsPage() {
       setEvoSuccess(true);
       setEvoUnits(prev => prev.map(u =>
         u.unidade_id === evoModal.unit!.unidade_id
-          ? { ...u, config: { dns: evoForm.dns, secret_key: evoForm.secret_key }, ativo: evoForm.ativo, configurado: !!evoForm.dns }
+          ? { ...u, config: { dns: evoForm.dns, secret_key: evoForm.secret_key, idBranch: evoForm.idBranch }, ativo: evoForm.ativo, configurado: !!evoForm.dns }
           : u
       ));
+      
+      // Auto-trigger sync after save
+      handleEvoSync(evoModal.unit.unidade_id);
+      
       setTimeout(() => { setEvoSuccess(false); setEvoModal({ open: false, unit: null }); }, 1400);
     } catch { alert("Erro ao salvar configuração EVO da unidade."); }
     finally { setEvoSaving(false); }
+  };
+
+  const [syncingId, setSyncingId] = useState<number | null>(null);
+  const handleEvoSync = async (unidadeId: number) => {
+    setSyncingId(unidadeId);
+    try {
+      const res = await axios.post(`/api-backend/management/integrations/evo/sync/${unidadeId}`, {}, getToken());
+      alert(`Sincronização concluída! ${res.data.count} planos atualizados.`);
+    } catch {
+      alert("Erro ao sincronizar planos. Verifique a configuração.");
+    } finally {
+      setSyncingId(null);
+    }
   };
 
   const inputClass = "w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all font-medium text-sm";
@@ -414,6 +431,21 @@ export default function IntegrationsPage() {
                     <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${evoForm.ativo ? "translate-x-6" : "translate-x-1"}`} />
                   </button>
                 </div>
+
+                {/* Botão de Sync Manual no Modal */}
+                {evoModal.unit.configurado && (
+                  <button 
+                    type="button" 
+                    onClick={() => handleEvoSync(evoModal.unit!.unidade_id)}
+                    disabled={syncingId !== null}
+                    className="w-full py-4 bg-[#00d2ff]/5 border border-[#00d2ff]/20 rounded-2xl text-[10px] font-black uppercase tracking-widest text-[#00d2ff] hover:bg-[#00d2ff]/10 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+                  >
+                    {syncingId === evoModal.unit.unidade_id 
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Sincronizando...</>
+                      : <><Zap className="w-4 h-4" /> Forçar Sincronização de Planos</>
+                    }
+                  </button>
+                )}
 
                 {/* DNS */}
                 <div className="space-y-3">
