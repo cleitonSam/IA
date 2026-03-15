@@ -441,7 +441,7 @@ async def update_evo_unit(
 
     existing = await _database.db_pool.fetchval(
         "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2",
-        empresa_id, str(unidade_id)
+        empresa_id, unidade_id
     )
     config_json = json.dumps(body.config)
     if existing:
@@ -452,7 +452,7 @@ async def update_evo_unit(
     else:
         await _database.db_pool.execute(
             "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2, $3, $4, NOW())",
-            empresa_id, config_json, body.ativo, str(unidade_id)
+            empresa_id, config_json, body.ativo, unidade_id
         )
     return {"status": "success"}
 

@@ -82,9 +82,9 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
             # Tenta unidade específica primeiro
             row = await _database.db_pool.fetchrow("""
                 SELECT config FROM integracoes
-                WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3::text AND ativo = true
+                WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3 AND ativo = true
                 LIMIT 1
-            """, empresa_id, tipo, str(unidade_id))
+            """, empresa_id, tipo, unidade_id)
             if row:
                 config = row['config']
                 if isinstance(config, str): config = json.loads(config)
