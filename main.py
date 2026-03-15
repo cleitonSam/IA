@@ -1,3 +1,4 @@
+# Sync trigger: force redeploy to fix dashboard indentation
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
