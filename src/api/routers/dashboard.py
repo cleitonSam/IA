@@ -78,24 +78,68 @@ async def get_unidades(
 @router.get("/metrics")
 async def get_metrics(
     unidade_id: int = Query(..., description="ID da unidade para filtrar métricas"),
-    data: date = Query(None, description="Data base para métricas (YYYY-MM-DD)"),
+    days: int = Query(30, description="Número de dias retroativos (padrão 30)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Retorna as métricas consolidadas de uma unidade para uma data específica.
+    Retorna as métricas consolidadas de uma unidade para um período.
+    Por padrão usa os últimos 30 dias para que o dashboard sempre exiba dados.
     """
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
     if perfil == "admin_master" or not empresa_id:
         empresa_id = await _get_empresa_id_da_unidade(unidade_id)
 
-    hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
 
     try:
-        metrics = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
+        # Busca dados agregados dos últimos `days` dias
+        where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3"
+        params_date = [empresa_id, unidade_id, hoje]
+        if days > 1:
+            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4 || ' days')::interval)::date AND $3"
+            params_date = [empresa_id, unidade_id, hoje, days]
+
+        row = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(DISTINCT c.id)                                                      AS total_conversas,
+                COUNT(DISTINCT CASE WHEN c.lead_qualificado THEN c.id END)               AS leads_qualificados,
+                COUNT(DISTINCT CASE WHEN c.intencao_de_compra THEN c.id END)             AS intencao_compra,
+                COALESCE(AVG(
+                    EXTRACT(EPOCH FROM (c.primeira_resposta_em - c.primeira_mensagem))
+                ) FILTER (WHERE c.primeira_resposta_em IS NOT NULL AND c.primeira_mensagem IS NOT NULL), 0) AS tempo_medio_resposta,
+                COUNT(DISTINCT CASE WHEN c.status IN ('encerrada','resolved','closed') THEN c.id END) AS conversas_encerradas
+            FROM conversas c
+            WHERE c.empresa_id = $1 AND c.unidade_id = $2
+              AND {where_date}
+        """, *params_date)
+
+        # Eventos funil
+        row_funil = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(DISTINCT CASE WHEN ef.tipo_evento = 'link_matricula_enviado' THEN ef.conversa_id END) AS total_links_enviados,
+                COUNT(DISTINCT CASE WHEN ef.tipo_evento = 'plano_exibido' THEN ef.conversa_id END)          AS total_planos_enviados,
+                COUNT(DISTINCT CASE WHEN ef.tipo_evento IN ('matricula_realizada','checkout_concluido') THEN ef.conversa_id END) AS total_matriculas
+            FROM eventos_funil ef
+            JOIN conversas c ON c.id = ef.conversa_id
+            WHERE c.empresa_id = $1 AND c.unidade_id = $2
+              AND {where_date}
+        """, *params_date)
+
+        metrics = dict(row) if row else {}
+        funil = dict(row_funil) if row_funil else {}
+        total_conv = metrics.get("total_conversas") or 0
+        leads = metrics.get("leads_qualificados") or 0
+        metrics["taxa_conversao"] = round((leads / total_conv * 100), 1) if total_conv > 0 else 0.0
+        metrics["tempo_medio_resposta"] = round(float(metrics.get("tempo_medio_resposta") or 0), 1)
+        metrics["total_links_enviados"] = funil.get("total_links_enviados") or 0
+        metrics["total_planos_enviados"] = funil.get("total_planos_enviados") or 0
+        metrics["total_matriculas"] = funil.get("total_matriculas") or 0
+
         return {
             "status": "success",
             "date": hoje.isoformat(),
+            "days": days,
             "unidade_id": unidade_id,
             "metrics": metrics
         }
@@ -169,7 +213,7 @@ async def get_conversations(
 @router.get("/metrics/empresa")
 async def get_metrics_empresa(
     data: Optional[date] = Query(None),
-    days: int = Query(1, description="Número de dias para retroceder (1=hoje, 7, 30)"),
+    days: int = Query(30, description="Número de dias para retroceder (padrão 30)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """

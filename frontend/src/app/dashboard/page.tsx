@@ -35,7 +35,7 @@ export default function DashboardPage() {
         const [userRes, unitsRes, empMetRes] = await Promise.all([
           axios.get(`/api-backend/auth/me`, config),
           axios.get(`/api-backend/dashboard/unidades`, config),
-          axios.get(`/api-backend/dashboard/metrics/empresa`, config)
+          axios.get(`/api-backend/dashboard/metrics/empresa?days=30`, config)
         ]);
         setUser(userRes.data);
         setUnidades(unitsRes.data);
@@ -59,7 +59,7 @@ export default function DashboardPage() {
       try {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const [metricsRes, convRes] = await Promise.all([
-          axios.get(`/api-backend/dashboard/metrics?unidade_id=${selectedUnidadeId}`, config),
+          axios.get(`/api-backend/dashboard/metrics?unidade_id=${selectedUnidadeId}&days=30`, config),
           axios.get(`/api-backend/dashboard/conversations?unidade_id=${selectedUnidadeId}&limit=5`, config)
         ]);
         setMetrics(metricsRes.data.metrics);
