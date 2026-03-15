@@ -110,10 +110,10 @@ export default function DashboardPage() {
   const navItems = [
     { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", active: true },
     { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas" },
-    { label: "Unidades", icon: Building2, href: "/dashboard/settings" },
-    { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings" },
-    { label: "FAQ", icon: HelpCircle, href: "/dashboard/settings" },
-    { label: "Integrações", icon: Network, href: "/dashboard/settings" },
+    { label: "Unidades", icon: Building2, href: "/dashboard/units" },
+    { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality" },
+    { label: "FAQ Neural", icon: HelpCircle, href: "/dashboard/faq" },
+    { label: "Integrações", icon: Network, href: "/dashboard/integrations" },
   ];
 
   return (
@@ -228,7 +228,7 @@ export default function DashboardPage() {
                     ))}
                   </div>
                   <div className="px-3 pb-2">
-                    <a href="/dashboard/settings"
+                    <a href="/dashboard/units"
                       className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-violet-400 hover:bg-violet-600/10 transition-all w-full">
                       <Settings className="w-3 h-3" /> Gerenciar unidades
                     </a>
@@ -239,9 +239,9 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-3 ml-auto">
-            <a href="/dashboard/settings"
+            <a href="/dashboard/units"
               className="hidden sm:flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all">
-              <Settings className="w-4 h-4" /> Central de Gestão
+              <Settings className="w-4 h-4" /> Configurações
             </a>
             <button className="relative p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-all border border-white/5">
               <Bell className="w-4 h-4 text-gray-400" />
@@ -383,9 +383,9 @@ export default function DashboardPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
                 { label: "Conversas", icon: MsgIcon, href: "/dashboard/conversas", desc: "Central de leads" },
-                { label: "Unidades", icon: Building2, href: "/dashboard/settings", desc: "Gerenciar filiais" },
-                { label: "Personalidade IA", icon: Brain, href: "/dashboard/settings", desc: "Configurar IA" },
-                { label: "Integrações", icon: Network, href: "/dashboard/settings", desc: "Chatwoot, EVO..." },
+                { label: "Unidades", icon: Building2, href: "/dashboard/units", desc: "Gerenciar filiais" },
+                { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality", desc: "Configurar IA" },
+                { label: "Integrações", icon: Network, href: "/dashboard/integrations", desc: "Chatwoot, EVO..." },
               ].map(item => (
                 <a key={item.label} href={item.href}
                   className="bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-violet-500/20 rounded-2xl p-4 transition-all group">

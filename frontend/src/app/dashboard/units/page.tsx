@@ -148,7 +148,7 @@ export default function UnitsPage() {
       <div className="max-w-6xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
           <div className="flex items-center gap-4">
-            <a href="/dashboard" className="p-2 hover:bg-white/5 rounded-full transition-colors">
+            <a href="/dashboard" className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5">
               <ArrowLeft className="w-5 h-5" />
             </a>
             <div>
@@ -156,13 +156,13 @@ export default function UnitsPage() {
                 <Building2 className="w-8 h-8 text-blue-500" />
                 Gestão de Unidades
               </h1>
-              <p className="text-gray-400 mt-1">Gerencie os endereços e informações de contato de suas unidades.</p>
+              <p className="text-gray-400 mt-1">Configure as filiais e pontos de atendimento da sua empresa.</p>
             </div>
           </div>
           
           <button
             onClick={() => handleOpenModal()}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-blue-500/20"
+            className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-blue-500/20"
           >
             <Plus className="w-5 h-5" />
             Nova Unidade
@@ -171,58 +171,59 @@ export default function UnitsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {units.length === 0 ? (
-            <div className="col-span-full text-center py-20 bg-white/5 border border-dashed border-white/10 rounded-2xl">
-              <Building2 className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-              <p className="text-gray-400">Nenhuma unidade cadastrada.</p>
+            <div className="col-span-full text-center py-32 bg-white/[0.02] border border-dashed border-white/10 rounded-3xl">
+              <Building2 className="w-16 h-16 text-gray-700 mx-auto mb-4" />
+              <p className="text-gray-500 font-medium">Nenhuma unidade cadastrada.</p>
+              <p className="text-gray-600 text-sm mt-1">Comece adicionando sua primeira filial.</p>
             </div>
           ) : (
-            units.map((unit) => (
+            units.map((unit, i) => (
               <motion.div
                 layout
                 key={unit.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="bg-white/5 border border-white/10 rounded-2xl p-6 hover:bg-white/10 transition-all group"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.05 }}
+                className="bg-white/[0.03] border border-white/10 rounded-3xl p-7 hover:bg-white/[0.06] hover:border-blue-500/30 transition-all group relative overflow-hidden"
               >
-                <div className="flex justify-between items-start mb-4">
-                  <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-500">
-                    <Building2 className="w-6 h-6" />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleOpenModal(unit)}
-                      className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(unit.id)}
-                      className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                  <button
+                    onClick={() => handleOpenModal(unit)}
+                    className="p-2.5 bg-white/10 hover:bg-blue-500 hover:text-white rounded-xl text-gray-400 transition-all"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(unit.id)}
+                    className="p-2.5 bg-white/10 hover:bg-red-500 hover:text-white rounded-xl text-gray-400 transition-all"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
 
-                <h3 className="text-xl font-bold mb-2">{unit.nome}</h3>
-                <div className="space-y-2 text-sm text-gray-400">
-                  {unit.cidade && (
-                    <p className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-blue-500/50" />
-                      {unit.cidade}, {unit.estado}
-                    </p>
-                  )}
+                <div className="w-14 h-14 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-500 mb-6 group-hover:scale-110 transition-transform">
+                  <Building2 className="w-7 h-7" />
+                </div>
+
+                <h3 className="text-xl font-bold mb-1 group-hover:text-blue-400 transition-colors uppercase tracking-tight">{unit.nome}</h3>
+                <p className="text-xs font-bold text-gray-600 mb-6 uppercase tracking-widest">{unit.nome_abreviado || "Unidade"}</p>
+                
+                <div className="space-y-4 pt-6 border-t border-white/5">
+                  <div className="flex items-center gap-3 text-sm text-gray-400">
+                    <div className="p-2 rounded-lg bg-white/5"><MapPin className="w-4 h-4 text-blue-500/50" /></div>
+                    <span className="line-clamp-1">{unit.endereco ? `${unit.endereco}, ${unit.numero}` : `${unit.cidade}, ${unit.estado}`}</span>
+                  </div>
                   {unit.whatsapp && (
-                    <p className="flex items-center gap-2">
-                      <Phone className="w-4 h-4 text-blue-500/50" />
-                      {unit.whatsapp}
-                    </p>
+                    <div className="flex items-center gap-3 text-sm text-gray-400">
+                      <div className="p-2 rounded-lg bg-white/5"><Phone className="w-4 h-4 text-blue-500/50" /></div>
+                      <span>{unit.whatsapp}</span>
+                    </div>
                   )}
                   {unit.site && (
-                    <p className="flex items-center gap-2">
-                      <Globe className="w-4 h-4 text-blue-500/50" />
-                      {unit.site}
-                    </p>
+                    <div className="flex items-center gap-3 text-sm text-blue-400/80 hover:text-blue-400 transition-colors cursor-pointer">
+                      <div className="p-2 rounded-lg bg-blue-500/5"><Globe className="w-4 h-4" /></div>
+                      <span className="line-clamp-1 text-xs font-bold">{unit.site.replace('https://', '')}</span>
+                    </div>
                   )}
                 </div>
               </motion.div>
@@ -239,185 +240,177 @@ export default function UnitsPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/80 backdrop-blur-md"
+              className="absolute inset-0 bg-black/90 backdrop-blur-xl"
               onClick={() => setIsModalOpen(false)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.9, y: 30 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 30 }}
-              className="bg-[#111] border border-white/10 rounded-3xl w-full max-w-2xl overflow-hidden relative shadow-2xl"
+              className="bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-3xl overflow-hidden relative shadow-2xl flex flex-col max-h-[90vh]"
             >
-              <form onSubmit={handleSave}>
-                <div className="p-8 border-b border-white/10 flex items-center justify-between">
-                  <h2 className="text-2xl font-bold flex items-center gap-3">
-                    {editingUnit ? <Pencil className="w-6 h-6 text-blue-500" /> : <Plus className="w-6 h-6 text-blue-500" />}
-                    {editingUnit ? "Editar Unidade" : "Nova Unidade"}
-                  </h2>
-                  <button type="button" onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/10 rounded-xl transition-all">
+              <form onSubmit={handleSave} className="flex flex-col h-full">
+                <div className="p-10 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                  <div>
+                    <h2 className="text-3xl font-bold flex items-center gap-4">
+                      {editingUnit ? <Pencil className="w-8 h-8 text-blue-500" /> : <Plus className="w-8 h-8 text-blue-500" />}
+                      {editingUnit ? "Editar Unidade" : "Nova Unidade"}
+                    </h2>
+                    <p className="text-gray-500 mt-2 text-sm">Preencha os dados abaixo para configurar sua unidade.</p>
+                  </div>
+                  <button type="button" onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-white/10 rounded-2xl transition-all border border-white/5">
                     <X className="w-6 h-6" />
                   </button>
                 </div>
 
-                <div className="p-8 space-y-6 max-h-[60vh] overflow-y-auto">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Nome da Unidade *</label>
-                      <input
-                        type="text"
-                        required
-                        value={formData.nome}
-                        onChange={(e) => setFormData({ ...formData, nome: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="Ex: Unidade Centro"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Nome Abrev.</label>
-                      <input
-                        type="text"
-                        value={formData.nome_abreviado}
-                        onChange={(e) => setFormData({ ...formData, nome_abreviado: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="Ex: Centro"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Endereço</label>
-                      <input
-                        type="text"
-                        value={formData.endereco}
-                        onChange={(e) => setFormData({ ...formData, endereco: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="Rua Exemplo"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Número</label>
-                      <input
-                        type="text"
-                        value={formData.numero}
-                        onChange={(e) => setFormData({ ...formData, numero: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="123"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Bairro</label>
-                      <input
-                        type="text"
-                        value={formData.bairro}
-                        onChange={(e) => setFormData({ ...formData, bairro: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Cidade</label>
-                      <input
-                        type="text"
-                        value={formData.cidade}
-                        onChange={(e) => setFormData({ ...formData, cidade: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Estado</label>
-                      <input
-                        type="text"
-                        value={formData.estado}
-                        onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="SP"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">WhatsApp</label>
-                      <input
-                        type="text"
-                        value={formData.whatsapp}
-                        onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="(11) 99999-9999"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-2">Telefone</label>
-                      <input
-                        type="text"
-                        value={formData.telefone_principal}
-                        onChange={(e) => setFormData({ ...formData, telefone_principal: e.target.value })}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <h4 className="text-xs font-black text-gray-500 uppercase tracking-widest pt-4">Links & Redes</h4>
+                <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-6">
+                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Informações Básicas</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="relative">
-                        <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nome oficial *</label>
                         <input
                           type="text"
-                          value={formData.site}
-                          onChange={(e) => setFormData({ ...formData, site: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          placeholder="Site"
+                          required
+                          value={formData.nome}
+                          onChange={(e) => setFormData({ ...formData, nome: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          placeholder="Ex: Red Fitness Tatuapé"
                         />
                       </div>
-                      <div className="relative">
-                        <Instagram className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nome exibição (Curto)</label>
                         <input
                           type="text"
-                          value={formData.instagram}
-                          onChange={(e) => setFormData({ ...formData, instagram: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          placeholder="Instagram"
+                          value={formData.nome_abreviado}
+                          onChange={(e) => setFormData({ ...formData, nome_abreviado: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          placeholder="Ex: Tatuapé"
                         />
                       </div>
-                      <div className="md:col-span-2 relative">
-                        <LinkIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Localização</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <div className="md:col-span-3 space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Logradouro</label>
                         <input
                           type="text"
-                          value={formData.link_matricula}
-                          onChange={(e) => setFormData({ ...formData, link_matricula: e.target.value })}
-                          className="w-full bg-black/40 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          placeholder="Link para Matrícula/Venda"
+                          value={formData.endereco}
+                          onChange={(e) => setFormData({ ...formData, endereco: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          placeholder="Ex: Av. Álvaro Ramos"
                         />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Nº</label>
+                        <input
+                          type="text"
+                          value={formData.numero}
+                          onChange={(e) => setFormData({ ...formData, numero: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          placeholder="123"
+                        />
+                      </div>
+                      <div className="md:col-span-2 space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Bairro</label>
+                        <input
+                          type="text"
+                          value={formData.bairro}
+                          onChange={(e) => setFormData({ ...formData, bairro: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Cidade</label>
+                        <input
+                          type="text"
+                          value={formData.cidade}
+                          onChange={(e) => setFormData({ ...formData, cidade: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">UF</label>
+                        <input
+                          type="text"
+                          value={formData.estado}
+                          onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
+                          className="w-full bg-white/[0.03] border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          placeholder="SP"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <h4 className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em]">Contato & Digital</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">WhatsApp Principal</label>
+                        <div className="relative">
+                          <Phone className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                          <input
+                            type="text"
+                            value={formData.whatsapp}
+                            onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
+                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                            placeholder="(11) 99999-9999"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Instagram @</label>
+                        <div className="relative">
+                          <Instagram className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                          <input
+                            type="text"
+                            value={formData.instagram}
+                            onChange={(e) => setFormData({ ...formData, instagram: e.target.value })}
+                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                          />
+                        </div>
+                      </div>
+                      <div className="md:col-span-2 space-y-2">
+                        <label className="text-xs font-bold text-gray-500 ml-1 uppercase">Link para Vendas / Matrícula</label>
+                        <div className="relative">
+                          <LinkIcon className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                          <input
+                            type="text"
+                            value={formData.link_matricula}
+                            onChange={(e) => setFormData({ ...formData, link_matricula: e.target.value })}
+                            className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-14 pr-5 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                            placeholder="https://..."
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <div className="p-8 bg-white/[0.02] border-t border-white/10 flex justify-end gap-4">
+                <div className="p-10 bg-white/[0.02] border-t border-white/5 flex justify-end gap-5">
                   <button
                     type="button"
                     onClick={() => setIsModalOpen(false)}
-                    className="px-8 py-3 rounded-xl font-bold text-gray-400 hover:bg-white/5 transition-all"
+                    className="px-8 py-4 rounded-2xl font-bold text-gray-500 hover:text-white hover:bg-white/5 transition-all"
                   >
-                    Cancelar
+                    Descartar
                   </button>
                   <button
                     type="submit"
                     disabled={saving}
-                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white px-10 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
+                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white px-12 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-xl shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]"
                   >
                     {saving ? (
                       <Loader2 className="w-5 h-5 animate-spin" />
                     ) : success ? (
-                      <CheckCircle2 className="w-5 h-5" />
+                      <CheckCircle2 className="w-5 h-5 text-emerald-300" />
                     ) : (
                       <Save className="w-5 h-5" />
                     )}
-                    {saving ? "Salvando..." : success ? "Sucesso!" : "Salvar Unidade"}
+                    {saving ? "Processando..." : success ? "Salvamento Concluído!" : "Confirmar Unidade"}
                   </button>
                 </div>
               </form>
@@ -425,6 +418,13 @@ export default function UnitsPage() {
           </div>
         )}
       </AnimatePresence>
+      
+      <style jsx global>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
+      `}</style>
     </div>
   );
 }
