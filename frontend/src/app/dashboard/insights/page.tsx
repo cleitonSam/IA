@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import {
   MessageSquare, Clock, Target, ArrowUpRight, Building2, Activity,
-  Star, Zap, DollarSign, Cpu, BarChart3, PieChart
+  Star, Zap, BarChart3, PieChart
 } from "lucide-react";
 import { motion } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
