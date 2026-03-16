@@ -43,6 +43,24 @@ class IntegrationUpdate(BaseModel):
     config: Dict[str, Any]
     ativo: bool = True
 
+class FollowupTemplateCreate(BaseModel):
+    nome: str
+    mensagem: str
+    delay_minutos: int
+    ordem: int = 1
+    tipo: str = "texto"
+    ativo: bool = True
+    unidade_id: Optional[int] = None
+
+class FollowupTemplateUpdate(BaseModel):
+    nome: Optional[str] = None
+    mensagem: Optional[str] = None
+    delay_minutos: Optional[int] = None
+    ordem: Optional[int] = None
+    tipo: Optional[str] = None
+    ativo: Optional[bool] = None
+    unidade_id: Optional[int] = None
+
 # --- Personality Endpoints ---
 
 @router.get("/personality")
@@ -539,5 +557,154 @@ async def export_leads(
         WHERE {where}
         ORDER BY c.created_at DESC
     """, *params)
-    
+
     return [dict(r) for r in rows]
+
+
+# --- Follow-up Endpoints ---
+
+@router.get("/followup/templates")
+async def list_followup_templates(token_payload: dict = Depends(get_current_user_token)):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    rows = await _database.db_pool.fetch("""
+        SELECT t.id, t.nome, t.mensagem, t.delay_minutos, t.ordem, t.tipo, t.ativo,
+               t.unidade_id, u.nome AS unidade_nome
+        FROM templates_followup t
+        LEFT JOIN unidades u ON u.id = t.unidade_id
+        WHERE t.empresa_id = $1
+        ORDER BY t.unidade_id NULLS LAST, t.ordem
+    """, empresa_id)
+    return [dict(r) for r in rows]
+
+
+@router.post("/followup/templates")
+async def create_followup_template(body: FollowupTemplateCreate, token_payload: dict = Depends(get_current_user_token)):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    row = await _database.db_pool.fetchrow("""
+        INSERT INTO templates_followup (empresa_id, nome, mensagem, delay_minutos, ordem, tipo, ativo, unidade_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+    """, empresa_id, body.nome, body.mensagem, body.delay_minutos, body.ordem, body.tipo, body.ativo, body.unidade_id)
+    return {"id": row["id"], "status": "created"}
+
+
+@router.put("/followup/templates/{template_id}")
+async def update_followup_template(
+    template_id: int,
+    body: FollowupTemplateUpdate,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    # Verifica ownership
+    exists = await _database.db_pool.fetchval(
+        "SELECT id FROM templates_followup WHERE id = $1 AND empresa_id = $2", template_id, empresa_id
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    # Monta SET dinâmico com apenas os campos enviados
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        return {"status": "no_changes"}
+    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates))
+    params = [template_id] + list(updates.values())
+    await _database.db_pool.execute(
+        f"UPDATE templates_followup SET {set_clause} WHERE id = $1", *params
+    )
+    return {"status": "updated"}
+
+
+@router.delete("/followup/templates/{template_id}")
+async def delete_followup_template(template_id: int, token_payload: dict = Depends(get_current_user_token)):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    exists = await _database.db_pool.fetchval(
+        "SELECT id FROM templates_followup WHERE id = $1 AND empresa_id = $2", template_id, empresa_id
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    # Cancela followups pendentes que usavam este template
+    await _database.db_pool.execute(
+        "UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE template_id = $1 AND status = 'pendente'",
+        template_id
+    )
+    await _database.db_pool.execute("DELETE FROM templates_followup WHERE id = $1", template_id)
+    return {"status": "deleted"}
+
+
+@router.get("/followup/history")
+async def get_followup_history(
+    status: Optional[str] = Query(None),
+    unidade_id: Optional[int] = Query(None),
+    limit: int = Query(20, le=100),
+    offset: int = Query(0),
+    token_payload: dict = Depends(get_current_user_token),
+):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    conditions = ["f.empresa_id = $1"]
+    params: list = [empresa_id]
+    if status:
+        params.append(status)
+        conditions.append(f"f.status = ${len(params)}")
+    if unidade_id:
+        params.append(unidade_id)
+        conditions.append(f"f.unidade_id = ${len(params)}")
+    where = " AND ".join(conditions)
+    params += [limit, offset]
+    rows = await _database.db_pool.fetch(f"""
+        SELECT f.id, f.status, f.mensagem, f.agendado_para, f.enviado_em, f.erro_log, f.ordem,
+               c.contato_nome, c.contato_fone, c.score_lead,
+               u.nome AS unidade_nome,
+               t.nome AS template_nome
+        FROM followups f
+        JOIN conversas c ON c.id = f.conversa_id
+        LEFT JOIN unidades u ON u.id = f.unidade_id
+        LEFT JOIN templates_followup t ON t.id = f.template_id
+        WHERE {where}
+        ORDER BY f.agendado_para DESC
+        LIMIT ${len(params)-1} OFFSET ${len(params)}
+    """, *params)
+    return [dict(r) for r in rows]
+
+
+@router.get("/followup/stats")
+async def get_followup_stats(token_payload: dict = Depends(get_current_user_token)):
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="Acesso restrito")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    row = await _database.db_pool.fetchrow("""
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'pendente')                                        AS pendentes,
+            COUNT(*) FILTER (WHERE status = 'enviado' AND DATE(enviado_em) = CURRENT_DATE)     AS enviados_hoje,
+            COUNT(*) FILTER (WHERE status = 'cancelado' AND DATE(updated_at) = CURRENT_DATE)   AS cancelados_hoje,
+            COUNT(*) FILTER (WHERE status = 'erro')                                            AS erros
+        FROM followups
+        WHERE empresa_id = $1
+    """, empresa_id)
+    return dict(row)

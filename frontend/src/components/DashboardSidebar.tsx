@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Building2, Brain, HelpCircle, Network,
-  Settings, LogOut, Zap, BarChart3, MessageSquare, Menu, X
+  Settings, LogOut, Zap, BarChart3, MessageSquare, Menu, X, Send
 } from "lucide-react";
 
 interface SidebarProps {
@@ -14,6 +14,7 @@ const navItems = [
   { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", id: "dashboard" },
   { label: "Insights IA", icon: BarChart3, href: "/dashboard/insights", id: "insights" },
   { label: "Conversas", icon: MessageSquare, href: "/dashboard/conversas", id: "conversas" },
+  { label: "Follow-ups", icon: Send, href: "/dashboard/followups", id: "followups" },
   { label: "Unidades", icon: Building2, href: "/dashboard/units", id: "units" },
   { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality", id: "personality" },
   { label: "FAQ Neural", icon: HelpCircle, href: "/dashboard/faq", id: "faq" },
