@@ -59,11 +59,14 @@ async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome
     if not contact_id or not nome_eh_valido(nome):
         return False
     url_base = integracao.get('url')
-    token = integracao.get('token')
+    token = integracao.get('access_token') or integracao.get('token')
+    if isinstance(token, dict):
+        token = token.get('access_token') or token.get('token')
+        logger.error("Config Chatwoot com token aninhado como dict — verifique a integração salva no painel")
     if not url_base or not token:
         return False
 
-    headers = {"api_access_token": token}
+    headers = {"api_access_token": str(token)}
     payload = {"name": nome.strip()}
     url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
     try:
@@ -116,7 +119,10 @@ async def enviar_mensagem_chatwoot(
     # Fluxo Chatwoot clássico
     if isinstance(url_base_ou_integracao, dict):
         url_base = url_base_ou_integracao.get('url')
-        token = url_base_ou_integracao.get('token')
+        token = url_base_ou_integracao.get('access_token') or url_base_ou_integracao.get('token')
+        if isinstance(token, dict):
+            token = token.get('access_token') or token.get('token')
+            logger.error("Config Chatwoot com token aninhado como dict — verifique a integração salva no painel")
     else:
         url_base = url_base_ou_integracao
 
@@ -161,7 +167,7 @@ async def enviar_mensagem_chatwoot(
                 "ignore_webhook": True
             }
         }
-    headers = {"api_access_token": token}
+    headers = {"api_access_token": str(token)}
 
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers)
