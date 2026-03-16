@@ -17,7 +17,6 @@ const navItems = [
   { label: "Follow-ups", icon: Send, href: "/dashboard/followups", id: "followups" },
   { label: "Unidades", icon: Building2, href: "/dashboard/units", id: "units" },
   { label: "Personalidade IA", icon: Brain, href: "/dashboard/personality", id: "personality" },
-  { label: "Followups", icon: MessageSquare, href: "/dashboard/followups", id: "followups" },
   { label: "FAQ Neural", icon: HelpCircle, href: "/dashboard/faq", id: "faq" },
   { label: "Integrações", icon: Network, href: "/dashboard/integrations", id: "integrations" },
 ];
