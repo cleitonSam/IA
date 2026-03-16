@@ -9,6 +9,7 @@ from src.core.config import (
 )
 import src.core.database as _database
 from src.core.redis_client import redis_client
+from src.utils.redis_helper import delete_tenant_cache
 from src.services.db_queries import sincronizar_planos_evo
 
 router = APIRouter()
@@ -162,5 +163,5 @@ async def health():
 @router.get("/sync-planos/{empresa_id}")
 async def sync_planos_manual(empresa_id: int):
     count = await sincronizar_planos_evo(empresa_id)
-    await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
+    await delete_tenant_cache(empresa_id, "planos:ativos:todos")
     return {"status": "ok", "sincronizados": count}

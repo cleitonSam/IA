@@ -32,12 +32,15 @@ def upgrade() -> None:
             sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
             sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
         )
-
-    existing_indexes = {idx['name'] for idx in inspector.get_indexes('convites')}
-    if 'ix_convites_token' not in existing_indexes:
         op.create_index('ix_convites_token', 'convites', ['token'], unique=True)
-    if 'ix_convites_email' not in existing_indexes:
         op.create_index('ix_convites_email', 'convites', ['email'])
+    else:
+        # Tabela já existe — garante que os indexes existam
+        existing_indexes = {idx['name'] for idx in inspector.get_indexes('convites')}
+        if 'ix_convites_token' not in existing_indexes:
+            op.create_index('ix_convites_token', 'convites', ['token'], unique=True)
+        if 'ix_convites_email' not in existing_indexes:
+            op.create_index('ix_convites_email', 'convites', ['email'])
 
 
 def downgrade() -> None:

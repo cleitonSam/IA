@@ -7,6 +7,9 @@ from typing import List
 from src.core.config import logger, OPENAI_API_KEY
 import src.core.database as _database
 from src.core.redis_client import redis_client
+from src.utils.redis_helper import (
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+)
 from src.services.llm_service import cliente_ia
 from src.services.db_queries import (
     carregar_integracao, sincronizar_planos_evo,
@@ -173,8 +176,8 @@ async def worker_followup():
                         continue
 
                     if (
-                        await redis_client.get(f"atend_manual:{emp_id}:{conv_id}") == "1"
-                        or await redis_client.get(f"pause_ia:{emp_id}:{conv_id}") == "1"
+                        await get_tenant_cache(emp_id, f"atend_manual:{conv_id}") == "1"
+                        or await get_tenant_cache(emp_id, f"pause_ia:{conv_id}") == "1"
                     ):
                         await _database.db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
@@ -246,7 +249,7 @@ async def worker_followup():
                         mensagem_final = template_base
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), integracao, nome_ia="Assistente Virtual", evitar_prefixo_nome=True
+                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), integracao, emp_id, nome_ia="Assistente Virtual", evitar_prefixo_nome=True
                     )
                     await _database.db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']

@@ -22,6 +22,9 @@ from src.services.bot_core import (
     processar_ia_e_responder, monitorar_escolha_unidade, rate_limit_middleware,
     startup_event, shutdown_event,
 )
+from src.utils.redis_helper import (
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+)
 from src.utils.text_helpers import (
     normalizar, limpar_nome, nome_eh_valido, extrair_nome_do_texto,
 )
@@ -56,10 +59,14 @@ async def chatwoot_webhook(
         logger.error(f"Account {account_id} sem empresa associada")
         return {"status": "erro_sem_empresa"}
 
-    rate_key = f"rl:conv:{empresa_id}:{id_conv}"
-    contador = await redis_client.incr(rate_key)
+    rate_key = f"rl:conv:{id_conv}"
+    # O rate limit pode continuar usando o redis_client diretamente ou via help
+    # Mas vamos usar o get_tenant_key se quisermos ser puristas.
+    # Por simplicidade, vamos manter o incr no redis_client mas prefixado manualmente ou via helper
+    t_rate_key = f"{empresa_id}:{rate_key}"
+    contador = await redis_client.incr(t_rate_key)
     if contador == 1:
-        await redis_client.expire(rate_key, 10)
+        await redis_client.expire(t_rate_key, 10)
     if contador > 10:
         from fastapi.responses import JSONResponse
         return JSONResponse({"status": "rate_limit"}, status_code=429)
@@ -76,15 +83,16 @@ async def chatwoot_webhook(
             conv_obj.get("assignee_id") is not None
             or conv_obj.get("status") not in ["pending", "open", None]
         ) else "0"
-        await redis_client.setex(f"atend_manual:{empresa_id}:{id_conv}", 86400, is_manual)
+        await set_tenant_cache(empresa_id, f"atend_manual:{id_conv}", is_manual, 86400)
 
     if event == "conversation_created":
-        await redis_client.delete(
-            f"pause_ia:{empresa_id}:{id_conv}", f"estado:{empresa_id}:{id_conv}",
-            f"unidade_escolhida:{empresa_id}:{id_conv}", f"esperando_unidade:{empresa_id}:{id_conv}",
-            f"prompt_unidade_enviado:{empresa_id}:{id_conv}", f"nome_cliente:{empresa_id}:{id_conv}", f"aguardando_nome:{empresa_id}:{id_conv}",
-            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{empresa_id}:{id_conv}", f"buffet:{empresa_id}:{id_conv}"
-        )
+        for k in [
+            f"pause_ia:{id_conv}", f"estado:{id_conv}", f"unidade_escolhida:{id_conv}",
+            f"esperando_unidade:{id_conv}", f"prompt_unidade_enviado:{id_conv}",
+            f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
+            f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
+        ]:
+            await delete_tenant_cache(empresa_id, k)
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
 
@@ -92,12 +100,13 @@ async def chatwoot_webhook(
         status_conv = conv_obj.get("status") or payload.get("status")
         if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv, empresa_id)
-            await redis_client.delete(
-                f"pause_ia:{empresa_id}:{id_conv}", f"estado:{empresa_id}:{id_conv}",
-                f"unidade_escolhida:{empresa_id}:{id_conv}", f"esperando_unidade:{empresa_id}:{id_conv}",
-                f"prompt_unidade_enviado:{empresa_id}:{id_conv}", f"nome_cliente:{empresa_id}:{id_conv}", f"aguardando_nome:{empresa_id}:{id_conv}",
-                f"atend_manual:{empresa_id}:{id_conv}"
-            )
+            for k in [
+                f"pause_ia:{id_conv}", f"estado:{id_conv}", f"unidade_escolhida:{id_conv}",
+                f"esperando_unidade:{id_conv}", f"prompt_unidade_enviado:{id_conv}",
+                f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
+                f"atend_manual:{id_conv}"
+            ]:
+                await delete_tenant_cache(empresa_id, k)
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
 
@@ -111,7 +120,7 @@ async def chatwoot_webhook(
     conteudo_texto = payload.get("content", "")
 
     # Recupera o slug (unidade) do Redis se já estiver em atendimento
-    slug = await redis_client.get(f"unidade_escolhida:{empresa_id}:{id_conv}")
+    slug = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
 
     contato = payload.get("sender", {})
     nome_contato_raw = contato.get("name")
@@ -143,22 +152,22 @@ async def chatwoot_webhook(
             return {"status": "ia_global_pausada"}
 
         if nome_contato_valido:
-            await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, nome_contato_limpo)
+            await set_tenant_cache(empresa_id, f"nome_cliente:{id_conv}", nome_contato_limpo, 86400)
         else:
             _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
             if _nome_informado:
-                await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, _nome_informado)
-                await redis_client.delete(f"aguardando_nome:{empresa_id}:{id_conv}")
+                await set_tenant_cache(empresa_id, f"nome_cliente:{id_conv}", _nome_informado, 86400)
+                await delete_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}")
                 await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
             else:
-                _aguardando_nome = await redis_client.get(f"aguardando_nome:{empresa_id}:{id_conv}")
+                _aguardando_nome = await get_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}")
                 if not _aguardando_nome:
                     msg_nome = (
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, nome_ia="Assistente Virtual")
-                    await redis_client.setex(f"aguardando_nome:{empresa_id}:{id_conv}", 900, "1")
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia="Assistente Virtual")
+                    await set_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}", "1", 900)
                     return {"status": "aguardando_nome"}
 
     mensagem_id = payload.get("id")
@@ -170,11 +179,11 @@ async def chatwoot_webhook(
             
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
-    slug_redis = await redis_client.get(f"unidade_escolhida:{empresa_id}:{id_conv}")
+    slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
     # slug já foi inicializado no topo com slug_redis
     slug_detectado = None
-    esperando_unidade = await redis_client.get(f"esperando_unidade:{empresa_id}:{id_conv}")
-    prompt_unidade_key = f"prompt_unidade_enviado:{empresa_id}:{id_conv}"
+    esperando_unidade = await get_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+    prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
 
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
         _msg_norm_wh = normalizar(conteudo_texto)
@@ -206,10 +215,10 @@ async def chatwoot_webhook(
             if slug_detectado and slug_detectado != slug:
                 logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
                 slug = slug_detectado
-                await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
+                await set_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}", slug, 86400)
                 if esperando_unidade:
-                    await redis_client.delete(f"esperando_unidade:{empresa_id}:{id_conv}")
-                await redis_client.delete(prompt_unidade_key)
+                    await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+                await delete_tenant_cache(empresa_id, prompt_unidade_key)
 
     if not slug and message_type == "incoming":
         unidades_ativas = await listar_unidades_ativas(empresa_id)
@@ -218,7 +227,7 @@ async def chatwoot_webhook(
 
         elif len(unidades_ativas) == 1:
             slug = unidades_ativas[0]["slug"]
-            await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
+            await set_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}", slug, 86400)
 
         else:
             if not slug:
@@ -251,9 +260,9 @@ async def chatwoot_webhook(
 
                 if slug_detectado:
                     slug = slug_detectado
-                    await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
-                    await redis_client.delete(f"esperando_unidade:{empresa_id}:{id_conv}")
-                    await redis_client.delete(prompt_unidade_key)
+                    await set_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}", slug, 86400)
+                    await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+                    await delete_tenant_cache(empresa_id, prompt_unidade_key)
                     contato = payload.get("sender", {})
                     _nome_contato = limpar_nome(contato.get("name"))
                     await bd_registrar_evento_funil(
@@ -281,12 +290,14 @@ async def chatwoot_webhook(
                         f"\n\nComo posso te ajudar? 😊"
                     )
                     await enviar_mensagem_chatwoot(
-                        account_id, id_conv, _msg_confirmacao, integracao, nome_ia=_nome_ia_temp
+                        account_id, id_conv, _msg_confirmacao, integracao, empresa_id, nome_ia=_nome_ia_temp
                     )
 
-                    lock_key = f"agendar_lock:{empresa_id}:{id_conv}"
-                    if await redis_client.set(lock_key, "1", nx=True, ex=5):
+                    lock_key = f"agendar_lock:{id_conv}"
+                    # Lock key prefixado manualmente ou via helper
+                    if await redis_client.set(f"{empresa_id}:{lock_key}", "1", nx=True, ex=5):
                         try:
+                            # ... database calls ... (no change needed for DB)
                             existe = await _database.db_pool.fetchval(
                                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
                                 "WHERE c.conversation_id = $1 AND c.empresa_id = $2 AND f.status = 'pendente' LIMIT 1", id_conv, empresa_id
@@ -294,18 +305,18 @@ async def chatwoot_webhook(
                             if not existe:
                                 await agendar_followups(id_conv, account_id, slug, empresa_id)
                         finally:
-                            await redis_client.delete(lock_key)
+                            await delete_tenant_cache(empresa_id, lock_key)
                     return {"status": "unidade_confirmada"}
                 else:
-                    if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
-                        throttle_key = f"esperando_unidade_throttle:{empresa_id}:{id_conv}"
-                        if not await redis_client.get(throttle_key):
+                    if esperando_unidade or await get_tenant_cache(empresa_id, prompt_unidade_key) == "1":
+                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
+                        if not await exists_tenant_cache(empresa_id, throttle_key):
                             msg_retry = (
                                 "Ainda não consegui localizar a unidade certinha 😅\n\n"
                                 "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
                             )
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia="Assistente Virtual")
-                            await redis_client.setex(throttle_key, 30, "1")
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, empresa_id, nome_ia="Assistente Virtual")
+                            await set_tenant_cache(empresa_id, throttle_key, "1", 30)
                         return {"status": "aguardando_escolha_unidade"}
 
                     _qtd_unidades = len(unidades_ativas)
@@ -314,9 +325,9 @@ async def chatwoot_webhook(
                         f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
                         "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, nome_ia="Assistente Virtual")
-                    await redis_client.setex(f"esperando_unidade:{empresa_id}:{id_conv}", 86400, "1")
-                    await redis_client.setex(prompt_unidade_key, 600, "1")
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia="Assistente Virtual")
+                    await set_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}", "1", 86400)
+                    await set_tenant_cache(empresa_id, prompt_unidade_key, "1", 600)
                     background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                     return {"status": "aguardando_escolha_unidade"}
 
@@ -327,11 +338,11 @@ async def chatwoot_webhook(
         if is_ai_message:
             return {"status": "ignorado"}
             
-        if await redis_client.exists(f"uaz_bot_sent_conv:{empresa_id}:{id_conv}"):
+        if await exists_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{id_conv}"):
             logger.info(f"⏭️ Ignorando bloqueio: mensagem reconhecida como eco do UazAPI (conv: {id_conv})")
             return {"status": "ignorado_uazapi_echo"}
                 
-        await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
+        await set_tenant_cache(empresa_id, f"pause_ia:{id_conv}", "1", 43200)
         if _database.db_pool:
             await _database.db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
@@ -344,10 +355,10 @@ async def chatwoot_webhook(
         return {"status": "ignorado"}
 
     contato = payload.get("sender", {})
-    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{empresa_id}:{id_conv}")) or "Cliente"
+    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await get_tenant_cache(empresa_id, f"nome_cliente:{id_conv}")) or "Cliente"
     
-    lock_key = f"agendar_lock:{empresa_id}:{id_conv}"
-    if await redis_client.set(lock_key, "1", nx=True, ex=5):
+    lock_key = f"agendar_lock:{id_conv}"
+    if await redis_client.set(f"{empresa_id}:{lock_key}", "1", nx=True, ex=5):
         try:
             existe = await _database.db_pool.fetchval(
                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
@@ -371,10 +382,10 @@ async def chatwoot_webhook(
         arquivos.append({"url": a.get("data_url"), "type": tipo})
 
     await redis_client.rpush(
-        f"buffet:{empresa_id}:{id_conv}",
+        f"{empresa_id}:buffet:{id_conv}",
         json.dumps({"text": conteudo_texto, "files": arquivos})
     )
-    await redis_client.expire(f"buffet:{empresa_id}:{id_conv}", 60)
+    await redis_client.expire(f"{empresa_id}:buffet:{id_conv}", 60)
 
     # Publicar job no Redis Streams para processamento assíncrono (Arquitetura guiada por eventos)
     try:
@@ -401,6 +412,5 @@ async def chatwoot_webhook(
 
 @router.get("/desbloquear/{empresa_id}/{conversation_id}")
 async def desbloquear_ia(empresa_id: int, conversation_id: int):
-    if await redis_client.delete(f"pause_ia:{empresa_id}:{conversation_id}"):
-        return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id} (emp={empresa_id})!"}
-    return {"status": "aviso", "mensagem": f"A conversa {conversation_id} da empresa {empresa_id} não estava pausada."}
+    val = await delete_tenant_cache(empresa_id, f"pause_ia:{conversation_id}")
+    return {"status": "sucesso", "mensagem": f"✅ Operação realizada para {conversation_id} (emp={empresa_id})!"}

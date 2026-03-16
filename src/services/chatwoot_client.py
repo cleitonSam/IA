@@ -8,18 +8,15 @@ from typing import Optional, Any
 from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL, CHATWOOT_WEBHOOK_SECRET
 from src.core.redis_client import redis_client
 from src.utils.text_helpers import limpar_markdown, primeiro_nome_cliente, nome_eh_valido
+from src.utils.redis_helper import get_tenant_cache
 
-# HTTP client — set externally during startup via:
-#   import src.services.chatwoot_client as _cw
-#   _cw.http_client = httpx.AsyncClient(...)
+# HTTP client — set externally during startup
 http_client: httpx.AsyncClient = None
 
 
 async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0):
     """
     Simula tempo de digitação humana com um simples sleep.
-    O endpoint REST de typing status do Chatwoot requer WebSocket (ActionCable),
-    não funciona via API token — usamos apenas o delay para naturalidade.
     """
     await asyncio.sleep(max(0.5, min(segundos, 6.0)))
 
@@ -65,14 +62,14 @@ async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome
         url_base = integracao.get('url') or nested.get('url')
         token = nested.get('access_token') or nested.get('token')
     else:
-        url_base = integracao.get('url')
+        url_base = integracao.get('url') or integracao.get('base_url')
         token = integracao.get('access_token') or integracao.get('token')
     if not url_base or not token:
         return False
 
     headers = {"api_access_token": str(token)}
     payload = {"name": nome.strip()}
-    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
+    url = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/contacts/{contact_id}"
     try:
         resp = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
         resp.raise_for_status()
@@ -92,6 +89,7 @@ async def enviar_mensagem_chatwoot(
     conversation_id: int,
     content: str,
     url_base_ou_integracao: Any, # Aceita URL string ou dict de integração
+    empresa_id: int,
     token: str = None,
     contact_id: int = None,
     nome_ia: str = "Assistente",
@@ -100,10 +98,9 @@ async def enviar_mensagem_chatwoot(
     fone: str = None,
     is_direct_url: bool = False
 ):
-    # Se for via UAZAPI (WhatsApp Direto)
+    # Fluxo UazAPI (WhatsApp Direto)
     if source == "uazapi" and fone:
         from src.services.uaz_client import UazAPIClient
-        # No worker, a integração (dict) contém base_url e token
         _cfg = url_base_ou_integracao if isinstance(url_base_ou_integracao, dict) else {}
         client = UazAPIClient(
             base_url=_cfg.get("url") or _cfg.get("base_url") or "",
@@ -111,8 +108,7 @@ async def enviar_mensagem_chatwoot(
             instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
-            # Proteção contra ECO: Marca que o bot enviou para o webhook ignorar bloqueio
-            await redis_client.setex(f"uaz_bot_sent_conv:{conversation_id}", 120, "1")
+            await redis_client.setex(f"uaz_bot_sent_conv:{empresa_id}:{conversation_id}", 120, "1")
             
             if is_direct_url:
                 await client.send_media(fone, content, media_type="image")
@@ -120,7 +116,7 @@ async def enviar_mensagem_chatwoot(
                 await client.send_text(fone, content)
             return True
         except Exception as e:
-            logger.error(f"Erro ao enviar via UAZAPI: {e}")
+            logger.error(f"❌ Erro ao enviar via UAZAPI: {e}")
             return False
 
     # Fluxo Chatwoot clássico
@@ -138,84 +134,55 @@ async def enviar_mensagem_chatwoot(
         url_base = url_base_ou_integracao
 
     if not url_base or not token:
-        logger.error("Integração Chatwoot incompleta: url ou token ausentes")
+        logger.error(f"❌ Integ Chatwoot incompleta para emp {empresa_id} conv {conversation_id}: url ou token ausentes")
         return None
 
-    # Padroniza formatação antes de enviar
-    content = formatar_mensagem_saida(content)
-
-    # Personalização natural com nome (sem repetição artificial)
-    if not evitar_prefixo_nome:
-        try:
-            _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
-        except Exception:
-            _nome_salvo = None
-        content = suavizar_personalizacao_nome(content, _nome_salvo)
-
-    # Normalização defensiva: Garante que url_base tenha protocolo se parecer um domínio
-    if url_base and not str(url_base).startswith(("http://", "https://")):
-        if "." in str(url_base):
-            url_base = f"https://{url_base}"
+    # Normalização de Protocolo (CHATWOOT-V5)
+    raw_url = str(url_base).strip()
+    if not raw_url.startswith(("http://", "https://")):
+        if "." in raw_url:
+            url_base = f"https://{raw_url}"
         else:
-            logger.error(f"❌ URL da integração Chatwoot inválida ou malformada: '{url_base}'")
+            logger.error(f"❌ URL Chatwoot inválida: '{raw_url}'")
             return None
 
     url_m = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     
+    # Padroniza formatação
+    content = formatar_mensagem_saida(content)
+
+    # Personalização com nome
+    if not evitar_prefixo_nome:
+        _nome_salvo = await get_tenant_cache(empresa_id, f"nome_cliente:{conversation_id}")
+        content = suavizar_personalizacao_nome(content, _nome_salvo)
+
+    payload = {
+        "content": content,
+        "message_type": "outgoing",
+        "content_attributes": {
+            "origin": "ai",
+            "ai_agent": nome_ia,
+            "ignore_webhook": True
+        }
+    }
     if is_direct_url:
-        # Chatwoot suporta attachments via multipart/form-data ou URL direta no content (depende da config)
-        # Aqui enviamos a URL no content, o Chatwoot costuma fazer o unfurl ou podemos usar attachments.
-        # Por simplicidade, enviamos como conteúdo.
-        payload = {
-            "content": content,
-            "message_type": "outgoing",
-            "content_attributes": {
-                "origin": "ai",
-                "ai_agent": nome_ia,
-                "ignore_webhook": True,
-                "external_url": content
-            }
-        }
-    else:
-        payload = {
-            "content": content,
-            "message_type": "outgoing",
-            "content_attributes": {
-                "origin": "ai",
-                "ai_agent": nome_ia,
-                "ignore_webhook": True
-            }
-        }
+        payload["content_attributes"]["external_url"] = content
     # Proteção: garante que token seja string válida
     if isinstance(token, dict):
         logger.error(f"⚠️ Token do Chatwoot chegou como dict — extraindo access_token/token")
         token = token.get('access_token') or token.get('token')
     headers = {"api_access_token": str(token) if token else ""}
+    
+    logger.info(f"🚀 [CHATWOOT-V5] Postando conv={conversation_id} emp={empresa_id}")
 
     try:
-        resp = await http_client.post(url_m, json=payload, headers=headers)
+        resp = await http_client.post(url_m, json=payload, headers=headers, timeout=15.0)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
         return resp
-    except httpx.TimeoutException as e:
-        logger.error(f"⏱️ Timeout ao enviar mensagem para conversa {conversation_id}: {e}")
-        if PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_timeout").inc()
-        return None
-    except httpx.HTTPStatusError as e:
-        logger.error(f"❌ HTTP {e.response.status_code} ao enviar para conversa {conversation_id}: {e}")
-        if PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_http_error").inc()
-        return None
-    except httpx.ConnectError as e:
-        logger.error(f"🔌 Conexão falhou ao enviar para conversa {conversation_id}: {e}")
-        if PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_connect_error").inc()
-        return None
     except Exception as e:
-        logger.error(f"Erro inesperado ao enviar mensagem para Chatwoot: {e}")
+        logger.error(f"❌ Erro Chatwoot: {e} | URL: {url_m}")
         if PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_unknown").inc()
+            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_error").inc()
         return None
 
 

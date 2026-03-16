@@ -26,6 +26,9 @@ from src.core.config import (
 )
 import src.core.database as _database
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
+from src.utils.redis_helper import (
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+)
 from src.core.security import cb_llm
 from src.utils.text_helpers import (
     normalizar, comprimir_texto, descomprimir_texto, limpar_nome,
@@ -60,9 +63,9 @@ async def resolver_contexto_unidade(
     empresa_id: int,
     slug_atual: Optional[str] = None
 ) -> Dict[str, Optional[str]]:
-    """Resolve unidade da conversa em um único ponto (mensagem > contexto)."""
+    # Resolve unidade da conversa em um único ponto (mensagem > contexto).
     # Prioriza contexto já salvo em Redis (mais confiável que slug transitório do webhook)
-    slug_redis = await redis_client.get(f"unidade_escolhida:{empresa_id}:{conversation_id}")
+    slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}")
     slug_salvo = slug_redis or slug_atual
 
     # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
@@ -97,7 +100,7 @@ async def resolver_contexto_unidade(
     if slug_detectado:
         mudou = slug_detectado != slug_salvo
         if mudou:
-            await redis_client.setex(f"unidade_escolhida:{empresa_id}:{conversation_id}", 86400, slug_detectado)
+            await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
         return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true" if mudou else "false"}
 
     if slug_salvo:
@@ -740,7 +743,7 @@ async def buscar_cache_semantico(
 
     try:
         # Busca empresa_id para o slug se não literal
-        pattern = f"semcache:{empresa_id}:{slug}:*"
+        pattern = f"{empresa_id}:semcache:{slug}:*"
         melhor_score = 0.0
         melhor_key   = None
         total_scan   = 0
@@ -794,7 +797,7 @@ async def salvar_cache_semantico(
         _cur_lim = 0
         while True:
             _cur_lim, _kk_lim = await redis_client.scan(
-                _cur_lim, match=f"semcache:{empresa_id}:{slug}:*", count=100
+                _cur_lim, match=f"{empresa_id}:semcache:{slug}:*", count=100
             )
             _total_slug += len(_kk_lim)
             if _cur_lim == 0 or _total_slug >= 500:
@@ -803,7 +806,7 @@ async def salvar_cache_semantico(
             logger.debug(f"semcache: limite 500 atingido para slug={slug}, entrada descartada")
             return
 
-        chave = f"semcache:{empresa_id}:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
+        chave = f"{empresa_id}:semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
         await redis_client.hset(chave, mapping={
             "embedding": json.dumps(emb),
             "resposta":  json.dumps(dados),
@@ -835,21 +838,11 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
-async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
-    """Coleta mensagens do buffer e limpa a fila da conversa.
-
-    Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
-    em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
-    """
-    # Busca empresa_id no contexto se disponível, mas aqui recebemos conversation_id
-    # No caso de ia_processor, os métodos que chamam buffet devem prover empresa_id.
-    # Vou ajustar a assinatura de coletar_mensagens_buffer e onde ela é chamada.
-    # Mas espera, eu posso buscar o empresa_id da conversa no Redis ou no BD se necessário.
-    # No bot_core.py, o empresa_id está disponível.
-    # Vamos adicionar empresa_id como argumento.
-    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
-
-    mensagens_acumuladas: List[str] = []
+async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[Dict[str, Any]]:
+    """Coleta mensagens acumuladas no buffer do Redis."""
+    chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
+    
+    mensagens_acumuladas: List[Dict[str, Any]] = []
     deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
 
     while True:
@@ -857,24 +850,26 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
             pipe.lrange(chave_buffet, 0, -1)
             pipe.delete(chave_buffet)
             resultado = await pipe.execute()
-        lote = resultado[0] or []
-        if lote:
-            mensagens_acumuladas.extend(lote)
-            if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
-                break
-            await asyncio.sleep(0.25)
-            continue
-        if mensagens_acumuladas or time.time() >= deadline:
-            break
-        await asyncio.sleep(0.15)
+        
+        lote_raw = resultado[0] or []
+        for raw in lote_raw:
+            try:
+                mensagens_acumuladas.append(json.loads(raw))
+            except:
+                pass
 
-    logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
+        if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
+            break
+        await asyncio.sleep(0.25)
+
+    if mensagens_acumuladas:
+        logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
 
 
 async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa_id: int, mensagens_acumuladas: List[str]) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
-    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
+    if not await exists_tenant_cache(empresa_id, f"esperando_unidade:{conversation_id}"):
         return False
 
     logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
