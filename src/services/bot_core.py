@@ -1126,6 +1126,13 @@ async def processar_ia_e_responder(
 
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
+            qtd_unidades_rede = len(todas_unidades or [])
+            contexto_rede_unidades = (
+                f"A rede {nome_empresa} possui {qtd_unidades_rede} unidades ativas. "
+                "Quando fizer sentido na conversa, mencione essa quantidade para orientar o cliente."
+                if qtd_unidades_rede > 1 else
+                f"A rede {nome_empresa} está operando com 1 unidade ativa."
+            )
 
             if hor_banco:
                 if isinstance(hor_banco, dict):
@@ -1272,6 +1279,9 @@ INFORMAÇÕES DA UNIDADE
 UNIDADES DA REDE {nome_empresa.upper()}:
 {resumo_todas_unidades}
 
+CONTEXTO DA REDE:
+{contexto_rede_unidades}
+
 REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da rede.
 Se o cliente perguntar sobre qualquer unidade (endereço, horário, infraestrutura, estacionamento, modalidades etc.), responda diretamente usando os dados acima.
 Só diga que não tem a informação se ela realmente não estiver nos dados fornecidos.
@@ -1287,7 +1297,8 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
 - Se um campo estiver como "não informado", diga que não tem essa informação agora.
 - NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
-- NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
+- Sempre trate a empresa correta ({nome_empresa}) como contexto do atendimento.
+- Se a rede tiver mais de 1 unidade ({qtd_unidades_rede} no total), pode informar essa quantidade ao cliente quando útil.
 - Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):

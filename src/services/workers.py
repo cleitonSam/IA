@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List
@@ -12,6 +13,26 @@ from src.services.db_queries import (
     _is_worker_leader, _coletar_metricas_unidade
 )
 from src.services.chatwoot_client import enviar_mensagem_chatwoot
+
+
+def _render_followup_template(template: str, nome_contato: str, nome_unidade: str) -> str:
+    texto = template or ""
+
+    nome = (nome_contato or "").strip() or "você"
+    unidade = (nome_unidade or "").strip()
+
+    for token in ("{{nome}}", "{nome}"):
+        texto = texto.replace(token, nome)
+
+    for token in ("{{unidade}}", "{unidade}"):
+        texto = texto.replace(token, unidade)
+
+    if not unidade:
+        # Limpa trechos comuns que ficariam quebrados sem o nome da unidade
+        texto = re.sub(r"\bsobre\s+a\s*\.?", "", texto, flags=re.IGNORECASE)
+        texto = re.sub(r"\s{2,}", " ", texto).strip()
+
+    return texto
 
 # Global flag — set to True by bot_core shutdown_event
 is_shutting_down: bool = False
@@ -181,8 +202,10 @@ async def worker_followup():
                         continue
                     
                     nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
-                    nome_unidade = f['nome_unidade'] or ''
-                    template_base = (f['mensagem'] or '').replace('{{nome}}', nome_contato).replace('{{unidade}}', nome_unidade)
+                    nome_unidade = (f['nome_unidade'] or '').strip()
+                    if not nome_unidade and f.get('slug'):
+                        nome_unidade = str(f['slug']).replace('-', ' ').replace('_', ' ').title()
+                    template_base = _render_followup_template(f['mensagem'] or '', nome_contato, nome_unidade)
                     
                     # Carrega personalidade para usar modelo escolhido pelo cliente
                     from src.services.db_queries import carregar_personalidade
