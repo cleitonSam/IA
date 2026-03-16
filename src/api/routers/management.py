@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
+from src.core.redis_client import redis_client
 import json
 import asyncio
 
@@ -421,6 +422,43 @@ async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
             return int(empresa_id)
     return None
 
+
+
+
+@router.get("/integrations/chatwoot/ai-status")
+async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_token)):
+    """Status global da IA para mensagens do Chatwoot (por empresa)."""
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    paused = await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1"
+    return {"ai_active": not paused}
+
+
+@router.put("/integrations/chatwoot/ai-status")
+async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_current_user_token)):
+    """Ativa/pausa globalmente o atendimento da IA no canal Chatwoot."""
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    ai_active = bool(body.get("ai_active", True))
+    key = f"ia:chatwoot:paused:{empresa_id}"
+    if ai_active:
+        await redis_client.delete(key)
+    else:
+        await redis_client.set(key, "1")
+
+    return {"status": "success", "ai_active": ai_active}
 
 @router.get("/integrations")
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):

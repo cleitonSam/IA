@@ -899,6 +899,11 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
+        # Pausa global da IA no Chatwoot por empresa (evita responder enquanto estiver desativada)
+        if source == 'chatwoot' and await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+            logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
+            return
+
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
             return
 

@@ -26,6 +26,8 @@ export default function IntegrationsPage() {
   const [activeTab, setActiveTab] = useState("chatwoot");
   const [integrations, setIntegrations] = useState<Record<string, Integration>>({});
   const [isAdminMaster, setIsAdminMaster] = useState(false);
+  const [chatwootAiActive, setChatwootAiActive] = useState(true);
+  const [togglingAi, setTogglingAi] = useState(false);
 
   // EVO per-unit state
   const [evoUnits, setEvoUnits] = useState<EvoUnit[]>([]);
@@ -53,6 +55,9 @@ export default function IntegrationsPage() {
             return acc;
           }, {});
           setIntegrations(mapped);
+          return axios.get("/api-backend/management/integrations/chatwoot/ai-status", getToken())
+            .then((statusRes) => setChatwootAiActive(Boolean(statusRes.data?.ai_active)))
+            .catch(() => setChatwootAiActive(true));
         }).catch(console.error).finally(() => setLoading(false));
     }).catch(() => setLoading(false));
   }, []);
@@ -78,6 +83,24 @@ export default function IntegrationsPage() {
     [activeTab]: { ...currentConfig, config: { ...currentConfig.config, [field]: value } }
   });
   const toggleAtivo = () => setIntegrations({ ...integrations, [activeTab]: { ...currentConfig, ativo: !currentConfig.ativo } });
+
+  const toggleChatwootAI = async () => {
+    if (activeTab !== "chatwoot") return;
+    const next = !chatwootAiActive;
+    setTogglingAi(true);
+    try {
+      await axios.put(
+        "/api-backend/management/integrations/chatwoot/ai-status",
+        { ai_active: next },
+        getToken()
+      );
+      setChatwootAiActive(next);
+    } catch {
+      alert("Erro ao alterar status da IA no Chatwoot.");
+    } finally {
+      setTogglingAi(false);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -337,6 +360,7 @@ export default function IntegrationsPage() {
                     </div>
 
                     {activeTab === "chatwoot" && (
+                      <>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div className="space-y-3">
                           <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5"><Globe className="w-3 h-3 text-[#00d2ff]" />URL Host</label>
@@ -351,6 +375,20 @@ export default function IntegrationsPage() {
                           <input type="password" value={currentConfig.config.access_token || ""} onChange={e => updateField("access_token", e.target.value)} className={`${inputClass} font-mono`} placeholder="••••••••••••••••••••••" />
                         </div>
                       </div>
+
+                      <div className="md:col-span-2 flex items-center justify-between bg-slate-900/60 px-5 py-4 rounded-2xl border border-white/5">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">IA no Chatwoot</p>
+                          <p className={`text-[10px] font-black uppercase mt-1 ${chatwootAiActive ? "text-emerald-400" : "text-amber-400"}`}>
+                            {chatwootAiActive ? "● Ativada" : "⏸ Pausada"}
+                          </p>
+                        </div>
+                        <button type="button" onClick={toggleChatwootAI} disabled={togglingAi}
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all disabled:opacity-60 ${chatwootAiActive ? "bg-[#00d2ff]" : "bg-slate-700"}`}>
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${chatwootAiActive ? "translate-x-6" : "translate-x-1"}`} />
+                        </button>
+                      </div>
+                      </>
                     )}
 
                     {activeTab === "uzap" && (
