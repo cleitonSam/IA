@@ -1445,9 +1445,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                  modelo_escolhido = "google/gemini-2.0-flash"
 
             temperature = float(pers.get("temperature") or pers.get("temperatura") or 0.7)
-            max_tokens_llm = int(pers.get("max_tokens") or 8000)
-            # Mínimo alto para nunca truncar respostas com múltiplos planos ou detalhes
-            max_tokens_llm = max(max_tokens_llm, 8000)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
@@ -1519,7 +1516,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
-                            max_tokens=max_tokens_llm,
                         ),
                         timeout=extra_timeout
                     )
