@@ -104,9 +104,12 @@ async def _marcar_convite_usado(token: str):
 
 @router.post("/login")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await buscar_usuario_por_email(form_data.username)
-    if not user or not verify_password(form_data.password, user['senha_hash']):
-        logger.warning(f"⚠️ Login falhou: {form_data.username}")
+    email_login = (form_data.username or "").strip().lower()
+    senha_login = form_data.password or ""
+
+    user = await buscar_usuario_por_email(email_login)
+    if not user or not verify_password(senha_login, user['senha_hash']):
+        logger.warning(f"⚠️ Login falhou: {email_login}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="E-mail ou senha incorretos",

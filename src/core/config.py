@@ -20,7 +20,7 @@ try:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
-except ImportError:
+except (ImportError, ValueError):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s"
@@ -52,7 +52,7 @@ try:
     METRIC_WORKER_LATENCY   = Histogram("saas_worker_latency_seconds", "Tempo total de processamento no worker",
                                          buckets=[1, 2, 5, 10, 30, 60])
     METRIC_WORKER_PROCESSED = Counter("saas_worker_messages_total", "Total de mensagens processadas pelo worker", ["status"])
-except ImportError:
+except (ImportError, ValueError):
     PROMETHEUS_OK = False
     generate_latest = None
     CONTENT_TYPE_LATEST = None
