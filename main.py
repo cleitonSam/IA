@@ -944,6 +944,25 @@ def normalizar(texto: str) -> str:
     return unicodedata.normalize("NFD", str(texto).lower()).encode("ascii", "ignore").decode("utf-8")
 
 
+def _render_followup_template(template: str, nome_contato: str, nome_unidade: str) -> str:
+    texto = template or ""
+
+    nome = (nome_contato or "").strip() or "você"
+    unidade = (nome_unidade or "").strip()
+
+    for token in ("{{nome}}", "{nome}"):
+        texto = texto.replace(token, nome)
+
+    for token in ("{{unidade}}", "{unidade}"):
+        texto = texto.replace(token, unidade)
+
+    if not unidade:
+        texto = re.sub(r"\bsobre\s+a\s*\.?", "", texto, flags=re.IGNORECASE)
+        texto = re.sub(r"\s{2,}", " ", texto).strip()
+
+    return texto
+
+
 def comprimir_texto(texto: str) -> str:
     if not texto:
         return ""
@@ -2173,7 +2192,8 @@ async def worker_followup():
                 agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
                 pendentes = await db_pool.fetch("""
-                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id
+                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id,
+                           u.nome AS nome_unidade, c.contato_nome
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
                     JOIN unidades u ON u.id = f.unidade_id
@@ -2206,8 +2226,14 @@ async def worker_followup():
                         )
                         continue
 
+                    nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
+                    nome_unidade = (f['nome_unidade'] or '').strip()
+                    if not nome_unidade and f.get('slug'):
+                        nome_unidade = str(f['slug']).replace('-', ' ').replace('_', ' ').title()
+                    mensagem_followup = _render_followup_template(f['mensagem'] or '', nome_contato, nome_unidade)
+
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], f['mensagem'], "Assistente Virtual", integracao
+                        f['account_id'], f['conversation_id'], mensagem_followup, "Assistente Virtual", integracao
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
