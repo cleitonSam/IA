@@ -2355,9 +2355,10 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
     if not db_pool or not texto:
         return None
 
-    # Ignora saudações genéricas mas NÃO ignora nomes de bairros de 1 palavra (Itaquera, Paulista...)
-    if eh_saudacao(texto):
-        return None
+    # Normalização agressiva para busca
+    texto_bruto = texto.lower()
+    texto_norm = normalizar(texto)
+    tokens_texto = set(texto_norm.split())
 
     # 1. Função SQL customizada (mais precisa, se disponível no banco)
     try:
@@ -2366,14 +2367,18 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
         if row:
             return row['unidade_slug']
     except asyncpg.UndefinedFunctionError:
-        pass  # Função não existe no banco — usa fallback Python
+        pass
     except asyncpg.PostgresError as e:
         logger.error(f"Erro SQL ao buscar unidade: {e}")
 
     # 2. Busca por palavras-chave, nome, cidade e bairro
     unidades = await listar_unidades_ativas(empresa_id)
-    texto_norm = normalizar(texto)
-    tokens_texto = set(texto_norm.split())  # tokens para matching por palavra
+    
+    # --- CAMADA ZERO: Matches de Prioridade (Ex: Ourinhos) ---
+    for u in unidades:
+        slug_u = u.get('slug', '').lower()
+        if slug_u == 'ourinhos' and 'ourinhos' in texto_bruto:
+            return u['slug']
 
     for u in unidades:
         nome_norm   = normalizar(u.get('nome', ''))
@@ -2391,22 +2396,17 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
         if any(p and len(p) > 3 and p in texto_norm for p in palavras_chave):
             return u['slug']
 
-        # Matching por tokens — suporta "morumbi" encontrar "Smart Fit – Morumbi"
-        # ou "sp" / "sao paulo" encontrar qualquer cidade de SP
+        # Matching por tokens
         tokens_nome    = set(nome_norm.split())
         tokens_cidade  = set(cidade_norm.split()) if cidade_norm else set()
         tokens_bairro  = set(bairro_norm.split()) if bairro_norm else set()
 
-        # Interseção de tokens significativos (ignora palavras curtas < 4 chars)
         _sig = lambda ts: {t for t in ts if len(t) >= 4}
 
-        # Token matching no NOME — exige ≥2 tokens para evitar falso positivo
-        # Ex: "Ricardo Jafet" → {"ricardo", "jafet"} ∩ tokens do texto → 2 matches → OK
         _match_nome = _sig(tokens_texto) & _sig(tokens_nome)
         if len(_match_nome) >= 2:
             return u['slug']
-        # Para nomes com 1 único token significativo (ex: "Andorinha"),
-        # aceita match direto se esse token ≥6 chars (mais específico)
+        
         if len(_match_nome) == 1 and all(len(t) >= 6 for t in _match_nome):
             return u['slug']
 
@@ -2415,13 +2415,7 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
         if _sig(tokens_texto) & _sig(tokens_bairro):
             return u['slug']
 
-        # Verifica se alguma palavra-chave é um token presente no texto
-        for p in palavras_chave:
-            tokens_pchave = set(p.split())
-            if _sig(tokens_texto) & _sig(tokens_pchave):
-                return u['slug']
-
-    # 3. Fuzzy matching conservador — threshold ajustável para evitar falsos positivos
+    # 3. Fuzzy matching conservador
     melhor_slug = None
     maior_score = 0
     for u in unidades:
@@ -3554,8 +3548,19 @@ NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de f
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
 Você é um atendente — apenas responda o cliente diretamente.
 
-Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
+Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
+"""
+            if slug:
+                prompt_sistema += f"Você atende especificamente a unidade: {nome_unidade}.\n"
+            else:
+                prompt_sistema += "Você é um consultor da marca Red Fitness. Quando o cliente perguntar de qual unidade você é, diga que atende toda a rede e pergunte qual unidade ele gostaria de conhecer.\n"
 
+            _foto_grade = unidade.get("foto_grade")
+            if _foto_grade:
+                prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM uma imagem da grade de aulas/horários disponível em: {_foto_grade}\n"
+                prompt_sistema += "Se o cliente pedir a 'grade', 'horário das aulas' ou 'cronograma', informe que vai enviar a imagem agora.\n"
+
+            prompt_sistema += f"""
 PERSONALIDADE
 {pers.get('personalidade', 'Atendente prestativo, simpático e focado em ajudar.')}
 
@@ -3752,35 +3757,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
-                        # Detecta resposta longa e tenta continuidade automática (sem cortar texto)
+                        # Resposta longa (length) agora é tratada deixando o texto fluir até o final natural dele (max_tokens generoso)
                         _finish = getattr(response.choices[0], 'finish_reason', None)
-                        if _finish == "length" and resposta_bruta:
-                            logger.info(f"ℹ️ Resposta longa (finish_reason=length) conv {conversation_id} — continuando automaticamente")
-                            try:
-                                acumulada = (resposta_bruta or "").strip()
-                                for _ in range(3):
-                                    resposta_cont = await asyncio.wait_for(
-                                        cliente_ia.chat.completions.create(
-                                            model=modelo_escolhido,
-                                            messages=[
-                                                {"role": "system", "content": "Continue exatamente de onde parou, sem repetir o início. Continue de forma direta."},
-                                                {"role": "assistant", "content": acumulada},
-                                            ],
-                                            temperature=max(0.2, min(temperature, 0.7)),
-                                            max_tokens=320,
-                                        ),
-                                        timeout=10,
-                                    )
-                                    cont_txt = (resposta_cont.choices[0].message.content or "").strip()
-                                    if not cont_txt:
-                                        break
-                                    acumulada = f"{acumulada} {cont_txt}".strip()
-                                    if getattr(resposta_cont.choices[0], 'finish_reason', None) != "length":
-                                        break
-                                resposta_bruta = acumulada
-                            except Exception:
-                                # Se não conseguir continuar, mantém o texto já gerado sem cortar.
-                                pass
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -4023,6 +4001,23 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
                 _texto_final = resposta_texto.strip()
+                
+                # NOVIDADE: Verifica se deve enviar IMAGEM da GRADE antes do texto
+                _foto_grade = unidade.get("foto_grade")
+                if intencao == "modalidades" and _foto_grade:
+                    try:
+                        logger.info(f"🖼️ Priorizando envio de foto_grade para conv {conversation_id}")
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, 
+                            f"Aqui está a grade de aulas da unidade *{nome_unidade}* 😊", 
+                            nome_ia, integracao_chatwoot,
+                            attachment_url=_foto_grade
+                        )
+                        # Pequeno delay para a imagem chegar antes do texto da IA
+                        await asyncio.sleep(1.0)
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar foto_grade: {e}")
+
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
                 await enviar_mensagem_chatwoot(
