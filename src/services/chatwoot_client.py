@@ -58,11 +58,15 @@ async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome
     """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
     if not contact_id or not nome_eh_valido(nome):
         return False
-    url_base = integracao.get('url')
-    token = integracao.get('access_token') or integracao.get('token')
-    if isinstance(token, dict):
-        token = token.get('access_token') or token.get('token')
-        logger.error("Config Chatwoot com token aninhado como dict — verifique a integração salva no painel")
+    # Normaliza config (suporta estrutura plana e aninhada legada)
+    nested = integracao.get('token') if isinstance(integracao.get('token'), dict) else None
+    if nested:
+        logger.error("Config Chatwoot aninhado sob 'token' — re-salve a integração no painel")
+        url_base = integracao.get('url') or nested.get('url')
+        token = nested.get('access_token') or nested.get('token')
+    else:
+        url_base = integracao.get('url')
+        token = integracao.get('access_token') or integracao.get('token')
     if not url_base or not token:
         return False
 
@@ -118,11 +122,15 @@ async def enviar_mensagem_chatwoot(
 
     # Fluxo Chatwoot clássico
     if isinstance(url_base_ou_integracao, dict):
-        url_base = url_base_ou_integracao.get('url')
-        token = url_base_ou_integracao.get('access_token') or url_base_ou_integracao.get('token')
-        if isinstance(token, dict):
-            token = token.get('access_token') or token.get('token')
-            logger.error("Config Chatwoot com token aninhado como dict — verifique a integração salva no painel")
+        cfg = url_base_ou_integracao
+        nested = cfg.get('token') if isinstance(cfg.get('token'), dict) else None
+        if nested:
+            logger.error("Config Chatwoot aninhado sob 'token' — re-salve a integração no painel")
+            url_base = cfg.get('url') or nested.get('url')
+            token = nested.get('access_token') or nested.get('token')
+        else:
+            url_base = cfg.get('url')
+            token = cfg.get('access_token') or cfg.get('token')
     else:
         url_base = url_base_ou_integracao
 
