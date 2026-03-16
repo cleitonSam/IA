@@ -80,8 +80,10 @@ app = FastAPI()
 # Rotas de dashboard/auth da versão modular (sem quebrar o webhook legado)
 from src.api.routers.auth import router as auth_router
 from src.api.routers.dashboard import router as dashboard_router
+from src.api.routers.management import router as management_router
 app.include_router(auth_router)
 app.include_router(dashboard_router)
+app.include_router(management_router)
 
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook
