@@ -2113,6 +2113,26 @@ async def enviar_mensagem_chatwoot(
         }
     }
     if attachment_url:
+        # Detecta se é integração UAZAPI para envio direto de mídia
+        if "uazapi.com" in str(url_base).lower():
+            try:
+                _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+                if _fone:
+                    _fone_clean = "".join(filter(str.isdigit, str(_fone)))
+                    uaz_url = f"{str(url_base).rstrip('/')}/send/media"
+                    uaz_payload = {
+                        "number": _fone_clean,
+                        "type": "image",
+                        "file": attachment_url
+                    }
+                    uaz_headers = {"token": token, "Content-Type": "application/json"}
+                    logger.info(f"🚀 Enviando mídia direta via UAZAPI para {_fone_clean}")
+                    uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=15.0)
+                    uaz_resp.raise_for_status()
+                    return uaz_resp
+            except Exception as e:
+                logger.error(f"❌ Erro ao enviar mídia direta via UAZAPI: {e}")
+
         payload["content_attributes"]["external_url"] = attachment_url
     headers = {"api_access_token": token}
 
@@ -3559,8 +3579,8 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 
             _foto_grade = unidade.get("foto_grade")
             if _foto_grade:
-                prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM uma imagem da grade de aulas/horários disponível em: {_foto_grade}\n"
-                prompt_sistema += "Se o cliente pedir a 'grade', 'horário das aulas' ou 'cronograma', informe que vai enviar a imagem agora.\n"
+                prompt_sistema += f"\n[SISTEMA - IMPORTANTE]: Você TEM a imagem da grade desta unidade aqui: {_foto_grade}\n"
+                prompt_sistema += "Se o cliente pedir 'grade', 'horários' ou 'quadro de aulas', você DEVE dizer algo como 'Vou te enviar a imagem da grade agora mesmo' e deixar que o sistema envie. NUNCA diga que não tem a grade.\n"
 
             prompt_sistema += f"""
 PERSONALIDADE
@@ -4186,6 +4206,10 @@ async def chatwoot_webhook(
     nome_contato_valido = nome_eh_valido(nome_contato_limpo)
 
     if message_type == "incoming":
+        _telefone = contato.get("phone_number")
+        if _telefone:
+            await redis_client.setex(f"fone_cliente:{id_conv}", 86400, str(_telefone))
+            
         if nome_contato_valido:
             await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
         else:
