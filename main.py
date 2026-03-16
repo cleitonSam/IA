@@ -2083,7 +2083,8 @@ async def enviar_mensagem_chatwoot(
     conversation_id: int,
     content: str,
     nome_ia: str,
-    integracao: dict
+    integracao: dict,
+    attachment_url: str = None
 ):
     url_base = integracao.get('url')
     token = extrair_token_chatwoot(integracao)
@@ -2111,6 +2112,8 @@ async def enviar_mensagem_chatwoot(
             "ignore_webhook": True
         }
     }
+    if attachment_url:
+        payload["content_attributes"]["external_url"] = attachment_url
     headers = {"api_access_token": token}
 
     try:
@@ -2374,11 +2377,6 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
     # 2. Busca por palavras-chave, nome, cidade e bairro
     unidades = await listar_unidades_ativas(empresa_id)
     
-    # --- CAMADA ZERO: Matches de Prioridade (Ex: Ourinhos) ---
-    for u in unidades:
-        slug_u = u.get('slug', '').lower()
-        if slug_u == 'ourinhos' and 'ourinhos' in texto_bruto:
-            return u['slug']
 
     for u in unidades:
         nome_norm   = normalizar(u.get('nome', ''))
@@ -3286,14 +3284,18 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
-        if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
-            return
-
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)
         textos = anexos["textos"]
         transcricoes = anexos["transcricoes"]
         imagens_urls = anexos["imagens_urls"]
         mensagens_formatadas = anexos["mensagens_formatadas"]
+
+        # Bypass 'waiting for unit' if user is asking for price, hours, etc.
+        _texto_unificado_p = " ".join([t for t in (textos + transcricoes) if t]).lower()
+        _bypass_pause = any(x in _texto_unificado_p for x in ["preço", "preco", "valor", "grade", "horario", "horário", "endereço", "endereco", "unidades", "grade de aula"])
+
+        if not _bypass_pause and await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
+            return
 
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
         # O drain loop pode recolocar mensagens no buffer após o processamento.
@@ -3551,9 +3553,9 @@ Você é um atendente — apenas responda o cliente diretamente.
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
             if slug:
-                prompt_sistema += f"Você atende especificamente a unidade: {nome_unidade}.\n"
+                prompt_sistema += f"Você é consultor da Red Fitness, focado agora no atendimento da unidade: {nome_unidade}.\n"
             else:
-                prompt_sistema += "Você é um consultor da marca Red Fitness. Quando o cliente perguntar de qual unidade você é, diga que atende toda a rede e pergunte qual unidade ele gostaria de conhecer.\n"
+                prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
 
             _foto_grade = unidade.get("foto_grade")
             if _foto_grade:
@@ -4004,7 +4006,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 
                 # NOVIDADE: Verifica se deve enviar IMAGEM da GRADE antes do texto
                 _foto_grade = unidade.get("foto_grade")
-                if intencao == "modalidades" and _foto_grade:
+                _texto_unificado = " ".join([t for t in (textos + transcricoes) if t]).lower()
+                _quer_grade = any(x in _texto_unificado for x in ["grade", "cronograma", "quadro de aulas", "horario das aulas", "horário das aulas", "grade de aulas"])
+                
+                if _quer_grade and _foto_grade:
                     try:
                         logger.info(f"🖼️ Priorizando envio de foto_grade para conv {conversation_id}")
                         await enviar_mensagem_chatwoot(
