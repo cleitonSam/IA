@@ -40,6 +40,8 @@ def get_engine():
             credentials, host_info = rest.rsplit("@", 1)
             # Split credentials by the FIRST ':' to get user and pass
             username, password = credentials.split(":", 1)
+            # URL-decode password (handles special chars like @, #, !, etc.)
+            password = urllib.parse.unquote(password)
             
             # Split host_info to get host, port, db and query
             # host_info example: server.com:5432/dbname?sslmode=disable
