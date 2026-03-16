@@ -132,7 +132,7 @@ async def enviar_mensagem_chatwoot(
             url_base = cfg.get('url') or nested.get('url')
             token = nested.get('access_token') or nested.get('token')
         else:
-            url_base = cfg.get('url')
+            url_base = cfg.get('url') or cfg.get('base_url')
             token = cfg.get('access_token') or cfg.get('token')
     else:
         url_base = url_base_ou_integracao
@@ -152,7 +152,15 @@ async def enviar_mensagem_chatwoot(
             _nome_salvo = None
         content = suavizar_personalizacao_nome(content, _nome_salvo)
 
-    url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+    # Normalização defensiva: Garante que url_base tenha protocolo se parecer um domínio
+    if url_base and not str(url_base).startswith(("http://", "https://")):
+        if "." in str(url_base):
+            url_base = f"https://{url_base}"
+        else:
+            logger.error(f"❌ URL da integração Chatwoot inválida ou malformada: '{url_base}'")
+            return None
+
+    url_m = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     
     if is_direct_url:
         # Chatwoot suporta attachments via multipart/form-data ou URL direta no content (depende da config)
