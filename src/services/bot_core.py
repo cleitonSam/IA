@@ -79,7 +79,7 @@ from src.services.ia_processor import (
     # Functions
     resolver_contexto_unidade, responder_horario, extrair_endereco_unidade,
     normalizar_lista_campo, extrair_telefone_unidade, responder_endereco,
-    responder_telefone, responder_lista_unidades, gerar_resposta_inteligente,
+    responder_telefone, responder_lista_unidades, responder_modalidades, gerar_resposta_inteligente,
     montar_saudacao_humanizada, detectar_tipo_cliente,
     formatar_planos_bonito, filtrar_planos_por_contexto,
     _cosine_sim, _get_embedding, buscar_cache_semantico, salvar_cache_semantico,
@@ -1012,6 +1012,22 @@ async def processar_ia_e_responder(
         if intencao == "unidades" and not fast_reply_lista:
             fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
             logger.info("⚡ Unidades: resposta factual direta sem LLM")
+
+        # Perguntas de grade/modalidades: tenta responder da unidade citada na mensagem, sem LLM.
+        if intencao == "modalidades" and not fast_reply_lista and not fast_reply:
+            slug_modalidades = await buscar_unidade_na_pergunta(texto_cliente_unificado, empresa_id, fuzzy_threshold=82)
+            if slug_modalidades:
+                if slug_modalidades != slug:
+                    slug = slug_modalidades
+                    await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
+                unidade_modalidades = await carregar_unidade(slug_modalidades, empresa_id) or unidade
+                fast_reply = responder_modalidades(unidade_modalidades)
+                logger.info(f"⚡ Modalidades: resposta factual da unidade {slug_modalidades}")
+            else:
+                _tem_pedido_unidade = bool(re.search(r"(unidade|bairro|cidade|grade|aula|aulas)", normalizar(texto_cliente_unificado or "")))
+                if _tem_pedido_unidade:
+                    fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
+                    logger.info("⚡ Modalidades: unidade não encontrada, retornando lista segura de unidades")
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
