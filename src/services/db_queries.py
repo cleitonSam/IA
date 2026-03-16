@@ -1278,11 +1278,25 @@ async def bd_atualizar_metricas_venda(conversation_id: int, link_venda_enviado: 
 async def buscar_usuario_por_email(email: str) -> Optional[Dict[str, Any]]:
     if not _database.db_pool:
         return None
+
+    email_norm = (email or "").strip().lower()
+    if not email_norm:
+        return None
+
     try:
-        row = await _database.db_pool.fetchrow("SELECT * FROM usuarios WHERE email = $1 AND ativo = true", email)
+        row = await _database.db_pool.fetchrow(
+            """
+            SELECT *
+            FROM usuarios
+            WHERE lower(trim(email)) = $1
+              AND COALESCE(ativo, true) = true
+            LIMIT 1
+            """,
+            email_norm,
+        )
         return dict(row) if row else None
     except Exception as e:
-        logger.error(f"Erro ao buscar usuário {email}: {e}")
+        logger.error(f"Erro ao buscar usuário {email_norm}: {e}")
         return None
 
 async def criar_usuario(nome: str, email: str, senha_hash: str, empresa_id: int, perfil: str = 'atendente'):
