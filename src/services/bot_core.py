@@ -1154,6 +1154,12 @@ async def processar_ia_e_responder(
                         mods_str = str(mods)
                     if mods_str:
                         partes.append(f"  Modalidades: {mods_str}")
+                foto = u.get('foto_grade')
+                if foto:
+                    partes.append(f"  Grade/Horários: imagem disponível — use <SEND_IMAGE:{u.get('slug')}> para enviar")
+                tour = u.get('link_tour_virtual')
+                if tour:
+                    partes.append(f"  Tour Virtual: vídeo disponível — use <SEND_VIDEO:{u.get('slug')}> para enviar")
                 return "\n".join(partes)
 
             resumo_todas_unidades = "\n\n".join(
@@ -1289,8 +1295,8 @@ NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de f
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
 NÃO mostre tags internas, avisos de sistema ou colunas técnicas na mensagem final.
 
-Seu nome é {nome_ia}. 
-{f"Você é atendente da academia {nome_empresa}, unidade {nome_unidade}." if slug else f"Você é consultor da rede {nome_empresa}. Como ainda não sei qual unidade o cliente prefere, fale em nome da Empresa/Rede de forma acolhedora."}
+Seu nome é {nome_ia}.
+{f"Você é atendente virtual da rede {nome_empresa}, respondendo pelo canal da unidade {nome_unidade}. Você representa TODA a rede e pode ajudar clientes de QUALQUER unidade." if slug else f"Você é consultor da rede {nome_empresa}. Como ainda não sei qual unidade o cliente prefere, fale em nome da Empresa/Rede de forma acolhedora."}
 
 {ctx_aluno}
 
@@ -1320,12 +1326,15 @@ CONTEXTO DA REDE:
 {contexto_rede_unidades}
 
 REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da rede.
-Se o cliente perguntar sobre qualquer unidade (endereço, horário, infraestrutura, estacionamento, modalidades etc.), responda diretamente usando os dados acima.
-Só diga que não tem a informação se ela realmente não estiver nos dados fornecidos.
-NÃO peça ao cliente para escolher uma unidade antes de responder — responda com os dados que você já tem.
+Se o cliente perguntar sobre qualquer unidade específica (mesmo que não seja a que você está atendendo agora), responda DIRETAMENTE com o que você sabe (endereço, horário, modalidades).
+Se você NÃO souber qual unidade ele quer, pergunte qual região fica melhor para ele, ou cite as unidades disponíveis (usando a lista acima).
+NÃO peça ao cliente para escolher uma unidade ANTES de responder se a pergunta dele for específica sobre uma unidade da lista.
+NUNCA diga "meu sistema é focado em [unidade X]" ou "não tenho informações de [outra unidade]" — você TEM os dados de TODAS as unidades listadas acima.
 NUNCA invente proximidade geográfica ("pertinho", "próxima") sem evidência explícita nos dados.
 NUNCA afirme bairro/cidade de uma unidade se essa informação não estiver exatamente nos dados fornecidos.
 Se o cliente citar um bairro/cidade sem unidade correspondente nos dados, diga isso claramente e ofereça as unidades reais disponíveis.
+Se uma unidade na lista acima tiver "<SEND_IMAGE:slug>", use essa tag na sua resposta quando o cliente pedir a grade de horários ou aulas dessa unidade para que a imagem seja enviada automaticamente.
+Se uma unidade tiver "<SEND_VIDEO:slug>", use essa tag quando o cliente quiser conhecer a academia por dentro ou pedir o tour virtual.
 
 FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
@@ -1334,11 +1343,12 @@ HISTÓRICO DA CONVERSA
 {historico}
 
 REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
-- Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
-- Se um campo estiver como "não informado", diga que não tem essa informação agora.
-- NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
+- Para informações DETALHADAS da unidade atual ({nome_unidade}): use EXCLUSIVAMENTE "INFORMAÇÕES DA UNIDADE" acima.
+- Para OUTRAS unidades da rede: use apenas os dados listados em "UNIDADES DA REDE" acima (endereço, horário, modalidades, etc.).
+- Se um campo estiver como "não informado" ou ausente, diga que não tem essa informação agora.
+- NUNCA invente endereços, telefones, horários ou qualquer dado não listado.
+- NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
 - Sempre trate a empresa correta ({nome_empresa}) como contexto do atendimento.
-- Se a rede tiver mais de 1 unidade ({qtd_unidades_rede} no total), pode informar essa quantidade ao cliente quando útil.
 - Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
@@ -1628,6 +1638,64 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     novo_estado = "interessado"
                 else:
                     novo_estado = estado_atual
+
+                # Envio cross-unit: <SEND_IMAGE:slug> — mídia de outra unidade da rede
+                _cross_img_match = re.search(r'<SEND_IMAGE:([^>]+)>', resposta_texto)
+                if _cross_img_match:
+                    _target_slug = _cross_img_match.group(1).strip()
+                    _target_unit = next((u for u in todas_unidades if u.get('slug') == _target_slug), None)
+                    _cross_foto = _target_unit.get('foto_grade') if _target_unit else None
+                    resposta_texto = re.sub(r'<SEND_IMAGE:[^>]+>', '', resposta_texto).strip()
+                    if _cross_foto and _target_unit:
+                        try:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id,
+                                f"Enviando a grade da unidade *{_target_unit.get('nome')}*... 🖼️",
+                                integracao, nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone
+                            )
+                            await asyncio.sleep(random.uniform(1.5, 3.5))
+                            if source == 'uazapi' and contato_fone:
+                                try:
+                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
+                                except Exception: pass
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, _cross_foto, integracao,
+                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                is_direct_url=True
+                            )
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar imagem cross-unit ({_target_slug}): {e}")
+
+                # Envio cross-unit: <SEND_VIDEO:slug> — tour virtual de outra unidade
+                _cross_vid_match = re.search(r'<SEND_VIDEO:([^>]+)>', resposta_texto)
+                if _cross_vid_match:
+                    _target_slug_v = _cross_vid_match.group(1).strip()
+                    _target_unit_v = next((u for u in todas_unidades if u.get('slug') == _target_slug_v), None)
+                    _cross_tour = _target_unit_v.get('link_tour_virtual') if _target_unit_v else None
+                    resposta_texto = re.sub(r'<SEND_VIDEO:[^>]+>', '', resposta_texto).strip()
+                    if _cross_tour and _target_unit_v:
+                        try:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id,
+                                f"Vou te enviar um vídeo da unidade *{_target_unit_v.get('nome')}* por dentro! 🎥",
+                                integracao, nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone
+                            )
+                            await asyncio.sleep(random.uniform(2.0, 4.5))
+                            if source == 'uazapi' and contato_fone:
+                                try:
+                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
+                                except Exception: pass
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, _cross_tour, integracao,
+                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                is_direct_url=True
+                            )
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar vídeo cross-unit ({_target_slug_v}): {e}")
 
                 # Se a IA usou a tag <SEND_IMAGE> e temos a URL
                 _foto_grade = unidade.get("foto_grade")

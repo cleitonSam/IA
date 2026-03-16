@@ -470,6 +470,8 @@ async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
                 u.servicos,
                 u.palavras_chave,
                 u.link_matricula,
+                u.foto_grade,
+                u.link_tour_virtual,
                 u.site,
                 u.instagram,
                 e.nome as nome_empresa
