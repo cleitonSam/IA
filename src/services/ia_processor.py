@@ -232,23 +232,35 @@ async def responder_lista_unidades(empresa_id: int, texto: str) -> str:
         return "No momento não encontrei unidades cadastradas."
 
     texto_norm = normalizar(texto)
-    cidade_filtro = None
+
+    # Filtra por cidade OU bairro citados na mensagem (evita respostas genéricas/hallucinação).
+    unidades_filtradas = []
     for u in unidades:
-        cidade = normalizar(u.get("cidade", "") or "")
-        if cidade and cidade in texto_norm:
-            cidade_filtro = u.get("cidade")
-            break
+        cidade_norm = normalizar(u.get("cidade", "") or "")
+        bairro_norm = normalizar(u.get("bairro", "") or "")
+        if (cidade_norm and cidade_norm in texto_norm) or (bairro_norm and bairro_norm in texto_norm):
+            unidades_filtradas.append(u)
 
-    if cidade_filtro:
-        unidades = [u for u in unidades if normalizar(u.get("cidade", "") or "") == normalizar(cidade_filtro)]
-
-    lista = "\n".join([f"• {u['nome']}" for u in unidades])
-    if cidade_filtro:
+    # Se o cliente mencionou localização, mas nenhuma unidade bateu, responde com segurança.
+    menciona_local = bool(re.search(r"\b(em|no|na)\s+[a-zà-ú0-9\s\-]{3,}\b", texto_norm))
+    if menciona_local and not unidades_filtradas:
+        lista_resumo = "\n".join([f"• {u['nome']} ({u.get('cidade') or u.get('bairro') or 'local não informado'})" for u in unidades])
         return (
-            f"📍 Temos {len(unidades)} unidade(s) em *{cidade_filtro}*:\n\n{lista}\n\n"
-            "Qual delas fica melhor para você? 😊"
+            "Não encontrei unidade exatamente nessa região que você mencionou.\n\n"
+            f"📍 Hoje temos {len(unidades)} unidade(s):\n\n{lista_resumo}\n\n"
+            "Se você me disser um bairro/cidade de preferência, eu te indico a melhor opção 😉"
         )
-    return f"📍 Temos {len(unidades)} unidades:\n\n{lista}\n\nQual delas fica mais perto de você? 😊"
+
+    alvo = unidades_filtradas if unidades_filtradas else unidades
+    lista = "\n".join([f"• {u['nome']}" for u in alvo])
+
+    if unidades_filtradas:
+        return (
+            f"📍 Encontrei {len(alvo)} unidade(s) com base na sua localização:\n\n{lista}\n\n"
+            "Qual delas você prefere? 😊"
+        )
+
+    return f"📍 Temos {len(alvo)} unidades:\n\n{lista}\n\nQual delas fica melhor para você? 😊"
 
 
 async def gerar_resposta_inteligente(
@@ -279,6 +291,9 @@ async def gerar_resposta_inteligente(
         return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
     if intencao == "endereco":
         return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
+    if intencao == "unidades":
+        resposta_unidades = await responder_lista_unidades(empresa_id, texto_cliente)
+        return {"tipo": "texto", "resposta": resposta_unidades, "slug": slug, "intencao": intencao}
     if intencao == "modalidades":
         return {"tipo": "texto", "resposta": responder_modalidades(unidade), "slug": slug, "intencao": intencao}
 

@@ -899,6 +899,11 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
+        # Pausa global da IA no Chatwoot por empresa (evita responder enquanto estiver desativada)
+        if source == 'chatwoot' and await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+            logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
+            return
+
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
             return
 
@@ -1002,6 +1007,11 @@ async def processar_ia_e_responder(
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
             fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
             logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
+
+        # Endereça perguntas de unidades/localização sem passar no LLM (evita alucinação de bairro/cidade)
+        if intencao == "unidades" and not fast_reply_lista:
+            fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
+            logger.info("⚡ Unidades: resposta factual direta sem LLM")
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -1286,6 +1296,9 @@ REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da re
 Se o cliente perguntar sobre qualquer unidade (endereço, horário, infraestrutura, estacionamento, modalidades etc.), responda diretamente usando os dados acima.
 Só diga que não tem a informação se ela realmente não estiver nos dados fornecidos.
 NÃO peça ao cliente para escolher uma unidade antes de responder — responda com os dados que você já tem.
+NUNCA invente proximidade geográfica ("pertinho", "próxima") sem evidência explícita nos dados.
+NUNCA afirme bairro/cidade de uma unidade se essa informação não estiver exatamente nos dados fornecidos.
+Se o cliente citar um bairro/cidade sem unidade correspondente nos dados, diga isso claramente e ofereça as unidades reais disponíveis.
 
 FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
@@ -1474,13 +1487,32 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         resposta_bruta = response.choices[0].message.content
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         if _finish == "length" and resposta_bruta:
-                            logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
+                            logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id} — tentando continuação")
                             _resposta_foi_truncada = True
-                            for _sep in ['. ', '! ', '? ', '\n']:
-                                _pos = resposta_bruta.rfind(_sep)
-                                if _pos > len(resposta_bruta) * 0.3:
-                                    resposta_bruta = resposta_bruta[:_pos + 1]
-                                    break
+                            try:
+                                resposta_cont = await asyncio.wait_for(
+                                    cliente_ia.chat.completions.create(
+                                        model=modelo_escolhido,
+                                        messages=[
+                                            {"role": "system", "content": "Continue exatamente a última resposta sem repetir o início, em no máximo 2 frases curtas."},
+                                            {"role": "assistant", "content": resposta_bruta},
+                                        ],
+                                        temperature=max(0.2, min(temperature, 0.7)),
+                                        max_tokens=220,
+                                    ),
+                                    timeout=10,
+                                )
+                                cont_txt = (resposta_cont.choices[0].message.content or "").strip()
+                                if cont_txt:
+                                    resposta_bruta = f"{resposta_bruta.rstrip()} {cont_txt}"
+                                    _resposta_foi_truncada = False
+                            except Exception:
+                                # fallback: corta no último final de frase completo
+                                for _sep in ['. ', '! ', '? ', '\n']:
+                                    _pos = resposta_bruta.rfind(_sep)
+                                    if _pos > len(resposta_bruta) * 0.3:
+                                        resposta_bruta = resposta_bruta[:_pos + 1]
+                                        break
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:

@@ -138,6 +138,10 @@ async def chatwoot_webhook(
     )
 
     if message_type == "incoming":
+        # Pausa global da IA para o canal Chatwoot (por empresa)
+        if await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+            return {"status": "ia_global_pausada"}
+
         if nome_contato_valido:
             await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
         else:
