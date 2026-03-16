@@ -1158,7 +1158,7 @@ async def processar_ia_e_responder(
 
             resumo_todas_unidades = "\n\n".join(
                 _resumo_unidade(u) for u in todas_unidades
-            ) if todas_unidades else lista_unidades_nomes
+            ) if todas_unidades else "A nossa rede possui diversas unidades, mas não tenho os detalhes de endereço delas agora."
 
             nome_empresa = unidade.get('nome_empresa') or 'Nossa Empresa'
             nome_unidade = unidade.get('nome') or 'Unidade Matriz'
@@ -1287,9 +1287,10 @@ NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo 
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
 NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
-Você é um atendente — apenas responda o cliente diretamente.
+NÃO mostre tags internas, avisos de sistema ou colunas técnicas na mensagem final.
 
-Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}, unidade {nome_unidade}.
+Seu nome é {nome_ia}. 
+{f"Você é atendente da academia {nome_empresa}, unidade {nome_unidade}." if slug else f"Você é consultor da rede {nome_empresa}. Como ainda não sei qual unidade o cliente prefere, fale em nome da Empresa/Rede de forma acolhedora."}
 
 {ctx_aluno}
 
@@ -1518,37 +1519,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         logger.info(f"📡 BotCore: Chamando LLM ({modelo_escolhido}) para conv {conversation_id}")
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
-                        _finish = getattr(response.choices[0], 'finish_reason', None)
-                        if _finish == "length" and resposta_bruta:
-                            logger.info(f"ℹ️ Resposta longa (finish_reason=length) conv {conversation_id} — continuando automaticamente")
-                            _resposta_foi_truncada = True
-                            try:
-                                acumulada = (resposta_bruta or "").strip()
-                                for _ in range(3):
-                                    resposta_cont = await asyncio.wait_for(
-                                        cliente_ia.chat.completions.create(
-                                            model=modelo_escolhido,
-                                            messages=[
-                                                {"role": "system", "content": "Continue exatamente de onde parou, sem repetir o início. Continue de forma direta."},
-                                                {"role": "assistant", "content": acumulada},
-                                            ],
-                                            temperature=max(0.2, min(temperature, 0.7)),
-                                            max_tokens=320,
-                                        ),
-                                        timeout=10,
-                                    )
-                                    cont_txt = (resposta_cont.choices[0].message.content or "").strip()
-                                    if not cont_txt:
-                                        break
-                                    acumulada = f"{acumulada} {cont_txt}".strip()
-                                    if getattr(resposta_cont.choices[0], 'finish_reason', None) != "length":
-                                        _resposta_foi_truncada = False
-                                        break
-                                resposta_bruta = acumulada
-                            except Exception:
-                                # Se não conseguir continuar, mantém o texto já gerado sem cortar.
-                                pass
-
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:

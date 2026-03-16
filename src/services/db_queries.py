@@ -514,72 +514,62 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
         query = "SELECT unidade_slug FROM buscar_unidades_por_texto($1, $2) LIMIT 1"
         row = await _database.db_pool.fetchrow(query, empresa_id, texto)
         if row:
-            return row['unidade_slug']
-    except asyncpg.UndefinedFunctionError:
-        pass  # Função não existe no banco — usa fallback Python
-    except asyncpg.PostgresError as e:
-        logger.error(f"Erro SQL ao buscar unidade: {e}")
-
-    # 2. Busca por palavras-chave, nome, cidade e bairro
+            return row['unidade_s    # 2. Busca por palavras-chave, nome, cidade e bairro
     unidades = await listar_unidades_ativas(empresa_id)
     texto_norm = normalizar(texto)
-    tokens_texto = set(texto_norm.split())  # tokens para matching por palavra
+    tokens_texto = set(texto_norm.split())
+
+    # Pré-lista de slugs candidatos com pontuação
+    candidatos = []
 
     for u in unidades:
-        nome_norm   = normalizar(u.get('nome', ''))
-        cidade_norm = normalizar(u.get('cidade', '') or '')
-        bairro_norm = normalizar(u.get('bairro', '') or '')
+        slug = u['slug']
+        nome_u = normalizar(u.get('nome', ''))
+        cidade_u = normalizar(u.get('cidade', '') or '')
+        bairro_u = normalizar(u.get('bairro', '') or '')
         palavras_chave = [normalizar(p) for p in (u.get('palavras_chave') or []) if p]
 
-        # Correspondência completa no texto
-        if nome_norm and nome_norm in texto_norm:
-            return u['slug']
-        if cidade_norm and len(cidade_norm) > 3 and cidade_norm in texto_norm:
-            return u['slug']
-        if bairro_norm and len(bairro_norm) > 3 and bairro_norm in texto_norm:
-            return u['slug']
-        if any(p and len(p) > 3 and p in texto_norm for p in palavras_chave):
-            return u['slug']
+        # Camada A: Match exato do nome da unidade ou cidade/bairro específicos
+        if nome_u and nome_u in texto_norm:
+            candidatos.append((slug, 100))
+            continue
+        
+        # Cidades/Bairros só contam se tiverem tamanho mínimo ou forem tokens exatos
+        if (cidade_u and len(cidade_u) >= 4 and cidade_u in texto_norm) or (cidade_u in tokens_texto):
+            candidatos.append((slug, 90))
+            continue
+        if (bairro_u and len(bairro_u) >= 4 and bairro_u in texto_norm) or (bairro_u in tokens_texto):
+            candidatos.append((slug, 90))
+            continue
 
-        # Matching por tokens — suporta "morumbi" encontrar "Smart Fit – Morumbi"
-        # ou "sp" / "sao paulo" encontrar qualquer cidade de SP
-        tokens_nome    = set(nome_norm.split())
-        tokens_cidade  = set(cidade_norm.split()) if cidade_norm else set()
-        tokens_bairro  = set(bairro_norm.split()) if bairro_norm else set()
-
-        # Interseção de tokens significativos (ignora palavras curtas < 4 chars)
-        _sig = lambda ts: {t for t in ts if len(t) >= 4}
-
-        # Token matching no NOME — exige ≥2 tokens para evitar falso positivo
-        # Ex: "Ricardo Jafet" → {"ricardo", "jafet"} ∩ tokens do texto → 2 matches → OK
-        _match_nome = _sig(tokens_texto) & _sig(tokens_nome)
-        if len(_match_nome) >= 2:
-            return u['slug']
-        # Para nomes com 1 único token significativo (ex: "Andorinha"),
-        # aceita match direto se esse token ≥6 chars (mais específico)
-        if len(_match_nome) == 1 and all(len(t) >= 6 for t in _match_nome):
-            return u['slug']
-
-        if _sig(tokens_texto) & _sig(tokens_cidade):
-            return u['slug']
-        if _sig(tokens_texto) & _sig(tokens_bairro):
-            return u['slug']
-
-        # Verifica se alguma palavra-chave é um token presente no texto
         for p in palavras_chave:
-            tokens_pchave = set(p.split())
-            if _sig(tokens_texto) & _sig(tokens_pchave):
-                return u['slug']
+            if (len(p) >= 4 and p in texto_norm) or (p in tokens_texto):
+                candidatos.append((slug, 85))
+                break
 
-    # 3. Fuzzy matching conservador — threshold ajustável para evitar falsos positivos
+        # Camada B: Token matching (ex: "Ourinhos")
+        tokens_nome = {t for t in nome_u.split() if len(t) >= 4 and t not in {"red", "fitness", "academia", "unidade"}}
+        tokens_sig_texto = {t for t in tokens_texto if len(t) >= 4}
+        
+        interseccao = tokens_sig_texto & tokens_nome
+        if interseccao:
+            # Se o token for exatamente o nome da cidade ou bairro, alta confiança
+            if any(t in {cidade_u, bairro_u} for t in interseccao):
+                candidatos.append((slug, 95))
+            else:
+                candidatos.append((slug, 70 + (len(interseccao) * 10)))
+
+    if candidatos:
+        # Retorna o slug com maior pontuação
+        candidatos.sort(key=lambda x: x[1], reverse=True)
+        return candidatos[0][0]
+
+    # 3. Fuzzy matching conservador
     melhor_slug = None
     maior_score = 0
     for u in unidades:
-        nome_norm   = normalizar(u.get('nome', ''))
-        cidade_norm = normalizar(u.get('cidade', '') or '')
-        bairro_norm = normalizar(u.get('bairro', '') or '')
-
-        for campo in filter(None, [nome_norm, cidade_norm, bairro_norm]):
+        nome_norm = normalizar(u.get('nome', ''))
+        for campo in filter(None, [nome_norm, normalizar(u.get('cidade', '')), normalizar(u.get('bairro', ''))]):
             score = fuzz.partial_ratio(campo, texto_norm)
             if score > maior_score:
                 maior_score = score
@@ -587,7 +577,6 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
 
     if maior_score >= fuzzy_threshold:
         return melhor_slug
-
     return None
 
 
