@@ -2443,7 +2443,7 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     if not db_pool or not slug or not pergunta:
         return None
 
-    cache_key = f"cfg:faq_raw:{slug}:{empresa_id}"
+    cache_key = f"cfg:faq_raw:v2:{empresa_id}:{slug}"
     raw = await redis_client.get(cache_key)
     if raw:
         try:
@@ -2453,10 +2453,22 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     else:
         try:
             faq_rows_db = await db_pool.fetch("""
+                WITH unidade AS (
+                    SELECT id
+                    FROM unidades
+                    WHERE slug = $1 AND empresa_id = $2
+                    LIMIT 1
+                )
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                LEFT JOIN unidade u ON true
+                WHERE f.empresa_id = $2
+                  AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR (u.id IS NOT NULL AND f.unidade_id = u.id)
+                      OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 50
             """, slug, empresa_id)

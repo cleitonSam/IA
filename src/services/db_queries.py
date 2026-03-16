@@ -631,7 +631,7 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     if not _database.db_pool or not slug or not pergunta:
         return None
 
-    cache_key = f"cfg:faq_raw:{slug}:{empresa_id}"
+    cache_key = f"cfg:faq_raw:v2:{empresa_id}:{slug}"
     raw = await redis_client.get(cache_key)
     if raw:
         try:
