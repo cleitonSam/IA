@@ -178,7 +178,11 @@ async def enviar_mensagem_chatwoot(
                 "ignore_webhook": True
             }
         }
-    headers = {"api_access_token": str(token)}
+    # Proteção: garante que token seja string válida
+    if isinstance(token, dict):
+        logger.error(f"⚠️ Token do Chatwoot chegou como dict — extraindo access_token/token")
+        token = token.get('access_token') or token.get('token')
+    headers = {"api_access_token": str(token) if token else ""}
 
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers)
