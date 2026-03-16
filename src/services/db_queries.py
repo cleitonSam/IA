@@ -704,7 +704,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     if not _database.db_pool:
         return ""
 
-    cache_key = f"cfg:faq:{slug}:v4"
+    cache_key = f"cfg:faq:{empresa_id}:{slug}:v5"
     cache = await redis_client.get(cache_key)
     if cache:
         return cache
