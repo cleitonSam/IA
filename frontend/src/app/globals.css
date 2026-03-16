@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --background: #020617; /* Official Deep Blue/Black */
+  --foreground: #f8fafc;
+  --primary: #00d2ff;   /* Neon Cyan */
+  --secondary: #3a86ff; /* Electric Blue */
+  --accent: #4ade80;    /* Emerald for success states */
+  --card: rgba(15, 23, 42, 0.6); /* Slate glass effect */
+  --border: rgba(0, 210, 255, 0.1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-glass-card: var(--card);
+  --color-glass-border: var(--border);
+  
+  --shadow-neon-primary: 0 0 20px rgba(0, 242, 255, 0.5);
+  --shadow-neon-secondary: 0 0 20px rgba(0, 102, 255, 0.5);
+  --shadow-neon-strong: 0 0 35px rgba(0, 242, 255, 0.6);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', system-ui, sans-serif;
+  overflow-x: hidden;
+  background-attachment: fixed;
+}
+
+/* Glassmorphism Utilities */
+.glass {
+  background: var(--card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+}
+
+.glass-morphism {
+  background: rgba(0, 242, 255, 0.03);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 242, 255, 0.1);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.bg-mesh {
+  background-color: var(--background);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(0, 242, 255, 0.15) 0px, transparent 45%),
+    radial-gradient(at 100% 0%, rgba(0, 102, 255, 0.1) 0px, transparent 45%),
+    radial-gradient(at 100% 100%, rgba(0, 242, 255, 0.08) 0px, transparent 45%),
+    radial-gradient(at 0% 100%, rgba(0, 102, 255, 0.12) 0px, transparent 45%);
+}
+
+.neon-border {
+  border: 1px solid var(--primary);
+  box-shadow: 0 0 10px rgba(0, 242, 255, 0.3);
+}
+
+.neon-glow {
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.5);
+}
+
+.blue-tint {
+  background: rgba(0, 102, 255, 0.05);
+}
