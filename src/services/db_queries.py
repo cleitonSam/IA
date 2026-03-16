@@ -133,7 +133,7 @@ async def carregar_integracao(
         return None
 
 
-async def bd_salvar_resumo_ia(conversation_id: int, resumo: str):
+async def bd_salvar_resumo_ia(conversation_id: int, empresa_id: int, resumo: str):
     """
     Salva o resumo gerado pela IA para uma conversa específica.
     """
@@ -141,11 +141,11 @@ async def bd_salvar_resumo_ia(conversation_id: int, resumo: str):
         return
     try:
         await _database.db_pool.execute(
-            "UPDATE conversas SET resumo_ia = $1, updated_at = NOW() WHERE conversation_id = $2",
-            resumo, conversation_id
+            "UPDATE conversas SET resumo_ia = $1, updated_at = NOW() WHERE conversation_id = $2 AND empresa_id = $3",
+            resumo, conversation_id, empresa_id
         )
     except Exception as e:
-        logger.error(f"Erro ao salvar resumo IA para conversa {conversation_id}: {e}")
+        logger.error(f"Erro ao salvar resumo IA para conversa {conversation_id} (emp={empresa_id}): {e}")
 
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 
@@ -858,7 +858,7 @@ async def bd_iniciar_conversa(
         await _database.db_pool.execute("""
             INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, primeira_mensagem, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'ativa')
-            ON CONFLICT (conversation_id) DO UPDATE SET
+            ON CONFLICT (empresa_id, conversation_id) DO UPDATE SET
                 contato_nome = COALESCE(NULLIF(EXCLUDED.contato_nome, ''), conversas.contato_nome),
                 contato_fone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_fone),
                 contato_telefone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_telefone),
@@ -867,30 +867,30 @@ async def bd_iniciar_conversa(
                 updated_at = NOW()
         """, conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id)
     except Exception as e:
-        logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {e}")
+        logger.error(f"❌ Erro ao iniciar conversa {conversation_id} (emp={empresa_id}): {e}")
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_salvar_mensagem_local(
-    conversation_id: int, role: str, content: str,
+    conversation_id: int, empresa_id: int, role: str, content: str,
     tipo: str = 'texto', url_midia: str = None
 ):
     if not _database.db_pool:
         return
     try:
         conversa = await _database.db_pool.fetchrow(
-            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2", conversation_id, empresa_id
         )
         if not conversa:
-            logger.error(f"Conversa {conversation_id} não encontrada para salvar mensagem.")
+            logger.error(f"Conversa {conversation_id} não encontrada para empresa {empresa_id}.")
             return
         await _database.db_pool.execute("""
             INSERT INTO mensagens (conversa_id, empresa_id, role, tipo, conteudo, url_midia, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        """, conversa['id'], conversa['empresa_id'], role, tipo, content, url_midia)
-        logger.info(f"✅ Mensagem {role} salva para conversa {conversation_id} (id_db={conversa['id']}, emp={conversa['empresa_id']})")
+        """, conversa['id'], empresa_id, role, tipo, content, url_midia)
+        logger.info(f"✅ Mensagem {role} salva para conversa {conversation_id} (id_db={conversa['id']}, emp={empresa_id})")
     except Exception as e:
-        logger.error(f"Erro ao salvar mensagem para conversa {conversation_id}: {e}")
+        logger.error(f"Erro ao salvar mensagem para conversa {conversation_id} (emp={empresa_id}): {e}")
 
 
 async def buscar_conversa_por_fone(contato_fone: str, empresa_id: int) -> Optional[Dict]:
@@ -926,30 +926,30 @@ async def buscar_conversa_por_fone(contato_fone: str, empresa_id: int) -> Option
         return None
 
 
-async def bd_obter_historico_local(conversation_id: int, limit: int = 12) -> Optional[str]:
+async def bd_obter_historico_local(conversation_id: int, empresa_id: int, limit: int = 12) -> Optional[str]:
     if not _database.db_pool:
         return None
     try:
         rows = await _database.db_pool.fetch("""
-            SELECT role, conteudo
+            SELECT m.role, m.conteudo
             FROM mensagens m
             JOIN conversas c ON c.id = m.conversa_id
-            WHERE c.conversation_id = $1
+            WHERE c.conversation_id = $1 AND c.empresa_id = $2
             ORDER BY m.created_at DESC
-            LIMIT $2
-        """, conversation_id, limit)
+            LIMIT $3
+        """, conversation_id, empresa_id, limit)
         msgs = list(reversed(rows))
         return "\n".join([
             f"{'Cliente' if r['role'] == 'user' else 'Atendente'}: {r['conteudo']}"
             for r in msgs
         ])
     except Exception as e:
-        logger.error(f"Erro ao obter histórico: {e}")
+        logger.error(f"Erro ao obter histórico para conv {conversation_id} (emp={empresa_id}): {e}")
         return None
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
-async def bd_atualizar_msg_cliente(conversation_id: int):
+async def bd_atualizar_msg_cliente(conversation_id: int, empresa_id: int):
     if not _database.db_pool:
         return
     try:
@@ -957,14 +957,14 @@ async def bd_atualizar_msg_cliente(conversation_id: int):
             UPDATE conversas
             SET total_mensagens_cliente = total_mensagens_cliente + 1,
                 ultima_mensagem = NOW(), updated_at = NOW()
-            WHERE conversation_id = $1
-        """, conversation_id)
+            WHERE conversation_id = $1 AND empresa_id = $2
+        """, conversation_id, empresa_id)
     except Exception as e:
-        logger.error(f"Erro ao atualizar msg cliente {conversation_id}: {e}")
+        logger.error(f"Erro ao atualizar msg cliente {conversation_id} (emp={empresa_id}): {e}")
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
-async def bd_atualizar_msg_ia(conversation_id: int):
+async def bd_atualizar_msg_ia(conversation_id: int, empresa_id: int):
     if not _database.db_pool:
         return
     try:
@@ -972,36 +972,36 @@ async def bd_atualizar_msg_ia(conversation_id: int):
             UPDATE conversas
             SET total_mensagens_ia = total_mensagens_ia + 1,
                 ultima_mensagem = NOW(), updated_at = NOW()
-            WHERE conversation_id = $1
-        """, conversation_id)
+            WHERE conversation_id = $1 AND empresa_id = $2
+        """, conversation_id, empresa_id)
     except Exception as e:
-        logger.error(f"Erro ao atualizar msg ia {conversation_id}: {e}")
+        logger.error(f"Erro ao atualizar msg ia {conversation_id} (emp={empresa_id}): {e}")
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
-async def bd_registrar_primeira_resposta(conversation_id: int):
+async def bd_registrar_primeira_resposta(conversation_id: int, empresa_id: int):
     if not _database.db_pool:
         return
     try:
         await _database.db_pool.execute("""
             UPDATE conversas
             SET primeira_resposta_em = NOW(), updated_at = NOW()
-            WHERE conversation_id = $1 AND primeira_resposta_em IS NULL
-        """, conversation_id)
+            WHERE conversation_id = $1 AND empresa_id = $2 AND primeira_resposta_em IS NULL
+        """, conversation_id, empresa_id)
     except Exception as e:
-        logger.error(f"Erro ao registrar primeira resposta {conversation_id}: {e}")
+        logger.error(f"Erro ao registrar primeira resposta {conversation_id} (emp={empresa_id}): {e}")
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_evento_funil(
-    conversation_id: int, tipo_evento: str,
+    conversation_id: int, empresa_id: int, tipo_evento: str,
     descricao: str, score_incremento: int = 5
 ):
     if not _database.db_pool:
         return
     try:
         conversa = await _database.db_pool.fetchrow(
-            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2", conversation_id, empresa_id
         )
         if not conversa:
             return
@@ -1039,12 +1039,12 @@ async def bd_registrar_evento_funil(
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
-async def bd_finalizar_conversa(conversation_id: int):
+async def bd_finalizar_conversa(conversation_id: int, empresa_id: int):
     if not _database.db_pool:
         return
     try:
         conversa = await _database.db_pool.fetchrow(
-            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2", conversation_id, empresa_id
         )
         if not conversa:
             return
@@ -1060,9 +1060,9 @@ async def bd_finalizar_conversa(conversation_id: int):
             WHERE conversa_id = $1 AND status = 'pendente'
         """, conversa['id'])
 
-        logger.info(f"✅ Conversa {conversation_id} finalizada (emp={conversa['empresa_id']})")
+        logger.info(f"✅ Conversa {conversation_id} finalizada (emp={empresa_id})")
     except Exception as e:
-        logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
+        logger.error(f"Erro ao finalizar conversa {conversation_id} (emp={empresa_id}): {e}")
 
 
 # --- WORKER DE MÉTRICAS DIÁRIAS ---
@@ -1249,7 +1249,7 @@ async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> D
     }
 
 
-async def bd_atualizar_metricas_venda(conversation_id: int, link_venda_enviado: bool = False, intencao_de_compra: bool = False):
+async def bd_atualizar_metricas_venda(conversation_id: int, empresa_id: int, link_venda_enviado: bool = False, intencao_de_compra: bool = False):
     """Atualiza as métricas de venda na tabela conversas, caso a IA demonstre intenção ou envie um link de venda."""
     if not _database.db_pool:
         return
@@ -1267,11 +1267,11 @@ async def bd_atualizar_metricas_venda(conversation_id: int, link_venda_enviado: 
             await _database.db_pool.execute(f"""
                 UPDATE conversas
                 SET {set_clause}
-                WHERE conversation_id = $1
-            """, conversation_id)
-            logger.info(f"📊 Métricas atualizadas para conv={conversation_id}: link_enviado={link_venda_enviado}, intencao={intencao_de_compra}")
+                WHERE conversation_id = $1 AND empresa_id = $2
+            """, conversation_id, empresa_id)
+            logger.info(f"📊 Métricas atualizadas para conv={conversation_id} (emp={empresa_id}): link_enviado={link_venda_enviado}, intencao={intencao_de_compra}")
     except Exception as e:
-        logger.error(f"❌ Erro ao atualizar métricas de venda para conv {conversation_id}: {e}")
+        logger.error(f"❌ Erro ao atualizar métricas de venda para conv {conversation_id} (emp={empresa_id}): {e}")
 
 # --- USUÁRIOS & DASHBOARD ---
 

@@ -217,7 +217,7 @@ async def get_conversations(
         for r in rows:
             d = dict(r)
             # Verifica se a IA está pausada no Redis
-            d["pausada"] = await redis_client.exists(f"pause_ia:{d['conversation_id']}")
+            d["pausada"] = await redis_client.exists(f"pause_ia:{empresa_id}:{d['conversation_id']}")
             result_data.append(d)
 
         return {
@@ -251,7 +251,7 @@ async def toggle_ia_conversation(
     if not exists:
         raise HTTPException(status_code=404, detail="Conversa não encontrada ou sem permissão")
 
-    key = f"pause_ia:{conversation_id}"
+    key = f"pause_ia:{empresa_id}:{conversation_id}"
     if await redis_client.exists(key):
         await redis_client.delete(key)
         return {"status": "ativa", "pausada": False}

@@ -518,6 +518,7 @@ async def _get_embedding(texto: str) -> Optional[List[float]]:
 async def buscar_cache_semantico(
     texto: str,
     slug: str,
+    empresa_id: int,
     threshold: float = 0.88
 ) -> Optional[Dict]:
     """
@@ -530,7 +531,7 @@ async def buscar_cache_semantico(
         return None  # API indisponível — usa hash cache
 
     try:
-        pattern = f"semcache:{slug}:*"
+        pattern = f"semcache:{empresa_id}:{slug}:*"
         melhor_score = 0.0
         melhor_key   = None
         total_scan   = 0
@@ -557,7 +558,7 @@ async def buscar_cache_semantico(
         if melhor_score >= threshold and melhor_key:
             resposta_str = await redis_client.hget(melhor_key, "resposta")
             if resposta_str:
-                logger.info(f"🧠 Cache semântico HIT (sim={melhor_score:.3f}) para '{texto[:40]}'")
+                logger.info(f"🧠 [E:{empresa_id}] Cache semântico HIT (sim={melhor_score:.3f}) para '{texto[:40]}'")
                 return json.loads(resposta_str)
     except Exception as e:
         logger.warning(f"Cache semântico erro: {e}")
@@ -567,12 +568,13 @@ async def buscar_cache_semantico(
 async def salvar_cache_semantico(
     texto: str,
     slug: str,
+    empresa_id: int,
     dados: Dict,
     ttl: int = 3600
 ):
     """
     Salva embedding (via API) + resposta no Redis para uso futuro.
-    Chave: semcache:{slug}:{md5(texto)}
+    Chave: semcache:{empresa_id}:{slug}:{md5(texto)}
     """
     emb = await _get_embedding(texto)
     if not emb:
@@ -583,7 +585,7 @@ async def salvar_cache_semantico(
         _cur_lim = 0
         while True:
             _cur_lim, _kk_lim = await redis_client.scan(
-                _cur_lim, match=f"semcache:{slug}:*", count=100
+                _cur_lim, match=f"semcache:{empresa_id}:{slug}:*", count=100
             )
             _total_slug += len(_kk_lim)
             if _cur_lim == 0 or _total_slug >= 500:
@@ -592,7 +594,7 @@ async def salvar_cache_semantico(
             logger.debug(f"semcache: limite 500 atingido para slug={slug}, entrada descartada")
             return
 
-        chave = f"semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
+        chave = f"semcache:{empresa_id}:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
         await redis_client.hset(chave, mapping={
             "embedding": json.dumps(emb),
             "resposta":  json.dumps(dados),
@@ -624,13 +626,13 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
-async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
     Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
     em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
     """
-    chave_buffet = f"buffet:{conversation_id}"
+    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
     deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
@@ -655,15 +657,15 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     return mensagens_acumuladas
 
 
-async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa_id: int, mensagens_acumuladas: List[str]) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
-    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
         return False
 
-    logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
+    logger.info(f"⏳ Conv {conversation_id} [E:{empresa_id}] aguardando escolha de unidade — IA pausada")
     for m_json in mensagens_acumuladas:
-        await redis_client.rpush(f"buffet:{conversation_id}", m_json)
-    await redis_client.expire(f"buffet:{conversation_id}", 300)
+        await redis_client.rpush(f"buffet:{empresa_id}:{conversation_id}", m_json)
+    await redis_client.expire(f"buffet:{empresa_id}:{conversation_id}", 300)
     return True
 
 
@@ -721,26 +723,26 @@ async def resolver_contexto_atendimento(
             slug = novo_slug
             mudou_unidade = True
             await bd_registrar_evento_funil(
-                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
+                conversation_id, empresa_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
             )
 
     return {"slug": slug, "mudou_unidade": mudou_unidade, "primeira_mensagem": primeira_mensagem}
 
 
-async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], transcricoes: List[str]):
+async def persistir_mensagens_usuario(conversation_id: int, empresa_id: int, textos: List[str], transcricoes: List[str]):
     """Persiste histórico de mensagens do usuário (texto e áudio transcrito)."""
     logger.debug(f"💾 Persistindo {len(textos)} textos e {len(transcricoes)} áudios para conv {conversation_id}")
     for txt in textos:
-        await bd_salvar_mensagem_local(conversation_id, "user", txt)
+        await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
     for transc in transcricoes:
-        await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+        await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", f"[Áudio] {transc}")
         
 
 async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empresa_id: int):
     await asyncio.sleep(120)
-    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
         return
-    if await redis_client.exists(f"unidade_escolhida:{conversation_id}"):
+    if await redis_client.exists(f"unidade_escolhida:{empresa_id}:{conversation_id}"):
         return
 
     integracao = await carregar_integracao(empresa_id, 'chatwoot')
@@ -751,17 +753,17 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
         "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
-        "Assistente Virtual", integracao
+        integracao, nome_ia="Assistente Virtual"
     )
 
     await asyncio.sleep(480)
-    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
         return
-    if await redis_client.exists(f"unidade_escolhida:{conversation_id}"):
+    if await redis_client.exists(f"unidade_escolhida:{empresa_id}:{conversation_id}"):
         return
 
     # Sem resposta após 8 min — encerra conversa
-    await redis_client.delete(f"esperando_unidade:{conversation_id}")
+    await redis_client.delete(f"esperando_unidade:{empresa_id}:{conversation_id}")
     url_c = f"{integracao['url']}/api/v1/accounts/{account_id}/conversations/{conversation_id}"
     try:
         await _chatwoot_module.http_client.put(
@@ -846,6 +848,7 @@ async def despachar_resposta(
     content: str,
     nome_ia: str,
     integracao: dict,
+    empresa_id: int,
     source: str = 'chatwoot',
     contato_fone: str = None
 ):
@@ -864,7 +867,7 @@ async def despachar_resposta(
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
         # Marca que o próximo fromMe=true nessa conversa é do BOT
-        await redis_client.setex(f"uaz_bot_sent_conv:{conversation_id}", 120, "1")
+        await redis_client.setex(f"uaz_bot_sent_conv:{empresa_id}:{conversation_id}", 120, "1")
         
         # Randomiza o conteúdo da mensagem de texto
         content_randomizado = randomizar_mensagem(content)
@@ -873,7 +876,9 @@ async def despachar_resposta(
         return res
     else:
         logger.info(f"📤 Despachando via Chatwoot conv={conversation_id}")
-        return await enviar_mensagem_chatwoot(account_id, conversation_id, content, nome_ia, integracao)
+        return await enviar_mensagem_chatwoot(
+            account_id, conversation_id, content, integracao, nome_ia=nome_ia
+        )
 
 
 async def processar_ia_e_responder(
@@ -889,15 +894,15 @@ async def processar_ia_e_responder(
     contato_fone: str = None
 ):
     logger.info(f"🧠 BotCore: processar_ia_e_responder conv={conversation_id} source={source} fone={contato_fone}")
-    chave_lock = f"lock:{conversation_id}"
-    chave_buffet = f"buffet:{conversation_id}"
+    chave_lock = f"lock:{empresa_id}:{conversation_id}"
+    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
         # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
         await asyncio.sleep(0.8)
 
-        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
+        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id, empresa_id)
         if not mensagens_acumuladas:
             return
 
@@ -906,7 +911,7 @@ async def processar_ia_e_responder(
             logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
             return
 
-        if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
+        if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
             return
 
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)
@@ -916,7 +921,7 @@ async def processar_ia_e_responder(
         mensagens_formatadas = anexos["mensagens_formatadas"]
 
         # ── GARANTIA DE PERSISTÊNCIA: Salva assim que coleta do buffer ────────
-        await persistir_mensagens_usuario(conversation_id, textos, transcricoes)
+        await persistir_mensagens_usuario(conversation_id, empresa_id, textos, transcricoes)
         # ──────────────────────────────────────────────────────────────────────
 
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
@@ -924,7 +929,7 @@ async def processar_ia_e_responder(
         # Se o hash das mensagens atuais é igual ao que foi respondido nos últimos
         # 2 minutos, descarta silenciosamente — a resposta já foi enviada.
         _hash_msgs = hashlib.md5(mensagens_formatadas.encode()).hexdigest()
-        _ultima_resp_key = f"last_ai_msg:{conversation_id}"
+        _ultima_resp_key = f"last_ai_msg:{empresa_id}:{conversation_id}"
         _ultima_resp_hash = await redis_client.get(_ultima_resp_key)
         if _ultima_resp_hash and _ultima_resp_hash == _hash_msgs:
             logger.info(f"⏭️ Anti-duplicata: mensagens já respondidas, descartando conv {conversation_id}")
@@ -945,7 +950,7 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
-        estado_raw = await redis_client.get(f"estado:{conversation_id}")
+        estado_raw = await redis_client.get(f"estado:{empresa_id}:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
 
         # ── INTEGRAÇÃO EVO: Verificação de Membro ─────────────────────
@@ -1053,10 +1058,10 @@ async def processar_ia_e_responder(
         _usa_cache_por_intencao = bool(intencao and intencao in _intencoes_cacheaveis)
 
         if _usa_cache_por_intencao:
-            chave_cache_ia = f"cache:intent:{slug}:{intencao}"
+            chave_cache_ia = f"cache:intent:{empresa_id}:{slug}:{intencao}"
         else:
             hash_pergunta = hashlib.md5(texto_norm_fast.encode('utf-8')).hexdigest()
-            chave_cache_ia = f"cache:ia:{slug}:{hash_pergunta}"
+            chave_cache_ia = f"cache:ia:{empresa_id}:{slug}:{hash_pergunta}"
 
         # Quando há dados pré-carregados do BD, bypassa cache completamente:
         # os dados são ao vivo (endereço/horário podem ter mudado) e o LLM precisa
@@ -1069,7 +1074,7 @@ async def processar_ia_e_responder(
         # Cache semântico (embedding) — consultado apenas se não houver cache exato nem contexto live
         _cache_sem = None
         if USAR_CACHE_SEMANTICO and intencao == "llm" and not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
-            _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug)
+            _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug, empresa_id)
 
         if fast_reply:
             logger.info("⚡ Fast-Path Ativado! Respondendo sem IA.")
@@ -1104,7 +1109,7 @@ async def processar_ia_e_responder(
             # --- FLUXO IA ---
             faq = await carregar_faq_unidade(slug, empresa_id) or ""
             logger.info(f"🧠 BotCore: FAQ carregado, montando prompt para conv {conversation_id}")
-            historico = await bd_obter_historico_local(conversation_id, limit=12) or "Sem histórico."
+            historico = await bd_obter_historico_local(conversation_id, empresa_id, limit=12) or "Sem histórico."
 
             todas_unidades = await listar_unidades_ativas(empresa_id)
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
@@ -1754,26 +1759,26 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 
                 if intencao:
                     await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
+                        conversation_id, empresa_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
                     )
                     await bd_atualizar_metricas_venda(
-                        conversation_id, link_venda_enviado=link_enviado, intencao_de_compra=intencao
+                        conversation_id, empresa_id, link_venda_enviado=link_enviado, intencao_de_compra=intencao
                     )
                     
                 if tel_banco and tel_banco in resposta_texto:
                     await bd_registrar_evento_funil(
-                        conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
+                        conversation_id, empresa_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
                     )
 
         # --- Salvar estado ---
         async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
+            pipe.setex(f"estado:{empresa_id}:{conversation_id}", 86400, comprimir_texto(novo_estado))
             pipe.lpush(
-                f"hist_estado:{conversation_id}",
+                f"hist_estado:{empresa_id}:{conversation_id}",
                 f"{datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()}|{novo_estado}"
             )
-            pipe.ltrim(f"hist_estado:{conversation_id}", 0, 10)
-            pipe.expire(f"hist_estado:{conversation_id}", 86400)
+            pipe.ltrim(f"hist_estado:{empresa_id}:{conversation_id}", 0, 10)
+            pipe.expire(f"hist_estado:{empresa_id}:{conversation_id}", 86400)
             await pipe.execute()
 
         _nome_valido = bool(nome_cliente and not any(p in (nome_cliente or "").lower() for p in ["cliente", "whatsapp", "lead"]))
@@ -1791,7 +1796,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 
                 if not _ja_prospect:
                     await bd_registrar_evento_funil(
-                        conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
+                        conversation_id, empresa_id, "interesse_detectado", f"Estado: {novo_estado}"
                     )
                     lead_data = {
                         "name": nome_cliente,
@@ -1817,11 +1822,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
         if salvar_resposta_unica:
-            await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
+            await bd_salvar_mensagem_local(conversation_id, empresa_id, "assistant", resposta_texto)
 
-        is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
+        is_manual = (await redis_client.get(f"atend_manual:{empresa_id}:{conversation_id}")) == "1"
 
-        if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
+        if is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
             pass  # IA pausada, não envia
 
         else:
@@ -1836,23 +1841,23 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────
                 for i, bloco_plano in enumerate(fast_reply_lista):
-                    if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                    if await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
                         break
                     if not bloco_plano.strip():
                         continue
-                    await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
+                    await bd_salvar_mensagem_local(conversation_id, empresa_id, "assistant", bloco_plano.strip())
                     
                     if source == 'chatwoot':
                         typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                         await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                     
                     await despachar_resposta(
-                        account_id, conversation_id, randomizar_mensagem(bloco_plano.strip()), nome_ia, integracao, 
-                        source=source, contato_fone=contato_fone
+                        account_id, conversation_id, randomizar_mensagem(bloco_plano.strip()), nome_ia, integracao,
+                        empresa_id, source=source, contato_fone=contato_fone
                     )
-                    await bd_atualizar_msg_ia(conversation_id)
+                    await bd_atualizar_msg_ia(conversation_id, empresa_id)
                     if i == 0:
-                        await bd_registrar_primeira_resposta(conversation_id)
+                        await bd_registrar_primeira_resposta(conversation_id, empresa_id)
 
             elif fast_reply:
                 if not resposta_texto:
@@ -1862,13 +1867,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
                     await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                 
-                await enviar_mensagem_chatwoot(
+                await despachar_resposta(
                     account_id, conversation_id, randomizar_mensagem(resposta_texto),
-                    integracao, nome_ia=nome_ia, contact_id=contact_id,
+                    integracao, nome_ia=nome_ia, empresa_id=empresa_id, contact_id=contact_id,
                     source=source, fone=contato_fone
                 )
-                await bd_atualizar_msg_ia(conversation_id)
-                await bd_registrar_primeira_resposta(conversation_id)
+                await bd_atualizar_msg_ia(conversation_id, empresa_id)
+                await bd_registrar_primeira_resposta(conversation_id, empresa_id)
 
             else:
                 if resposta_texto and resposta_texto.strip():
@@ -1880,10 +1885,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     
                     await despachar_resposta(
                         account_id, conversation_id, _texto_final, nome_ia, integracao,
-                        source=source, contato_fone=contato_fone
+                        empresa_id, source=source, contato_fone=contato_fone
                     )
-                    await bd_atualizar_msg_ia(conversation_id)
-                    await bd_registrar_primeira_resposta(conversation_id)
+                    await bd_atualizar_msg_ia(conversation_id, empresa_id)
+                    await bd_registrar_primeira_resposta(conversation_id, empresa_id)
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
@@ -1907,11 +1912,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             logger.info(f"🔄 Drain: {len(msgs_drain)} mensagens extras para conv {conversation_id}")
             textos_drain = [json.loads(m).get("text", "") for m in msgs_drain if json.loads(m).get("text")]
             for txt in textos_drain:
-                await bd_salvar_mensagem_local(conversation_id, "user", txt)
+                await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
             # Passa essas mensagens para outro ciclo de processamento reutilizando o mesmo lock
             for m_json in msgs_drain:
-                await redis_client.rpush(f"buffet_drain:{conversation_id}", m_json)
-            await redis_client.expire(f"buffet_drain:{conversation_id}", 120)
+                await redis_client.rpush(f"buffet_drain:{empresa_id}:{conversation_id}", m_json)
+            await redis_client.expire(f"buffet_drain:{empresa_id}:{conversation_id}", 120)
             # Coloca de volta no buffet para ser pego pelo próximo webhook (lock será liberado logo)
             for m_json in msgs_drain:
                 await redis_client.rpush(chave_buffet, m_json)
@@ -1935,7 +1940,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 if await redis_client.set(chave_lock, novo_lock_val, nx=True, ex=180):
                     asyncio.create_task(processar_ia_e_responder(
                         account_id, conversation_id, contact_id, slug,
-                        nome_cliente, novo_lock_val, empresa_id, integracao_chatwoot
+                        nome_cliente, novo_lock_val, empresa_id, integracao
                     ))
         except Exception as e_drain:
             logger.error(f"Erro no drain pós-processamento: {e_drain}")
@@ -1964,19 +1969,21 @@ async def chatwoot_webhook(
 
     # Rate limiting por conversa
     # Rate limit por conversa (anti-loop de webhook)
-    rate_key = f"rl:conv:{id_conv}"
+    # Busca empresa_id mais cedo se necessário, mas aqui podemos usar o account_id para o rate limit
+    # ou mover a busca do empresa_id para antes do rate limit.
+    # Vamos mover a busca do empresa_id para antes.
+    empresa_id = await buscar_empresa_por_account_id(account_id)
+    if not empresa_id:
+        logger.error(f"Account {account_id} sem empresa associada")
+        return {"status": "erro_sem_empresa"}
+
+    rate_key = f"rl:conv:{empresa_id}:{id_conv}"
     contador = await redis_client.incr(rate_key)
     if contador == 1:
         await redis_client.expire(rate_key, 10)
     if contador > 10:
         from fastapi.responses import JSONResponse
         return JSONResponse({"status": "rate_limit"}, status_code=429)
-
-    # Busca empresa pelo account_id
-    empresa_id = await buscar_empresa_por_account_id(account_id)
-    if not empresa_id:
-        logger.error(f"Account {account_id} sem empresa associada")
-        return {"status": "erro_sem_empresa"}
 
     # Carrega integração Chatwoot da empresa
     integracao = await carregar_integracao(empresa_id, 'chatwoot')
@@ -1990,15 +1997,15 @@ async def chatwoot_webhook(
             conv_obj.get("assignee_id") is not None
             or conv_obj.get("status") not in ["pending", "open", None]
         ) else "0"
-        await redis_client.setex(f"atend_manual:{id_conv}", 86400, is_manual)
+        await redis_client.setex(f"atend_manual:{empresa_id}:{id_conv}", 86400, is_manual)
 
     if event == "conversation_created":
         # Nova conversa — garante que não há estado antigo no Redis (ex: conversas reutilizadas em testes)
         await redis_client.delete(
-            f"pause_ia:{id_conv}", f"estado:{id_conv}",
-            f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
-            f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-            f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
+            f"pause_ia:{empresa_id}:{id_conv}", f"estado:{empresa_id}:{id_conv}",
+            f"unidade_escolhida:{empresa_id}:{id_conv}", f"esperando_unidade:{empresa_id}:{id_conv}",
+            f"prompt_unidade_enviado:{empresa_id}:{id_conv}", f"nome_cliente:{empresa_id}:{id_conv}", f"aguardando_nome:{empresa_id}:{id_conv}",
+            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{empresa_id}:{id_conv}", f"buffet:{empresa_id}:{id_conv}"
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
@@ -2006,12 +2013,12 @@ async def chatwoot_webhook(
     if event == "conversation_updated":
         status_conv = conv_obj.get("status") or payload.get("status")
         if status_conv in {"resolved", "closed"}:
-            await bd_finalizar_conversa(id_conv)
+            await bd_finalizar_conversa(id_conv, empresa_id)
             await redis_client.delete(
-                f"pause_ia:{id_conv}", f"estado:{id_conv}",
-                f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
-                f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-                f"atend_manual:{id_conv}"
+                f"pause_ia:{empresa_id}:{id_conv}", f"estado:{empresa_id}:{id_conv}",
+                f"unidade_escolhida:{empresa_id}:{id_conv}", f"esperando_unidade:{empresa_id}:{id_conv}",
+                f"prompt_unidade_enviado:{empresa_id}:{id_conv}", f"nome_cliente:{empresa_id}:{id_conv}", f"aguardando_nome:{empresa_id}:{id_conv}",
+                f"atend_manual:{empresa_id}:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
@@ -2032,40 +2039,40 @@ async def chatwoot_webhook(
 
     if message_type == "incoming":
         if nome_contato_valido:
-            await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
+            await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, nome_contato_limpo)
         else:
             _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
             if _nome_informado:
-                await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
-                await redis_client.delete(f"aguardando_nome:{id_conv}")
+                await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, _nome_informado)
+                await redis_client.delete(f"aguardando_nome:{empresa_id}:{id_conv}")
                 await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
             else:
-                _aguardando_nome = await redis_client.get(f"aguardando_nome:{id_conv}")
+                _aguardando_nome = await redis_client.get(f"aguardando_nome:{empresa_id}:{id_conv}")
                 if not _aguardando_nome:
                     msg_nome = (
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao)
-                    await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, nome_ia="Assistente Virtual")
+                    await redis_client.setex(f"aguardando_nome:{empresa_id}:{id_conv}", 900, "1")
                     return {"status": "aguardando_nome"}
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
     if message_type == "incoming" and mensagem_id:
-        dedup_key = f"msg_incoming_processada:{id_conv}:{mensagem_id}"
+        dedup_key = f"msg_incoming_processada:{empresa_id}:{id_conv}:{mensagem_id}"
         if not await redis_client.set(dedup_key, "1", nx=True, ex=120):
             logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
             return {"status": "duplicado"}
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
-    slug_redis = await redis_client.get(f"unidade_escolhida:{id_conv}")
+    slug_redis = await redis_client.get(f"unidade_escolhida:{empresa_id}:{id_conv}")
     # Regra de segurança: em operação multiunidade, NÃO usar label como fonte primária.
     # A unidade só é assumida por escolha explícita (Redis) ou por detecção no texto.
     slug = slug_redis
     slug_detectado = None
-    esperando_unidade = await redis_client.get(f"esperando_unidade:{id_conv}")
-    prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
+    esperando_unidade = await redis_client.get(f"esperando_unidade:{empresa_id}:{id_conv}")
+    prompt_unidade_key = f"prompt_unidade_enviado:{empresa_id}:{id_conv}"
 
     # Detecta unidade na mensagem APENAS em dois cenários:
     # 1) Já existe um slug definido (cliente quer trocar de unidade)
@@ -2107,9 +2114,9 @@ async def chatwoot_webhook(
             if slug_detectado and slug_detectado != slug:
                 logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
                 slug = slug_detectado
-                await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+                await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
                 if esperando_unidade:
-                    await redis_client.delete(f"esperando_unidade:{id_conv}")
+                    await redis_client.delete(f"esperando_unidade:{empresa_id}:{id_conv}")
                 await redis_client.delete(prompt_unidade_key)
 
     # Sem unidade ainda — tenta definir
@@ -2121,7 +2128,7 @@ async def chatwoot_webhook(
         elif len(unidades_ativas) == 1:
             # Empresa com apenas 1 unidade — seleciona automaticamente
             slug = unidades_ativas[0]["slug"]
-            await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
+            await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
 
         else:
             if not slug:
@@ -2164,8 +2171,8 @@ async def chatwoot_webhook(
                 if slug_detectado:
                     # Unidade identificada — confirma com mensagem humanizada e prossegue
                     slug = slug_detectado
-                    await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
-                    await redis_client.delete(f"esperando_unidade:{id_conv}")
+                    await redis_client.setex(f"unidade_escolhida:{empresa_id}:{id_conv}", 86400, slug)
+                    await redis_client.delete(f"esperando_unidade:{empresa_id}:{id_conv}")
                     await redis_client.delete(prompt_unidade_key)
                     contato = payload.get("sender", {})
                     _nome_contato = limpar_nome(contato.get("name"))
@@ -2174,7 +2181,7 @@ async def chatwoot_webhook(
                         contato.get("id"), _nome_contato, empresa_id
                     )
                     await bd_registrar_evento_funil(
-                        id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
+                        id_conv, empresa_id, "unidade_escolhida", f"Cliente escolheu {slug}", 3
                     )
 
                     # Envia confirmação humanizada com dados da unidade
@@ -2199,15 +2206,15 @@ async def chatwoot_webhook(
                         f"\n\nComo posso te ajudar? 😊"
                     )
                     await enviar_mensagem_chatwoot(
-                        account_id, id_conv, _msg_confirmacao, _nome_ia_temp, integracao
+                        account_id, id_conv, _msg_confirmacao, integracao, nome_ia=_nome_ia_temp
                     )
 
-                    lock_key = f"agendar_lock:{id_conv}"
+                    lock_key = f"agendar_lock:{empresa_id}:{id_conv}"
                     if await redis_client.set(lock_key, "1", nx=True, ex=5):
                         try:
                             existe = await _database.db_pool.fetchval(
                                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
-                                "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
+                                "WHERE c.conversation_id = $1 AND c.empresa_id = $2 AND f.status = 'pendente' LIMIT 1", id_conv, empresa_id
                             )
                             if not existe:
                                 await agendar_followups(id_conv, account_id, slug, empresa_id)
@@ -2220,13 +2227,13 @@ async def chatwoot_webhook(
                     # (ex.: múltiplos webhooks da mesma conversa em sequência).
                     if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
                         # Não fica em silêncio: envia lembrete curto com throttle
-                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
+                        throttle_key = f"esperando_unidade_throttle:{empresa_id}:{id_conv}"
                         if not await redis_client.get(throttle_key):
                             msg_retry = (
                                 "Ainda não consegui localizar a unidade certinha 😅\n\n"
                                 "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
                             )
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, "Assistente Virtual", integracao)
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia="Assistente Virtual")
                             await redis_client.setex(throttle_key, 30, "1")
                         logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
                         return {"status": "aguardando_escolha_unidade"}
@@ -2238,8 +2245,8 @@ async def chatwoot_webhook(
                         f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
                         "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
-                    await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, nome_ia="Assistente Virtual")
+                    await redis_client.setex(f"esperando_unidade:{empresa_id}:{id_conv}", 86400, "1")
                     await redis_client.setex(prompt_unidade_key, 600, "1")
                     background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
                     return {"status": "aguardando_escolha_unidade"}
@@ -2251,12 +2258,12 @@ async def chatwoot_webhook(
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
             return {"status": "ignorado"}
-        await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+        await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if _database.db_pool:
             await _database.db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
-                "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1) "
-                "AND status = 'pendente'", id_conv
+                "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2) "
+                "AND status = 'pendente'", id_conv, empresa_id
             )
         return {"status": "ia_pausada"}
 
@@ -2264,27 +2271,27 @@ async def chatwoot_webhook(
         return {"status": "ignorado"}
 
     contato = payload.get("sender", {})
-    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
+    _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{empresa_id}:{id_conv}")) or "Cliente"
     await bd_iniciar_conversa(
         id_conv, slug, account_id,
         contato.get("id"), _nome_para_bd, empresa_id
     )
 
-    lock_key = f"agendar_lock:{id_conv}"
+    lock_key = f"agendar_lock:{empresa_id}:{id_conv}"
     if await redis_client.set(lock_key, "1", nx=True, ex=5):
         try:
             existe = await _database.db_pool.fetchval(
                 "SELECT 1 FROM followups f JOIN conversas c ON c.id = f.conversa_id "
-                "WHERE c.conversation_id = $1 AND f.status = 'pendente' LIMIT 1", id_conv
+                "WHERE c.conversation_id = $1 AND c.empresa_id = $2 AND f.status = 'pendente' LIMIT 1", id_conv, empresa_id
             )
             if not existe:
                 await agendar_followups(id_conv, account_id, slug, empresa_id)
         finally:
             await redis_client.delete(lock_key)
 
-    await bd_atualizar_msg_cliente(id_conv)
+    await bd_atualizar_msg_cliente(id_conv, empresa_id)
 
-    if await redis_client.exists(f"pause_ia:{id_conv}"):
+    if await redis_client.exists(f"pause_ia:{empresa_id}:{id_conv}"):
         return {"status": "ignorado"}
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
@@ -2295,13 +2302,13 @@ async def chatwoot_webhook(
         arquivos.append({"url": a.get("data_url"), "type": tipo})
 
     await redis_client.rpush(
-        f"buffet:{id_conv}",
+        f"buffet:{empresa_id}:{id_conv}",
         json.dumps({"text": conteudo_texto, "files": arquivos})
     )
-    await redis_client.expire(f"buffet:{id_conv}", 60)
+    await redis_client.expire(f"buffet:{empresa_id}:{id_conv}", 60)
 
     lock_val = str(uuid.uuid4())
-    if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=180):
+    if await redis_client.set(f"lock:{empresa_id}:{id_conv}", lock_val, nx=True, ex=180):
         background_tasks.add_task(
             processar_ia_e_responder,
             account_id, id_conv, contato.get("id"), slug,
@@ -2312,8 +2319,8 @@ async def chatwoot_webhook(
     return {"status": "acumulando_no_buffet"}
 
 
-async def desbloquear_ia(conversation_id: int):
-    if await redis_client.delete(f"pause_ia:{conversation_id}"):
+async def desbloquear_ia(conversation_id: int, empresa_id: int):
+    if await redis_client.delete(f"pause_ia:{empresa_id}:{conversation_id}"):
         return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id}!"}
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 

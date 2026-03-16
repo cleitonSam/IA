@@ -104,7 +104,7 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
         await _database.db_pool.execute("""
             UPDATE followups SET status = 'cancelado', updated_at = NOW()
             WHERE (
-                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1)
+                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2)
                 OR conversation_id = $1
             ) AND empresa_id = $2 AND status = 'pendente'
         """, conversation_id, empresa_id)
@@ -126,11 +126,11 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
                 INSERT INTO followups
                     (conversa_id, conversation_id, account_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
                 VALUES (
-                    (SELECT id FROM conversas WHERE conversation_id = $1),
+                    (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2),
                     $1,
                     $9,
                     $2,
-                    (SELECT id FROM unidades WHERE slug = $3),
+                    (SELECT id FROM unidades WHERE slug = $3 AND empresa_id = $2),
                     $4, $5, $6, $7, $8, 'pendente'
                 )
             """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para, account_id)
@@ -173,8 +173,8 @@ async def worker_followup():
                         continue
 
                     if (
-                        await redis_client.get(f"atend_manual:{conv_id}") == "1"
-                        or await redis_client.get(f"pause_ia:{conv_id}") == "1"
+                        await redis_client.get(f"atend_manual:{emp_id}:{conv_id}") == "1"
+                        or await redis_client.get(f"pause_ia:{emp_id}:{conv_id}") == "1"
                     ):
                         await _database.db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
@@ -246,7 +246,7 @@ async def worker_followup():
                         mensagem_final = template_base
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), "Assistente Virtual", integracao, evitar_prefixo_nome=True
+                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), integracao, nome_ia="Assistente Virtual", evitar_prefixo_nome=True
                     )
                     await _database.db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']

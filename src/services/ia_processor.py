@@ -62,7 +62,7 @@ async def resolver_contexto_unidade(
 ) -> Dict[str, Optional[str]]:
     """Resolve unidade da conversa em um único ponto (mensagem > contexto)."""
     # Prioriza contexto já salvo em Redis (mais confiável que slug transitório do webhook)
-    slug_redis = await redis_client.get(f"unidade_escolhida:{conversation_id}")
+    slug_redis = await redis_client.get(f"unidade_escolhida:{empresa_id}:{conversation_id}")
     slug_salvo = slug_redis or slug_atual
 
     # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
@@ -97,7 +97,7 @@ async def resolver_contexto_unidade(
     if slug_detectado:
         mudou = slug_detectado != slug_salvo
         if mudou:
-            await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug_detectado)
+            await redis_client.setex(f"unidade_escolhida:{empresa_id}:{conversation_id}", 86400, slug_detectado)
         return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true" if mudou else "false"}
 
     if slug_salvo:
@@ -726,6 +726,7 @@ async def _get_embedding(texto: str) -> Optional[List[float]]:
 async def buscar_cache_semantico(
     texto: str,
     slug: str,
+    empresa_id: int,
     threshold: float = 0.88
 ) -> Optional[Dict]:
     """
@@ -738,7 +739,8 @@ async def buscar_cache_semantico(
         return None  # API indisponível — usa hash cache
 
     try:
-        pattern = f"semcache:{slug}:*"
+        # Busca empresa_id para o slug se não literal
+        pattern = f"semcache:{empresa_id}:{slug}:*"
         melhor_score = 0.0
         melhor_key   = None
         total_scan   = 0
@@ -775,12 +777,13 @@ async def buscar_cache_semantico(
 async def salvar_cache_semantico(
     texto: str,
     slug: str,
+    empresa_id: int,
     dados: Dict,
     ttl: int = 3600
 ):
     """
     Salva embedding (via API) + resposta no Redis para uso futuro.
-    Chave: semcache:{slug}:{md5(texto)}
+    # Chave: semcache:{empresa_id}:{slug}:{md5(texto)}
     """
     emb = await _get_embedding(texto)
     if not emb:
@@ -791,7 +794,7 @@ async def salvar_cache_semantico(
         _cur_lim = 0
         while True:
             _cur_lim, _kk_lim = await redis_client.scan(
-                _cur_lim, match=f"semcache:{slug}:*", count=100
+                _cur_lim, match=f"semcache:{empresa_id}:{slug}:*", count=100
             )
             _total_slug += len(_kk_lim)
             if _cur_lim == 0 or _total_slug >= 500:
@@ -800,7 +803,7 @@ async def salvar_cache_semantico(
             logger.debug(f"semcache: limite 500 atingido para slug={slug}, entrada descartada")
             return
 
-        chave = f"semcache:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
+        chave = f"semcache:{empresa_id}:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
         await redis_client.hset(chave, mapping={
             "embedding": json.dumps(emb),
             "resposta":  json.dumps(dados),
@@ -832,13 +835,19 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
-async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
     Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
     em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
     """
-    chave_buffet = f"buffet:{conversation_id}"
+    # Busca empresa_id no contexto se disponível, mas aqui recebemos conversation_id
+    # No caso de ia_processor, os métodos que chamam buffet devem prover empresa_id.
+    # Vou ajustar a assinatura de coletar_mensagens_buffer e onde ela é chamada.
+    # Mas espera, eu posso buscar o empresa_id da conversa no Redis ou no BD se necessário.
+    # No bot_core.py, o empresa_id está disponível.
+    # Vamos adicionar empresa_id como argumento.
+    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
     deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
@@ -863,15 +872,15 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     return mensagens_acumuladas
 
 
-async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa_id: int, mensagens_acumuladas: List[str]) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
-    if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
+    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
         return False
 
     logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
     for m_json in mensagens_acumuladas:
-        await redis_client.rpush(f"buffet:{conversation_id}", m_json)
-    await redis_client.expire(f"buffet:{conversation_id}", 300)
+        await redis_client.rpush(f"buffet:{empresa_id}:{conversation_id}", m_json)
+    await redis_client.expire(f"buffet:{empresa_id}:{conversation_id}", 300)
     return True
 
 
@@ -935,12 +944,12 @@ async def resolver_contexto_atendimento(
     return {"slug": slug, "mudou_unidade": mudou_unidade, "primeira_mensagem": primeira_mensagem}
 
 
-async def persistir_mensagens_usuario(conversation_id: int, textos: List[str], transcricoes: List[str]):
+async def persistir_mensagens_usuario(conversation_id: int, empresa_id: int, textos: List[str], transcricoes: List[str]):
     """Persiste histórico de mensagens do usuário (texto e áudio transcrito)."""
     for txt in textos:
-        await bd_salvar_mensagem_local(conversation_id, "user", txt)
+        await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
     for transc in transcricoes:
-        await bd_salvar_mensagem_local(conversation_id, "user", f"[Áudio] {transc}")
+        await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", f"[Áudio] {transc}")
 
 
 # --- UTILITÁRIOS DE JSON ---

@@ -42,7 +42,7 @@ async def uazapi_webhook(
 
         # fromMe=true pode ser o BOT (via API) ou um ATENDENTE HUMANO (via WhatsApp)
         if key.get("fromMe"):
-            bot_sent_key = f"uaz_bot_sent:{phone}"
+            bot_sent_key = f"uaz_bot_sent:{empresa_id}:{phone}"
             if await redis_client.exists(bot_sent_key):
                 # É o próprio bot — ignora sem pausar
                 await redis_client.delete(bot_sent_key)
@@ -52,7 +52,7 @@ async def uazapi_webhook(
                 conversa_humana = await buscar_conversa_por_fone(phone, empresa_id)
                 if conversa_humana:
                     conv_id_humano = conversa_humana.get("conversation_id")
-                    await redis_client.setex(f"pause_ia:{conv_id_humano}", 43200, "1")
+                    await redis_client.setex(f"pause_ia:{empresa_id}:{conv_id_humano}", 43200, "1")
                     logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
                 return {"status": "ignored", "reason": "from_me_human"}
 
