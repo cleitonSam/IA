@@ -4172,6 +4172,9 @@ async def chatwoot_webhook(
     # (nome de unidade, cidade ou bairro). Mensagens genéricas NUNCA trocam o slug.
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
         _msg_norm_wh = normalizar(conteudo_texto)
+        _pedido_troca_unidade = any(k in _msg_norm_wh for k in (
+            "unidade", "trocar", "mudar", "outra", "bairro", "cidade", "endereco", "endereço"
+        ))
         _tem_geo_wh = False
         try:
             _units_wh = await listar_unidades_ativas(empresa_id)
@@ -4186,7 +4189,8 @@ async def chatwoot_webhook(
         except Exception:
             pass
 
-        if _tem_geo_wh or esperando_unidade:
+        # Só troca unidade fora do fluxo de escolha quando houver pedido explícito do cliente.
+        if esperando_unidade or (_tem_geo_wh and _pedido_troca_unidade):
             slug_detectado = await buscar_unidade_na_pergunta(
                 conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
             )
@@ -4226,7 +4230,12 @@ async def chatwoot_webhook(
                     if _tem_geo_multi:
                         break
 
-                if not slug_detectado and _tem_geo_multi:
+                _pedido_unidade_explicito = any(k in texto_cliente for k in (
+                    "unidade", "bairro", "cidade", "endereco", "endereço"
+                ))
+                _msg_curta_geo = len([t for t in texto_cliente.split() if t]) <= 5
+
+                if not slug_detectado and _tem_geo_multi and (_pedido_unidade_explicito or _msg_curta_geo):
                     slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
                 # Tenta por número digitado (ex: "1", "2")
