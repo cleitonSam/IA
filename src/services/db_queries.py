@@ -110,9 +110,17 @@ async def carregar_integracao(
         if row:
             config = row['config']
             if isinstance(config, str): config = json.loads(config)
+            # Auto-normaliza config aninhado legado: {"token": {"url":..., "access_token":...}}
+            if isinstance(config.get('token'), dict):
+                logger.warning(f"Config {tipo} da empresa {empresa_id} está aninhada — normalizando automaticamente")
+                config = config['token']
+                await _database.db_pool.execute(
+                    "UPDATE integracoes SET config = $1 WHERE empresa_id = $2 AND tipo = $3 AND unidade_id IS NULL",
+                    json.dumps(config), empresa_id, tipo
+                )
             await redis_set_json(cache_key, config, 300)
             return config
-        
+
         return None
     except asyncpg.PostgresError as e:
         logger.error(f"Erro PostgreSQL ao carregar integração {tipo} da empresa {empresa_id}: {e}")
