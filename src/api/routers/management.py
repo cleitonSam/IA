@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
+from src.core.redis_client import redis_client
 import json
 import asyncio
 
@@ -38,6 +39,27 @@ class FAQCreate(BaseModel):
     unidade_id: Optional[int] = None
     todas_unidades: bool = False
     prioridade: int = 0
+
+
+
+async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
+    """Resolve empresa_id do token; fallback para lookup por e-mail em tokens legados."""
+    empresa_id = token_payload.get("empresa_id")
+    if empresa_id:
+        return empresa_id
+
+    email = token_payload.get("sub")
+    if not email:
+        return None
+
+    try:
+        return await _database.db_pool.fetchval(
+            "SELECT empresa_id FROM usuarios WHERE email = $1",
+            email
+        )
+    except Exception as e:
+        logger.warning(f"Não foi possível resolver empresa_id para {email}: {e}")
+        return None
 
 class IntegrationUpdate(BaseModel):
     config: Dict[str, Any]
@@ -283,16 +305,39 @@ async def personality_playground(
 
 @router.get("/faq")
 async def list_faq(token_payload: dict = Depends(get_current_user_token)):
-    empresa_id = token_payload.get("empresa_id")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+
     rows = await _database.db_pool.fetch(
         "SELECT id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo FROM faq WHERE empresa_id = $1 ORDER BY prioridade DESC, id DESC",
         empresa_id
     )
+
+    # Compatibilidade com dados legados: alguns registros antigos podem estar sem empresa_id.
+    # Nesses casos, expõe apenas FAQs vinculados a unidades da empresa atual.
+    if not rows:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT f.id, f.pergunta, f.resposta, f.unidade_id,
+                   COALESCE(f.todas_unidades, false) AS todas_unidades,
+                   COALESCE(f.prioridade, 0) AS prioridade,
+                   COALESCE(f.ativo, true) AS ativo
+            FROM faq f
+            WHERE f.empresa_id IS NULL
+              AND f.unidade_id IN (SELECT id FROM unidades WHERE empresa_id = $1)
+            ORDER BY COALESCE(f.prioridade, 0) DESC, f.id DESC
+            """,
+            empresa_id
+        )
+
     return [dict(r) for r in rows]
 
 @router.post("/faq")
 async def create_faq(body: FAQCreate, token_payload: dict = Depends(get_current_user_token)):
-    empresa_id = token_payload.get("empresa_id")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
     await _database.db_pool.execute(
         """INSERT INTO faq (empresa_id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, true, NOW())""",
@@ -302,7 +347,9 @@ async def create_faq(body: FAQCreate, token_payload: dict = Depends(get_current_
 
 @router.put("/faq/{faq_id}")
 async def update_faq(faq_id: int, body: FAQCreate, token_payload: dict = Depends(get_current_user_token)):
-    empresa_id = token_payload.get("empresa_id")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
     await _database.db_pool.execute(
         """UPDATE faq SET pergunta=$1, resposta=$2, unidade_id=$3, todas_unidades=$4, prioridade=$5, updated_at=NOW()
            WHERE id=$6 AND empresa_id=$7""",
@@ -312,7 +359,9 @@ async def update_faq(faq_id: int, body: FAQCreate, token_payload: dict = Depends
 
 @router.delete("/faq/{faq_id}")
 async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user_token)):
-    empresa_id = token_payload.get("empresa_id")
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
     await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
     return {"status": "success"}
 
@@ -373,6 +422,43 @@ async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
             return int(empresa_id)
     return None
 
+
+
+
+@router.get("/integrations/chatwoot/ai-status")
+async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_token)):
+    """Status global da IA para mensagens do Chatwoot (por empresa)."""
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    paused = await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1"
+    return {"ai_active": not paused}
+
+
+@router.put("/integrations/chatwoot/ai-status")
+async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_current_user_token)):
+    """Ativa/pausa globalmente o atendimento da IA no canal Chatwoot."""
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    ai_active = bool(body.get("ai_active", True))
+    key = f"ia:chatwoot:paused:{empresa_id}"
+    if ai_active:
+        await redis_client.delete(key)
+    else:
+        await redis_client.set(key, "1")
+
+    return {"status": "success", "ai_active": ai_active}
 
 @router.get("/integrations")
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):

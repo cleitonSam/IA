@@ -79,7 +79,7 @@ from src.services.ia_processor import (
     # Functions
     resolver_contexto_unidade, responder_horario, extrair_endereco_unidade,
     normalizar_lista_campo, extrair_telefone_unidade, responder_endereco,
-    responder_telefone, responder_lista_unidades, gerar_resposta_inteligente,
+    responder_telefone, responder_lista_unidades, responder_modalidades, gerar_resposta_inteligente,
     montar_saudacao_humanizada, detectar_tipo_cliente,
     formatar_planos_bonito, filtrar_planos_por_contexto,
     _cosine_sim, _get_embedding, buscar_cache_semantico, salvar_cache_semantico,
@@ -899,6 +899,11 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
+        # Pausa global da IA no Chatwoot por empresa (evita responder enquanto estiver desativada)
+        if source == 'chatwoot' and await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+            logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
+            return
+
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
             return
 
@@ -1002,6 +1007,27 @@ async def processar_ia_e_responder(
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
             fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
             logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
+
+        # Endereça perguntas de unidades/localização sem passar no LLM (evita alucinação de bairro/cidade)
+        if intencao == "unidades" and not fast_reply_lista:
+            fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
+            logger.info("⚡ Unidades: resposta factual direta sem LLM")
+
+        # Perguntas de grade/modalidades: tenta responder da unidade citada na mensagem, sem LLM.
+        if intencao == "modalidades" and not fast_reply_lista and not fast_reply:
+            slug_modalidades = await buscar_unidade_na_pergunta(texto_cliente_unificado, empresa_id, fuzzy_threshold=82)
+            if slug_modalidades:
+                if slug_modalidades != slug:
+                    slug = slug_modalidades
+                    await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
+                unidade_modalidades = await carregar_unidade(slug_modalidades, empresa_id) or unidade
+                fast_reply = responder_modalidades(unidade_modalidades)
+                logger.info(f"⚡ Modalidades: resposta factual da unidade {slug_modalidades}")
+            else:
+                _tem_pedido_unidade = bool(re.search(r"(unidade|bairro|cidade|grade|aula|aulas)", normalizar(texto_cliente_unificado or "")))
+                if _tem_pedido_unidade:
+                    fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
+                    logger.info("⚡ Modalidades: unidade não encontrada, retornando lista segura de unidades")
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -1286,6 +1312,9 @@ REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da re
 Se o cliente perguntar sobre qualquer unidade (endereço, horário, infraestrutura, estacionamento, modalidades etc.), responda diretamente usando os dados acima.
 Só diga que não tem a informação se ela realmente não estiver nos dados fornecidos.
 NÃO peça ao cliente para escolher uma unidade antes de responder — responda com os dados que você já tem.
+NUNCA invente proximidade geográfica ("pertinho", "próxima") sem evidência explícita nos dados.
+NUNCA afirme bairro/cidade de uma unidade se essa informação não estiver exatamente nos dados fornecidos.
+Se o cliente citar um bairro/cidade sem unidade correspondente nos dados, diga isso claramente e ofereça as unidades reais disponíveis.
 
 FAQ — RESPOSTAS PRONTAS (USE SEMPRE QUE A PERGUNTA DO CLIENTE SE ENCAIXAR):
 {faq}
@@ -1474,13 +1503,35 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         resposta_bruta = response.choices[0].message.content
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         if _finish == "length" and resposta_bruta:
-                            logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
+                            logger.info(f"ℹ️ Resposta longa (finish_reason=length) conv {conversation_id} — continuando automaticamente")
                             _resposta_foi_truncada = True
-                            for _sep in ['. ', '! ', '? ', '\n']:
-                                _pos = resposta_bruta.rfind(_sep)
-                                if _pos > len(resposta_bruta) * 0.3:
-                                    resposta_bruta = resposta_bruta[:_pos + 1]
-                                    break
+                            try:
+                                acumulada = (resposta_bruta or "").strip()
+                                for _ in range(3):
+                                    resposta_cont = await asyncio.wait_for(
+                                        cliente_ia.chat.completions.create(
+                                            model=modelo_escolhido,
+                                            messages=[
+                                                {"role": "system", "content": "Continue exatamente de onde parou, sem repetir o início. Continue de forma direta."},
+                                                {"role": "assistant", "content": acumulada},
+                                            ],
+                                            temperature=max(0.2, min(temperature, 0.7)),
+                                            max_tokens=320,
+                                        ),
+                                        timeout=10,
+                                    )
+                                    cont_txt = (resposta_cont.choices[0].message.content or "").strip()
+                                    if not cont_txt:
+                                        break
+                                    acumulada = f"{acumulada} {cont_txt}".strip()
+                                    if getattr(resposta_cont.choices[0], 'finish_reason', None) != "length":
+                                        _resposta_foi_truncada = False
+                                        break
+                                resposta_bruta = acumulada
+                            except Exception:
+                                # Se não conseguir continuar, mantém o texto já gerado sem cortar.
+                                pass
+
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -1773,7 +1824,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
             else:
                 if resposta_texto and resposta_texto.strip():
-                    _texto_final = garantir_frase_completa(resposta_texto) if _resposta_foi_truncada else resposta_texto.strip()
+                    _texto_final = resposta_texto.strip()
                     
                     if source == 'chatwoot':
                         typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
