@@ -516,7 +516,13 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
         query = "SELECT unidade_slug FROM buscar_unidades_por_texto($1, $2) LIMIT 1"
         row = await _database.db_pool.fetchrow(query, empresa_id, texto)
         if row:
-            return row['unidade_s    # 2. Busca por palavras-chave, nome, cidade e bairro
+            return row['unidade_slug']
+    except asyncpg.UndefinedFunctionError:
+        pass  # Função não existe no banco — usa fallback Python
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro SQL ao buscar unidade: {e}")
+
+    # 2. Busca por palavras-chave, nome, cidade e bairro
     unidades = await listar_unidades_ativas(empresa_id)
     texto_norm = normalizar(texto)
     tokens_texto = set(texto_norm.split())
