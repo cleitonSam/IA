@@ -10,7 +10,7 @@ interface SidebarProps {
   activePage?: string;
 }
 
-const navItems = [
+const navItemsRaw = [
   { label: "Visão Geral", icon: LayoutDashboard, href: "/dashboard", id: "dashboard" },
   { label: "Insights IA", icon: BarChart3, href: "/dashboard/insights", id: "insights" },
   { label: "Conversas", icon: MessageSquare, href: "/dashboard/conversas", id: "conversas" },
@@ -20,6 +20,10 @@ const navItems = [
   { label: "FAQ Neural", icon: HelpCircle, href: "/dashboard/faq", id: "faq" },
   { label: "Integrações", icon: Network, href: "/dashboard/integrations", id: "integrations" },
 ];
+
+const navItems = navItemsRaw.filter((item, index, all) => (
+  all.findIndex((candidate) => candidate.id === item.id && candidate.href === item.href) === index
+));
 
 export default function DashboardSidebar({ activePage = "dashboard" }: SidebarProps) {
   const [open, setOpen] = useState(false);
