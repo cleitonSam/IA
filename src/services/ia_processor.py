@@ -196,16 +196,34 @@ def responder_endereco(unidade: dict) -> str:
 
 def responder_telefone(unidade: dict) -> str:
     nome = unidade.get("nome") or "da unidade"
-    telefone = extrair_telefone_unidade(unidade)
-    if not telefone:
-        return (
-            f"📞 No momento não encontrei o contato da unidade *{nome}*.\n\n"
-            "Se quiser, posso te passar o endereço."
-        )
+    telefone = extrair_telefone_unidade(unidade) or "não encontrado"
     return (
         f"📞 O contato da unidade *{nome}* é:\n{telefone}\n\n"
         "Se quiser, também posso te passar o endereço ou horário."
     )
+
+
+def responder_modalidades(unidade: dict) -> str:
+    nome = unidade.get("nome") or "da unidade"
+    modalidades = normalizar_lista_campo(unidade.get("modalidades"))
+    foto_grade = unidade.get("foto_grade")
+    
+    if not modalidades:
+        return (
+            f"💪 Na unidade *{nome}* temos diversas atividades incríveis!\n\n"
+            "Geralmente temos musculação, cardio e aulas coletivas. "
+            "Qual modalidade você mais gosta? 😊"
+        )
+    
+    lista = "\n".join([f"• {m}" for m in modalidades])
+    resposta = f"💪 Na unidade *{nome}* temos:\n\n{lista}"
+    
+    if foto_grade:
+        resposta += f"\n\n🖼️ *Também tenho a imagem com a grade completa de horários aqui!* Quer que eu te envie? 😊"
+    else:
+        resposta += "\n\nQual dessas você mais tem interesse? 😊"
+        
+    return resposta
 
 
 async def responder_lista_unidades(empresa_id: int, texto: str) -> str:
@@ -261,8 +279,16 @@ async def gerar_resposta_inteligente(
         return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
     if intencao == "endereco":
         return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
+    if intencao == "modalidades":
+        return {"tipo": "texto", "resposta": responder_modalidades(unidade), "slug": slug, "intencao": intencao}
 
-    return {"tipo": "llm", "resposta": None, "slug": slug, "intencao": "llm"}
+    return {
+        "tipo": "llm", 
+        "resposta": None, 
+        "slug": slug, 
+        "intencao": "llm",
+        "foto_grade": unidade.get("foto_grade")
+    }
 
 
 def montar_saudacao_humanizada(

@@ -6,7 +6,7 @@ import {
   Building2, Plus, Pencil, Trash2, Save, X, Loader2,
   CheckCircle2, MapPin, Phone, Globe, Instagram, Clock,
   Dumbbell, CreditCard, Shield, Sparkles, Layers,
-  ListChecks, HeartHandshake, Eye, Settings2, Info
+  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -34,6 +34,7 @@ interface Unit {
   infraestrutura?: any;
   servicos?: any;
   palavras_chave?: string[];
+  foto_grade?: string;
 }
 
 type TabType = "identity" | "location" | "contact" | "operation" | "extra";
@@ -43,6 +44,7 @@ const emptyForm = {
   endereco: "", numero: "", telefone_principal: "", whatsapp: "",
   site: "", instagram: "", link_matricula: "", horarios: "", modalidades: "",
   planos: {}, formas_pagamento: {}, convenios: {}, infraestrutura: {}, servicos: {}, palavras_chave: [],
+  foto_grade: "",
 };
 
 export default function UnitsPage() {
@@ -105,6 +107,7 @@ export default function UnitsPage() {
           infraestrutura: data.infraestrutura || {},
           servicos: data.servicos || {},
           palavras_chave: data.palavras_chave || [],
+          foto_grade: data.foto_grade || "",
         });
       } catch (e) {
         console.error("Erro ao carregar dados da unidade:", e);
@@ -145,7 +148,28 @@ export default function UnitsPage() {
     try {
       await axios.delete(`/api-backend/dashboard/unidades/${id}`, getConfig());
       fetchUnits();
-    } catch (e) { alert("Erro ao desativar unidade."); }
+      } catch (e) { alert("Erro ao desativar unidade."); }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formDataUpload = new FormData();
+    formDataUpload.append("file", file);
+
+    try {
+      const res = await axios.post("/api-backend/dashboard/unidades/upload", formDataUpload, {
+        headers: {
+          ...getConfig().headers,
+          "Content-Type": "multipart/form-data"
+        }
+      });
+      setFormData({ ...formData, foto_grade: res.data.url });
+    } catch (err) {
+      console.error("Erro no upload:", err);
+      alert("Falha ao subir imagem. Verifique o tamanho/formato.");
+    }
   };
 
   const TabBtn = ({ id, label, icon: Icon }: { id: TabType; label: string; icon: any }) => (
@@ -485,6 +509,45 @@ export default function UnitsPage() {
                             className={textareaClass}
                             placeholder="Musculação, CrossFit, Pilates, Lutas..." />
                         </Field>
+
+                        <div className="md:col-span-2">
+                          <Field label="Grade de Aulas / Horários (Imagem)" icon={ImagePlus}>
+                            <div className="flex flex-col md:flex-row gap-6 items-start">
+                              <div className="flex-1 w-full">
+                                <label className="flex flex-col items-center justify-center w-full h-44 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[2rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
+                                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                    <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                      <Upload className="w-6 h-6 text-[#00d2ff]" />
+                                    </div>
+                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
+                                    <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
+                                  </div>
+                                  <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
+                                </label>
+                              </div>
+                              
+                              {formData.foto_grade && (
+                                <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
+                                  <img 
+                                    src={formData.foto_grade} 
+                                    alt="Preview Grade" 
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover/preview:scale-110" 
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, foto_grade: "" })}
+                                    className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
+                                    <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </Field>
+                        </div>
                       </div>
                     )}
 

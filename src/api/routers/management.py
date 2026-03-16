@@ -401,7 +401,7 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 
 
 @router.get("/integrations/evo/units")
-async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)):
+async def get_evo_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
     perfil = token_payload.get("perfil", "")
 
@@ -427,6 +427,7 @@ async def get_evo_per_unit(token_payload: dict = Depends(get_current_user_token)
         if isinstance(c, str):
             try: c = json.loads(c)
             except Exception: c = {}
+        # Ensure unidade_id is treated as string for the map key
         config_map[str(r["unidade_id"])] = {"config": c, "ativo": r["ativo"]}
 
     result = []
@@ -561,6 +562,26 @@ async def export_leads(
     return [dict(r) for r in rows]
 
 
+# --- EVO Sync Endpoint (from origin) ---
+
+@router.post("/integrations/evo/sync/{unidade_id}")
+async def sync_evo_unit(
+    unidade_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+) -> dict:
+    """Força a sincronização de planos da EVO para esta unidade específica."""
+    from src.services.db_queries import sincronizar_planos_evo
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    try:
+        count = await sincronizar_planos_evo(empresa_id, unidade_id=unidade_id, bypass_cache=True)
+        return {"status": "success", "count": count}
+    except Exception as e:
+        logger.error(f"Erro ao sincronizar EVO para unidade {unidade_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Follow-up Endpoints ---
 
 @router.get("/followup/templates")
@@ -610,13 +631,11 @@ async def update_followup_template(
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
-    # Verifica ownership
     exists = await _database.db_pool.fetchval(
         "SELECT id FROM templates_followup WHERE id = $1 AND empresa_id = $2", template_id, empresa_id
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Template não encontrado")
-    # Monta SET dinâmico com apenas os campos enviados
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
         return {"status": "no_changes"}
@@ -641,7 +660,6 @@ async def delete_followup_template(template_id: int, token_payload: dict = Depen
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Template não encontrado")
-    # Cancela followups pendentes que usavam este template
     await _database.db_pool.execute(
         "UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE template_id = $1 AND status = 'pendente'",
         template_id

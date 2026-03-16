@@ -101,3 +101,9 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Antigravity IA <ti@fluxodigitaltech.com.br>")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both
+
+# --- IMAGEKIT ---
+IMAGEKIT_ID = os.getenv("IMAGEKIT_ID", "0jwoagmre")
+IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY", "public_FbnUvM0qv3WeLi0dJ51f+ZhEL9M=")
+IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY", "private_23DVHBZEcaUv5TebKcOufmVgxOA=")
+IMAGEKIT_URL_ENDPOINT = f"https://ik.imagekit.io/{IMAGEKIT_ID}/"

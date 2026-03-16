@@ -64,7 +64,12 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         return None
 
 
-async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+async def carregar_integracao(
+    empresa_id: int, 
+    tipo: str = 'chatwoot', 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> Optional[Dict[str, Any]]:
     """
     Carrega a configuração de integração ativa de uma empresa.
     Tenta primeiro por unidade, se não houver, busca a global da empresa.
@@ -73,9 +78,10 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
         return None
 
     cache_key = f"cfg:integracao:{empresa_id}:{tipo}:{unidade_id or 'global'}"
-    cache = await redis_get_json(cache_key)
-    if cache is not None:
-        return cache
+    if not bypass_cache:
+        cache = await redis_get_json(cache_key)
+        if cache is not None:
+            return cache
 
     try:
         if unidade_id:
@@ -87,9 +93,12 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot', unidade_i
             """, empresa_id, tipo, unidade_id)
             if row:
                 config = row['config']
-                if isinstance(config, str): config = json.loads(config)
-                await redis_set_json(cache_key, config, 300)
-                return config
+                try:
+                    if isinstance(config, str): config = json.loads(config)
+                    await redis_set_json(cache_key, config, 300)
+                    return config
+                except Exception as e:
+                    logger.error(f"Erro ao parsear config de integração {tipo} da unidade {unidade_id}: {e}")
 
         # Fallback para global
         row = await _database.db_pool.fetchrow("""
@@ -132,14 +141,18 @@ async def bd_salvar_resumo_ia(conversation_id: int, resumo: str):
 
 # --- FUNÇÕES PARA INTEGRAÇÃO EVO ---
 
-async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[List[Dict]]:
+async def buscar_planos_evo_da_api(
+    empresa_id: int, 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> Optional[List[Dict]]:
     """
     Busca os planos (memberships) da academia via API Evo diretamente.
     """
     if not _database.db_pool:
         return None
 
-    integracao = await carregar_integracao(empresa_id, 'evo', unidade_id=unidade_id)
+    integracao = await carregar_integracao(empresa_id, 'evo', unidade_id=unidade_id, bypass_cache=bypass_cache)
     if not integracao:
         logger.info(f"ℹ️ Empresa {empresa_id} (Unid {unidade_id}) não tem integração Evo ativa")
         return None
@@ -154,18 +167,47 @@ async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = 
     url = (
         f"{api_base}/membership?take=100&skip=0&active=true"
         "&showAccessBranches=false&showOnlineSalesObservation=false"
-        "&showActivitiesGroups=false&externalSaleAvailable=false"
+        "&showActivitiesGroups=false"
     )
+    
+    # Se houver idBranch na config (multilocation), filtramos por ele
+    id_branch = integracao.get('idBranch')
+    if id_branch:
+        url += f"&idBranch={id_branch}"
 
     auth = base64.b64encode(f"{dns}:{secret_key}".encode()).decode()
     headers = {'Authorization': f'Basic {auth}', 'accept': 'application/json'}
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+    data = None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Forçamos HTTP/1.1 para evitar erros de chunked read comuns
+            async with httpx.AsyncClient(http1=True) as client:
+                logger.info(f"🔄 Chamando API Evo (Unid {unidade_id}, Tentativa {attempt+1}/{max_retries}): {url}")
+                resp = await client.get(url, headers=headers, timeout=30.0)
+                logger.info(f"💾 Status API Evo: {resp.status_code}")
+                resp.raise_for_status()
+                data = resp.json()
+                # Logamos as chaves e o início da resposta para depuração (nível INFO para o usuário ver)
+                logger.info(f"📦 Resposta EVO (Unid {unidade_id}) - Chaves: {list(data.keys()) if isinstance(data, dict) else 'Lista'}")
+                if isinstance(data, dict) and 'data' in data:
+                    logger.info(f"📊 Total de items na chave 'data': {len(data['data'])}")
+                break # Sucesso
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+            if attempt == max_retries - 1:
+                logger.error(f"❌ Falha definitiva após {max_retries} tentativas: {e}")
+                return None
+            logger.warning(f"⚠️ Erro de conexão/protocolo ({e}). Tentando novamente em 1s...")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar planos Evo: {e}")
+            return None
+    
+    if data is None:
+        return None
 
+    try:
         items = None
         if isinstance(data, list):
             items = data
@@ -217,21 +259,25 @@ async def buscar_planos_evo_da_api(empresa_id: int, unidade_id: Optional[int] = 
         return None
 
 
-async def sincronizar_planos_evo(empresa_id: int, unidade_id: Optional[int] = None) -> int:
+async def sincronizar_planos_evo(
+    empresa_id: int, 
+    unidade_id: Optional[int] = None,
+    bypass_cache: bool = False
+) -> int:
     """
     Busca planos da API Evo e insere/atualiza na tabela planos.
     """
     if not _database.db_pool:
         return 0
 
-    planos_api = await buscar_planos_evo_da_api(empresa_id, unidade_id=unidade_id)
+    planos_api = await buscar_planos_evo_da_api(empresa_id, unidade_id=unidade_id, bypass_cache=bypass_cache)
     if not planos_api:
         return 0
 
+    logger.info(f"✨ Encontrados {len(planos_api)} planos na API para empresa {empresa_id}")
     count = 0
     for p in planos_api:
-        if not p.get('link_venda'):
-            continue
+        # Removida exigência de link_venda para permitir que a IA conheça todos os planos ativos
 
         # Se estamos sincronizando para uma unidade específica, o plano deve ser vinculado a ela.
         # Caso contrário, se for global, unidade_id no banco fica nulo.
@@ -375,7 +421,7 @@ async def _is_worker_leader(nome: str, ttl: int) -> bool:
         return False
 
 
-async def listar_unidades_ativas(empresa_id: int = 1) -> List[Dict[str, Any]]:
+async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
     if not _database.db_pool:
         return []
 
@@ -970,7 +1016,9 @@ async def bd_registrar_evento_funil(
 
         await _database.db_pool.execute("""
             UPDATE conversas
-            SET score_interesse = score_interesse + $2, updated_at = NOW()
+            SET score_interesse = COALESCE(score_interesse, 0) + $2,
+                score_lead = LEAST(5, COALESCE(score_lead, 0) + $2),
+                updated_at = NOW()
             WHERE id = $1
         """, conversa_id, score_incremento)
 

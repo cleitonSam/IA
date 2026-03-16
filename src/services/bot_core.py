@@ -217,8 +217,8 @@ async def startup_event():
         logger.info("🤖 OpenRouter habilitado (OPENROUTER_API_KEY carregada)")
 
     # Limpa cooldown de provedor no startup (destrava o bot se o usuário corrigiu a chave)
-    llm_provider_pause_key = f"llm:provider_pause:{EMPRESA_ID_PADRAO}"
-    await redis_client.delete(llm_provider_pause_key)
+    async for key in redis_client.scan_iter("llm:provider_pause:*"):
+        await redis_client.delete(key)
 
     logger.info(f"🚀 Iniciando Motor em modo: {APP_MODE.upper()}")
 
@@ -1428,10 +1428,14 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 # ── Chamada ao LLM com timeout global + circuit breaker ───────────
                 start_time = time.time()
 
-                # Monta conteúdo do role "user":
-                # - Com imagem: lista multimodal [imagem(s) + texto da pergunta]
-                # - Sem imagem: string direta com as mensagens
-                # Sem isso o modelo recebe a imagem mas não a pergunta real do cliente.
+                # Injeta informação sobre imagem de grade se existir
+                _foto_grade = unidade.get("foto_grade")
+                if _foto_grade:
+                    prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM uma imagem da grade de aulas/horários disponível em: {_foto_grade}\n"
+                    prompt_sistema += "Se o cliente quiser ver a grade ou horários, você pode dizer que está enviando a imagem agora.\n"
+                    prompt_sistema += "IMPORTANTE: Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
+
+                # Monta conteúdo do role "user"
                 if conteudo_usuario:
                     conteudo_usuario.append({"type": "text", "text": mensagens_formatadas})
                     user_content = conteudo_usuario
@@ -1452,18 +1456,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
-                _resposta_foi_truncada = False
                 async with llm_semaphore:
                     try:
                         logger.info(f"📡 BotCore: Chamando LLM ({modelo_escolhido}) para conv {conversation_id}")
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
-                        # Detecta resposta truncada por max_tokens
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         if _finish == "length" and resposta_bruta:
                             logger.warning(f"⚠️ Resposta truncada (finish_reason=length) conv {conversation_id}")
                             _resposta_foi_truncada = True
-                            # Corta na última frase completa para não enviar frase pela metade
                             for _sep in ['. ', '! ', '? ', '\n']:
                                 _pos = resposta_bruta.rfind(_sep)
                                 if _pos > len(resposta_bruta) * 0.3:
@@ -1514,8 +1515,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         if PROMETHEUS_OK:
                             METRIC_ERROS_TOTAL.labels(tipo="llm_fallback").inc()
 
-                        # Em indisponibilidade do provedor, evita nova tentativa imediata no fallback
-                        # para reduzir ruído de log e latência.
                         if erro_provedor:
                             await redis_client.setex(llm_provider_pause_key, 300, "1")
                             resposta_bruta = json.dumps({
@@ -1548,36 +1547,27 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             if not goto_send:
                 # ── Garante que NENHUMA resposta saia com frase cortada ──────────
                 def _garantir_frase_completa(txt: str) -> str:
-                    """Remove frase incompleta no final do texto.
-                    Procura o último terminador de frase (. ! ? ou quebra de linha)
-                    e descarta tudo depois, evitando enviar 'horários super est'."""
                     if not txt:
                         return txt
                     txt = txt.strip()
-                    # Se termina com pontuação ou emoji, está OK
                     if txt[-1] in '.!?😊💪✅🏋🎯':
                         return txt
-                    # Procura último ponto de corte seguro
                     for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
                         _pos = txt.rfind(_sep)
-                        if _pos > len(txt) * 0.3:  # só corta se mantém >30% do texto
+                        if _pos > len(txt) * 0.3:
                             return txt[:_pos + 1].strip()
-                    # Sem ponto de corte — retorna tudo (melhor inteiro que vazio)
                     return txt
 
-                # ── A IA agora responde texto puro — sem JSON ──────────────────
                 resposta_texto = limpar_markdown(resposta_bruta.strip())
 
-                # Tenta extrair JSON legado caso o modelo ainda retorne JSON (backward compat)
                 if resposta_texto.startswith('{'):
                     try:
                         _dados_legado = json.loads(corrigir_json(resposta_texto))
                         resposta_texto = limpar_markdown(_dados_legado.get("resposta", resposta_texto))
                         novo_estado = _dados_legado.get("estado", estado_atual).strip().lower()
                     except (json.JSONDecodeError, ValueError):
-                        pass  # Não é JSON, usa como texto mesmo
+                        pass
 
-                # Inferir estado emocional a partir das palavras-chave da resposta
                 _resp_norm = normalizar(resposta_texto)
                 if any(w in _resp_norm for w in ("matricula", "matricular", "assinar", "plano", "checkout", "comecar agora")):
                     novo_estado = "conversao"
@@ -1590,12 +1580,33 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 else:
                     novo_estado = estado_atual
 
-                if not resposta_texto:
-                    resposta_texto = "Desculpe, pode repetir sua pergunta? 😊"
-                    novo_estado = estado_atual
+                # Se a IA usou a tag <SEND_IMAGE> e temos a URL
+                _foto_grade = unidade.get("foto_grade")
+                if "<SEND_IMAGE>" in resposta_texto:
+                    if _foto_grade:
+                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
+                        try:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                f"Enviando a grade da unidade *{unidade.get('nome')}*... 🖼️",
+                                integracao, 
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone
+                            )
+                            await asyncio.sleep(0.5)
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                _foto_grade,
+                                integracao,
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone,
+                                is_direct_url=True 
+                            )
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar imagem da grade: {e}")
+                    else:
+                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
 
-                # Pós-processamento de conversão: se o cliente já sinalizou compra,
-                # garante envio do link de matrícula e CTA de outros planos na mesma resposta.
                 if _intencao_compra and link_plano:
                     _resp_norm_compra = normalizar(resposta_texto or "")
                     _tem_link = ("http://" in (resposta_texto or "")) or ("https://" in (resposta_texto or ""))
@@ -1741,9 +1752,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
                     await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                 
-                await despachar_resposta(
-                    account_id, conversation_id, resposta_texto, nome_ia, integracao,
-                    source=source, contato_fone=contato_fone
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, resposta_texto,
+                    integracao, nome_ia=nome_ia, contact_id=contact_id,
+                    source=source, fone=contato_fone
                 )
                 await bd_atualizar_msg_ia(conversation_id)
                 await bd_registrar_primeira_resposta(conversation_id)

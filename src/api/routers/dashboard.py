@@ -4,12 +4,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from src.core.config import logger
 from src.core.security import get_current_user_token
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
+from src.utils.imagekit import upload_to_imagekit
 
 
 class CriarUnidadeRequest(BaseModel):
@@ -25,14 +26,15 @@ class CriarUnidadeRequest(BaseModel):
     site: Optional[str] = None
     instagram: Optional[str] = None
     link_matricula: Optional[str] = None
-    horarios: Optional[str] = None
-    modalidades: Optional[str] = None
-    planos: Optional[Dict[str, Any]] = None
-    formas_pagamento: Optional[Dict[str, Any]] = None
-    convenios: Optional[Dict[str, Any]] = None
-    infraestrutura: Optional[Dict[str, Any]] = None
-    servicos: Optional[Dict[str, Any]] = None
-    palavras_chave: Optional[List[str]] = None
+    horarios: Optional[Any] = None
+    modalidades: Optional[Any] = None
+    planos: Optional[Any] = None
+    formas_pagamento: Optional[Any] = None
+    convenios: Optional[Any] = None
+    infraestrutura: Optional[Any] = None
+    servicos: Optional[Any] = None
+    palavras_chave: Optional[Any] = None
+    foto_grade: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -54,8 +56,8 @@ async def get_unidades(
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
     try:
-        if perfil == "admin_master" or not empresa_id:
-            # Retorna todas as unidades ativas de todas as empresas
+        if perfil == "admin_master":
+            # Retorna todas as unidades ativas de todas as empresas (legítimo para admin_master)
             rows = await _database.db_pool.fetch(
                 """
                 SELECT u.id, u.nome, u.slug, e.nome as empresa_nome
@@ -65,12 +67,15 @@ async def get_unidades(
                 ORDER BY e.nome, u.nome
                 """
             )
-            return [
-                {"id": r["id"], "nome": r["nome"], "slug": r["slug"], "empresa_nome": r["empresa_nome"]}
-                for r in rows
-            ]
+            return [dict(r) for r in rows]
+
+        if not empresa_id:
+            raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+
         unidades = await listar_unidades_ativas(empresa_id)
         return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro ao listar unidades para dashboard: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar lista de unidades")
@@ -99,8 +104,8 @@ async def get_metrics(
         where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $3"
         params_date = [empresa_id, unidade_id, hoje]
         if days > 1:
-            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4::text || ' days')::interval)::date AND $3"
-            params_date = [empresa_id, unidade_id, hoje, str(days)]
+            where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($3::date - ($4 * interval '1 day')) AND $3"
+            params_date = [empresa_id, unidade_id, hoje, days]
 
         row = await _database.db_pool.fetchrow(f"""
             SELECT
@@ -145,9 +150,11 @@ async def get_metrics(
             "unidade_id": unidade_id,
             "metrics": metrics
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro ao buscar métricas para dashboard: {e}")
-        raise HTTPException(status_code=500, detail="Erro interno ao processar métricas")
+        raise HTTPException(status_code=500, detail="Erro ao buscar métricas")
 
 @router.get("/conversations")
 async def get_conversations(
@@ -237,7 +244,6 @@ async def get_metrics_empresa(
             raise HTTPException(status_code=400, detail="Empresa não identificada")
 
     hoje = data or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-
     try:
         # Monta filtro de empresa_id e datas dinamicamente
         # Os índices dos parâmetros mudam dependendo se há empresa_id
@@ -246,8 +252,8 @@ async def get_metrics_empresa(
             unit_empresa_cond = "u.empresa_id = $1 AND"
             params: list = [empresa_id, hoje]
             if days > 1:
-                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3::text || ' days')::interval)::date AND $2"
-                params.append(str(days))
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($2::date - ($3 * interval '1 day')) AND $2"
+                params.append(days)
             else:
                 where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $2"
         else:
@@ -256,8 +262,8 @@ async def get_metrics_empresa(
             unit_empresa_cond = ""
             params = [hoje]
             if days > 1:
-                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($1::date - ($2::text || ' days')::interval)::date AND $1"
-                params.append(str(days))
+                where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') BETWEEN ($1::date - ($2 * interval '1 day')) AND $1"
+                params.append(days)
             else:
                 where_date = "DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = $1"
 
@@ -362,10 +368,10 @@ async def criar_unidade(
                 estado, endereco, numero, telefone_principal, whatsapp, site,
                 instagram, link_matricula, horarios, modalidades, planos,
                 formas_pagamento, convenios, infraestrutura, servicos, palavras_chave,
-                ativa, created_at, updated_at
+                foto_grade, ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -375,7 +381,8 @@ async def criar_unidade(
             body.telefone_principal, body.whatsapp, body.site, body.instagram,
             body.link_matricula, body.horarios, body.modalidades,
             body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
-            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or []
+            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or [],
+            body.foto_grade
         )
         from src.core.redis_client import redis_client
         await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
@@ -384,6 +391,30 @@ async def criar_unidade(
     except Exception as e:
         logger.error(f"Erro ao criar unidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao criar unidade")
+
+@router.post("/unidades/upload")
+async def upload_unidade_foto(
+    file: UploadFile = File(...),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Realiza o upload de uma imagem para o ImageKit.
+    Retorna a URL da imagem.
+    """
+    # Validação simples de tipo
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="O arquivo deve ser uma imagem")
+    
+    try:
+        content = await file.read()
+        url = await upload_to_imagekit(content, file.filename)
+        if not url:
+            raise HTTPException(status_code=500, detail="Erro ao fazer upload para o ImageKit")
+        
+        return {"url": url}
+    except Exception as e:
+        logger.error(f"Erro no endpoint de upload: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno no upload")
 
 
 @router.get("/unidades/{unidade_id}")
@@ -406,7 +437,7 @@ async def get_unidade(
                endereco, numero, telefone_principal, whatsapp,
                site, instagram, link_matricula, slug, ativa,
                horarios, modalidades, planos, formas_pagamento,
-               convenios, infraestrutura, servicos, palavras_chave
+               convenios, infraestrutura, servicos, palavras_chave, foto_grade
         FROM unidades
         WHERE id = $1 AND empresa_id = $2
         """,
@@ -453,16 +484,16 @@ async def atualizar_unidade(
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
                 horarios = $13, modalidades = $14, planos = $15, 
                 formas_pagamento = $16, convenios = $17, infraestrutura = $18,
-                servicos = $19, palavras_chave = $20,
+                servicos = $19, palavras_chave = $20, foto_grade = $21,
                 updated_at = NOW()
-            WHERE id = $21 AND empresa_id = $22
+            WHERE id = $22 AND empresa_id = $23
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
             body.horarios, body.modalidades, body.planos or {}, 
             body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
-            body.servicos or {}, body.palavras_chave or [],
+            body.servicos or {}, body.palavras_chave or [], body.foto_grade,
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client
