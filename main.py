@@ -77,6 +77,12 @@ CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 
 app = FastAPI()
 
+# Rotas de dashboard/auth da versão modular (sem quebrar o webhook legado)
+from src.api.routers.auth import router as auth_router
+from src.api.routers.dashboard import router as dashboard_router
+app.include_router(auth_router)
+app.include_router(dashboard_router)
+
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook
 @app.middleware("http")
@@ -879,6 +885,8 @@ async def startup_event():
                 command_timeout=20,
                 timeout=10,
             )
+            import src.core.database as core_database
+            core_database.db_pool = db_pool
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except asyncpg.PostgresConnectionStatusError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
@@ -922,6 +930,8 @@ async def shutdown_event():
     await redis_client.aclose()
     if db_pool:
         await db_pool.close()
+        import src.core.database as core_database
+        core_database.db_pool = None
     logger.info("🛑 Servidor desligado.")
 
 
