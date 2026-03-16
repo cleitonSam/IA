@@ -34,7 +34,7 @@ from src.core.security import cb_llm
 from src.utils.text_helpers import (
     normalizar, comprimir_texto, descomprimir_texto, limpar_nome,
     primeiro_nome_cliente, nome_eh_valido, extrair_nome_do_texto,
-    limpar_markdown
+    limpar_markdown, randomizar_mensagem
 )
 from src.utils.intent_helpers import (
     SAUDACOES, eh_saudacao, eh_confirmacao_curta, classificar_intencao,
@@ -860,13 +860,15 @@ async def despachar_resposta(
         
         # Substitui proporção por um tempo de digitação rígido e "redondo" (solicitação do usuário)
         import random
-        tempo_digitacao = random.choice([600, 800, 1000, 1200])
+        tempo_digitacao = random.choice([800, 1100, 1400, 1800])
 
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
-        # Marca que o próximo fromMe=true nessa conversa é do BOT (não de atendente humano)
-        # Usamos 120s para garantir que cubra qualquer delay de sincronização entre API e Chatwoot
+        # Marca que o próximo fromMe=true nessa conversa é do BOT
         await redis_client.setex(f"uaz_bot_sent_conv:{conversation_id}", 120, "1")
-        res = await uaz.send_text(chat_id, content, delay=tempo_digitacao)
+        
+        # Randomiza o conteúdo da mensagem de texto
+        content_randomizado = randomizar_mensagem(content)
+        res = await uaz.send_text(chat_id, content_randomizado, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res
     else:
@@ -1475,6 +1477,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     prompt_sistema += "Se o cliente quiser ver a grade ou horários, você pode dizer que está enviando a imagem agora.\n"
                     prompt_sistema += "IMPORTANTE: Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
 
+                # Injeta informação sobre Tour Virtual se existir
+                _link_tour = unidade.get("link_tour_virtual")
+                if _link_tour:
+                    prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível em: {_link_tour}\n"
+                    prompt_sistema += "Se o cliente demonstrar interesse em conhecer a academia, ver por dentro ou perguntar por tour virtual, ofereça e envie o vídeo.\n"
+                    prompt_sistema += "IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.\n"
+
                 # Monta conteúdo do role "user"
                 if conteudo_usuario:
                     conteudo_usuario.append({"type": "text", "text": mensagens_formatadas})
@@ -1655,7 +1664,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(random.uniform(1.5, 3.5))
+                            if source == 'uazapi' and contato_fone:
+                                try:
+                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
+                                except Exception: pass
+                            
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id, 
                                 _foto_grade,
@@ -1668,6 +1683,39 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             logger.error(f"Erro ao enviar imagem da grade: {e}")
                     else:
                         resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
+
+                # Se a IA usou a tag <SEND_VIDEO> e temos a URL
+                _link_tour = unidade.get("link_tour_virtual")
+                if "<SEND_VIDEO>" in resposta_texto:
+                    if _link_tour:
+                        resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
+                        try:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                f"Vou te enviar um vídeo mostrando nossa unidade por dentro! 🎥",
+                                integracao, 
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone
+                            )
+                            await asyncio.sleep(random.uniform(2.0, 4.5))
+                            if source == 'uazapi' and contato_fone:
+                                try:
+                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
+                                except Exception: pass
+
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id, 
+                                _link_tour,
+                                integracao,
+                                nome_ia=nome_ia,
+                                contact_id=contact_id, source=source, fone=contato_fone,
+                                is_direct_url=True 
+                            )
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar vídeo do tour: {e}")
+                    else:
+                        resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
 
                 if _intencao_compra and link_plano:
                     _resp_norm_compra = normalizar(resposta_texto or "")
@@ -1799,7 +1847,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                     
                     await despachar_resposta(
-                        account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao, 
+                        account_id, conversation_id, randomizar_mensagem(bloco_plano.strip()), nome_ia, integracao, 
                         source=source, contato_fone=contato_fone
                     )
                     await bd_atualizar_msg_ia(conversation_id)
@@ -1815,7 +1863,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                 
                 await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, resposta_texto,
+                    account_id, conversation_id, randomizar_mensagem(resposta_texto),
                     integracao, nome_ia=nome_ia, contact_id=contact_id,
                     source=source, fone=contato_fone
                 )

@@ -6,7 +6,7 @@ import {
   Building2, Plus, Pencil, Trash2, Save, X, Loader2,
   CheckCircle2, MapPin, Phone, Globe, Instagram, Clock,
   Dumbbell, CreditCard, Shield, Sparkles, Layers,
-  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload
+  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload, Video
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -35,6 +35,7 @@ interface Unit {
   servicos?: any;
   palavras_chave?: string[];
   foto_grade?: string;
+  link_tour_virtual?: string;
 }
 
 type TabType = "identity" | "location" | "contact" | "operation" | "extra";
@@ -45,6 +46,7 @@ const emptyForm = {
   site: "", instagram: "", link_matricula: "", horarios: "", modalidades: "",
   planos: {}, formas_pagamento: {}, convenios: {}, infraestrutura: {}, servicos: {}, palavras_chave: [],
   foto_grade: "",
+  link_tour_virtual: "",
 };
 
 export default function UnitsPage() {
@@ -108,6 +110,7 @@ export default function UnitsPage() {
           servicos: data.servicos || {},
           palavras_chave: data.palavras_chave || [],
           foto_grade: data.foto_grade || "",
+          link_tour_virtual: data.link_tour_virtual || "",
         });
       } catch (e) {
         console.error("Erro ao carregar dados da unidade:", e);
@@ -151,7 +154,7 @@ export default function UnitsPage() {
       } catch (e) { alert("Erro ao desativar unidade."); }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, fieldName: "foto_grade" | "link_tour_virtual") => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -165,10 +168,10 @@ export default function UnitsPage() {
           "Content-Type": "multipart/form-data"
         }
       });
-      setFormData({ ...formData, foto_grade: res.data.url });
+      setFormData({ ...formData, [fieldName]: res.data.url });
     } catch (err) {
       console.error("Erro no upload:", err);
-      alert("Falha ao subir imagem. Verifique o tamanho/formato.");
+      alert("Falha ao subir arquivo. Verifique o tamanho/formato.");
     }
   };
 
@@ -522,7 +525,7 @@ export default function UnitsPage() {
                                     <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
                                     <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
                                   </div>
-                                  <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} />
+                                  <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} />
                                 </label>
                               </div>
                               
@@ -542,6 +545,51 @@ export default function UnitsPage() {
                                   </button>
                                   <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
                                     <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </Field>
+                        </div>
+
+                        <div className="md:col-span-2">
+                          <Field label="Tour Virtual (Vídeo / Link)" icon={Video}>
+                            <div className="flex flex-col md:flex-row gap-6 items-start">
+                              <div className="flex-1 w-full flex flex-col gap-4">
+                                <div className="relative">
+                                  <Video className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
+                                  <input type="text" value={formData.link_tour_virtual}
+                                    onChange={e => setFormData({ ...formData, link_tour_virtual: e.target.value })}
+                                    className={`${inputClass} pl-12`} placeholder="Cole o link do vídeo (YouTube, Vimeo ou upload direto)" />
+                                </div>
+                                <label className="flex flex-col items-center justify-center w-full h-24 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[1.5rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
+                                  <div className="flex flex-col items-center justify-center py-2">
+                                    <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
+                                      <Upload className="w-4 h-4 text-[#00d2ff]" />
+                                    </div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
+                                    <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 20MB)</p>
+                                  </div>
+                                  <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} />
+                                </label>
+                              </div>
+                              
+                              {formData.link_tour_virtual && (
+                                <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
+                                  <div className="w-full h-full flex items-center justify-center bg-black/40">
+                                    <Video className="w-12 h-12 text-[#00d2ff]/40" />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, link_tour_virtual: "" })}
+                                    className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
+                                    <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter overflow-hidden text-ellipsis whitespace-nowrap px-2">
+                                      {formData.link_tour_virtual}
+                                    </p>
                                   </div>
                                 </div>
                               )}

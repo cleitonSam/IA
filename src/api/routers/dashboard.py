@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from src.core.config import logger
 from src.core.security import get_current_user_token
+from src.core.redis_client import redis_client
+import json
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
 from src.utils.imagekit import upload_to_imagekit
 
@@ -35,6 +37,7 @@ class CriarUnidadeRequest(BaseModel):
     servicos: Optional[Any] = None
     palavras_chave: Optional[Any] = None
     foto_grade: Optional[str] = None
+    link_tour_virtual: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -210,15 +213,52 @@ async def get_conversations(
         total_query = f"SELECT COUNT(*) FROM conversas c WHERE {where}"
         total = await _database.db_pool.fetchval(total_query, *params[:-2])
 
+        result_data = []
+        for r in rows:
+            d = dict(r)
+            # Verifica se a IA está pausada no Redis
+            d["pausada"] = await redis_client.exists(f"pause_ia:{d['conversation_id']}")
+            result_data.append(d)
+
         return {
             "total": total,
             "offset": offset,
             "limit": limit,
-            "data": [dict(r) for r in rows]
+            "data": result_data
         }
     except Exception as e:
         logger.error(f"Erro ao listar conversas: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar conversas")
+
+
+@router.post("/conversations/{conversation_id}/toggle-ia")
+async def toggle_ia_conversation(
+    conversation_id: str,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Alterna o status da IA (Ativa/Pausada) para uma conversa específica.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    # Verifica se a conversa pertence à empresa
+    exists = await _database.db_pool.fetchval(
+        "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+        conversation_id, empresa_id
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada ou sem permissão")
+
+    key = f"pause_ia:{conversation_id}"
+    if await redis_client.exists(key):
+        await redis_client.delete(key)
+        return {"status": "ativa", "pausada": False}
+    else:
+        # Pausa por 24h (ou até ser reativada)
+        await redis_client.setex(key, 86400, "1")
+        return {"status": "pausada", "pausada": True}
 
 
 @router.get("/metrics/empresa")
@@ -368,10 +408,10 @@ async def criar_unidade(
                 estado, endereco, numero, telefone_principal, whatsapp, site,
                 instagram, link_matricula, horarios, modalidades, planos,
                 formas_pagamento, convenios, infraestrutura, servicos, palavras_chave,
-                foto_grade, ativa, created_at, updated_at
+                foto_grade, link_tour_virtual, ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -382,7 +422,7 @@ async def criar_unidade(
             body.link_matricula, body.horarios, body.modalidades,
             body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
             body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or [],
-            body.foto_grade
+            body.foto_grade, body.link_tour_virtual
         )
         from src.core.redis_client import redis_client
         await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
@@ -437,7 +477,7 @@ async def get_unidade(
                endereco, numero, telefone_principal, whatsapp,
                site, instagram, link_matricula, slug, ativa,
                horarios, modalidades, planos, formas_pagamento,
-               convenios, infraestrutura, servicos, palavras_chave, foto_grade
+               convenios, infraestrutura, servicos, palavras_chave, foto_grade, link_tour_virtual
         FROM unidades
         WHERE id = $1 AND empresa_id = $2
         """,
@@ -484,16 +524,16 @@ async def atualizar_unidade(
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
                 horarios = $13, modalidades = $14, planos = $15, 
                 formas_pagamento = $16, convenios = $17, infraestrutura = $18,
-                servicos = $19, palavras_chave = $20, foto_grade = $21,
+                servicos = $19, palavras_chave = $20, foto_grade = $21, link_tour_virtual = $22,
                 updated_at = NOW()
-            WHERE id = $22 AND empresa_id = $23
+            WHERE id = $23 AND empresa_id = $24
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
             body.horarios, body.modalidades, body.planos or {}, 
             body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
-            body.servicos or {}, body.palavras_chave or [], body.foto_grade,
+            body.servicos or {}, body.palavras_chave or [], body.foto_grade, body.link_tour_virtual,
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client

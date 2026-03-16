@@ -27,6 +27,7 @@ interface Conversation {
   resumo_ia: string;
   canal: string;
   unidade_nome: string;
+  pausada: boolean;
 }
 
 const statusColor: Record<string, string> = {
@@ -209,6 +210,11 @@ export default function ConversasPage() {
                               <div key={s} className={`w-1.5 h-1.5 rounded-full ${s <= (conv.score_lead || 0) ? "bg-[#00d2ff] shadow-[0_0_4px_rgba(0,210,255,0.5)]" : "bg-white/10"}`} />
                             ))}
                           </div>
+                          {conv.pausada && (
+                            <span className="text-[9px] font-black text-amber-400 flex items-center gap-1 bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
+                              <Bot className="w-2.5 h-2.5" /> IA Pausada
+                            </span>
+                          )}
                           {conv.intencao_de_compra && (
                             <span className="text-[9px] font-black text-rose-400 flex items-center gap-1 bg-rose-400/10 px-2 py-0.5 rounded-full">
                               <Flame className="w-2.5 h-2.5" /> Quente
@@ -269,6 +275,34 @@ export default function ConversasPage() {
                         <Clock className="w-4 h-4 text-[#00d2ff]/40" />
                         {selected.contato_fone || selected.contato_telefone}
                       </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-3">
+                      <button 
+                        onClick={async () => {
+                          try {
+                            const res = await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/toggle-ia`, {}, config);
+                            const newStatus = res.data.pausada;
+                            setSelected({ ...selected, pausada: newStatus });
+                            setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, pausada: newStatus } : c));
+                          } catch (err) { console.error(err); }
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                          selected.pausada 
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20" 
+                            : "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                        }`}
+                      >
+                        {selected.pausada ? (
+                          <><Zap className="w-4 h-4" /> Ativar IA</>
+                        ) : (
+                          <><X className="w-4 h-4" /> Pausar IA</>
+                        )}
+                      </button>
+                      {selected.pausada && (
+                        <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/15 animate-pulse">
+                          AUTOMAÇÃO DESATIVADA
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>

@@ -90,3 +90,26 @@ def limpar_markdown(texto: str) -> str:
     texto = re.sub(r'^#{1,6}\s+', '', texto, flags=re.MULTILINE)
 
     return texto
+
+
+def randomizar_mensagem(texto: str) -> str:
+    """
+    Adiciona um caractere invisível (Zero Width Space ou similar) 
+    aleatório ao final da mensagem para evitar bloqueio por conteúdo idêntico.
+    """
+    if not texto:
+        return texto
+    
+    import random
+    # Lista de caracteres invisíveis Unicode seguros para WhatsApp
+    chars_invisiveis = [
+        "\u200B", # Zero Width Space
+        "\u200C", # Zero Width Non-Joiner
+        "\u200D", # Zero Width Joiner
+        "\u2060", # Word Joiner
+        "\uFEFF", # Zero Width No-Break Space
+    ]
+    char_prefixo = random.choice(chars_invisiveis)
+    char_sufixo = random.choice(chars_invisiveis)
+    
+    return f"{char_prefixo}{texto}{char_sufixo}"

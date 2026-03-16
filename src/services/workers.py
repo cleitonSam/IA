@@ -13,6 +13,7 @@ from src.services.db_queries import (
     _is_worker_leader, _coletar_metricas_unidade
 )
 from src.services.chatwoot_client import enviar_mensagem_chatwoot
+from src.utils.text_helpers import randomizar_mensagem
 
 
 def _render_followup_template(template: str, nome_contato: str, nome_unidade: str) -> str:
@@ -245,7 +246,7 @@ async def worker_followup():
                         mensagem_final = template_base
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], mensagem_final, "Assistente Virtual", integracao, evitar_prefixo_nome=True
+                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), "Assistente Virtual", integracao, evitar_prefixo_nome=True
                     )
                     await _database.db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']

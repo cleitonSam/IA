@@ -111,6 +111,9 @@ async def enviar_mensagem_chatwoot(
             instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
+            # Proteção contra ECO: Marca que o bot enviou para o webhook ignorar bloqueio
+            await redis_client.setex(f"uaz_bot_sent_conv:{conversation_id}", 120, "1")
+            
             if is_direct_url:
                 await client.send_media(fone, content, media_type="image")
             else:
