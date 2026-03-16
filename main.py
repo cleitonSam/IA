@@ -2443,7 +2443,7 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     if not db_pool or not slug or not pergunta:
         return None
 
-    cache_key = f"cfg:faq_raw:{slug}:{empresa_id}"
+    cache_key = f"cfg:faq_raw:v2:{empresa_id}:{slug}"
     raw = await redis_client.get(cache_key)
     if raw:
         try:
@@ -2453,10 +2453,22 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     else:
         try:
             faq_rows_db = await db_pool.fetch("""
+                WITH unidade AS (
+                    SELECT id
+                    FROM unidades
+                    WHERE slug = $1 AND empresa_id = $2
+                    LIMIT 1
+                )
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                LEFT JOIN unidade u ON true
+                WHERE f.empresa_id = $2
+                  AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR (u.id IS NOT NULL AND f.unidade_id = u.id)
+                      OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 50
             """, slug, empresa_id)
@@ -2512,19 +2524,31 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     if not db_pool:
         return ""
 
-    cache_key = f"cfg:faq:{slug}:v3"
+    cache_key = f"cfg:faq:{empresa_id}:{slug}:v4"
     cache = await redis_client.get(cache_key)
     if cache:
         return cache
 
     rows = []
     try:
-        # Query principal — com prioridade e visualizacoes
+        # Query principal — unidade específica, múltiplas unidades ou todas
         rows = await db_pool.fetch("""
+            WITH unidade AS (
+                SELECT id
+                FROM unidades
+                WHERE slug = $1 AND empresa_id = $2
+                LIMIT 1
+            )
             SELECT f.pergunta, f.resposta
             FROM faq f
-            JOIN unidades u ON u.id = f.unidade_id
-            WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+            LEFT JOIN unidade u ON true
+            WHERE f.empresa_id = $2
+              AND f.ativo = true
+              AND (
+                  f.todas_unidades = true
+                  OR (u.id IS NOT NULL AND f.unidade_id = u.id)
+                  OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
+              )
             ORDER BY f.prioridade DESC NULLS LAST, f.visualizacoes DESC NULLS LAST
             LIMIT 30
         """, slug, empresa_id)
@@ -2532,10 +2556,22 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
         # Fallback: sem a coluna visualizacoes
         try:
             rows = await db_pool.fetch("""
+                WITH unidade AS (
+                    SELECT id
+                    FROM unidades
+                    WHERE slug = $1 AND empresa_id = $2
+                    LIMIT 1
+                )
                 SELECT f.pergunta, f.resposta
                 FROM faq f
-                JOIN unidades u ON u.id = f.unidade_id
-                WHERE u.slug = $1 AND u.empresa_id = $2 AND f.ativo = true
+                LEFT JOIN unidade u ON true
+                WHERE f.empresa_id = $2
+                  AND f.ativo = true
+                  AND (
+                      f.todas_unidades = true
+                      OR (u.id IS NOT NULL AND f.unidade_id = u.id)
+                      OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
+                  )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 30
             """, slug, empresa_id)
@@ -2656,14 +2692,15 @@ async def bd_iniciar_conversa(
         # 1) tenta atualizar registro existente da mesma conta/conversa
         _updated = await db_pool.execute("""
             UPDATE conversas
-               SET contato_nome = $4,
-                   unidade_id   = $6,
+               SET contato_id   = COALESCE($3, contato_id),
+                   contato_nome = $4,
+                   unidade_id   = $5,
                    status       = 'ativa',
                    updated_at   = NOW()
              WHERE conversation_id = $1
                AND account_id      = $2
-               AND empresa_id      = $5
-        """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id)
+               AND empresa_id      = $6
+        """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id)
 
         # 2) se não atualizou nenhuma linha, insere nova conversa
         if str(_updated).endswith(" 0"):
@@ -4135,6 +4172,9 @@ async def chatwoot_webhook(
     # (nome de unidade, cidade ou bairro). Mensagens genéricas NUNCA trocam o slug.
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
         _msg_norm_wh = normalizar(conteudo_texto)
+        _pedido_troca_unidade = any(k in _msg_norm_wh for k in (
+            "unidade", "trocar", "mudar", "outra", "bairro", "cidade", "endereco", "endereço"
+        ))
         _tem_geo_wh = False
         try:
             _units_wh = await listar_unidades_ativas(empresa_id)
@@ -4149,7 +4189,8 @@ async def chatwoot_webhook(
         except Exception:
             pass
 
-        if _tem_geo_wh or esperando_unidade:
+        # Só troca unidade fora do fluxo de escolha quando houver pedido explícito do cliente.
+        if esperando_unidade or (_tem_geo_wh and _pedido_troca_unidade):
             slug_detectado = await buscar_unidade_na_pergunta(
                 conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
             )
@@ -4189,7 +4230,12 @@ async def chatwoot_webhook(
                     if _tem_geo_multi:
                         break
 
-                if not slug_detectado and _tem_geo_multi:
+                _pedido_unidade_explicito = any(k in texto_cliente for k in (
+                    "unidade", "bairro", "cidade", "endereco", "endereço"
+                ))
+                _msg_curta_geo = len([t for t in texto_cliente.split() if t]) <= 5
+
+                if not slug_detectado and _tem_geo_multi and (_pedido_unidade_explicito or _msg_curta_geo):
                     slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
                 # Tenta por número digitado (ex: "1", "2")
