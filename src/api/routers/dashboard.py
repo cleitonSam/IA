@@ -233,7 +233,7 @@ async def get_conversations(
 
 @router.post("/conversations/{conversation_id}/toggle-ia")
 async def toggle_ia_conversation(
-    conversation_id: str,
+    conversation_id: int,
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
