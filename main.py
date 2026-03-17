@@ -4354,14 +4354,29 @@ async def chatwoot_webhook(
     # Verifica atributos no nível raiz do payload e também dentro do objeto message (comum em anexos)
     msg_obj = payload.get("message") or {}
     msg_attrs = msg_obj.get("content_attributes") or {}
+    msg_content = str(msg_obj.get("content") or "")
     
+    # Extrai texto de anexos (captions podem conter nossos marcadores 🤖 ou 📸)
+    anexos_obj = msg_obj.get("attachments") or payload.get("attachments") or []
+    texto_anexos = " ".join([str(a.get("caption") or "") for a in anexos_obj]) if isinstance(anexos_obj, list) else ""
+
     is_ai_message = (
         content_attrs.get("origin") == "ai" 
         or msg_attrs.get("origin") == "ai"
         or "🤖" in conteudo_texto 
         or "📸" in conteudo_texto
+        or "🤖" in msg_content
+        or "📸" in msg_content
+        or "🤖" in texto_anexos
+        or "📸" in texto_anexos
         or is_private
     )
+    
+    # Fallback de segurança: busca marcadores em qualquer lugar do JSON (blindagem extra)
+    if not is_ai_message and message_type == "outgoing":
+        if "🤖" in str(payload) or "📸" in str(payload):
+            is_ai_message = True
+            logger.info(f"🛡️ IA identificada via busca bruta no payload conv {id_conv}")
 
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
     if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
@@ -4592,6 +4607,10 @@ async def chatwoot_webhook(
         if is_ai_message:
             logger.info(f"🦾 Mensagem reconhecida como IA (marker/private) — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
+        
+        # Log de segurança para debugar se for uma mensagem da IA que escapou da detecção
+        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing sem marcador detectada")
+        
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if db_pool:
             await db_pool.execute(
