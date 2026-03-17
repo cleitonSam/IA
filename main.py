@@ -3179,13 +3179,13 @@ async def worker_metricas_diarias():
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE ativo = true")
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE status = 'active'")
 
                 total_unidades = 0
                 for emp in empresas:
                     empresa_id = emp['id']
                     unidades = await db_pool.fetch(
-                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativo = true",
+                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true",
                         empresa_id
                     )
 
