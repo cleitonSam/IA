@@ -2163,7 +2163,10 @@ async def enviar_mensagem_chatwoot(
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
                 uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
                 
-                _header = f"*{nome_ia}*\n" if nome_ia else ""
+                # Marcadores para evitar auto-bloqueio no webhook
+                _marker = "📸" if attachment_url else "🤖"
+                _header = f"{_marker} *{nome_ia}*\n" if nome_ia else f"{_marker}\n"
+                
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
                     uaz_payload = {
@@ -4501,6 +4504,7 @@ async def chatwoot_webhook(
     # Pausa IA se for mensagem de atendente humano
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
+            logger.info(f"🦾 Mensagem reconhecida como IA (marker/private) — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if db_pool:

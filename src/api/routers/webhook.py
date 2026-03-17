@@ -45,6 +45,9 @@ async def chatwoot_webhook(
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
+    
+    # Extrai flags importantes do Chatwoot
+    is_private = payload.get("private") is True or (payload.get("message") or {}).get("private") is True
 
     if PROMETHEUS_OK:
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
@@ -116,8 +119,15 @@ async def chatwoot_webhook(
     message_type = payload.get("message_type")
     sender_type = payload.get("sender", {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    is_ai_message = content_attrs.get("origin") == "ai"
-    conteudo_texto = payload.get("content", "")
+    conteudo_texto = str(payload.get("content", "") or "")
+    
+    # Identificação robusta de mensagens da IA (Sync ou Direta)
+    is_ai_message = (
+        content_attrs.get("origin") == "ai" 
+        or "🤖" in conteudo_texto 
+        or "📸" in conteudo_texto
+        or is_private
+    )
 
     # Recupera o slug (unidade) do Redis se já estiver em atendimento
     slug = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")

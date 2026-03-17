@@ -108,12 +108,16 @@ async def enviar_mensagem_chatwoot(
             instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
-            await redis_client.setex(f"uaz_bot_sent_conv:{empresa_id}:{conversation_id}", 120, "1")
+            # Marcador para evitar auto-bloqueio no webhook
+            _marker = "📸" if is_direct_url else "🤖"
+            _prefixed_content = f"{_marker} *{nome_ia}*\n{content}" if nome_ia else f"{_marker}\n{content}"
+            
+            await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 45, "1")
             
             if is_direct_url:
-                await client.send_media(fone, content, media_type="image")
+                await client.send_media(fone, _prefixed_content, media_type="image")
             else:
-                await client.send_text(fone, content)
+                await client.send_text(fone, _prefixed_content)
             return True
         except Exception as e:
             logger.error(f"❌ Erro ao enviar via UAZAPI: {e}")
