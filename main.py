@@ -1917,25 +1917,38 @@ async def sync_planos_manual(empresa_id: int):
 
 # --- FUNÇÃO CENTRALIZADA DE ENVIO PARA O CHATWOOT ---
 
-async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0):
+async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0, empresa_id: int = None):
     """
     Simula tempo de digitação humana e envia status de presença se for UAZAPI.
     """
     url_base = integracao.get('url') or integracao.get('base_url')
     token = extrair_token_chatwoot(integracao)
     
-    if "uazapi.com" in str(url_base).lower() and token:
+    # Detecta se é UazAPI (conforme lógica do enviar_mensagem_chatwoot)
+    is_uazapi = "uazapi.com" in str(url_base).lower()
+    uaz_integracao = integracao if is_uazapi else None
+    
+    if not is_uazapi and empresa_id:
+        _uaz = await carregar_integracao(empresa_id, 'uazapi')
+        if _uaz:
+            uaz_integracao = _uaz
+            is_uazapi = True
+
+    if is_uazapi and uaz_integracao:
         try:
             _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
-                uaz_url = f"{str(url_base).rstrip('/')}/send/presence"
+                uaz_token = extrair_token_chatwoot(uaz_integracao)
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
+                
+                uaz_url = f"{str(uaz_base).rstrip('/')}/send/presence"
                 uaz_payload = {
                     "number": _fone_clean,
                     "presence": "composing",
                     "delay": str(int(segundos * 1000))
                 }
-                uaz_headers = {"token": token, "Content-Type": "application/json"}
+                uaz_headers = {"token": uaz_token, "Content-Type": "application/json"}
                 await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=5.0)
         except Exception as e:
             logger.error(f"⚠️ Erro ao simular digitação via UAZAPI: {e}")
@@ -2101,33 +2114,44 @@ async def enviar_mensagem_chatwoot(
     content: str,
     nome_ia: str,
     integracao: dict,
+    empresa_id: int = None,
     attachment_url: str = None
 ):
     url_base = integracao.get('url') or integracao.get('base_url')
     token = extrair_token_chatwoot(integracao)
-    if not url_base or not token:
-        logger.error("Integração Chatwoot incompleta: url ou token ausentes")
-        return None
-
-    # Padroniza formatação antes de enviar
+    
+    # Padroniza formatação
     content = formatar_mensagem_saida(content)
 
-    # Personalização natural com nome
+    # Personalização com nome
     try:
         _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
     except Exception:
         _nome_salvo = None
     content = suavizar_personalizacao_nome(content, _nome_salvo)
 
-    # --- FLUXO UAZAPI DIRETO (Melhoria de Performance e Confiabilidade) ---
-    if "uazapi.com" in str(url_base).lower():
+    # --- LÓGICA DE ENVIO DIRETO UAZAPI (Priority) ---
+    # Detecta se é UazAPI — ou via URL ou carregando integração explícita
+    is_uazapi = "uazapi.com" in str(url_base).lower()
+    uaz_integracao = integracao if is_uazapi else None
+    
+    if not is_uazapi and empresa_id:
+        # Se não é UazAPI na URL do Chatwoot, busca se a empresa tem uma integração UazAPI ativa
+        _uaz = await carregar_integracao(empresa_id, 'uazapi')
+        if _uaz:
+            uaz_integracao = _uaz
+            is_uazapi = True
+
+    if is_uazapi and uaz_integracao:
         try:
             _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
-                # Se houver anexo, prioriza envio de mídia
+                uaz_token = extrair_token_chatwoot(uaz_integracao)
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
+                
                 if attachment_url:
-                    uaz_url = f"{str(url_base).rstrip('/')}/send/media"
+                    uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
                     uaz_payload = {
                         "number": _fone_clean,
                         "type": "image",
@@ -2135,24 +2159,28 @@ async def enviar_mensagem_chatwoot(
                         "caption": content if content else ""
                     }
                 else:
-                    uaz_url = f"{str(url_base).rstrip('/')}/send/text"
+                    uaz_url = f"{str(uaz_base).rstrip('/')}/send/text"
                     uaz_payload = {
                         "number": _fone_clean,
-                        "text": content
+                        "text": content,
+                        "delay": "1000" # Delay padrão conforme exemplo do usuário
                     }
 
-                uaz_headers = {"token": token, "Content-Type": "application/json"}
-                logger.info(f"🚀 Enviando via UAZAPI DIRETO p/ {_fone_clean} (Anexo={bool(attachment_url)})")
+                uaz_headers = {"token": uaz_token, "Content-Type": "application/json", "Accept": "application/json"}
+                logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)})")
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
                 
-                # Registra no Redis que enviamos via bot para evitar loops de eco em alguns webhooks
                 await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 30, "1")
                 return uaz_resp
         except Exception as e:
-            logger.error(f"❌ Falha no envio direto UAZAPI (tentando Chatwoot como fallback): {e}")
+            logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
 
     # --- FLUXO CHATWOOT CLÁSSICO ---
+    if not url_base or not token:
+        logger.error("Integração Chatwoot incompleta para envio")
+        return None
+
     url_m = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {
         "content": content,
@@ -2167,14 +2195,13 @@ async def enviar_mensagem_chatwoot(
         payload["content_attributes"]["external_url"] = attachment_url
         
     headers = {"api_access_token": str(token)}
-
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers, timeout=20.0)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada para conversa {conversation_id} (via Chatwoot)")
+        logger.info(f"📤 Mensagem enviada via Chatwoot (conv={conversation_id})")
         return resp
     except Exception as e:
-        logger.error(f"❌ Erro ao enviar para Chatwoot (conv={conversation_id}): {e}")
+        logger.error(f"❌ Erro final ao enviar mensagem: {e}")
         return None
         if _PROMETHEUS_OK:
             METRIC_ERROS_TOTAL.labels(tipo="chatwoot_unknown").inc()
@@ -2276,7 +2303,7 @@ async def worker_followup():
                     mensagem_followup = _render_followup_template(f['mensagem'] or '', nome_contato, nome_unidade)
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], mensagem_followup, "Assistente Virtual", integracao
+                        f['account_id'], f['conversation_id'], mensagem_followup, "Assistente Virtual", integracao, f['empresa_id']
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
@@ -2304,7 +2331,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
         "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
-        "Assistente Virtual", integracao
+        "Assistente Virtual", integracao, empresa_id
     )
 
     await asyncio.sleep(480)
@@ -4014,9 +4041,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     continue
                 await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
                 typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
-                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
                 await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot
+                    account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot, empresa_id
                 )
                 await bd_atualizar_msg_ia(conversation_id)
                 if i == 0:
@@ -4027,9 +4054,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             if not resposta_texto:
                 resposta_texto = fast_reply if isinstance(fast_reply, str) else ""
             typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
-            await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+            await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
             await enviar_mensagem_chatwoot(
-                account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot
+                account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot, empresa_id
             )
             await bd_atualizar_msg_ia(conversation_id)
             await bd_registrar_primeira_resposta(conversation_id)
@@ -4053,7 +4080,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         await enviar_mensagem_chatwoot(
                             account_id, conversation_id, 
                             f"Aqui está a grade de aulas da unidade *{nome_unidade}* 😊", 
-                            nome_ia, integracao_chatwoot,
+                            nome_ia, integracao_chatwoot, empresa_id,
                             attachment_url=_foto_grade
                         )
                         # Pequeno delay para a imagem chegar antes do texto da IA
@@ -4062,9 +4089,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         logger.error(f"Erro ao enviar foto_grade: {e}")
 
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
-                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time)
+                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
                 await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot
+                    account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
                 )
                 await bd_atualizar_msg_ia(conversation_id)
                 await bd_registrar_primeira_resposta(conversation_id)
@@ -4243,7 +4270,7 @@ async def chatwoot_webhook(
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao)
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao, empresa_id)
                     await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
                     return {"status": "aguardando_nome"}
 
@@ -4420,7 +4447,7 @@ async def chatwoot_webhook(
                         f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
                         "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao)
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao, empresa_id)
                     await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
                     await redis_client.setex(prompt_unidade_key, 600, "1")
                     background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
