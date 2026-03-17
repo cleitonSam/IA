@@ -1919,10 +1919,27 @@ async def sync_planos_manual(empresa_id: int):
 
 async def simular_digitacao(account_id: int, conversation_id: int, integracao: dict, segundos: float = 2.0):
     """
-    Simula tempo de digitação humana com um simples sleep.
-    O endpoint REST de typing status do Chatwoot requer WebSocket (ActionCable),
-    não funciona via API token — usamos apenas o delay para naturalidade.
+    Simula tempo de digitação humana e envia status de presença se for UAZAPI.
     """
+    url_base = integracao.get('url') or integracao.get('base_url')
+    token = extrair_token_chatwoot(integracao)
+    
+    if "uazapi.com" in str(url_base).lower() and token:
+        try:
+            _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if _fone:
+                _fone_clean = "".join(filter(str.isdigit, str(_fone)))
+                uaz_url = f"{str(url_base).rstrip('/')}/send/presence"
+                uaz_payload = {
+                    "number": _fone_clean,
+                    "presence": "composing",
+                    "delay": str(int(segundos * 1000))
+                }
+                uaz_headers = {"token": token, "Content-Type": "application/json"}
+                await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=5.0)
+        except Exception as e:
+            logger.error(f"⚠️ Erro ao simular digitação via UAZAPI: {e}")
+
     await asyncio.sleep(max(0.5, min(segundos, 6.0)))
 
 
@@ -2086,7 +2103,7 @@ async def enviar_mensagem_chatwoot(
     integracao: dict,
     attachment_url: str = None
 ):
-    url_base = integracao.get('url')
+    url_base = integracao.get('url') or integracao.get('base_url')
     token = extrair_token_chatwoot(integracao)
     if not url_base or not token:
         logger.error("Integração Chatwoot incompleta: url ou token ausentes")
@@ -2095,14 +2112,48 @@ async def enviar_mensagem_chatwoot(
     # Padroniza formatação antes de enviar
     content = formatar_mensagem_saida(content)
 
-    # Personalização natural com nome (sem repetição artificial)
+    # Personalização natural com nome
     try:
         _nome_salvo = await redis_client.get(f"nome_cliente:{conversation_id}")
     except Exception:
         _nome_salvo = None
     content = suavizar_personalizacao_nome(content, _nome_salvo)
 
-    url_m = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+    # --- FLUXO UAZAPI DIRETO (Melhoria de Performance e Confiabilidade) ---
+    if "uazapi.com" in str(url_base).lower():
+        try:
+            _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if _fone:
+                _fone_clean = "".join(filter(str.isdigit, str(_fone)))
+                # Se houver anexo, prioriza envio de mídia
+                if attachment_url:
+                    uaz_url = f"{str(url_base).rstrip('/')}/send/media"
+                    uaz_payload = {
+                        "number": _fone_clean,
+                        "type": "image",
+                        "file": attachment_url,
+                        "caption": content if content else ""
+                    }
+                else:
+                    uaz_url = f"{str(url_base).rstrip('/')}/send/text"
+                    uaz_payload = {
+                        "number": _fone_clean,
+                        "text": content
+                    }
+
+                uaz_headers = {"token": token, "Content-Type": "application/json"}
+                logger.info(f"🚀 Enviando via UAZAPI DIRETO p/ {_fone_clean} (Anexo={bool(attachment_url)})")
+                uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
+                uaz_resp.raise_for_status()
+                
+                # Registra no Redis que enviamos via bot para evitar loops de eco em alguns webhooks
+                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 30, "1")
+                return uaz_resp
+        except Exception as e:
+            logger.error(f"❌ Falha no envio direto UAZAPI (tentando Chatwoot como fallback): {e}")
+
+    # --- FLUXO CHATWOOT CLÁSSICO ---
+    url_m = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
     payload = {
         "content": content,
         "message_type": "outgoing",
@@ -2113,51 +2164,18 @@ async def enviar_mensagem_chatwoot(
         }
     }
     if attachment_url:
-        # Detecta se é integração UAZAPI para envio direto de mídia
-        if "uazapi.com" in str(url_base).lower():
-            try:
-                _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
-                if _fone:
-                    _fone_clean = "".join(filter(str.isdigit, str(_fone)))
-                    uaz_url = f"{str(url_base).rstrip('/')}/send/media"
-                    uaz_payload = {
-                        "number": _fone_clean,
-                        "type": "image",
-                        "file": attachment_url
-                    }
-                    uaz_headers = {"token": token, "Content-Type": "application/json"}
-                    logger.info(f"🚀 Enviando mídia direta via UAZAPI para {_fone_clean}")
-                    uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=15.0)
-                    uaz_resp.raise_for_status()
-                    return uaz_resp
-            except Exception as e:
-                logger.error(f"❌ Erro ao enviar mídia direta via UAZAPI: {e}")
-
         payload["content_attributes"]["external_url"] = attachment_url
-    headers = {"api_access_token": token}
+        
+    headers = {"api_access_token": str(token)}
 
     try:
-        resp = await http_client.post(url_m, json=payload, headers=headers)
+        resp = await http_client.post(url_m, json=payload, headers=headers, timeout=20.0)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada para conversa {conversation_id}")
+        logger.info(f"📤 Mensagem enviada para conversa {conversation_id} (via Chatwoot)")
         return resp
-    except httpx.TimeoutException as e:
-        logger.error(f"⏱️ Timeout ao enviar mensagem para conversa {conversation_id}: {e}")
-        if _PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_timeout").inc()
-        return None
-    except httpx.HTTPStatusError as e:
-        logger.error(f"❌ HTTP {e.response.status_code} ao enviar para conversa {conversation_id}: {e}")
-        if _PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_http_error").inc()
-        return None
-    except httpx.ConnectError as e:
-        logger.error(f"🔌 Conexão falhou ao enviar para conversa {conversation_id}: {e}")
-        if _PROMETHEUS_OK:
-            METRIC_ERROS_TOTAL.labels(tipo="chatwoot_connect_error").inc()
-        return None
     except Exception as e:
-        logger.error(f"Erro inesperado ao enviar mensagem para Chatwoot: {e}")
+        logger.error(f"❌ Erro ao enviar para Chatwoot (conv={conversation_id}): {e}")
+        return None
         if _PROMETHEUS_OK:
             METRIC_ERROS_TOTAL.labels(tipo="chatwoot_unknown").inc()
         return None
