@@ -4194,6 +4194,9 @@ async def chatwoot_webhook(
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
+    
+    # Extrai flags importantes do Chatwoot
+    is_private = payload.get("private") is True or (payload.get("message") or {}).get("private") is True
 
     if _PROMETHEUS_OK:
         METRIC_WEBHOOKS_TOTAL.labels(event=event or "unknown").inc()
@@ -4261,8 +4264,15 @@ async def chatwoot_webhook(
     message_type = payload.get("message_type")
     sender_type = payload.get("sender", {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    is_ai_message = content_attrs.get("origin") == "ai"
-    conteudo_texto = payload.get("content", "")
+    conteudo_texto = str(payload.get("content", "") or "")
+    
+    # Identificação robusta de mensagens da IA (Sync ou Direta)
+    is_ai_message = (
+        content_attrs.get("origin") == "ai" 
+        or "🤖" in conteudo_texto 
+        or "📸" in conteudo_texto
+        or is_private
+    )
 
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
     if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
