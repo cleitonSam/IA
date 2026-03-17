@@ -216,11 +216,12 @@ async def worker_followup():
                     pers = await carregar_personalidade(emp_id)
                     modelo_followup = pers.get("model_name") or "gpt-4o-mini"
                     temp_followup = float(pers.get("temperature") or 0.7)
-                    
+                    usar_emoji = pers.get("usar_emoji", True)
+
                     # ── Lógica do Score e Geração IA ────────────────────────
                     eventos = await _database.db_pool.fetch("SELECT tipo_evento, score_incremento FROM eventos_funil WHERE conversa_id = $1", f['conversa_id'])
                     score_total = sum((e['score_incremento'] or 1) for e in eventos)
-                    
+
                     if score_total >= 4:
                         contexto_lead = "Este lead é QUENTE (Alta intenção). Já interagiu bem ou pediu link de matrícula. Faça um remarketing direto, focando em urgência e conversão, mostre proximidade."
                     elif score_total >= 2:
@@ -228,12 +229,13 @@ async def worker_followup():
                     else:
                         contexto_lead = "Este lead é FRIO. Falou pouco. Mande apenas uma lembrança gentil de que estamos à disposição."
 
+                    regra_emoji = "Use no máximo 2 emojis." if usar_emoji else "Não use emojis."
                     prompt_sistema = (
                         f"Você é um excelente assistente de vendas da academia {nome_unidade}.\n"
                         f"Sua missão é reescrever este template de recarga/follow-up de forma natural, humana e curtinha de WhatsApp.\n"
                         f"{contexto_lead}\n\n"
                         f"Template Original: '{template_base}'\n"
-                        f"Regras: Não pareça um robô. Use no máximo 2 emojis. Seja breve."
+                        f"Regras: Não pareça um robô. {regra_emoji} Seja breve."
                     )
                     
                     try:

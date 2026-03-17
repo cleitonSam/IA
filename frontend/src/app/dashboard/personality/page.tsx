@@ -20,6 +20,7 @@ interface Personality {
   temperature: number;
   max_tokens: number;
   ativo: boolean;
+  usar_emoji: boolean;
 }
 
 const emptyForm = {
@@ -31,6 +32,7 @@ const emptyForm = {
   temperature: 0.7,
   max_tokens: 1000,
   ativo: false,
+  usar_emoji: true,
 };
 
 const MODELS = [
@@ -88,6 +90,7 @@ export default function PersonalityPage() {
         temperature: p.temperature ?? 0.7,
         max_tokens: p.max_tokens ?? 1000,
         ativo: p.ativo ?? false,
+        usar_emoji: p.usar_emoji ?? true,
       });
     } else {
       setEditing(null);
@@ -509,6 +512,23 @@ export default function PersonalityPage() {
                               className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all ${formData.ativo ? "bg-emerald-500" : "bg-slate-700"}`}
                             >
                               <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${formData.ativo ? "translate-x-6" : "translate-x-1"}`} />
+                            </button>
+                          </div>
+
+                          {/* Emoji toggle */}
+                          <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-5 flex items-center justify-between">
+                            <div>
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Emojis nas mensagens</p>
+                              <p className={`text-[9px] font-black uppercase mt-0.5 ${formData.usar_emoji ? "text-[#00d2ff]" : "text-slate-600"}`}>
+                                {formData.usar_emoji ? "● Ativados" : "○ Desativados"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setFormData({ ...formData, usar_emoji: !formData.usar_emoji })}
+                              className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all ${formData.usar_emoji ? "bg-[#00d2ff]" : "bg-slate-700"}`}
+                            >
+                              <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${formData.usar_emoji ? "translate-x-6" : "translate-x-1"}`} />
                             </button>
                           </div>
                         </div>

@@ -22,6 +22,7 @@ class PersonalityUpdate(BaseModel):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1000
     ativo: Optional[bool] = None
+    usar_emoji: Optional[bool] = None
 
 class PersonalityCreate(BaseModel):
     nome_ia: str
@@ -32,6 +33,7 @@ class PersonalityCreate(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 1000
     ativo: bool = False
+    usar_emoji: bool = True
 
 class FAQCreate(BaseModel):
     pergunta: str
@@ -162,7 +164,7 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     rows = await _database.db_pool.fetch(
         """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
                   modelo_preferido AS model_name, temperatura AS temperature,
-                  max_tokens, ativo
+                  max_tokens, ativo, usar_emoji
            FROM personalidade_ia
            WHERE empresa_id = $1
            ORDER BY ativo DESC, id DESC""",
@@ -184,11 +186,11 @@ async def create_personality(
         row = await _database.db_pool.fetchrow(
             """INSERT INTO personalidade_ia
                (empresa_id, nome_ia, personalidade, instrucoes_base, tom_voz,
-                modelo_preferido, temperatura, max_tokens, ativo, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+                modelo_preferido, temperatura, max_tokens, ativo, usar_emoji, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
-            data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo
+            data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji
         )
         return {"id": row["id"], "status": "success"}
     except Exception as e:
@@ -214,10 +216,10 @@ async def update_personality_by_id(
     await _database.db_pool.execute(
         """UPDATE personalidade_ia
            SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
-               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, updated_at=NOW()
-           WHERE id=$9 AND empresa_id=$10""",
+               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9, updated_at=NOW()
+           WHERE id=$10 AND empresa_id=$11""",
         data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
-        data.model_name, data.temperature, data.max_tokens, data.ativo,
+        data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
         pid, empresa_id
     )
     return {"status": "success"}
