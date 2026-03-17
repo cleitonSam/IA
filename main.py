@@ -909,6 +909,7 @@ async def startup_event():
         asyncio.create_task(worker_followup(), name="worker_followup"),
         asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
         asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
+        asyncio.create_task(worker_resumo_ia(), name="worker_resumo_ia"),
     ]
     for _task in worker_tasks:
         _task.add_done_callback(_log_worker_task_result)
@@ -3275,6 +3276,82 @@ async def worker_metricas_diarias():
                 logger.error(f"❌ Erro inesperado no worker de métricas: {e}", exc_info=True)
     except asyncio.CancelledError:
         logger.info("🛑 worker_metricas_diarias cancelado")
+        raise
+
+
+async def worker_resumo_ia():
+    """
+    Worker que gera o Resumo Neural para conversas que ainda não têm resumo_ia.
+    Roda a cada 10 min, processa até 10 conversas por ciclo usando o modelo
+    mais econômico disponível no OpenRouter.
+    """
+    _RESUMO_MODEL = "google/gemini-2.0-flash-lite"
+    _RESUMO_BATCH = 10
+    _RESUMO_INTERVAL = 600
+
+    try:
+        while True:
+            await asyncio.sleep(_RESUMO_INTERVAL)
+            if not db_pool or not cliente_ia:
+                continue
+            if not await _is_worker_leader("resumo_ia", ttl=_RESUMO_INTERVAL + 60):
+                continue
+            try:
+                pendentes = await db_pool.fetch("""
+                    SELECT c.id, c.conversation_id, c.empresa_id, c.contato_nome
+                    FROM conversas c
+                    WHERE c.resumo_ia IS NULL
+                      AND c.updated_at >= NOW() - INTERVAL '48 hours'
+                      AND (
+                          SELECT COUNT(*) FROM mensagens m
+                          WHERE m.conversa_id = c.id AND m.role = 'user'
+                      ) >= 3
+                    ORDER BY c.updated_at DESC
+                    LIMIT $1
+                """, _RESUMO_BATCH)
+
+                for conv in pendentes:
+                    try:
+                        msgs = await db_pool.fetch("""
+                            SELECT role, conteudo as content FROM mensagens
+                            WHERE conversa_id = $1
+                            ORDER BY created_at ASC
+                            LIMIT 40
+                        """, conv['id'])
+
+                        if not msgs:
+                            continue
+
+                        historico = "\n".join(
+                            f"{'Lead' if m['role'] == 'user' else 'IA'}: {(m['content'] or '').strip()}"
+                            for m in msgs
+                        )
+
+                        prompt = (
+                            "Analise a conversa abaixo entre um lead e uma IA de vendas de academia. "
+                            "Responda em português com no máximo 3 frases cobrindo: "
+                            "1) o que o lead quer, 2) nível de interesse (quente/morno/frio), "
+                            "3) próximo passo sugerido. Seja direto e objetivo.\n\n"
+                            f"Conversa:\n{historico}"
+                        )
+
+                        resp = await cliente_ia.chat.completions.create(
+                            model=_RESUMO_MODEL,
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=200,
+                            temperature=0.3,
+                        )
+                        resumo = resp.choices[0].message.content.strip()
+                        
+                        from src.services.db_queries import bd_salvar_resumo_ia
+                        await bd_salvar_resumo_ia(conv['conversation_id'], conv['empresa_id'], resumo)
+                        logger.info(f"Resumo Neural gerado para conversa {conv['conversation_id']}")
+                    except Exception as e:
+                        logger.error(f"Erro ao gerar resumo para conversa {conv['conversation_id']}: {e}")
+            except Exception as e:
+                logger.error(f"Erro no worker_resumo_ia: {e}")
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_resumo_ia cancelado")
         raise
 
 # --- UTILITÁRIOS DE JSON ---
