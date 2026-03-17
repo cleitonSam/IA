@@ -261,6 +261,32 @@ async def toggle_ia_conversation(
         return {"status": "pausada", "pausada": True}
 
 
+@router.post("/conversations/{conversation_id}/resumo")
+async def manual_summary_conversation(
+    conversation_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Gera o Resumo Neural manualmente para uma conversa específica.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    # Verifica se a conversa pertence à empresa
+    row = await _database.db_pool.fetchrow(
+        "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+        conversation_id, empresa_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada ou sem permissão")
+
+    from src.services.workers import gerar_resumo_conversa
+    resumo = await gerar_resumo_conversa(row['id'], conversation_id, empresa_id)
+    
+    return {"status": "success", "resumo_ia": resumo}
+
+
 @router.get("/metrics/empresa")
 async def get_metrics_empresa(
     data: Optional[date] = Query(None),

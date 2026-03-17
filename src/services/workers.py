@@ -267,71 +267,65 @@ _RESUMO_BATCH = 10   # conversas por ciclo
 _RESUMO_INTERVAL = 600  # segundos entre ciclos (10 min)
 
 
+async def gerar_resumo_conversa(conversa_id_db: int, conversation_id_ext: int, empresa_id: int):
+    """
+    Gera o Resumo Neural para uma conversa específica.
+    """
+    from src.services.llm_service import cliente_ia
+    
+    if not _database.db_pool or not cliente_ia:
+        return None
+
+    try:
+        msgs = await _database.db_pool.fetch("""
+            SELECT role, content FROM mensagens
+            WHERE conversa_id = $1
+            ORDER BY created_at ASC
+            LIMIT 40
+        """, conversa_id_db)
+
+        if not msgs:
+            return "Nenhuma mensagem encontrada para resumir."
+
+        historico = "\n".join(
+            f"{'Lead' if m['role'] == 'user' else 'IA'}: {(m['content'] or '').strip()}"
+            for m in msgs
+        )
+
+        prompt = (
+            "Analise a conversa abaixo entre um lead e uma IA de vendas de academia. "
+            "Responda em português com no máximo 3 frases cobrindo: "
+            "1) o que o lead quer, 2) nível de interesse (quente/morno/frio), "
+            "3) próximo passo sugerido. Seja direto e objetivo.\n\n"
+            f"Conversa:\n{historico}"
+        )
+
+        resp = await cliente_ia.chat.completions.create(
+            model=_RESUMO_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.3,
+        )
+        resumo = resp.choices[0].message.content.strip()
+        await bd_salvar_resumo_ia(conversation_id_ext, empresa_id, resumo)
+        logger.info(f"Resumo Neural manual gerado para conversa {conversation_id_ext}")
+        return resumo
+    except Exception as e:
+        logger.error(f"Erro ao gerar resumo manual para conversa {conversation_id_ext}: {e}")
+        return f"Erro ao gerar resumo: {str(e)}"
+
+
 async def worker_resumo_ia():
     """
-    Worker que gera o Resumo Neural para conversas que ainda não têm resumo_ia.
-    Roda a cada 10 min, processa até 10 conversas por ciclo usando o modelo
-    mais econômico disponível no OpenRouter.
+    Worker que gerava o Resumo Neural automaticamente.
+    DESATIVADO: Agora o resumo é gerado manualmente via Dashboard.
     """
+    return
+    # Mantido apenas como referência do que era feito
     try:
         while True:
             await asyncio.sleep(_RESUMO_INTERVAL)
-            if not _database.db_pool or not cliente_ia:
-                continue
-            if not await _is_worker_leader("resumo_ia", ttl=_RESUMO_INTERVAL + 60):
-                continue
-            try:
-                pendentes = await _database.db_pool.fetch("""
-                    SELECT c.id, c.conversation_id, c.empresa_id, c.contato_nome
-                    FROM conversas c
-                    WHERE c.resumo_ia IS NULL
-                      AND c.updated_at >= NOW() - INTERVAL '48 hours'
-                      AND (
-                          SELECT COUNT(*) FROM mensagens m
-                          WHERE m.conversa_id = c.id AND m.role = 'user'
-                      ) >= 3
-                    ORDER BY c.updated_at DESC
-                    LIMIT $1
-                """, _RESUMO_BATCH)
-
-                for conv in pendentes:
-                    try:
-                        msgs = await _database.db_pool.fetch("""
-                            SELECT role, content FROM mensagens
-                            WHERE conversa_id = $1
-                            ORDER BY created_at ASC
-                            LIMIT 40
-                        """, conv['id'])
-
-                        if not msgs:
-                            continue
-
-                        historico = "\n".join(
-                            f"{'Lead' if m['role'] == 'user' else 'IA'}: {(m['content'] or '').strip()}"
-                            for m in msgs
-                        )
-
-                        prompt = (
-                            "Analise a conversa abaixo entre um lead e uma IA de vendas de academia. "
-                            "Responda em português com no máximo 3 frases cobrindo: "
-                            "1) o que o lead quer, 2) nível de interesse (quente/morno/frio), "
-                            "3) próximo passo sugerido. Seja direto e objetivo.\n\n"
-                            f"Conversa:\n{historico}"
-                        )
-
-                        resp = await cliente_ia.chat.completions.create(
-                            model=_RESUMO_MODEL,
-                            messages=[{"role": "user", "content": prompt}],
-                            max_tokens=200,
-                            temperature=0.3,
-                        )
-                        resumo = resp.choices[0].message.content.strip()
-                        await bd_salvar_resumo_ia(conv['conversation_id'], conv['empresa_id'], resumo)
-                        logger.info(f"Resumo Neural gerado para conversa {conv['conversation_id']}")
-                    except Exception as e:
-                        logger.error(f"Erro ao gerar resumo para conversa {conv['conversation_id']}: {e}")
-            except Exception as e:
-                logger.error(f"Erro no worker_resumo_ia: {e}")
+            # ... rest of the logic ...
     except asyncio.CancelledError:
         logger.info("🛑 worker_resumo_ia cancelado")
         raise

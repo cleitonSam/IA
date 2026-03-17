@@ -909,7 +909,7 @@ async def startup_event():
         asyncio.create_task(worker_followup(), name="worker_followup"),
         asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
         asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
-        asyncio.create_task(worker_resumo_ia(), name="worker_resumo_ia"),
+        # asyncio.create_task(worker_resumo_ia(), name="worker_resumo_ia"),
     ]
     for _task in worker_tasks:
         _task.add_done_callback(_log_worker_task_result)

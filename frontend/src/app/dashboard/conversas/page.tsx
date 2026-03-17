@@ -44,6 +44,7 @@ const statusLabel: Record<string, string> = {
 export default function ConversasPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [summarizing, setSummarizing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -106,6 +107,23 @@ export default function ConversasPage() {
       document.body.appendChild(link); link.click(); document.body.removeChild(link);
     } catch (err) { console.error(err); }
     finally { setExporting(false); }
+  };
+  
+  const handleGenerateSummary = async () => {
+    if (!selected) return;
+    setSummarizing(true);
+    try {
+      const res = await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/resumo`, {}, config);
+      if (res.data.status === "success") {
+        const newSummary = res.data.resumo_ia;
+        setSelected({ ...selected, resumo_ia: newSummary });
+        setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, resumo_ia: newSummary } : c));
+      }
+    } catch (err) {
+      console.error("Erro ao gerar resumo:", err);
+    } finally {
+      setSummarizing(false);
+    }
   };
 
   const totalPages = Math.ceil(total / limit);
@@ -326,9 +344,22 @@ export default function ConversasPage() {
                   </div>
 
                   <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 hover:border-[#00d2ff]/15 transition-all">
-                    <div className="flex items-center gap-3 mb-5">
-                      <Brain className="w-5 h-5 text-[#00d2ff]" />
-                      <h3 className="text-lg font-black uppercase tracking-widest">Resumo Neural</h3>
+                    <div className="flex items-center justify-between mb-5">
+                      <div className="flex items-center gap-3">
+                        <Brain className="w-5 h-5 text-[#00d2ff]" />
+                        <h3 className="text-lg font-black uppercase tracking-widest">Resumo Neural</h3>
+                      </div>
+                      <button 
+                        onClick={handleGenerateSummary}
+                        disabled={summarizing}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-[#00d2ff]/10 hover:bg-[#00d2ff]/20 border border-[#00d2ff]/20 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all disabled:opacity-50"
+                      >
+                        {summarizing ? (
+                          <><RefreshCw className="w-3 h-3 animate-spin" /> Gerando...</>
+                        ) : (
+                          <><Zap className="w-3 h-3" /> Gerar Resumo</>
+                        )}
+                      </button>
                     </div>
                     <p className="text-slate-400 leading-relaxed italic">
                       "{selected.resumo_ia || "Nenhuma análise disponível para este lead."}"
