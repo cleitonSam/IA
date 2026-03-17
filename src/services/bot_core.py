@@ -872,6 +872,8 @@ async def despachar_resposta(
         logger.info(f"📤 Despachando via UazAPI para {chat_id} (delay {tempo_digitacao}ms)")
         # Marca que o próximo fromMe=true nessa conversa é do BOT
         await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
+        if contato_fone:
+            await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{contato_fone}", 120, "1")
         
         # Randomiza o conteúdo da mensagem de texto
         content_randomizado = randomizar_mensagem(content)

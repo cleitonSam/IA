@@ -113,7 +113,9 @@ async def enviar_mensagem_chatwoot(
             _prefixed_content = f"{_marker} *{nome_ia}*\n{content}" if nome_ia else f"{_marker}\n{content}"
             
             await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
-            
+            # Chave usada pelo uaz_webhook.py para identificar eco de imagem enviada pelo bot
+            await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{fone}", 120, "1")
+
             if is_direct_url:
                 await client.send_media(fone, _prefixed_content, media_type="image")
             else:
