@@ -262,7 +262,7 @@ async def worker_followup():
 
 
 # Modelo econômico via OpenRouter para tarefas de resumo
-_RESUMO_MODEL = "google/gemini-2.0-flash-lite"
+_RESUMO_MODEL = "google/gemini-2.0-flash-lite-001"
 _RESUMO_BATCH = 10   # conversas por ciclo
 _RESUMO_INTERVAL = 600  # segundos entre ciclos (10 min)
 
