@@ -2131,9 +2131,13 @@ async def enviar_mensagem_chatwoot(
         _nome_salvo = None
     content = suavizar_personalizacao_nome(content, _nome_salvo)
 
+    # Marcadores para evitar auto-bloqueio no webhook
+    _marker = "📸" if attachment_url else "🤖"
+    _header = f"{_marker} *{nome_ia}*\n" if nome_ia else f"{_marker}\n"
+    
     # Prepara payload base do Chatwoot antecipadamente
     payload = {
-        "content": content,
+        "content": f"{_header}{content}" if (content or _header) else "",
         "message_type": "outgoing",
         "content_attributes": {
             "origin": "ai",
@@ -4347,8 +4351,13 @@ async def chatwoot_webhook(
     conteudo_texto = str(payload.get("content", "") or "")
     
     # Identificação robusta de mensagens da IA (Sync ou Direta)
+    # Verifica atributos no nível raiz do payload e também dentro do objeto message (comum em anexos)
+    msg_obj = payload.get("message") or {}
+    msg_attrs = msg_obj.get("content_attributes") or {}
+    
     is_ai_message = (
         content_attrs.get("origin") == "ai" 
+        or msg_attrs.get("origin") == "ai"
         or "🤖" in conteudo_texto 
         or "📸" in conteudo_texto
         or is_private
