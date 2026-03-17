@@ -3289,7 +3289,7 @@ async def worker_resumo_ia():
     Roda a cada 10 min, processa até 10 conversas por ciclo usando o modelo
     mais econômico disponível no OpenRouter.
     """
-    _RESUMO_MODEL = "google/gemini-2.0-flash-lite"
+    _RESUMO_MODEL = "google/gemini-2.0-flash-lite-001"
     _RESUMO_BATCH = 10
     _RESUMO_INTERVAL = 600
 
