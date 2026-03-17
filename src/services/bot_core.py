@@ -2298,7 +2298,7 @@ async def chatwoot_webhook(
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if _database.db_pool:
             await _database.db_pool.execute(
-                "UPDATE followups SET status = 'cancelado' "
+                "UPDATE followups SET status = 'cancelado', updated_at = NOW() "
                 "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2) "
                 "AND status = 'pendente'", id_conv, empresa_id
             )

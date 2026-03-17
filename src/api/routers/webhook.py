@@ -355,7 +355,7 @@ async def chatwoot_webhook(
         await set_tenant_cache(empresa_id, f"pause_ia:{id_conv}", "1", 43200)
         if _database.db_pool:
             await _database.db_pool.execute(
-                "UPDATE followups SET status = 'cancelado' "
+                "UPDATE followups SET status = 'cancelado', updated_at = NOW() "
                 "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2) "
                 "AND status = 'pendente'", id_conv, empresa_id
             )
