@@ -98,7 +98,7 @@ export default function FAQPage() {
             </motion.button>
           </div>
 
-          {/* List */}
+          {/* List - Compact Table Layout */}
           {loading ? (
             <div className="flex items-center justify-center py-40"><Loader2 className="w-8 h-8 text-[#00d2ff] animate-spin" /></div>
           ) : faqs.length === 0 ? (
@@ -108,41 +108,77 @@ export default function FAQPage() {
               <p className="text-slate-600 text-sm mt-2">Adicione perguntas e respostas para começar.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-5">
-              <AnimatePresence mode="popLayout">
-                {[...faqs].reverse().map((faq, i) => (
-                  <motion.div layout key={faq.id} initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                    className="bg-slate-900/50 border border-white/5 hover:border-[#00d2ff]/20 rounded-3xl p-8 flex flex-col md:flex-row gap-8 md:items-center justify-between group transition-all relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-1 h-full bg-[#00d2ff]/20 group-hover:bg-[#00d2ff] transition-colors rounded-l-3xl" />
-                    <div className="flex-1 pl-3">
-                      <div className="flex items-center gap-3 mb-5">
-                        {faq.todas_unidades ? (
-                          <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest bg-[#00d2ff]/10 text-[#00d2ff] px-3 py-1.5 rounded-full border border-[#00d2ff]/20">
-                            <Globe className="w-3.5 h-3.5" /> Global
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-400 px-3 py-1.5 rounded-full border border-indigo-500/20">
-                            <Building2 className="w-3.5 h-3.5" /> Unidade
-                          </span>
-                        )}
-                        <span className="text-[10px] font-black uppercase text-slate-600 bg-white/5 px-3 py-1 rounded-full">Prio: {faq.prioridade}</span>
-                      </div>
-                      <h3 className="text-xl font-bold text-white group-hover:text-[#00d2ff] transition-colors mb-4 line-clamp-2">{faq.pergunta}</h3>
-                      <div className="bg-slate-950/40 rounded-2xl p-5 border border-white/5">
-                        <p className="text-slate-400 text-sm leading-relaxed italic line-clamp-3">"{faq.resposta}"</p>
-                      </div>
-                    </div>
-                    <div className="flex md:flex-col gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => handleOpenModal(faq)} className="p-3.5 bg-white/5 hover:bg-[#00d2ff]/15 text-slate-500 hover:text-[#00d2ff] rounded-2xl transition-all border border-white/5 hover:border-[#00d2ff]/20">
-                        <Edit2 className="w-5 h-5" />
-                      </button>
-                      <button onClick={() => handleDelete(faq.id!)} className="p-3.5 bg-white/5 hover:bg-red-500/15 text-slate-500 hover:text-red-400 rounded-2xl transition-all border border-white/5 hover:border-red-500/20">
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
+            <div className="bg-slate-900/40 border border-white/5 rounded-[2rem] overflow-hidden backdrop-blur-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 bg-white/[0.02]">
+                      <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 w-[100px]">Âmbito</th>
+                      <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500">Conhecimento (Pergunta & Resposta)</th>
+                      <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 w-[80px] text-center">Prio</th>
+                      <th className="px-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 w-[120px] text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <AnimatePresence mode="popLayout">
+                      {[...faqs].reverse().map((faq, i) => (
+                        <motion.tr 
+                          key={faq.id} 
+                          initial={{ opacity: 0, y: 10 }} 
+                          animate={{ opacity: 1, y: 0 }} 
+                          transition={{ delay: i * 0.03 }}
+                          className="border-b border-white/5 hover:bg-white/[0.02] group transition-colors"
+                        >
+                          <td className="px-8 py-6 vertical-top">
+                            {faq.todas_unidades ? (
+                              <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-tighter bg-[#00d2ff]/10 text-[#00d2ff] px-2.5 py-1 rounded-lg border border-[#00d2ff]/20 w-fit">
+                                <Globe className="w-3 h-3" /> Global
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-tighter bg-indigo-500/10 text-indigo-400 px-2.5 py-1 rounded-lg border border-indigo-500/20 w-fit">
+                                <Building2 className="w-3 h-3" /> Unidade
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="max-w-2xl">
+                              <h3 className="text-sm font-bold text-white group-hover:text-[#00d2ff] transition-colors mb-1.5 line-clamp-1">
+                                {faq.pergunta}
+                              </h3>
+                              <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed italic">
+                                "{faq.resposta}"
+                              </p>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6 text-center">
+                            <span className="text-[10px] font-black text-slate-600 bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
+                              {faq.prioridade}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button 
+                                onClick={() => handleOpenModal(faq)} 
+                                className="p-2 bg-white/5 hover:bg-[#00d2ff]/20 text-slate-500 hover:text-[#00d2ff] rounded-xl transition-all border border-white/5 hover:border-[#00d2ff]/30"
+                                title="Editar"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleDelete(faq.id!)} 
+                                className="p-2 bg-white/5 hover:bg-red-500/20 text-slate-500 hover:text-red-400 rounded-xl transition-all border border-white/5 hover:border-red-500/30"
+                                title="Excluir"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </motion.tr>
+                      ))}
+                    </AnimatePresence>
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
