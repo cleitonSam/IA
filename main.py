@@ -2783,7 +2783,8 @@ def log_db_error(retry_state):
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_iniciar_conversa(
     conversation_id: int, slug: str, account_id: int,
-    contato_id: int = None, contato_nome: str = None, empresa_id: int = None
+    contato_id: int = None, contato_nome: str = None, empresa_id: int = None,
+    contato_telefone: str = None
 ):
     if not db_pool:
         return
@@ -2799,25 +2800,26 @@ async def bd_iniciar_conversa(
         # 1) tenta atualizar registro existente da mesma conta/conversa
         _updated = await db_pool.execute("""
             UPDATE conversas
-               SET contato_id   = COALESCE($3, contato_id),
-                   contato_nome = $4,
-                   unidade_id   = $5,
-                   status       = 'ativa',
-                   updated_at   = NOW()
+               SET contato_id       = COALESCE($3, contato_id),
+                   contato_nome     = $4,
+                   unidade_id       = $5,
+                   contato_telefone = COALESCE($7, contato_telefone),
+                   status           = 'ativa',
+                   updated_at       = NOW()
              WHERE conversation_id = $1
                AND account_id      = $2
                AND empresa_id      = $6
-        """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id)
+        """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id, contato_telefone)
 
         # 2) se não atualizou nenhuma linha, insere nova conversa
         if str(_updated).endswith(" 0"):
             await db_pool.execute("""
                 INSERT INTO conversas (
                     conversation_id, account_id, contato_id, contato_nome,
-                    empresa_id, unidade_id, primeira_mensagem, status
+                    empresa_id, unidade_id, primeira_mensagem, status, contato_telefone
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa')
-            """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa', $7)
+            """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {e}")
 
@@ -4402,9 +4404,11 @@ async def chatwoot_webhook(
                     await redis_client.delete(prompt_unidade_key)
                     contato = payload.get("sender", {})
                     _nome_contato = limpar_nome(contato.get("name"))
+                    _telefone_contato = contato.get("phone_number")
                     await bd_iniciar_conversa(
                         id_conv, slug, account_id,
-                        contato.get("id"), _nome_contato, empresa_id
+                        contato.get("id"), _nome_contato, empresa_id,
+                        contato_telefone=_telefone_contato
                     )
                     await bd_registrar_evento_funil(
                         id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
@@ -4498,9 +4502,11 @@ async def chatwoot_webhook(
 
     contato = payload.get("sender", {})
     _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
+    _telefone_para_bd = contato.get("phone_number")
     await bd_iniciar_conversa(
         id_conv, slug, account_id,
-        contato.get("id"), _nome_para_bd, empresa_id
+        contato.get("id"), _nome_para_bd, empresa_id,
+        contato_telefone=_telefone_para_bd
     )
 
     lock_key = f"agendar_lock:{id_conv}"
