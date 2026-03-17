@@ -2171,12 +2171,18 @@ async def enviar_mensagem_chatwoot(
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
                 
-                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 30, "1")
-                return uaz_resp
+                # Registra que enviamos direto para evitar eco no webhook
+                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 45, "1")
+                
+                # Se enviamos mídia, postamos no Chatwoot como NOTA para evitar que o Chatwoot
+                # tente enviar o anexo novamente (o que costuma falhar ou duplicar)
+                if attachment_url:
+                    payload["message_type"] = "note"
+                    payload["content"] = f"[Mídia Enviada Direto] {attachment_url}\n\n{content}"
         except Exception as e:
             logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
 
-    # --- FLUXO CHATWOOT CLÁSSICO ---
+    # --- FLUXO CHATWOOT CLÁSSICO (Sync de Histórico) ---
     if not url_base or not token:
         logger.error("Integração Chatwoot incompleta para envio")
         return None
@@ -4010,7 +4016,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
             )
 
-        # Labels de qualificação + unidade no Chatwoot
         try:
             qualif_label = _label_qualif(texto_cliente_unificado, novo_estado, _intencao_compra)
             await atualizar_labels_conversa_chatwoot(
@@ -4022,6 +4027,28 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             )
         except Exception as e:
             logger.warning(f"Falha ao classificar labels da conversa {conversation_id}: {e}")
+
+        # --- NOVIDADE: PRIORIZAÇÃO GLOBAL DE MÍDIA (Grade, etc.) ---
+        _foto_grade = unidade.get("foto_grade")
+        _texto_unificado_lower = " ".join([t for t in (textos + transcricoes) if t]).lower()
+        _keywords_grade = ["grade", "cronograma", "quadro de aulas", "horario das aulas", "horário das aulas", "grade de aulas", "imagem da grade", "foto da grade", "horários", "horarios"]
+        _quer_grade = any(x in _texto_unificado_lower for x in _keywords_grade)
+        
+        if _quer_grade:
+            if _foto_grade:
+                try:
+                    logger.info(f"🖼️ Priorizando envio de foto_grade para conv {conversation_id}")
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, 
+                        f"Aqui está a grade de aulas da unidade *{nome_unidade or 'selecionada'}* 😊", 
+                        nome_ia, integracao_chatwoot, empresa_id,
+                        attachment_url=_foto_grade
+                    )
+                    await asyncio.sleep(1.2)
+                except Exception as e:
+                    logger.error(f"Erro ao enviar foto_grade: {e}")
+            else:
+                logger.warning(f"⚠️ Cliente pediu grade, mas a unidade {nome_unidade} (slug: {slug}) NÃO possui foto_grade cadastrada.")
 
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
         if salvar_resposta_unica:
@@ -4069,25 +4096,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             if resposta_texto and resposta_texto.strip():
                 _texto_final = resposta_texto.strip()
                 
-                # NOVIDADE: Verifica se deve enviar IMAGEM da GRADE antes do texto
-                _foto_grade = unidade.get("foto_grade")
-                _texto_unificado = " ".join([t for t in (textos + transcricoes) if t]).lower()
-                _quer_grade = any(x in _texto_unificado for x in ["grade", "cronograma", "quadro de aulas", "horario das aulas", "horário das aulas", "grade de aulas"])
-                
-                if _quer_grade and _foto_grade:
-                    try:
-                        logger.info(f"🖼️ Priorizando envio de foto_grade para conv {conversation_id}")
-                        await enviar_mensagem_chatwoot(
-                            account_id, conversation_id, 
-                            f"Aqui está a grade de aulas da unidade *{nome_unidade}* 😊", 
-                            nome_ia, integracao_chatwoot, empresa_id,
-                            attachment_url=_foto_grade
-                        )
-                        # Pequeno delay para a imagem chegar antes do texto da IA
-                        await asyncio.sleep(1.0)
-                    except Exception as e:
-                        logger.error(f"Erro ao enviar foto_grade: {e}")
-
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
                 await enviar_mensagem_chatwoot(
@@ -4244,6 +4252,16 @@ async def chatwoot_webhook(
     content_attrs = payload.get("content_attributes") or {}
     is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
+
+    # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
+    if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
+        await redis_client.delete(f"uaz_bot_sent:{id_conv}") # Consome o flag
+        logger.info(f"♻️ Echo UazAPI detectado e ignorado para conv {id_conv}")
+        return {"status": "eco_uazapi_ignorado"}
+
+    # Ignora mensagens enviadas pela própria IA (via Chatwoot)
+    if is_ai_message or sender_type == "bot":
+        return {"status": "ignorado_msg_propria"}
 
     contato = payload.get("sender", {})
     nome_contato_raw = contato.get("name")
