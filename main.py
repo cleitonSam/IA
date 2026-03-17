@@ -2190,7 +2190,7 @@ async def enviar_mensagem_chatwoot(
                 # Sincroniza com Chatwoot via NOTA (Log de Histórico)
                 # Assim a conversa não fica "pausada" por falta de resposta, 
                 # mas também não enviamos duplicado (já que o note é interno).
-                payload["message_type"] = "note"
+                payload["private"] = True
                 if attachment_url:
                     payload["content"] = f"📸 [Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
                 else:
@@ -4036,27 +4036,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         except Exception as e:
             logger.warning(f"Falha ao classificar labels da conversa {conversation_id}: {e}")
 
-        # --- NOVIDADE: PRIORIZAÇÃO GLOBAL DE MÍDIA (Grade, etc.) ---
+        # --- NOVIDADE: PRIORIZAÇÃO GLOBAL DE MÍDIA (Grade, etc. - movido para depois do texto) ---
         _foto_grade = unidade.get("foto_grade")
         _texto_unificado_lower = " ".join([t for t in (textos + transcricoes) if t]).lower()
         _keywords_grade = ["grade", "cronograma", "quadro de aulas", "horario das aulas", "horário das aulas", "grade de aulas", "imagem da grade", "foto da grade", "horários", "horarios"]
         _quer_grade = any(x in _texto_unificado_lower for x in _keywords_grade)
-        
-        if _quer_grade:
-            if _foto_grade:
-                try:
-                    logger.info(f"🖼️ Priorizando envio de foto_grade para conv {conversation_id}")
-                    await enviar_mensagem_chatwoot(
-                        account_id, conversation_id, 
-                        f"Aqui está a grade de aulas da unidade *{nome_unidade or 'selecionada'}* 😊", 
-                        nome_ia, integracao_chatwoot, empresa_id,
-                        attachment_url=_foto_grade
-                    )
-                    await asyncio.sleep(1.2)
-                except Exception as e:
-                    logger.error(f"Erro ao enviar foto_grade: {e}")
-            else:
-                logger.warning(f"⚠️ Cliente pediu grade, mas a unidade {nome_unidade} (slug: {slug}) NÃO possui foto_grade cadastrada.")
 
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
         if salvar_resposta_unica:
@@ -4111,6 +4095,24 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 )
                 await bd_atualizar_msg_ia(conversation_id)
                 await bd_registrar_primeira_resposta(conversation_id)
+
+        # ── PÓS-PROCESSAMENTO: Mídia (Grade, etc.) ──
+        if _quer_grade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
+            if _foto_grade:
+                try:
+                    logger.info(f"🖼️ Enviando foto_grade (Pós-Texto) para conv {conversation_id}")
+                    # Pequeno delay para garantir que o texto chegue antes
+                    await asyncio.sleep(1.5)
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, 
+                        f"Aqui está a grade de aulas da unidade *{nome_unidade or 'selecionada'}* 😊", 
+                        nome_ia, integracao_chatwoot, empresa_id,
+                        attachment_url=_foto_grade
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao enviar foto_grade: {e}")
+            else:
+                logger.warning(f"⚠️ Cliente pediu grade, mas a unidade {nome_unidade} (slug: {slug}) NÃO possui foto_grade cadastrada.")
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
