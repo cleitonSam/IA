@@ -2130,6 +2130,19 @@ async def enviar_mensagem_chatwoot(
         _nome_salvo = None
     content = suavizar_personalizacao_nome(content, _nome_salvo)
 
+    # Prepara payload base do Chatwoot antecipadamente
+    payload = {
+        "content": content,
+        "message_type": "outgoing",
+        "content_attributes": {
+            "origin": "ai",
+            "ai_agent": nome_ia,
+            "ignore_webhook": True
+        }
+    }
+    if attachment_url:
+        payload["content_attributes"]["external_url"] = attachment_url
+
     # --- LÓGICA DE ENVIO DIRETO UAZAPI (Priority) ---
     # Detecta se é UazAPI — ou via URL ou carregando integração explícita
     is_uazapi = "uazapi.com" in str(url_base).lower()
@@ -2163,7 +2176,7 @@ async def enviar_mensagem_chatwoot(
                     uaz_payload = {
                         "number": _fone_clean,
                         "text": content,
-                        "delay": "1000" # Delay padrão conforme exemplo do usuário
+                        "delay": "1000"
                     }
 
                 uaz_headers = {"token": uaz_token, "Content-Type": "application/json", "Accept": "application/json"}
@@ -2174,11 +2187,15 @@ async def enviar_mensagem_chatwoot(
                 # Registra que enviamos direto para evitar eco no webhook
                 await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 45, "1")
                 
-                # Se enviamos mídia, postamos no Chatwoot como NOTA para evitar que o Chatwoot
-                # tente enviar o anexo novamente (o que costuma falhar ou duplicar)
+                # Sincroniza com Chatwoot via NOTA (Log de Histórico)
+                # Assim a conversa não fica "pausada" por falta de resposta, 
+                # mas também não enviamos duplicado (já que o note é interno).
+                payload["message_type"] = "note"
                 if attachment_url:
-                    payload["message_type"] = "note"
-                    payload["content"] = f"[Mídia Enviada Direto] {attachment_url}\n\n{content}"
+                    payload["content"] = f"📸 [Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
+                else:
+                    payload["content"] = f"🤖 [Bot Direto]: {content}"
+                    
         except Exception as e:
             logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
 
@@ -2188,23 +2205,12 @@ async def enviar_mensagem_chatwoot(
         return None
 
     url_m = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
-    payload = {
-        "content": content,
-        "message_type": "outgoing",
-        "content_attributes": {
-            "origin": "ai",
-            "ai_agent": nome_ia,
-            "ignore_webhook": True
-        }
-    }
-    if attachment_url:
-        payload["content_attributes"]["external_url"] = attachment_url
-        
     headers = {"api_access_token": str(token)}
+    
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers, timeout=20.0)
         resp.raise_for_status()
-        logger.info(f"📤 Mensagem enviada via Chatwoot (conv={conversation_id})")
+        logger.info(f"📤 Mensagem sincronizada via Chatwoot (tipo={payload['message_type']})")
         return resp
     except Exception as e:
         logger.error(f"❌ Erro final ao enviar mensagem: {e}")
