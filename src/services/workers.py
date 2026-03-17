@@ -294,9 +294,11 @@ async def gerar_resumo_conversa(conversa_id_db: int, conversation_id_ext: int, e
 
         prompt = (
             "Analise a conversa abaixo entre um lead e uma IA de vendas de academia. "
-            "Responda em português com no máximo 3 frases cobrindo: "
-            "1) o que o lead quer, 2) nível de interesse (quente/morno/frio), "
-            "3) próximo passo sugerido. Seja direto e objetivo.\n\n"
+            "Crie um resumo estruturado em 3 pontos curtos usando exatamente este formato:\n"
+            "* **Objetivo:** [o que o lead busca]\n"
+            "* **Status:** [nível de interesse: quente/morno/frio]\n"
+            "* **Ação:** [próximo passo sugerido]\n\n"
+            "Seja muito direto. Use no máximo 15 palavras por ponto.\n\n"
             f"Conversa:\n{historico}"
         )
 
