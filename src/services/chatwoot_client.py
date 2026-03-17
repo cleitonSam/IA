@@ -108,9 +108,8 @@ async def enviar_mensagem_chatwoot(
             instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
-            # Marcador para evitar auto-bloqueio no webhook
-            _marker = "📸" if is_direct_url else "🤖"
-            _prefixed_content = f"{_marker} *{nome_ia}*\n{content}" if nome_ia else f"{_marker}\n{content}"
+            # Prefixo de nome sem emoticons
+            _prefixed_content = f"*{nome_ia}*\n{content}" if nome_ia else f"{content}"
             
             await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
             # Chave usada pelo uaz_webhook.py para identificar eco de imagem enviada pelo bot

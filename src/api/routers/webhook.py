@@ -122,10 +122,19 @@ async def chatwoot_webhook(
     conteudo_texto = str(payload.get("content", "") or "")
     
     # Identificação robusta de mensagens da IA (Sync ou Direta)
+    msg_obj = payload.get("message") or {}
+    msg_attrs = msg_obj.get("content_attributes") or {}
+    msg_id = payload.get("id") or msg_obj.get("id")
+
+    # Verifica se o ID da mensagem está no Redis (marcado pela enviar_mensagem_chatwoot)
+    is_ai_in_redis = False
+    if msg_id:
+        is_ai_in_redis = await redis_client.exists(f"ai_msg_id:{msg_id}")
+
     is_ai_message = (
         content_attrs.get("origin") == "ai" 
-        or "🤖" in conteudo_texto 
-        or "📸" in conteudo_texto
+        or msg_attrs.get("origin") == "ai"
+        or is_ai_in_redis
         or is_private
     )
 

@@ -2131,13 +2131,9 @@ async def enviar_mensagem_chatwoot(
         _nome_salvo = None
     content = suavizar_personalizacao_nome(content, _nome_salvo)
 
-    # Marcadores para evitar auto-bloqueio no webhook
-    _marker = "📸" if attachment_url else "🤖"
-    _header = f"{_marker} *{nome_ia}*\n" if nome_ia else f"{_marker}\n"
-    
     # Prepara payload base do Chatwoot antecipadamente
     payload = {
-        "content": f"{_header}{content}" if (content or _header) else "",
+        "content": content if content else "",
         "message_type": "outgoing",
         "content_attributes": {
             "origin": "ai",
@@ -2168,9 +2164,8 @@ async def enviar_mensagem_chatwoot(
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
                 uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
                 
-                # Marcadores para evitar auto-bloqueio no webhook
-                _marker = "📸" if attachment_url else "🤖"
-                _header = f"{_marker} *{nome_ia}*\n" if nome_ia else f"{_marker}\n"
+                # Cabeçalho sem emoticons
+                _header = f"*{nome_ia}*\n" if nome_ia else ""
                 
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
@@ -2201,9 +2196,9 @@ async def enviar_mensagem_chatwoot(
                 # mas também não enviamos duplicado (já que o note é interno).
                 payload["private"] = True
                 if attachment_url:
-                    payload["content"] = f"📸 [Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
+                    payload["content"] = f"[Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
                 else:
-                    payload["content"] = f"🤖 [Bot Direto]: {content}"
+                    payload["content"] = f"[Bot Direto]: {content}"
                     
         except Exception as e:
             logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
@@ -2219,6 +2214,15 @@ async def enviar_mensagem_chatwoot(
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers, timeout=20.0)
         resp.raise_for_status()
+        
+        # Armazena o ID da mensagem enviada no Redis para identificação no webhook
+        try:
+            msg_data = resp.json()
+            if msg_data and "id" in msg_data:
+                await redis_client.setex(f"ai_msg_id:{msg_data['id']}", 600, "1")
+        except Exception:
+            pass
+
         logger.info(f"📤 Mensagem sincronizada via Chatwoot (tipo={payload['message_type']})")
         return resp
     except Exception as e:
@@ -4354,29 +4358,19 @@ async def chatwoot_webhook(
     # Verifica atributos no nível raiz do payload e também dentro do objeto message (comum em anexos)
     msg_obj = payload.get("message") or {}
     msg_attrs = msg_obj.get("content_attributes") or {}
-    msg_content = str(msg_obj.get("content") or "")
-    
-    # Extrai texto de anexos (captions podem conter nossos marcadores 🤖 ou 📸)
-    anexos_obj = msg_obj.get("attachments") or payload.get("attachments") or []
-    texto_anexos = " ".join([str(a.get("caption") or "") for a in anexos_obj]) if isinstance(anexos_obj, list) else ""
+    msg_id = payload.get("id") or msg_obj.get("id")
+
+    # Verifica se o ID da mensagem está no Redis (marcado pela enviar_mensagem_chatwoot)
+    is_ai_in_redis = False
+    if msg_id:
+        is_ai_in_redis = await redis_client.exists(f"ai_msg_id:{msg_id}")
 
     is_ai_message = (
         content_attrs.get("origin") == "ai" 
         or msg_attrs.get("origin") == "ai"
-        or "🤖" in conteudo_texto 
-        or "📸" in conteudo_texto
-        or "🤖" in msg_content
-        or "📸" in msg_content
-        or "🤖" in texto_anexos
-        or "📸" in texto_anexos
+        or is_ai_in_redis
         or is_private
     )
-    
-    # Fallback de segurança: busca marcadores em qualquer lugar do JSON (blindagem extra)
-    if not is_ai_message and message_type == "outgoing":
-        if "🤖" in str(payload) or "📸" in str(payload):
-            is_ai_message = True
-            logger.info(f"🛡️ IA identificada via busca bruta no payload conv {id_conv}")
 
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
     if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
