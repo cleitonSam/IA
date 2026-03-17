@@ -361,13 +361,9 @@ export default function ConversasPage() {
                         )}
                       </button>
                     </div>
-                    <p 
-                      className="text-slate-400 leading-relaxed italic whitespace-pre-wrap"
-                      dangerouslySetInnerHTML={{ 
-                        __html: (selected.resumo_ia || "Nenhuma análise disponível para este lead.")
-                          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
-                      }}
-                    />
+                    <p className="text-slate-400 leading-relaxed italic">
+                      "{selected.resumo_ia || "Nenhuma análise disponível para este lead."}"
+                    </p>
                   </div>
 
                   <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 space-y-4">
