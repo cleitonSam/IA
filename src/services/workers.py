@@ -179,7 +179,7 @@ async def worker_followup():
                         await get_tenant_cache(emp_id, f"atend_manual:{conv_id}") == "1"
                         or await get_tenant_cache(emp_id, f"pause_ia:{conv_id}") == "1"
                     ):
-                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
                         continue
 
                     respondeu = await _database.db_pool.fetchval("""
@@ -189,7 +189,7 @@ async def worker_followup():
                           AND m.created_at > NOW() - interval '5 minutes'
                     """, conv_id)
                     if respondeu:
-                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
                         continue
 
                     integracao = await carregar_integracao(emp_id, 'chatwoot')
