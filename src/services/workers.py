@@ -278,7 +278,7 @@ async def gerar_resumo_conversa(conversa_id_db: int, conversation_id_ext: int, e
 
     try:
         msgs = await _database.db_pool.fetch("""
-            SELECT role, content FROM mensagens
+            SELECT role, conteudo FROM mensagens
             WHERE conversa_id = $1
             ORDER BY created_at ASC
             LIMIT 40
@@ -288,7 +288,7 @@ async def gerar_resumo_conversa(conversa_id_db: int, conversation_id_ext: int, e
             return "Nenhuma mensagem encontrada para resumir."
 
         historico = "\n".join(
-            f"{'Lead' if m['role'] == 'user' else 'IA'}: {(m['content'] or '').strip()}"
+            f"{'Lead' if m['role'] == 'user' else 'IA'}: {(m['conteudo'] or '').strip()}"
             for m in msgs
         )
 
