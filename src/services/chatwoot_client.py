@@ -8,7 +8,7 @@ from typing import Optional, Any
 from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL, CHATWOOT_WEBHOOK_SECRET
 from src.core.redis_client import redis_client
 from src.utils.text_helpers import limpar_markdown, primeiro_nome_cliente, nome_eh_valido
-from src.utils.redis_helper import get_tenant_cache
+from src.utils.redis_helper import get_tenant_cache, set_tenant_cache
 
 # HTTP client — set externally during startup
 http_client: httpx.AsyncClient = None
@@ -112,7 +112,7 @@ async def enviar_mensagem_chatwoot(
             _marker = "📸" if is_direct_url else "🤖"
             _prefixed_content = f"{_marker} *{nome_ia}*\n{content}" if nome_ia else f"{_marker}\n{content}"
             
-            await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 45, "1")
+            await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
             
             if is_direct_url:
                 await client.send_media(fone, _prefixed_content, media_type="image")
