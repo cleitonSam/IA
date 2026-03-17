@@ -2163,19 +2163,20 @@ async def enviar_mensagem_chatwoot(
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
                 uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
                 
+                _header = f"*{nome_ia}*\n" if nome_ia else ""
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
                     uaz_payload = {
                         "number": _fone_clean,
                         "type": "image",
                         "file": attachment_url,
-                        "caption": content if content else ""
+                        "caption": f"{_header}{content}" if (content or _header) else ""
                     }
                 else:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/text"
                     uaz_payload = {
                         "number": _fone_clean,
-                        "text": content,
+                        "text": f"{_header}{content}",
                         "delay": "1000"
                     }
 
