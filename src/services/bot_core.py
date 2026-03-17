@@ -67,7 +67,7 @@ from src.services.evo_client import verificar_status_membro_evo, criar_prospect_
 import src.services.chatwoot_client as _chatwoot_module
 from src.services.workers import (
     _log_worker_task_result, worker_sync_planos, sync_planos_manual,
-    agendar_followups, worker_followup, worker_metricas_diarias
+    agendar_followups, worker_followup, worker_metricas_diarias, worker_resumo_ia
 )
 import src.services.workers as _workers_module
 import src.services.uaz_client as _uaz_module
@@ -232,6 +232,7 @@ async def startup_event():
             asyncio.create_task(worker_metricas_diarias(), name="worker_metricas_diarias"),
             asyncio.create_task(worker_sync_planos(), name="worker_sync_planos"),
             asyncio.create_task(run_stream_worker(), name="stream_worker"),
+            asyncio.create_task(worker_resumo_ia(), name="worker_resumo_ia"),
         ]
         for _task in worker_tasks:
             _task.add_done_callback(_log_worker_task_result)
