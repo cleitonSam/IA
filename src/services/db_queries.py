@@ -838,13 +838,13 @@ def log_db_error(retry_state):
 async def bd_iniciar_conversa(
     conversation_id: int, slug: str, account_id: int,
     contato_id: int = None, contato_nome: str = None, empresa_id: int = None,
-    contato_fone: str = None
+    contato_fone: str = None, canal: str = "WhatsApp"
 ):
     if not _database.db_pool:
         return
     try:
         unidade_id = None
-        if slug:
+        if slug and slug != "uazapi":
             unidade = await _database.db_pool.fetchrow(
                 "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
             )
@@ -853,16 +853,17 @@ async def bd_iniciar_conversa(
             else:
                 logger.warning(f"Unidade {slug} não encontrada para empresa {empresa_id}. Prosseguindo sem unidade_id.")
         await _database.db_pool.execute("""
-            INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, primeira_mensagem, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 'ativa')
+            INSERT INTO conversas (conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, canal, primeira_mensagem, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), 'ativa')
             ON CONFLICT (conversation_id, empresa_id) DO UPDATE SET
                 contato_nome = COALESCE(NULLIF(EXCLUDED.contato_nome, ''), conversas.contato_nome),
                 contato_fone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_fone),
                 contato_telefone = COALESCE(NULLIF(EXCLUDED.contato_fone, ''), conversas.contato_telefone),
+                canal = COALESCE(conversas.canal, EXCLUDED.canal),
                 unidade_id = EXCLUDED.unidade_id,
                 status = 'ativa',
                 updated_at = NOW()
-        """, conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id)
+        """, conversation_id, account_id, contato_id, contato_nome, contato_fone, empresa_id, unidade_id, canal)
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar conversa {conversation_id} (emp={empresa_id}): {e}")
 

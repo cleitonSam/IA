@@ -161,15 +161,27 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
-    rows = await _database.db_pool.fetch(
-        """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
-                  modelo_preferido AS model_name, temperatura AS temperature,
-                  max_tokens, ativo, usar_emoji
-           FROM personalidade_ia
-           WHERE empresa_id = $1
-           ORDER BY ativo DESC, id DESC""",
-        empresa_id
-    )
+    try:
+        rows = await _database.db_pool.fetch(
+            """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                      modelo_preferido AS model_name, temperatura AS temperature,
+                      max_tokens, ativo, usar_emoji
+               FROM personalidade_ia
+               WHERE empresa_id = $1
+               ORDER BY ativo DESC, id DESC""",
+            empresa_id
+        )
+    except Exception:
+        # Fallback enquanto a migration de usar_emoji não foi aplicada
+        rows = await _database.db_pool.fetch(
+            """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                      modelo_preferido AS model_name, temperatura AS temperature,
+                      max_tokens, ativo, true AS usar_emoji
+               FROM personalidade_ia
+               WHERE empresa_id = $1
+               ORDER BY ativo DESC, id DESC""",
+            empresa_id
+        )
     return [dict(r) for r in rows]
 
 
