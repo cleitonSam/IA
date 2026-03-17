@@ -2287,8 +2287,8 @@ async def worker_followup():
 
                 for f in pendentes:
                     if (
-                        await redis_client.get(f"atend_manual:{f['conversation_id']}") == "1"
-                        or await redis_client.get(f"pause_ia:{f['conversation_id']}") == "1"
+                        await redis_client.get(f"atend_manual:{f['empresa_id']}:{f['conversation_id']}") == "1"
+                        or await redis_client.get(f"pause_ia:{f['empresa_id']}:{f['conversation_id']}") == "1"
                     ):
                         await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
@@ -4062,15 +4062,15 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         if salvar_resposta_unica:
             await bd_salvar_mensagem_local(conversation_id, "assistant", resposta_texto)
 
-        is_manual = (await redis_client.get(f"atend_manual:{conversation_id}")) == "1"
+        is_manual = (await redis_client.get(f"atend_manual:{empresa_id}:{conversation_id}")) == "1"
 
-        if is_manual or await redis_client.exists(f"pause_ia:{conversation_id}"):
+        if is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
             pass  # IA pausada, não envia
 
         elif fast_reply_lista:
             # ── Planos: cada item da lista = 1 mensagem separada ──────────────
             for i, bloco_plano in enumerate(fast_reply_lista):
-                if await redis_client.exists(f"pause_ia:{conversation_id}"):
+                if await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
                     break
                 if not bloco_plano.strip():
                     continue
@@ -4226,15 +4226,15 @@ async def chatwoot_webhook(
             conv_obj.get("assignee_id") is not None
             or conv_obj.get("status") not in ["pending", "open", None]
         ) else "0"
-        await redis_client.setex(f"atend_manual:{id_conv}", 86400, is_manual)
+        await redis_client.setex(f"atend_manual:{empresa_id}:{id_conv}", 86400, is_manual)
 
     if event == "conversation_created":
         # Nova conversa — garante que não há estado antigo no Redis (ex: conversas reutilizadas em testes)
         await redis_client.delete(
-            f"pause_ia:{id_conv}", f"estado:{id_conv}",
+            f"pause_ia:{empresa_id}:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
             f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-            f"atend_manual:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
+            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
@@ -4244,10 +4244,10 @@ async def chatwoot_webhook(
         if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
-                f"pause_ia:{id_conv}", f"estado:{id_conv}",
+                f"pause_ia:{empresa_id}:{id_conv}", f"estado:{id_conv}",
                 f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
                 f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-                f"atend_manual:{id_conv}"
+                f"atend_manual:{empresa_id}:{id_conv}"
             )
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
@@ -4455,6 +4455,7 @@ async def chatwoot_webhook(
                 else:
                     # Evita loop de mensagens repetidas quando já pedimos a unidade
                     # (ex.: múltiplos webhooks da mesma conversa em sequência).
+                    await bd_atualizar_msg_cliente(id_conv)
                     if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
                         # Não fica em silêncio: envia lembrete curto com throttle
                         throttle_key = f"esperando_unidade_throttle:{id_conv}"
@@ -4488,7 +4489,7 @@ async def chatwoot_webhook(
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
             return {"status": "ignorado"}
-        await redis_client.setex(f"pause_ia:{id_conv}", 43200, "1")
+        await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if db_pool:
             await db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
@@ -4523,7 +4524,7 @@ async def chatwoot_webhook(
 
     await bd_atualizar_msg_cliente(id_conv)
 
-    if await redis_client.exists(f"pause_ia:{id_conv}"):
+    if await redis_client.exists(f"pause_ia:{empresa_id}:{id_conv}"):
         return {"status": "ignorado"}
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
@@ -4551,10 +4552,10 @@ async def chatwoot_webhook(
     return {"status": "acumulando_no_buffet"}
 
 
-@app.get("/desbloquear/{conversation_id}")
-async def desbloquear_ia(conversation_id: int):
-    if await redis_client.delete(f"pause_ia:{conversation_id}"):
-        return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id}!"}
+@app.get("/desbloquear/{empresa_id}/{conversation_id}")
+async def desbloquear_ia(empresa_id: int, conversation_id: int):
+    if await redis_client.delete(f"pause_ia:{empresa_id}:{conversation_id}"):
+        return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id} na empresa {empresa_id}!"}
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
 
 
