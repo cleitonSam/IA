@@ -57,14 +57,30 @@ async def uazapi_webhook(
                     logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
                 return {"status": "ignored", "reason": "from_me_human"}
 
-        # Extrair conteúdo (texto ou legenda)
-        content = ""
-        conversation = message.get("message", {}).get("conversation")
-        extended = message.get("message", {}).get("extendedTextMessage", {}).get("text")
-        image_caption = message.get("message", {}).get("imageMessage", {}).get("caption")
-        video_caption = message.get("message", {}).get("videoMessage", {}).get("caption")
+        # Extrair conteúdo (texto, legenda ou seleção de menu interativo)
+        msg_payload = message.get("message", {})
 
-        content = conversation or extended or image_caption or video_caption or ""
+        conversation  = msg_payload.get("conversation")
+        extended      = msg_payload.get("extendedTextMessage", {}).get("text")
+        image_caption = msg_payload.get("imageMessage", {}).get("caption")
+        video_caption = msg_payload.get("videoMessage", {}).get("caption")
+
+        # Seleção de lista interativa (type=list)
+        list_reply    = msg_payload.get("listResponseMessage", {})
+        list_title    = list_reply.get("title", "") or list_reply.get("singleSelectReply", {}).get("selectedRowId", "")
+
+        # Seleção de botão (type=button)
+        btn_reply     = msg_payload.get("buttonsResponseMessage", {})
+        btn_text      = btn_reply.get("selectedDisplayText", "") or btn_reply.get("selectedButtonId", "")
+
+        # Se é uma resposta de menu, prefixamos para a IA entender o contexto
+        is_menu_reply = bool(list_reply or btn_reply)
+        raw_selection = list_title or btn_text
+
+        if is_menu_reply and raw_selection:
+            content = f"[Selecionou no menu]: {raw_selection}"
+        else:
+            content = conversation or extended or image_caption or video_caption or ""
 
         if not content:
             # Caso seja apenas mídia sem texto, podemos tratar futuramente
