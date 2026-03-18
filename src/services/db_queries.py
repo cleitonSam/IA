@@ -794,6 +794,40 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         return {}
 
 
+async def carregar_menu_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Carrega a configuração do menu de triagem da empresa (da personalidade ativa).
+    Retorna None se não houver configuração ou se o menu estiver inativo.
+    Cacheia em Redis por 120s.
+    """
+    if not _database.db_pool:
+        return None
+
+    cache_key = f"cfg:menu_triagem:{empresa_id}"
+    cached = await redis_get_json(cache_key)
+    if cached is not None:
+        return cached if cached else None
+
+    try:
+        row = await _database.db_pool.fetchrow(
+            "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true LIMIT 1",
+            empresa_id
+        )
+        config = None
+        if row and row["menu_triagem"]:
+            val = row["menu_triagem"]
+            if isinstance(val, str):
+                import json as _json
+                config = _json.loads(val)
+            elif isinstance(val, dict):
+                config = val
+        await redis_set_json(cache_key, config or {}, 120)
+        return config
+    except Exception as e:
+        logger.error(f"Erro ao carregar menu de triagem da empresa {empresa_id}: {e}")
+        return None
+
+
 async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
     if not _database.db_pool:
         return {}

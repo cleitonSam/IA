@@ -166,3 +166,69 @@ def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
         return None, horario_hoje
 
     return abertura <= hora_atual < fechamento, horario_hoje
+
+
+# Mapeamento índice weekday → chave PT-BR usada no horario_atendimento_ia
+_DIA_KEYS = {
+    0: "segunda",
+    1: "terca",
+    2: "quarta",
+    3: "quinta",
+    4: "sexta",
+    5: "sabado",
+    6: "domingo",
+}
+
+
+def ia_esta_no_horario(config: Any) -> bool:
+    """
+    Verifica se a IA deve atender agora com base na configuração de horário.
+
+    Estrutura esperada em config:
+        {"tipo": "dia_todo"}
+        ou
+        {"tipo": "horario_especifico", "dias": {
+            "segunda": [{"inicio": "08:00", "fim": "18:00"}],
+            "sabado":  [{"inicio": "09:00", "fim": "13:00"}],
+            "domingo": []
+        }}
+
+    Retorna True se a IA deve atender agora, False caso contrário.
+    Retorna True se config for None ou inválido (comportamento padrão: atende sempre).
+    """
+    if not config:
+        return True
+
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (json.JSONDecodeError, ValueError):
+            return True
+
+    if not isinstance(config, dict):
+        return True
+
+    tipo = config.get("tipo", "dia_todo")
+    if tipo == "dia_todo":
+        return True
+
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    dia_key = _DIA_KEYS.get(agora.weekday(), "segunda")
+    hora_atual = agora.time()
+
+    dias = config.get("dias", {})
+    periodos = dias.get(dia_key, [])
+
+    if not periodos:
+        return False
+
+    for periodo in periodos:
+        try:
+            h_ini, m_ini = map(int, periodo["inicio"].split(":"))
+            h_fim, m_fim = map(int, periodo["fim"].split(":"))
+            if dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim):
+                return True
+        except (KeyError, ValueError):
+            continue
+
+    return False

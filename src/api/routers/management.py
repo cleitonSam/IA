@@ -23,6 +23,8 @@ class PersonalityUpdate(BaseModel):
     max_tokens: Optional[int] = 1000
     ativo: Optional[bool] = None
     usar_emoji: Optional[bool] = None
+    horario_atendimento_ia: Optional[dict] = None
+    menu_triagem: Optional[dict] = None
 
 class PersonalityCreate(BaseModel):
     nome_ia: str
@@ -34,6 +36,8 @@ class PersonalityCreate(BaseModel):
     max_tokens: int = 1000
     ativo: bool = False
     usar_emoji: bool = True
+    horario_atendimento_ia: Optional[dict] = None
+    menu_triagem: Optional[dict] = None
 
 class FAQCreate(BaseModel):
     pergunta: str
@@ -94,22 +98,33 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
     row = await _database.db_pool.fetchrow(
-        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, modelo_preferido as model_name, temperatura as temperature, max_tokens, ativo FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+        "SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, modelo_preferido as model_name, temperatura as temperature, max_tokens, ativo, usar_emoji, horario_atendimento_ia, menu_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
         empresa_id
     )
     if not row:
         # Retorna um objeto vazio mas estruturado se não existir
         return {
-            "nome_ia": "", 
-            "personalidade": "", 
-            "instrucoes_base": "", 
-            "tom_voz": "Profissional", 
+            "nome_ia": "",
+            "personalidade": "",
+            "instrucoes_base": "",
+            "tom_voz": "Profissional",
             "model_name": "gpt-4o-mini",
             "temperature": 0.7,
             "max_tokens": 1000,
-            "ativo": False
+            "ativo": False,
+            "usar_emoji": True,
+            "horario_atendimento_ia": None,
+            "menu_triagem": None
         }
-    return dict(row)
+    result = dict(row)
+    # Deserializar campos JSONB que asyncpg pode retornar como string
+    for json_field in ("horario_atendimento_ia", "menu_triagem"):
+        if isinstance(result.get(json_field), str):
+            try:
+                result[json_field] = json.loads(result[json_field])
+            except (json.JSONDecodeError, ValueError):
+                result[json_field] = None
+    return result
 
 @router.post("/personality")
 async def update_personality(
@@ -124,6 +139,10 @@ async def update_personality(
         update_data["modelo_preferido"] = update_data.pop("model_name")
     if "temperature" in update_data:
         update_data["temperatura"] = update_data.pop("temperature")
+    if "horario_atendimento_ia" in update_data and update_data["horario_atendimento_ia"] is not None:
+        update_data["horario_atendimento_ia"] = json.dumps(update_data["horario_atendimento_ia"])
+    if "menu_triagem" in update_data and update_data["menu_triagem"] is not None:
+        update_data["menu_triagem"] = json.dumps(update_data["menu_triagem"])
 
     if not update_data:
         return {"status": "no_changes"}
@@ -165,24 +184,34 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
         rows = await _database.db_pool.fetch(
             """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
                       modelo_preferido AS model_name, temperatura AS temperature,
-                      max_tokens, ativo, usar_emoji
+                      max_tokens, ativo, usar_emoji, horario_atendimento_ia, menu_triagem
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
             empresa_id
         )
     except Exception:
-        # Fallback enquanto a migration de usar_emoji não foi aplicada
+        # Fallback enquanto a migration não foi aplicada
         rows = await _database.db_pool.fetch(
             """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
                       modelo_preferido AS model_name, temperatura AS temperature,
-                      max_tokens, ativo, true AS usar_emoji
+                      max_tokens, ativo, true AS usar_emoji, NULL AS horario_atendimento_ia, NULL AS menu_triagem
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
             empresa_id
         )
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        for json_field in ("horario_atendimento_ia", "menu_triagem"):
+            if isinstance(d.get(json_field), str):
+                try:
+                    d[json_field] = json.loads(d[json_field])
+                except (json.JSONDecodeError, ValueError):
+                    d[json_field] = None
+        result.append(d)
+    return result
 
 
 @router.post("/personalities", status_code=201)
@@ -195,14 +224,17 @@ async def create_personality(
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     try:
+        horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
+        menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
         row = await _database.db_pool.fetchrow(
             """INSERT INTO personalidade_ia
                (empresa_id, nome_ia, personalidade, instrucoes_base, tom_voz,
-                modelo_preferido, temperatura, max_tokens, ativo, usar_emoji, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+                modelo_preferido, temperatura, max_tokens, ativo, usar_emoji, horario_atendimento_ia, menu_triagem, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
-            data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji
+            data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
+            horario_json, menu_json
         )
         return {"id": row["id"], "status": "success"}
     except Exception as e:
@@ -225,14 +257,17 @@ async def update_personality_by_id(
     )
     if not existing:
         raise HTTPException(status_code=404, detail="Personalidade não encontrada")
+    horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
+    menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
     await _database.db_pool.execute(
         """UPDATE personalidade_ia
            SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
-               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9, updated_at=NOW()
-           WHERE id=$10 AND empresa_id=$11""",
+               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
+               horario_atendimento_ia=$10, menu_triagem=$11, updated_at=NOW()
+           WHERE id=$12 AND empresa_id=$13""",
         data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
         data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-        pid, empresa_id
+        horario_json, menu_json, pid, empresa_id
     )
     return {"status": "success"}
 

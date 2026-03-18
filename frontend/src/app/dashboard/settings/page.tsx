@@ -11,6 +11,41 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 
 // --- Types ---
+type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
+
+interface Periodo {
+  inicio: string;
+  fim: string;
+}
+
+interface HorarioAtendimento {
+  tipo: "dia_todo" | "horario_especifico";
+  dias: Record<DiaKey, Periodo[]>;
+}
+
+const DIAS_SEMANA: { key: DiaKey; label: string }[] = [
+  { key: "segunda", label: "Segunda-feira" },
+  { key: "terca",   label: "Terça-feira"   },
+  { key: "quarta",  label: "Quarta-feira"  },
+  { key: "quinta",  label: "Quinta-feira"  },
+  { key: "sexta",   label: "Sexta-feira"   },
+  { key: "sabado",  label: "Sábado"        },
+  { key: "domingo", label: "Domingo"       },
+];
+
+const HORARIO_DEFAULT: HorarioAtendimento = {
+  tipo: "horario_especifico",
+  dias: {
+    segunda:  [{ inicio: "08:00", fim: "18:00" }],
+    terca:    [{ inicio: "08:00", fim: "18:00" }],
+    quarta:   [{ inicio: "08:00", fim: "18:00" }],
+    quinta:   [{ inicio: "08:00", fim: "18:00" }],
+    sexta:    [{ inicio: "08:00", fim: "18:00" }],
+    sabado:   [{ inicio: "09:00", fim: "13:00" }],
+    domingo:  [],
+  },
+};
+
 interface Unit {
   id: number;
   nome: string;
@@ -34,6 +69,7 @@ interface Personality {
   instrucoes_base: string;
   tom_voz: string;
   ativo: boolean;
+  horario_atendimento_ia: HorarioAtendimento | null;
 }
 
 interface FAQ {
@@ -68,7 +104,8 @@ export default function SettingsPage() {
 
   // --- Personality State ---
   const [personality, setPersonality] = useState<Personality>({
-    nome_ia: "", personalidade: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true
+    nome_ia: "", personalidade: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true,
+    horario_atendimento_ia: null
   });
 
   // --- FAQ State ---
@@ -359,6 +396,122 @@ export default function SettingsPage() {
                   placeholder="Instruções detalhadas de como a IA deve agir e o que evitar..."
                 />
               </div>
+              {/* Horário de Atendimento da IA */}
+              <div className="border-t border-white/10 pt-8">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4 flex items-center gap-2">
+                  <HistoryIcon className="w-4 h-4 text-primary/60" /> Horário de Atendimento da IA
+                </h3>
+
+                {/* Toggle tipo */}
+                <div className="flex gap-4 mb-6">
+                  {(["dia_todo", "horario_especifico"] as const).map((tipo) => {
+                    const atual = personality.horario_atendimento_ia?.tipo ?? "dia_todo";
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => {
+                          if (tipo === "dia_todo") {
+                            setPersonality({ ...personality, horario_atendimento_ia: { tipo: "dia_todo", dias: HORARIO_DEFAULT.dias } });
+                          } else {
+                            const base = personality.horario_atendimento_ia?.dias ?? HORARIO_DEFAULT.dias;
+                            setPersonality({ ...personality, horario_atendimento_ia: { tipo: "horario_especifico", dias: base } });
+                          }
+                        }}
+                        className={`flex-1 py-3 rounded-xl font-bold border transition-all ${
+                          atual === tipo
+                            ? "bg-primary/20 text-primary border-primary"
+                            : "bg-black/20 text-gray-500 border-white/10 hover:text-white"
+                        }`}
+                      >
+                        {tipo === "dia_todo" ? "🌐 Atender o dia todo (24h)" : "🕐 Horário específico"}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Tabela de dias — só exibe quando horario_especifico */}
+                {(personality.horario_atendimento_ia?.tipo ?? "dia_todo") === "horario_especifico" && (
+                  <div className="space-y-3">
+                    {DIAS_SEMANA.map(({ key, label }) => {
+                      const periodos: Periodo[] = personality.horario_atendimento_ia?.dias?.[key] ?? [];
+                      const ativo = periodos.length > 0;
+
+                      const setDia = (novosPeriodos: Periodo[]) => {
+                        const diasAtuais = personality.horario_atendimento_ia?.dias ?? HORARIO_DEFAULT.dias;
+                        setPersonality({
+                          ...personality,
+                          horario_atendimento_ia: {
+                            tipo: "horario_especifico",
+                            dias: { ...diasAtuais, [key]: novosPeriodos },
+                          },
+                        });
+                      };
+
+                      return (
+                        <div key={key} className="bg-slate-950/40 border border-white/10 rounded-xl p-4">
+                          <div className="flex items-center gap-3 mb-2">
+                            <button
+                              type="button"
+                              onClick={() => setDia(ativo ? [] : [{ inicio: "08:00", fim: "18:00" }])}
+                              className={`relative inline-flex h-6 w-10 items-center rounded-full transition-all ${ativo ? "bg-primary" : "bg-slate-700"}`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${ativo ? "translate-x-5" : "translate-x-1"}`} />
+                            </button>
+                            <span className="text-sm font-bold w-32">{label}</span>
+                            {!ativo && <span className="text-xs text-gray-600 uppercase tracking-widest">Inativo</span>}
+                          </div>
+
+                          {ativo && (
+                            <div className="space-y-2 ml-13 pl-14">
+                              {periodos.map((p, i) => (
+                                <div key={i} className="flex items-center gap-2">
+                                  <input
+                                    type="time"
+                                    value={p.inicio}
+                                    onChange={(e) => {
+                                      const np = [...periodos];
+                                      np[i] = { ...np[i], inicio: e.target.value };
+                                      setDia(np);
+                                    }}
+                                    className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-primary/40"
+                                  />
+                                  <span className="text-gray-600 text-sm">até</span>
+                                  <input
+                                    type="time"
+                                    value={p.fim}
+                                    onChange={(e) => {
+                                      const np = [...periodos];
+                                      np[i] = { ...np[i], fim: e.target.value };
+                                      setDia(np);
+                                    }}
+                                    className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-primary/40"
+                                  />
+                                  {periodos.length > 1 && (
+                                    <button type="button" onClick={() => setDia(periodos.filter((_, j) => j !== i))} className="text-gray-600 hover:text-red-400 transition-colors">
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              {periodos.length < 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDia([...periodos, { inicio: "14:00", fim: "18:00" }])}
+                                  className="text-xs text-primary/60 hover:text-primary flex items-center gap-1 mt-1 transition-colors"
+                                >
+                                  <Plus className="w-3 h-3" /> Adicionar período
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end">
                 <button type="submit" disabled={saving} className="bg-primary hover:bg-primary/90 text-black px-10 py-3 rounded-xl font-bold flex items-center gap-2">
                   {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}

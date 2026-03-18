@@ -2,7 +2,8 @@ import uuid
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
-from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao
+from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem
+from src.services.uaz_client import UazAPIClient
 
 router = APIRouter()
 
@@ -25,11 +26,11 @@ async def uazapi_webhook(
     try:
         body = await request.json()
         event = body.get("event")
-        
+
         # Só processamos novas mensagens recebidas
         if event != "messages.upsert":
             return {"status": "ignored", "event": event}
-            
+
         data = body.get("data", {})
         message = data.get("message", {})
         key = message.get("key", {})
@@ -62,16 +63,61 @@ async def uazapi_webhook(
         extended = message.get("message", {}).get("extendedTextMessage", {}).get("text")
         image_caption = message.get("message", {}).get("imageMessage", {}).get("caption")
         video_caption = message.get("message", {}).get("videoMessage", {}).get("caption")
-        
+
         content = conversation or extended or image_caption or video_caption or ""
-        
+
         if not content:
             # Caso seja apenas mídia sem texto, podemos tratar futuramente
             return {"status": "ignored", "reason": "empty_content"}
 
         # Buscar se já existe uma conversa interna para este telefone
         conversa_existente = await buscar_conversa_por_fone(phone, empresa_id)
-        
+
+        # --- Menu de Triagem ---
+        # Lógica de inatividade: a chave Redis expira após 1h sem mensagens do contato.
+        # A cada mensagem recebida, o TTL é renovado. Se o contato ficar 1h sem mandar
+        # mensagem, a chave expira e o menu será reenviado na próxima mensagem.
+        MENU_INACTIVITY_TTL = 3600  # 1 hora
+        menu_triagem_key = f"menu_triagem:sent:{empresa_id}:{phone}"
+        menu_already_sent = await redis_client.exists(menu_triagem_key)
+
+        if menu_already_sent:
+            # Renova o TTL a cada mensagem — só envia de novo após 1h de inatividade
+            await redis_client.expire(menu_triagem_key, MENU_INACTIVITY_TTL)
+
+        if not menu_already_sent:
+            # Verifica se a IA está pausada para esta conversa
+            ia_pausada = False
+            if conversa_existente:
+                conv_id_existente = conversa_existente.get("conversation_id")
+                if conv_id_existente:
+                    ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conv_id_existente}"))
+
+            if not ia_pausada:
+                menu_config = await carregar_menu_triagem(empresa_id)
+                if menu_config and menu_config.get("ativo"):
+                    try:
+                        uaz_menu = UazAPIClient(
+                            base_url=integracao.get("url", ""),
+                            token=integracao.get("token", ""),
+                            instance_name=integracao.get("instance", "default")
+                        )
+                        # Marca como enviado pelo bot antes de enviar (para fromMe handler ignorar)
+                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 30, "1")
+                        sent = await uaz_menu.send_menu(phone, menu_config)
+                        if sent:
+                            # TTL de 1h: não envia o menu novamente neste período
+                            await redis_client.setex(menu_triagem_key, MENU_INACTIVITY_TTL, "1")
+                            logger.info(f"📋 Menu de triagem enviado para {phone} (empresa {empresa_id})")
+                            return {"status": "menu_sent", "phone": phone}
+                        else:
+                            # Falhou ao enviar o menu — limpa o marcador e segue fluxo normal
+                            await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{phone}")
+                    except Exception as menu_err:
+                        logger.error(f"❌ Erro ao enviar menu de triagem para {phone}: {menu_err}")
+
+        # --- Fim do Menu de Triagem ---
+
         # Se não existe, usamos um ID temporário ou mapeamos depois no worker
         # Para manter compatibilidade com a fila atual:
         job_data = {
@@ -86,7 +132,7 @@ async def uazapi_webhook(
 
         # Publicar no Redis Streams
         await redis_client.xadd("ia:webhook:stream", job_data)
-        
+
         logger.info(f"📥 UazAPI Webhook: Mensagem de {phone} enfileirada.")
         return {"status": "queued", "phone": phone}
 

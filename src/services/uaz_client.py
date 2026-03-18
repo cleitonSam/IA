@@ -86,3 +86,55 @@ class UazAPIClient:
         }
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None
+
+    async def send_menu(self, number: str, config: dict) -> bool:
+        """
+        Envia menu interativo de triagem via UazAPI.
+        Suporta tipos: list, button.
+        config deve conter: tipo, texto, titulo, rodape, botao, opcoes (lista de {id, titulo, descricao}).
+        """
+        clean_number = "".join(filter(str.isdigit, number))
+        tipo = config.get("tipo", "list")
+        opcoes = config.get("opcoes", [])
+
+        if tipo == "list":
+            # Formato esperado pela UazAPI (igual ao fluxo N8N):
+            # choices: ["[NomeSeção]", "Titulo|id|Descricao", ...]
+            choices = [f"[{config.get('titulo', 'Opções')}]"]
+            for opt in opcoes:
+                titulo = opt.get("titulo", "")
+                opt_id = opt.get("id", "")
+                descricao = opt.get("descricao", "")
+                choices.append(f"{titulo}|{opt_id}|{descricao}")
+
+            payload = {
+                "number": clean_number,
+                "type": "list",
+                "text": config.get("texto", ""),
+                "footerText": config.get("rodape", ""),
+                "listButton": config.get("botao", "Ver opções"),
+                "selectableCount": 1,
+                "choices": choices,
+                "readchat": True,
+                "readmessages": True,
+                "delay": 1000
+            }
+        elif tipo == "button":
+            # Botões de resposta rápida (máx 3 no WhatsApp)
+            choices = [opt.get("titulo", "") for opt in opcoes[:3]]
+            payload = {
+                "number": clean_number,
+                "type": "button",
+                "text": config.get("texto", ""),
+                "footerText": config.get("rodape", ""),
+                "choices": choices,
+                "readchat": True,
+                "readmessages": True,
+                "delay": 1000
+            }
+        else:
+            logger.warning(f"⚠️ Tipo de menu não suportado: {tipo}")
+            return False
+
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
