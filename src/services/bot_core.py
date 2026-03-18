@@ -45,7 +45,7 @@ from src.utils.intent_helpers import (
 )
 from src.utils.time_helpers import (
     saudacao_por_horario, horario_hoje_formatado, formatar_horarios_funcionamento,
-    esta_aberta_agora
+    esta_aberta_agora, ia_esta_no_horario
 )
 from src.services.llm_service import cliente_ia, cliente_whisper, is_provider_unavailable_error, is_openrouter_auth_error
 
@@ -915,6 +915,13 @@ async def processar_ia_e_responder(
         # Pausa global da IA no Chatwoot por empresa (evita responder enquanto estiver desativada)
         if source == 'chatwoot' and await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
             logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
+            return
+
+        # Verifica horário de atendimento da IA configurado pelo usuário
+        _pers_horario = await carregar_personalidade(empresa_id) or {}
+        _horario_config = _pers_horario.get("horario_atendimento_ia")
+        if not ia_esta_no_horario(_horario_config):
+            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada")
             return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
