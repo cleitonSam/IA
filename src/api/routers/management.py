@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
@@ -83,6 +83,38 @@ class PersonalityCreate(BaseModel):
     emoji_cor: Optional[str] = "#00d2ff"
 
     model_config = {"extra": "allow"}
+
+    _STR_FIELDS = [
+        "nome_ia", "personalidade", "instrucoes_base", "tom_voz", "model_name",
+        "idioma", "objetivos_venda", "metas_comerciais", "script_vendas",
+        "scripts_objecoes", "frases_fechamento", "diferenciais", "posicionamento",
+        "publico_alvo", "restricoes", "linguagem_proibida", "contexto_empresa",
+        "contexto_extra", "abordagem_proativa", "exemplos", "palavras_proibidas",
+        "despedida_personalizada", "regras_formatacao", "regras_seguranca",
+        "emoji_tipo", "emoji_cor",
+    ]
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_types(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        for field in cls._STR_FIELDS:
+            v = values.get(field)
+            if v is not None and not isinstance(v, str):
+                values[field] = str(v)
+        # Garante tipos numéricos corretos
+        if "temperature" in values and values["temperature"] is not None:
+            try:
+                values["temperature"] = float(values["temperature"])
+            except (TypeError, ValueError):
+                values["temperature"] = 0.7
+        if "max_tokens" in values and values["max_tokens"] is not None:
+            try:
+                values["max_tokens"] = int(float(values["max_tokens"]))
+            except (TypeError, ValueError):
+                values["max_tokens"] = 1000
+        return values
 
 class FAQCreate(BaseModel):
     pergunta: str

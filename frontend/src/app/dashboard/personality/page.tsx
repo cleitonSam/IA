@@ -249,7 +249,10 @@ export default function PersonalityPage() {
       if (axios.isAxiosError(e)) {
         const detail = e.response?.data?.detail;
         if (typeof detail === "string") msg = detail;
-        else if (Array.isArray(detail)) msg = detail.map((d: any) => d.msg || d).join(", ");
+        else if (Array.isArray(detail)) msg = detail.map((d: any) => {
+          const field = Array.isArray(d.loc) ? d.loc.slice(1).join(".") : "";
+          return field ? `[${field}] ${d.msg}` : (d.msg || d);
+        }).join(" | ");
         else msg = e.response?.data?.message || `Erro ${e.response?.status || "de conexão"}.`;
       }
       setSaveError(msg);
