@@ -754,10 +754,12 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
         return
 
     # Lembrete amigável — pergunta de novo sem listar todas as unidades
+    _pers_monit = await carregar_personalidade(empresa_id) or {}
+    _nome_ia_monit = _pers_monit.get('nome_ia') or 'Assistente'
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
         "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
-        integracao, empresa_id, nome_ia="Assistente Virtual"
+        integracao, empresa_id, nome_ia=_nome_ia_monit
     )
 
     await asyncio.sleep(480)
@@ -1409,7 +1411,7 @@ Você pretende treinar só hoje ou está pensando em começar academia?"
 DADOS DO ATENDIMENTO:
 Cliente: {nome_cliente}
 Estado emocional anterior: {estado_atual}
-{contexto_precarregado_bloco}
+{contexto_precarregado_bloco}{"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL (ex: boa noite, tudo bem, oi, etc). Responda SOMENTE com uma saudação calorosa e pergunte como pode ajudar. NÃO mencione unidades, NÃO pergunte sobre cidade/bairro, NÃO fale de planos ou produtos.]" if eh_saudacao(primeira_mensagem or "") else ""}
 MENSAGENS DO CLIENTE (responda a TODAS):
 {mensagens_formatadas}
 
