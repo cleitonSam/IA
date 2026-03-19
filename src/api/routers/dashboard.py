@@ -287,6 +287,35 @@ async def manual_summary_conversation(
     return {"status": "success", "resumo_ia": resumo}
 
 
+@router.post("/conversations/{conversation_id}/limpar-memoria")
+async def limpar_memoria_conversa(
+    conversation_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Limpa o histórico de mensagens e o estado Redis da IA para uma conversa.
+    A IA passa a responder sem memória do histórico anterior.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    from src.services.db_queries import bd_limpar_historico_conversa
+    ok = await bd_limpar_historico_conversa(conversation_id, empresa_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada ou sem permissão")
+
+    await redis_client.delete(
+        f"estado:{empresa_id}:{conversation_id}",
+        f"unidade_escolhida:{conversation_id}",
+        f"esperando_unidade:{empresa_id}:{conversation_id}",
+        f"buffet:{empresa_id}:{conversation_id}",
+        f"buffet_drain:{empresa_id}:{conversation_id}",
+    )
+
+    return {"status": "ok", "mensagem": "Memória da IA limpa com sucesso"}
+
+
 @router.get("/metrics/empresa")
 async def get_metrics_empresa(
     data: Optional[date] = Query(None),

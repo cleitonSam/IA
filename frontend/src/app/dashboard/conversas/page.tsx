@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   MessageSquare, Search, ChevronLeft, ChevronRight,
   Building2, Star, Flame, Clock, X, RefreshCw,
-  Download, Zap, Bot, BarChart3, Target, Brain
+  Download, Zap, Bot, BarChart3, Target, Brain, Trash2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -45,6 +45,8 @@ export default function ConversasPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [summarizing, setSummarizing] = useState(false);
+  const [clearingMemory, setClearingMemory] = useState(false);
+  const [memoryClearedId, setMemoryClearedId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -316,6 +318,30 @@ export default function ConversasPage() {
                           <><X className="w-4 h-4" /> Pausar IA</>
                         )}
                       </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm("Limpar toda a memória da IA nessa conversa? A IA vai esquecer o histórico.")) return;
+                          setClearingMemory(true);
+                          try {
+                            await axios.post(`/api-backend/dashboard/conversations/${selected.conversation_id}/limpar-memoria`, {}, config);
+                            setSelected({ ...selected, total_mensagens_cliente: 0, total_mensagens_ia: 0 });
+                            setConversations(conversations.map(c => c.conversation_id === selected.conversation_id ? { ...c, total_mensagens_cliente: 0, total_mensagens_ia: 0 } : c));
+                            setMemoryClearedId(String(selected.conversation_id));
+                            setTimeout(() => setMemoryClearedId(null), 3000);
+                          } catch (err) { console.error(err); }
+                          finally { setClearingMemory(false); }
+                        }}
+                        disabled={clearingMemory}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20 disabled:opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {clearingMemory ? "Limpando..." : "Limpar Memória"}
+                      </button>
+                      {memoryClearedId === String(selected.conversation_id) && (
+                        <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/15">
+                          MEMÓRIA LIMPA ✓
+                        </span>
+                      )}
                       {selected.pausada && (
                         <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/15 animate-pulse">
                           AUTOMAÇÃO DESATIVADA

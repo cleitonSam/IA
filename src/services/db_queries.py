@@ -1340,6 +1340,30 @@ async def buscar_usuario_por_email(email: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Erro ao buscar usuário {email_norm}: {e}")
         return None
 
+async def bd_limpar_historico_conversa(conversation_id: int, empresa_id: int) -> bool:
+    if not _database.db_pool:
+        return False
+    try:
+        conversa_id = await _database.db_pool.fetchval(
+            "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+            conversation_id, empresa_id
+        )
+        if not conversa_id:
+            return False
+        await _database.db_pool.execute(
+            "DELETE FROM mensagens WHERE conversa_id = $1 AND empresa_id = $2",
+            conversa_id, empresa_id
+        )
+        await _database.db_pool.execute(
+            "UPDATE conversas SET total_mensagens_cliente = 0, total_mensagens_ia = 0 WHERE id = $1",
+            conversa_id
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao limpar histórico da conversa {conversation_id}: {e}")
+        return False
+
+
 async def criar_usuario(nome: str, email: str, senha_hash: str, empresa_id: int, perfil: str = 'atendente'):
     if not _database.db_pool:
         return None
