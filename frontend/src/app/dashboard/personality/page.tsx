@@ -5,10 +5,45 @@ import axios from "axios";
 import {
   Brain, Plus, Pencil, Trash2, Save, X, Loader2, CheckCircle2,
   Sparkles, Target, Cpu, Thermometer, Hash, Send, Bot, PlayCircle,
-  Mic2, MessageSquare, Eye, Zap, Activity
+  Mic2, MessageSquare, Eye, Clock
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
+
+type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
+
+interface Periodo {
+  inicio: string;
+  fim: string;
+}
+
+interface HorarioAtendimento {
+  tipo: "dia_todo" | "horario_especifico";
+  dias: Record<DiaKey, Periodo[]>;
+}
+
+const DIAS_SEMANA: { key: DiaKey; label: string }[] = [
+  { key: "segunda", label: "Segunda-feira" },
+  { key: "terca",   label: "Terça-feira"   },
+  { key: "quarta",  label: "Quarta-feira"  },
+  { key: "quinta",  label: "Quinta-feira"  },
+  { key: "sexta",   label: "Sexta-feira"   },
+  { key: "sabado",  label: "Sábado"        },
+  { key: "domingo", label: "Domingo"       },
+];
+
+const HORARIO_DEFAULT: HorarioAtendimento = {
+  tipo: "horario_especifico",
+  dias: {
+    segunda: [{ inicio: "08:00", fim: "18:00" }],
+    terca:   [{ inicio: "08:00", fim: "18:00" }],
+    quarta:  [{ inicio: "08:00", fim: "18:00" }],
+    quinta:  [{ inicio: "08:00", fim: "18:00" }],
+    sexta:   [{ inicio: "08:00", fim: "18:00" }],
+    sabado:  [],
+    domingo: [],
+  },
+};
 
 interface Personality {
   id: number;
@@ -21,6 +56,7 @@ interface Personality {
   max_tokens: number;
   ativo: boolean;
   usar_emoji: boolean;
+  horario_atendimento_ia: HorarioAtendimento | null;
 }
 
 const emptyForm = {
@@ -33,6 +69,7 @@ const emptyForm = {
   max_tokens: 1000,
   ativo: false,
   usar_emoji: true,
+  horario_atendimento_ia: null as HorarioAtendimento | null,
 };
 
 const MODELS = [
@@ -91,6 +128,7 @@ export default function PersonalityPage() {
         max_tokens: p.max_tokens ?? 1000,
         ativo: p.ativo ?? false,
         usar_emoji: p.usar_emoji ?? true,
+        horario_atendimento_ia: p.horario_atendimento_ia ?? null,
       });
     } else {
       setEditing(null);
@@ -532,6 +570,123 @@ export default function PersonalityPage() {
                             </button>
                           </div>
                         </div>
+                      </div>
+
+                      {/* Horário de Atendimento da IA — full width below grid */}
+                      <div className="mt-8 bg-slate-900/50 border border-white/5 rounded-3xl p-6">
+                        <h4 className="text-sm font-black flex items-center gap-2 mb-5 text-white">
+                          <Clock className="w-4 h-4 text-[#00d2ff]" /> Horário de Atendimento da IA
+                        </h4>
+
+                        {/* Toggle tipo */}
+                        <div className="flex gap-3 mb-5">
+                          {(["dia_todo", "horario_especifico"] as const).map((tipo) => {
+                            const atual = formData.horario_atendimento_ia?.tipo ?? "dia_todo";
+                            return (
+                              <button
+                                key={tipo}
+                                type="button"
+                                onClick={() => {
+                                  if (tipo === "dia_todo") {
+                                    setFormData({ ...formData, horario_atendimento_ia: { tipo: "dia_todo", dias: HORARIO_DEFAULT.dias } });
+                                  } else {
+                                    const base = formData.horario_atendimento_ia?.dias ?? HORARIO_DEFAULT.dias;
+                                    setFormData({ ...formData, horario_atendimento_ia: { tipo: "horario_especifico", dias: base } });
+                                  }
+                                }}
+                                className={`flex-1 py-3 rounded-2xl font-black text-xs uppercase tracking-widest border transition-all ${
+                                  atual === tipo
+                                    ? "bg-[#00d2ff]/20 text-[#00d2ff] border-[#00d2ff]"
+                                    : "bg-black/20 text-slate-500 border-white/5 hover:text-white"
+                                }`}
+                              >
+                                {tipo === "dia_todo" ? "🌐 Dia todo (24h)" : "🕐 Horário específico"}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Dias da semana — só exibe quando horario_especifico */}
+                        {(formData.horario_atendimento_ia?.tipo ?? "dia_todo") === "horario_especifico" && (
+                          <div className="space-y-2">
+                            {DIAS_SEMANA.map(({ key, label }) => {
+                              const periodos: Periodo[] = formData.horario_atendimento_ia?.dias?.[key] ?? [];
+                              const diaAtivo = periodos.length > 0;
+
+                              const setDia = (novosPeriodos: Periodo[]) => {
+                                const diasAtuais = formData.horario_atendimento_ia?.dias ?? HORARIO_DEFAULT.dias;
+                                setFormData({
+                                  ...formData,
+                                  horario_atendimento_ia: {
+                                    tipo: "horario_especifico",
+                                    dias: { ...diasAtuais, [key]: novosPeriodos },
+                                  },
+                                });
+                              };
+
+                              return (
+                                <div key={key} className="bg-slate-950/60 border border-white/5 rounded-2xl p-4">
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => setDia(diaAtivo ? [] : [{ inicio: "08:00", fim: "18:00" }])}
+                                      className={`relative inline-flex h-6 w-10 items-center rounded-full transition-all flex-shrink-0 ${diaAtivo ? "bg-[#00d2ff]" : "bg-slate-700"}`}
+                                    >
+                                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${diaAtivo ? "translate-x-5" : "translate-x-1"}`} />
+                                    </button>
+                                    <span className={`text-xs font-black uppercase tracking-wide w-28 flex-shrink-0 ${diaAtivo ? "text-white" : "text-slate-600"}`}>{label}</span>
+
+                                    {diaAtivo && (
+                                      <div className="flex flex-wrap gap-2 flex-1">
+                                        {periodos.map((p, i) => (
+                                          <div key={i} className="flex items-center gap-1.5">
+                                            <input
+                                              type="time"
+                                              value={p.inicio}
+                                              onChange={(e) => {
+                                                const np = [...periodos];
+                                                np[i] = { ...np[i], inicio: e.target.value };
+                                                setDia(np);
+                                              }}
+                                              className="bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-[#00d2ff]/40"
+                                            />
+                                            <span className="text-slate-600 text-xs">até</span>
+                                            <input
+                                              type="time"
+                                              value={p.fim}
+                                              onChange={(e) => {
+                                                const np = [...periodos];
+                                                np[i] = { ...np[i], fim: e.target.value };
+                                                setDia(np);
+                                              }}
+                                              className="bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-[#00d2ff]/40"
+                                            />
+                                            {periodos.length > 1 && (
+                                              <button type="button" onClick={() => setDia(periodos.filter((_, j) => j !== i))} className="text-slate-600 hover:text-red-400 transition-colors">
+                                                <X className="w-3.5 h-3.5" />
+                                              </button>
+                                            )}
+                                          </div>
+                                        ))}
+                                        {periodos.length < 2 && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setDia([...periodos, { inicio: "14:00", fim: "18:00" }])}
+                                            className="text-xs text-[#00d2ff]/60 hover:text-[#00d2ff] flex items-center gap-1 transition-colors font-bold"
+                                          >
+                                            <Plus className="w-3 h-3" /> período
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {!diaAtivo && <span className="text-[10px] text-slate-700 uppercase tracking-widest">Inativo</span>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
