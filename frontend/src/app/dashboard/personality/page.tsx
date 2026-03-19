@@ -126,19 +126,10 @@ const MODELS = [
 
 const TONES = ["Profissional", "Amigável", "Entusiasta"];
 
-const EMOJI_TYPES = [
-  { id: "Moderno", label: "Moderno", desc: "Emojis atuais e vibrantes", icon: "✨" },
-  { id: "Classico", label: "Clássico", desc: "Emoticons tradicionais :)", icon: "🙂" },
-  { id: "Corporativo", label: "Corporativo", desc: "Sóbrios e profissionais", icon: "💼" },
-  { id: "Divertido", label: "Divertido", desc: "Expressivos e lúdicos", icon: "🤪" },
-];
-
-const EMOJI_COLORS = [
-  { id: "Multicolorido", label: "Multi", color: "linear-gradient(45deg, #ff0000, #00ff00, #0000ff)" },
-  { id: "Azul", label: "Azul", color: "#00d2ff" },
-  { id: "Verde", label: "Verde", color: "#10b981" },
-  { id: "Dourado", label: "Ouro", color: "#f59e0b" },
-  { id: "Rosa", label: "Rosa", color: "#ec4899" },
+const EMOJI_CATEGORIES = [
+  { label: "Rostos", emojis: ["😊", "😇", "🙂", "😉", "😍", "😎", "🤓", "🧐", "🥳", "🤖"] },
+  { label: "Símbolos", emojis: ["✨", "💎", "🔥", "🚀", "💡", "✅", "💙", "⭐", "🎉", "📢"] },
+  { label: "Negócios", emojis: ["💼", "📈", "💰", "🤝", "📅", "✉️", "📱", "🏢", "🏆", "🎯"] },
 ];
 
 export default function PersonalityPage() {
@@ -153,6 +144,7 @@ export default function PersonalityPage() {
   const [testMessage, setTestMessage] = useState("");
   const [testLoading, setTestLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"config" | "playground">("config");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
@@ -634,60 +626,141 @@ export default function PersonalityPage() {
                             </div>
                           </div>
 
-                          {/* Emojis & Cores Visuais */}
-                          <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-6 space-y-6 shadow-xl shadow-black/20">
+                          {/* Alma & Estética (Emojis & Cores) - Estilo WhatsApp */}
+                          <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-6 space-y-6 shadow-xl shadow-black/20 overflow-visible">
                             <h4 className="text-sm font-black flex items-center gap-2">
-                              <Sparkles className="w-4 h-4 text-[#00d2ff]" /> Alma & Estética (Emojis)
+                              <Sparkles className="w-4 h-4 text-[#00d2ff]" /> Alma & Estética (Visual)
                             </h4>
-                            
-                            <div className="space-y-4">
-                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Estilo do Emoji</label>
-                              <div className="grid grid-cols-2 gap-2">
-                                {EMOJI_TYPES.map(type => (
-                                  <button
-                                    key={type.id}
-                                    type="button"
-                                    onClick={() => setFormData({ ...formData, emoji_tipo: type.id })}
-                                    className={`flex items-center gap-3 p-3 rounded-2xl border transition-all text-left group ${
-                                      formData.emoji_tipo === type.id
-                                        ? "bg-[#00d2ff]/20 border-[#00d2ff] text-[#00d2ff]"
-                                        : "bg-black/40 border-white/5 text-slate-500 hover:border-white/10 hover:bg-black/60"
-                                    }`}
-                                  >
-                                    <span className="text-xl grayscale group-hover:grayscale-0 transition-all">{type.icon}</span>
-                                    <div>
-                                      <p className="text-[10px] font-black uppercase tracking-tight">{type.label}</p>
-                                      <p className="text-[8px] opacity-40 leading-none">{type.desc}</p>
-                                    </div>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
 
-                            <div className="space-y-4 pt-2">
-                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Preferência de Cor</label>
-                              <div className="flex flex-wrap gap-3">
-                                {EMOJI_COLORS.map(c => (
-                                  <button
-                                    key={c.id}
-                                    type="button"
-                                    onClick={() => setFormData({ ...formData, emoji_cor: c.id })}
-                                    className={`relative w-10 h-10 rounded-full transition-all flex items-center justify-center p-0.5 ${
-                                      formData.emoji_cor === c.id ? "ring-2 ring-[#00d2ff] ring-offset-4 ring-offset-[#020617] scale-110" : "hover:scale-105"
-                                    }`}
-                                    title={c.label}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                              {/* Lado Esquerdo: Seletores */}
+                              <div className="space-y-6">
+                                <div className="space-y-3 relative">
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Emoji Principal / Estilo</label>
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                                      className="w-14 h-14 rounded-2xl bg-black/40 border border-white/10 flex items-center justify-center text-3xl hover:bg-black/60 transition-all shadow-inner"
+                                    >
+                                      {formData.emoji_tipo || "✨"}
+                                    </button>
+                                    <div className="text-[10px] text-slate-500 font-medium leading-tight">
+                                      Clique para abrir o <br/>seletor de emojis
+                                    </div>
+                                  </div>
+
+                                  <AnimatePresence>
+                                    {showEmojiPicker && (
+                                      <motion.div
+                                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                                        className="absolute z-50 top-full mt-3 left-0 w-64 bg-slate-900 border border-white/10 rounded-3xl p-4 shadow-2xl backdrop-blur-xl"
+                                      >
+                                        <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
+                                          <span className="text-[10px] font-black text-[#00d2ff] uppercase">Escolha um Emoji</span>
+                                          <button type="button" onClick={() => setShowEmojiPicker(false)}><X className="w-3 h-3" /></button>
+                                        </div>
+                                        <div className="space-y-4 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                                          {EMOJI_CATEGORIES.map(cat => (
+                                            <div key={cat.label}>
+                                              <p className="text-[9px] font-black text-slate-600 uppercase mb-2 tracking-tighter">{cat.label}</p>
+                                              <div className="grid grid-cols-5 gap-2">
+                                                {cat.emojis.map(e => (
+                                                  <button
+                                                    key={e}
+                                                    type="button"
+                                                    onClick={() => {
+                                                      setFormData({ ...formData, emoji_tipo: e });
+                                                      setShowEmojiPicker(false);
+                                                    }}
+                                                    className="w-8 h-8 flex items-center justify-center text-xl hover:bg-white/5 rounded-lg transition-all"
+                                                  >
+                                                    {e}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </motion.div>
+                                    )}
+                                  </AnimatePresence>
+                                </div>
+
+                                <div className="space-y-3">
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Cor Predominante (Branding)</label>
+                                  <div className="flex items-center gap-4">
+                                    <div className="relative group">
+                                      <input
+                                        type="color"
+                                        value={formData.emoji_cor.startsWith('#') ? formData.emoji_cor : "#00d2ff"}
+                                        onChange={e => setFormData({ ...formData, emoji_cor: e.target.value })}
+                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                      />
+                                      <div 
+                                        className="w-14 h-14 rounded-full border-4 border-white/10 shadow-lg transition-transform group-hover:scale-110"
+                                        style={{ backgroundColor: formData.emoji_cor.startsWith('#') ? formData.emoji_cor : "#00d2ff" }}
+                                      />
+                                    </div>
+                                    <div className="flex-1">
+                                      <input
+                                        type="text"
+                                        value={formData.emoji_cor}
+                                        onChange={e => setFormData({ ...formData, emoji_cor: e.target.value })}
+                                        className="w-full bg-black/20 border border-white/5 rounded-xl px-3 py-2 text-xs font-mono text-[#00d2ff]"
+                                        placeholder="#00d2ff"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Lado Direito: Preview Style WhatsApp */}
+                              <div className="bg-black/20 rounded-2xl p-4 flex flex-col items-center justify-center border border-white/5">
+                                <span className="text-[9px] font-black text-slate-600 uppercase mb-3 tracking-widest">Preview da IA</span>
+                                <div className="space-y-3 w-full">
+                                  {/* Bot Bubble */}
+                                  <motion.div 
+                                    layout
+                                    className="max-w-[85%] self-start"
                                   >
                                     <div 
-                                      className="w-full h-full rounded-full shadow-inner"
-                                      style={{ background: c.color }}
-                                    />
-                                    {formData.emoji_cor === c.id && (
-                                      <div className="absolute -top-1 -right-1 bg-[#00d2ff] text-black rounded-full p-0.5 shadow-lg">
-                                        <CheckCircle2 className="w-3 h-3" />
+                                      className="rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white shadow-lg relative"
+                                      style={{ 
+                                        backgroundColor: formData.emoji_cor.startsWith('#') ? `${formData.emoji_cor}22` : "#00d2ff22",
+                                        border: `1px solid ${formData.emoji_cor.startsWith('#') ? formData.emoji_cor : "#00d2ff"}44`
+                                      }}
+                                    >
+                                      Olá! Como posso ajudar você hoje? {formData.emoji_tipo || "✨"}
+                                      <div 
+                                        className="absolute -left-2 top-0 w-3 h-3 overflow-hidden"
+                                      >
+                                        <div 
+                                          className="w-full h-full rotate-45 transform origin-top-right"
+                                          style={{ backgroundColor: formData.emoji_cor.startsWith('#') ? `${formData.emoji_cor}22` : "#00d2ff22" }}
+                                        />
                                       </div>
-                                    )}
-                                  </button>
-                                ))}
+                                    </div>
+                                  </motion.div>
+
+                                  {/* User Bubble */}
+                                  <div className="max-w-[80%] ml-auto bg-slate-800 rounded-2xl rounded-tr-none p-3 text-[11px] text-slate-300">
+                                    Gostaria de saber os preços.
+                                  </div>
+
+                                  {/* Bot Second Bubble */}
+                                  <div 
+                                    className="max-w-[85%] rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white shadow-lg"
+                                    style={{ 
+                                      backgroundColor: formData.emoji_cor.startsWith('#') ? formData.emoji_cor : "#00d2ff",
+                                      color: "#fff"
+                                    }}
+                                  >
+                                    Com certeza! Temos planos a partir de R$ 99. {formData.emoji_tipo || "✨"}
+                                  </div>
+                                </div>
                               </div>
                             </div>
                           </div>
