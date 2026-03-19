@@ -22,7 +22,7 @@ function formatDuration(seconds: number): string {
 export default function InsightsPage() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
-  const [selectedRange, setSelectedRange] = useState("hoje");
+  const [selectedRange, setSelectedRange] = useState("7 dias");
 
   const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
