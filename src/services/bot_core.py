@@ -609,31 +609,14 @@ async def salvar_cache_semantico(
         logger.warning(f"Erro ao salvar cache semântico: {e}")
 
 
-def dividir_em_blocos(texto: str, min_chars: int = 100) -> list:
-    """Divide uma resposta longa em blocos para envio separado no WhatsApp.
-
-    Regras:
-    - Só divide se houver parágrafos duplos (\\n\\n) e texto longo (> 300 chars)
-    - Blocos muito curtos (< min_chars) são fundidos ao anterior
-    - Mantém a ordem e integridade do texto
+def dividir_em_blocos(texto: str) -> list:
+    """Divide resposta em blocos separados por parágrafo (\\n\\n).
+    Cada parágrafo vira uma mensagem independente no WhatsApp.
     """
-    if not texto or len(texto) <= 300:
-        return [texto.strip()] if texto else []
-
-    partes = [p.strip() for p in texto.split('\n\n') if p.strip()]
-    if len(partes) <= 1:
-        return [texto.strip()]
-
-    blocos: list = []
-    atual = partes[0]
-    for parte in partes[1:]:
-        if len(atual) < min_chars:
-            atual = atual + '\n\n' + parte
-        else:
-            blocos.append(atual)
-            atual = parte
-    blocos.append(atual)
-    return blocos
+    if not texto:
+        return []
+    blocos = [p.strip() for p in texto.split('\n\n') if p.strip()]
+    return blocos if blocos else [texto.strip()]
 
 
 def detectar_intencao(texto: str) -> Optional[str]:
