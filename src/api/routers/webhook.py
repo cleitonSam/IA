@@ -182,7 +182,8 @@ async def chatwoot_webhook(
 
     if message_type == "incoming":
         # Pausa global da IA para o canal Chatwoot (por empresa)
-        if await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+        # Pausa global Chatwoot
+        if await get_tenant_cache(empresa_id, "ia:chatwoot:paused") == "1":
             return {"status": "ia_global_pausada"}
 
         if nome_contato_valido:
@@ -206,8 +207,7 @@ async def chatwoot_webhook(
 
     mensagem_id = payload.get("id")
     if message_type == "incoming" and mensagem_id:
-        dedup_key = f"msg_incoming_processada:{empresa_id}:{id_conv}:{mensagem_id}"
-        if not await redis_client.set(dedup_key, "1", nx=True, ex=120):
+        if not await set_tenant_cache(empresa_id, f"msg_incoming_processada:{id_conv}:{mensagem_id}", "1", 120, nx=True):
             logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
             return {"status": "duplicado"}
             
@@ -425,7 +425,7 @@ async def chatwoot_webhook(
 
     await bd_atualizar_msg_cliente(id_conv, empresa_id)
 
-    if await redis_client.exists(f"pause_ia:{empresa_id}:{id_conv}"):
+    if await exists_tenant_cache(empresa_id, f"pause_ia:{id_conv}"):
         return {"status": "ignorado"}
 
     # --- Menu de Triagem ---
@@ -479,11 +479,10 @@ async def chatwoot_webhook(
         tipo = "image" if ft.startswith("image") else "audio" if ft.startswith("audio") else "documento"
         arquivos.append({"url": a.get("data_url"), "type": tipo})
 
-    await redis_client.rpush(
-        f"{empresa_id}:buffet:{id_conv}",
-        json.dumps({"text": conteudo_texto, "files": arquivos})
-    )
-    await redis_client.expire(f"{empresa_id}:buffet:{id_conv}", 60)
+    # Adiciona ao buffet (fila de rajada)
+    buffet_key = f"buffet:{id_conv}"
+    await redis_client.rpush(get_tenant_key(empresa_id, buffet_key), json.dumps({"text": conteudo_texto, "files": arquivos}))
+    await redis_client.expire(get_tenant_key(empresa_id, buffet_key), 60)
 
     # Publicar job no Redis Streams para processamento assíncrono (Arquitetura guiada por eventos)
     try:

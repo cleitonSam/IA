@@ -27,7 +27,7 @@ from src.core.config import (
 import src.core.database as _database
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
 from src.utils.redis_helper import (
-    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache, get_tenant_key
 )
 from src.core.security import cb_llm
 from src.utils.text_helpers import (
@@ -877,8 +877,8 @@ async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa
 
     logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
     for m_json in mensagens_acumuladas:
-        await redis_client.rpush(f"buffet:{empresa_id}:{conversation_id}", m_json)
-    await redis_client.expire(f"buffet:{empresa_id}:{conversation_id}", 300)
+        await redis_client.rpush(f"{empresa_id}:buffet:{conversation_id}", m_json)
+    await redis_client.expire(f"{empresa_id}:buffet:{conversation_id}", 300)
     return True
 
 

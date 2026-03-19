@@ -31,7 +31,7 @@ from typing import Optional, List, Dict, Any
 import src.core.database as _database
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
 from src.utils.redis_helper import (
-    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache, get_tenant_key
 )
 from src.core.security import cb_llm
 from src.utils.text_helpers import (
@@ -646,7 +646,7 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
     Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
     em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
     """
-    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
+    chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
     deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
@@ -673,13 +673,13 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
 
 async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa_id: int, mensagens_acumuladas: List[str]) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
-    if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
+    if not await exists_tenant_cache(empresa_id, f"esperando_unidade:{conversation_id}"):
         return False
 
     logger.info(f"⏳ Conv {conversation_id} [E:{empresa_id}] aguardando escolha de unidade — IA pausada")
     for m_json in mensagens_acumuladas:
-        await redis_client.rpush(f"buffet:{empresa_id}:{conversation_id}", m_json)
-    await redis_client.expire(f"buffet:{empresa_id}:{conversation_id}", 300)
+        await redis_client.rpush(f"{empresa_id}:buffet:{conversation_id}", m_json)
+    await redis_client.expire(f"{empresa_id}:buffet:{conversation_id}", 300)
     return True
 
 
@@ -925,7 +925,7 @@ async def processar_ia_e_responder(
             return
 
         # Pausa global da IA no Chatwoot por empresa (evita responder enquanto estiver desativada)
-        if source == 'chatwoot' and await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
+        if source == 'chatwoot' and await get_tenant_cache(empresa_id, "ia:chatwoot:paused") == "1":
             logger.info(f"⏸️ IA global Chatwoot pausada para empresa {empresa_id}; conv {conversation_id} ignorada")
             return
 
@@ -954,7 +954,7 @@ async def processar_ia_e_responder(
         # Se o hash das mensagens atuais é igual ao que foi respondido nos últimos
         # 2 minutos, descarta silenciosamente — a resposta já foi enviada.
         _hash_msgs = hashlib.md5(mensagens_formatadas.encode()).hexdigest()
-        _ultima_resp_key = f"last_ai_msg:{empresa_id}:{conversation_id}"
+        _ultima_resp_key = get_tenant_key(empresa_id, f"last_ai_msg:{conversation_id}")
         _ultima_resp_hash = await redis_client.get(_ultima_resp_key)
         if _ultima_resp_hash and _ultima_resp_hash == _hash_msgs:
             logger.info(f"⏭️ Anti-duplicata: mensagens já respondidas, descartando conv {conversation_id}")
@@ -975,8 +975,8 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
-        estado_raw = await redis_client.get(f"estado:{empresa_id}:{conversation_id}")
-        estado_atual = descomprimir_texto(estado_raw) or "neutro"
+        estado_raw = await get_tenant_cache(empresa_id, f"estado:{conversation_id}")
+        estado_atual = (descomprimir_texto(estado_raw) if estado_raw else None) or "neutro"
 
         # ── INTEGRAÇÃO EVO: Verificação de Membro ─────────────────────
         status_evo = {"is_aluno": False, "status": "lead"}
@@ -1043,7 +1043,7 @@ async def processar_ia_e_responder(
             slug_modalidades = await buscar_unidade_na_pergunta(texto_cliente_unificado, empresa_id, fuzzy_threshold=82)
             if slug_modalidades and slug_modalidades != slug:
                 slug = slug_modalidades
-                await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
+                await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug, 86400)
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -1965,9 +1965,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
             # Passa essas mensagens para outro ciclo de processamento reutilizando o mesmo lock
             for m_json in msgs_drain:
-                await redis_client.rpush(f"buffet_drain:{empresa_id}:{conversation_id}", m_json)
-            await redis_client.expire(f"buffet_drain:{empresa_id}:{conversation_id}", 120)
-            # Coloca de volta no buffet para ser pego pelo próximo webhook (lock será liberado logo)
+                # Usa formato consistente com o resto do sistema
+                await redis_client.rpush(f"{empresa_id}:buffet_drain:{conversation_id}", m_json)
+            await redis_client.expire(f"{empresa_id}:buffet_drain:{conversation_id}", 120)
+            # Coloca de volta no buffet para ser pego pelo próximo ciclo (lock será liberado logo)
             for m_json in msgs_drain:
                 await redis_client.rpush(chave_buffet, m_json)
             await redis_client.expire(chave_buffet, 60)
@@ -2027,7 +2028,7 @@ async def chatwoot_webhook(
         logger.error(f"Account {account_id} sem empresa associada")
         return {"status": "erro_sem_empresa"}
 
-    rate_key = f"rl:conv:{empresa_id}:{id_conv}"
+    rate_key = get_tenant_key(empresa_id, f"rl:conv:{id_conv}")
     contador = await redis_client.incr(rate_key)
     if contador == 1:
         await redis_client.expire(rate_key, 10)
@@ -2051,12 +2052,16 @@ async def chatwoot_webhook(
 
     if event == "conversation_created":
         # Nova conversa — garante que não há estado antigo no Redis (ex: conversas reutilizadas em testes)
-        await redis_client.delete(
-            f"pause_ia:{empresa_id}:{id_conv}", f"estado:{empresa_id}:{id_conv}",
-            f"unidade_escolhida:{empresa_id}:{id_conv}", f"esperando_unidade:{empresa_id}:{id_conv}",
-            f"prompt_unidade_enviado:{empresa_id}:{id_conv}", f"nome_cliente:{empresa_id}:{id_conv}", f"aguardando_nome:{empresa_id}:{id_conv}",
-            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{empresa_id}:{id_conv}", f"buffet:{empresa_id}:{id_conv}"
-        )
+        await delete_tenant_cache(empresa_id, f"pause_ia:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"estado:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"prompt_unidade_enviado:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"nome_cliente:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"atend_manual:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"lock:{id_conv}")
+        await delete_tenant_cache(empresa_id, f"buffet:{id_conv}")
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
 
@@ -2112,19 +2117,18 @@ async def chatwoot_webhook(
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
     if message_type == "incoming" and mensagem_id:
-        dedup_key = f"msg_incoming_processada:{empresa_id}:{id_conv}:{mensagem_id}"
-        if not await redis_client.set(dedup_key, "1", nx=True, ex=120):
+        if not await set_tenant_cache(empresa_id, f"msg_incoming_processada:{id_conv}:{mensagem_id}", "1", 120, nx=True):
             logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
             return {"status": "duplicado"}
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
-    slug_redis = await redis_client.get(f"unidade_escolhida:{empresa_id}:{id_conv}")
+    slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
     # Regra de segurança: em operação multiunidade, NÃO usar label como fonte primária.
     # A unidade só é assumida por escolha explícita (Redis) ou por detecção no texto.
     slug = slug_redis
     slug_detectado = None
-    esperando_unidade = await redis_client.get(f"esperando_unidade:{empresa_id}:{id_conv}")
-    prompt_unidade_key = f"prompt_unidade_enviado:{empresa_id}:{id_conv}"
+    esperando_unidade = await get_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+    prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
 
     # Detecta unidade na mensagem APENAS em dois cenários:
     # 1) Já existe um slug definido (cliente quer trocar de unidade)

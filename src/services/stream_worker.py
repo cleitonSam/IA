@@ -112,13 +112,23 @@ async def run_stream_worker():
                         
                         logger.info(f"⚙️ Integração {source} carregada com sucesso. Iniciando processamento IA.")
                         lock_val = str(uuid.uuid4())
-                        if await redis_client.set(f"lock:{conversation_id}", lock_val, nx=True, ex=60):
-                            await processar_ia_e_responder(
-                                account_id, conversation_id, contact_id, slug,
-                                nome_cliente, lock_val, empresa_id, integracao,
-                                source=source, # Passamos a origem para o bot_core decidir como responder
-                                contato_fone=contato_fone
-                            )
+                        lock_key = f"lock:{empresa_id}:{conversation_id}"
+                        if await redis_client.set(lock_key, lock_val, nx=True, ex=60):
+                            try:
+                                while True:
+                                    await processar_ia_e_responder(
+                                        account_id, conversation_id, contact_id, slug,
+                                        nome_cliente, lock_val, empresa_id, integracao,
+                                        source=source,
+                                        contato_fone=contato_fone
+                                    )
+                                    # Verifica se chegaram novas mensagens no buffet enquanto processávamos
+                                    if await redis_client.llen(f"{empresa_id}:buffet:{conversation_id}") == 0:
+                                        break
+                                    logger.info(f"🔄 Novas mensagens no buffet para conv {conversation_id}, continuando loop.")
+                            finally:
+                                # Opcional: deletar o lock aqui se o bot_core não o fizer (bot_core já deleta no finally)
+                                pass
                         
                         await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
                         await redis_client.xdel(STREAM_NAME, msg_id)
