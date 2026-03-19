@@ -2103,7 +2103,9 @@ async def chatwoot_webhook(
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia="Assistente Virtual")
+                    _pers_nome = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia_nome = _pers_nome.get('nome_ia') or 'Assistente'
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia=_nome_ia_nome)
                     await set_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}", "1", 900)
                     return {"status": "aguardando_nome"}
 
@@ -2283,23 +2285,29 @@ async def chatwoot_webhook(
                                 "Ainda não consegui localizar a unidade certinha 😅\n\n"
                                 "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
                             )
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia="Assistente Virtual")
+                            _pers_retry = await carregar_personalidade(empresa_id) or {}
+                            _nome_ia_retry = _pers_retry.get('nome_ia') or 'Assistente'
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia=_nome_ia_retry)
                             await redis_client.setex(throttle_key, 30, "1")
                         logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
                         return {"status": "aguardando_escolha_unidade"}
 
-                    # Unidade não identificada — não assume uma unidade específica.
-                    _qtd_unidades = len(unidades_ativas)
-                    msg = (
-                        "Boa pergunta! Somos sim a Red Fitness 💪\n\n"
-                        f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
-                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
-                    )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia="Assistente Virtual")
-                    await set_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}", "1", 86400)
-                    await set_tenant_cache(empresa_id, prompt_unidade_key, "1", 600)
-                    background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
-                    return {"status": "aguardando_escolha_unidade"}
+                    # Unidade não identificada — se for saudação, deixa o LLM responder naturalmente
+                    if eh_saudacao(conteudo_texto or ""):
+                        pass  # saudação: não pede unidade, cai no fluxo do LLM abaixo
+                    else:
+                        _pers_wh = await carregar_personalidade(empresa_id) or {}
+                        _nome_ia_wh = _pers_wh.get('nome_ia') or 'Assistente'
+                        _qtd_unidades = len(unidades_ativas)
+                        msg = (
+                            f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n\n"
+                            "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
+                        )
+                        await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia=_nome_ia_wh)
+                        await set_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}", "1", 86400)
+                        await set_tenant_cache(empresa_id, prompt_unidade_key, "1", 600)
+                        background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
+                        return {"status": "aguardando_escolha_unidade"}
 
     if not slug:
         return {"status": "erro_sem_unidade"}
