@@ -109,8 +109,11 @@ async def uazapi_webhook(
                 if conv_id_existente:
                     ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conv_id_existente}"))
 
-            if not ia_pausada:
+            if ia_pausada:
+                logger.info(f"⏸️ Menu de triagem: IA pausada por atendente para {phone}, menu não enviado")
+            else:
                 menu_config = await carregar_menu_triagem(empresa_id)
+                logger.info(f"📋 Menu triagem — empresa {empresa_id} | fone {phone} | config={bool(menu_config)} | ativo={menu_config.get('ativo') if menu_config else None}")
                 if menu_config and menu_config.get("ativo"):
                     try:
                         uaz_menu = UazAPIClient(
@@ -124,13 +127,15 @@ async def uazapi_webhook(
                         if sent:
                             # TTL de 1h: não envia o menu novamente neste período
                             await redis_client.setex(menu_triagem_key, MENU_INACTIVITY_TTL, "1")
-                            logger.info(f"📋 Menu de triagem enviado para {phone} (empresa {empresa_id})")
+                            logger.info(f"✅ Menu de triagem enviado para {phone} (empresa {empresa_id})")
                             return {"status": "menu_sent", "phone": phone}
                         else:
-                            # Falhou ao enviar o menu — limpa o marcador e segue fluxo normal
+                            logger.warning(f"⚠️ Falha ao enviar menu para {phone} — UazAPI retornou erro, seguindo fluxo normal")
                             await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{phone}")
                     except Exception as menu_err:
                         logger.error(f"❌ Erro ao enviar menu de triagem para {phone}: {menu_err}")
+                else:
+                    logger.info(f"📋 Menu triagem: config ausente ou inativo para empresa {empresa_id} — seguindo fluxo normal")
 
         # --- Fim do Menu de Triagem ---
 

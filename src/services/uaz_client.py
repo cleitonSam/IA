@@ -22,15 +22,18 @@ class UazAPIClient:
         }
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
-        if not http_client:
-            logger.error("🚫 UazAPIClient: http_client não inicializado.")
-            return None
-            
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         try:
-            resp = await http_client.request(method, url, headers=self.headers, **kwargs)
-            resp.raise_for_status()
-            return resp.json()
+            # Usa o http_client global se disponível; cria um local como fallback
+            client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
+            own_client = http_client is None
+            try:
+                resp = await client.request(method, url, headers=self.headers, **kwargs)
+                resp.raise_for_status()
+                return resp.json()
+            finally:
+                if own_client:
+                    await client.aclose()
         except Exception as e:
             logger.error(f"❌ Erro na UazAPI ({endpoint}): {e}")
             if PROMETHEUS_OK:
