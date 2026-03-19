@@ -1360,7 +1360,7 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo:
-1. Responda a pergunta do cliente de forma direta e curta
+1. Responda a pergunta do cliente de forma direta e engajadas
 2. Depois da resposta, faça UMA pergunta de descoberta que avança a conversa
 Exemplos:
   Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
@@ -1451,6 +1451,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                  modelo_escolhido = "google/gemini-2.0-flash"
 
             temperature = float(pers.get("temperature") or pers.get("temperatura") or 0.7)
+            max_tokens = int(pers.get("max_tokens") or 800)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
@@ -1522,6 +1523,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
+                            max_tokens=max_tokens,
                         ),
                         timeout=extra_timeout
                     )
@@ -1628,6 +1630,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         novo_estado = _dados_legado.get("estado", estado_atual).strip().lower()
                     except (json.JSONDecodeError, ValueError):
                         pass
+
+                # Aplica a garantia de frase completa para evitar truncamento feio
+                resposta_texto = _garantir_frase_completa(resposta_texto)
 
                 _resp_norm = normalizar(resposta_texto)
                 if any(w in _resp_norm for w in ("matricula", "matricular", "assinar", "plano", "checkout", "comecar agora")):

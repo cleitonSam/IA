@@ -17,6 +17,7 @@ from src.services.db_queries import (
 )
 from src.services.chatwoot_client import enviar_mensagem_chatwoot
 from src.utils.text_helpers import randomizar_mensagem
+from src.utils.intent_helpers import garantir_frase_completa
 
 
 def _render_followup_template(template: str, nome_contato: str, nome_unidade: str) -> str:
@@ -243,6 +244,8 @@ async def worker_followup():
                             max_tokens=250
                         )
                         mensagem_final = resp_llm.choices[0].message.content.strip()
+                        # Garante que a frase não saia cortada (comum em follow-ups curtos)
+                        mensagem_final = garantir_frase_completa(mensagem_final)
                     except Exception as e_llm:
                         logger.error(f"Erro no LLM do follow-up (fallback para template estático): {e_llm}")
                         mensagem_final = template_base
