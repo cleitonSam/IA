@@ -274,8 +274,10 @@ export default function PersonalityPage() {
       );
       setPlayHistory(prev => [...prev, { role: "bot", content: res.data.reply }]);
     } catch (err: unknown) {
-      const axiosError = err as any; 
-      const detail = axiosError?.response?.data?.detail || "Erro ao conectar com a IA.";
+      let detail = "Erro ao conectar com a IA.";
+      if (axios.isAxiosError(err)) {
+        detail = err.response?.data?.detail || detail;
+      }
       setPlayHistory(prev => [...prev, { role: "bot", content: `⚠️ ${detail}` }]);
     } finally {
       setTestLoading(false);
