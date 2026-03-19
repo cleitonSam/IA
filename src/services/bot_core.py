@@ -1249,20 +1249,27 @@ Convênios: {convenios_prompt}
                 'diferenciais':        'DIFERENCIAIS DA EMPRESA',
                 'posicionamento':      'POSICIONAMENTO DE MERCADO',
                 'publico_alvo':        'PÚBLICO-ALVO',
-                'restricoes':         'RESTRIÇÕES',
+                'restricoes':         'RESTRIÇÕES CRÍTICAS',
                 'linguagem_proibida':  'LINGUAGEM PROIBIDA',
                 'contexto_empresa':    'CONTEXTO DA EMPRESA',
                 'contexto_extra':      'CONTEXTO EXTRA',
                 'abordagem_proativa':  'ABORDAGEM PROATIVA',
                 'idioma':              'IDIOMA',
-                'horario_ativo_inicio':'HORÁRIO ATIVO INÍCIO',
-                'horario_ativo_fim':   'HORÁRIO ATIVO FIM',
-                'exemplos':            'EXEMPLOS DE ATENDIMENTO',
-                'palavras_proibidas':  'PALAVRAS PROIBIDAS',
+                'exemplos':            'EXEMPLOS DE INTERAÇÃO',
+                'palavras_proibidas':  'PALAVRAS E TERMOS PROIBIDOS',
                 'despedida_personalizada': 'DESPEDIDA PERSONALIZADA',
+                'regras_formatacao':   'REGRAS DE FORMATAÇÃO DE MENSAGEM',
+                'regras_seguranca':    'REGRAS DE SEGURANÇA E PRIVACIDADE',
             }
 
             _extras_prompt = ""
+            for campo, label in _LABEL_MAP.items():
+                valor = pers.get(campo)
+                if valor and str(valor).strip():
+                    # Campos que vão em blocos específicos são ignorados aqui para evitar duplicidade
+                    if campo in ('idioma', 'exemplos', 'regras_formatacao', 'regras_seguranca', 'restricoes', 'palavras_proibidas', 'despedida_personalizada'):
+                        continue
+                    _extras_prompt += f"\n\n[{label}]\n{valor}"
          
             # --- CONSTRUÇÃO MODULAR DO PROMPT ---
             blocos_prompt = []
@@ -1321,30 +1328,45 @@ Convênios: {convenios_prompt}
             if faq:
                 blocos_prompt.append(f"[FAQ — RESPOSTAS PRONTAS]\n{faq}")
 
+            if pers.get('exemplos'):
+                blocos_prompt.append(f"[EXEMPLOS DE INTERAÇÕES]\n{pers.get('exemplos')}")
+
             # 9. Regras de Sistema (Músculo do Bot)
-            blocos_prompt.append("""[REGRAS DE SISTEMA]
+            regras_seg = pers.get('regras_seguranca') or ""
+            blocos_prompt.append(f"""[REGRAS DE SISTEMA]
 - Responda diretamente se tiver os dados. Se não souber a unidade, pergunte a região.
 - Se o cliente enviar apenas saudação social, responda apenas saudação e pergunte como ajudar.
-- Use <SEND_IMAGE:slug> para grades e <SEND_VIDEO:slug> para tours virtuais quando solicitado.""")
+- Use <SEND_IMAGE:slug> para grades e <SEND_VIDEO:slug> para tours virtuais quando solicitado.
+{regras_seg}""")
 
             # 10. Histórico e Regras Anti-Alucinação
+            restricoes = pers.get('restricoes') or ""
+            palavras_proibidas = pers.get('palavras_proibidas') or ""
+            
             blocos_prompt.append(f"""[HISTÓRICO DA CONVERSA]
 {historico}
 
 [REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO]
 - Use EXCLUSIVAMENTE os dados fornecidos.
 - Se não souber, diga que não tem a informação.
-- Nunca invente endereços, telefones ou horários.""")
+- Nunca invente endereços, telefones ou horários.
+{f"- RESTRIÇÕES: {restricoes}" if restricoes else ""}
+{f"- NUNCA USE ESTAS PALAVRAS/TERMOS: {palavras_proibidas}" if palavras_proibidas else ""}""")
 
             # 11. Formatação (WhatsApp)
+            r_format = pers.get('regras_formatacao') or ""
             blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP]
 - Use *bold* para destaque. Listas com •.
 - Separe blocos com linha em branco.
 - NUNCA use markdown (**, ##, ```).
 - Tamanho ideal: 2-4 parágrafos curtos.
-- TERMINAR sempre frases completas.""")
+- TERMINAR sempre frases completas.
+{r_format}""")
 
             # 12. Dados finais e Variáveis do Atendimento
+            despedida = pers.get('despedida_personalizada') or ""
+            if despedida:
+                blocos_prompt.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
             ctx_saudacao = f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]" if eh_saudacao(primeira_mensagem or "") else ""
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
