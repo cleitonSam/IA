@@ -2278,19 +2278,24 @@ async def chatwoot_webhook(
                     # Evita loop de mensagens repetidas quando já pedimos a unidade
                     # (ex.: múltiplos webhooks da mesma conversa em sequência).
                     if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
-                        # Não fica em silêncio: envia lembrete curto com throttle
-                        throttle_key = f"esperando_unidade_throttle:{empresa_id}:{id_conv}"
-                        if not await redis_client.get(throttle_key):
-                            msg_retry = (
-                                "Ainda não consegui localizar a unidade certinha 😅\n\n"
-                                "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
-                            )
-                            _pers_retry = await carregar_personalidade(empresa_id) or {}
-                            _nome_ia_retry = _pers_retry.get('nome_ia') or 'Assistente'
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia=_nome_ia_retry)
-                            await redis_client.setex(throttle_key, 30, "1")
-                        logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
-                        return {"status": "aguardando_escolha_unidade"}
+                        # Se for saudação, limpa o estado e deixa o LLM responder
+                        if eh_saudacao(conteudo_texto or ""):
+                            await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+                            await delete_tenant_cache(empresa_id, prompt_unidade_key)
+                        else:
+                            # Não fica em silêncio: envia lembrete curto com throttle
+                            throttle_key = f"esperando_unidade_throttle:{empresa_id}:{id_conv}"
+                            if not await redis_client.get(throttle_key):
+                                msg_retry = (
+                                    "Ainda não consegui localizar a unidade certinha 😅\n\n"
+                                    "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
+                                )
+                                _pers_retry = await carregar_personalidade(empresa_id) or {}
+                                _nome_ia_retry = _pers_retry.get('nome_ia') or 'Assistente'
+                                await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia=_nome_ia_retry)
+                                await redis_client.setex(throttle_key, 30, "1")
+                            logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
+                            return {"status": "aguardando_escolha_unidade"}
 
                     # Unidade não identificada — se for saudação, deixa o LLM responder naturalmente
                     if eh_saudacao(conteudo_texto or ""):
