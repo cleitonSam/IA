@@ -77,6 +77,8 @@ interface Personality {
   despedida_personalizada: string;
   regras_formatacao: string;
   regras_seguranca: string;
+  emoji_tipo: string;
+  emoji_cor: string;
 }
 
 const emptyForm = {
@@ -110,6 +112,8 @@ const emptyForm = {
   despedida_personalizada: "",
   regras_formatacao: "",
   regras_seguranca: "",
+  emoji_tipo: "Moderno",
+  emoji_cor: "Multicolorido",
 };
 
 const MODELS = [
@@ -121,6 +125,21 @@ const MODELS = [
 ];
 
 const TONES = ["Profissional", "Amigável", "Entusiasta"];
+
+const EMOJI_TYPES = [
+  { id: "Moderno", label: "Moderno", desc: "Emojis atuais e vibrantes", icon: "✨" },
+  { id: "Classico", label: "Clássico", desc: "Emoticons tradicionais :)", icon: "🙂" },
+  { id: "Corporativo", label: "Corporativo", desc: "Sóbrios e profissionais", icon: "💼" },
+  { id: "Divertido", label: "Divertido", desc: "Expressivos e lúdicos", icon: "🤪" },
+];
+
+const EMOJI_COLORS = [
+  { id: "Multicolorido", label: "Multi", color: "linear-gradient(45deg, #ff0000, #00ff00, #0000ff)" },
+  { id: "Azul", label: "Azul", color: "#00d2ff" },
+  { id: "Verde", label: "Verde", color: "#10b981" },
+  { id: "Dourado", label: "Ouro", color: "#f59e0b" },
+  { id: "Rosa", label: "Rosa", color: "#ec4899" },
+];
 
 export default function PersonalityPage() {
   const [personalities, setPersonalities] = useState<Personality[]>([]);
@@ -191,6 +210,8 @@ export default function PersonalityPage() {
         despedida_personalizada: p.despedida_personalizada || "",
         regras_formatacao: p.regras_formatacao || "",
         regras_seguranca: p.regras_seguranca || "",
+        emoji_tipo: p.emoji_tipo || "Moderno",
+        emoji_cor: p.emoji_cor || "Multicolorido",
       });
     } else {
       setEditing(null);
@@ -608,6 +629,64 @@ export default function PersonalityPage() {
                                   {formData.model_name === m.id && <CheckCircle2 className="w-4 h-4" />}
                                 </button>
                               ))}
+                            </div>
+                          </div>
+
+                          {/* Emojis & Cores Visuais */}
+                          <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-6 space-y-6 shadow-xl shadow-black/20">
+                            <h4 className="text-sm font-black flex items-center gap-2">
+                              <Sparkles className="w-4 h-4 text-[#00d2ff]" /> Alma & Estética (Emojis)
+                            </h4>
+                            
+                            <div className="space-y-4">
+                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Estilo do Emoji</label>
+                              <div className="grid grid-cols-2 gap-2">
+                                {EMOJI_TYPES.map(type => (
+                                  <button
+                                    key={type.id}
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, emoji_tipo: type.id })}
+                                    className={`flex items-center gap-3 p-3 rounded-2xl border transition-all text-left group ${
+                                      formData.emoji_tipo === type.id
+                                        ? "bg-[#00d2ff]/20 border-[#00d2ff] text-[#00d2ff]"
+                                        : "bg-black/40 border-white/5 text-slate-500 hover:border-white/10 hover:bg-black/60"
+                                    }`}
+                                  >
+                                    <span className="text-xl grayscale group-hover:grayscale-0 transition-all">{type.icon}</span>
+                                    <div>
+                                      <p className="text-[10px] font-black uppercase tracking-tight">{type.label}</p>
+                                      <p className="text-[8px] opacity-40 leading-none">{type.desc}</p>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="space-y-4 pt-2">
+                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Preferência de Cor</label>
+                              <div className="flex flex-wrap gap-3">
+                                {EMOJI_COLORS.map(c => (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, emoji_cor: c.id })}
+                                    className={`relative w-10 h-10 rounded-full transition-all flex items-center justify-center p-0.5 ${
+                                      formData.emoji_cor === c.id ? "ring-2 ring-[#00d2ff] ring-offset-4 ring-offset-[#020617] scale-110" : "hover:scale-105"
+                                    }`}
+                                    title={c.label}
+                                  >
+                                    <div 
+                                      className="w-full h-full rounded-full shadow-inner"
+                                      style={{ background: c.color }}
+                                    />
+                                    {formData.emoji_cor === c.id && (
+                                      <div className="absolute -top-1 -right-1 bg-[#00d2ff] text-black rounded-full p-0.5 shadow-lg">
+                                        <CheckCircle2 className="w-3 h-3" />
+                                      </div>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           </div>
 

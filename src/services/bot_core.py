@@ -1355,12 +1355,17 @@ Convênios: {convenios_prompt}
 
             # 11. Formatação (WhatsApp)
             r_format = pers.get('regras_formatacao') or ""
+            e_tipo = pers.get('emoji_tipo') or "Moderno"
+            e_cor = pers.get('emoji_cor') or "Multicolorido"
+            
             blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP]
 - Use *bold* para destaque. Listas com •.
 - Separe blocos com linha em branco.
 - NUNCA use markdown (**, ##, ```).
 - Tamanho ideal: 2-4 parágrafos curtos.
 - TERMINAR sempre frases completas.
+- ESTILO DE EMOJI: {e_tipo}.
+- PREFERÊNCIA DE COR DE EMOJI: {e_cor}.
 {r_format}""")
 
             # 12. Dados finais e Variáveis do Atendimento

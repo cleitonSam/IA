@@ -44,6 +44,8 @@ class PersonalityUpdate(BaseModel):
     despedida_personalizada: Optional[str] = None
     regras_formatacao: Optional[str] = None
     regras_seguranca: Optional[str] = None
+    emoji_tipo: Optional[str] = None
+    emoji_cor: Optional[str] = None
 
 class PersonalityCreate(BaseModel):
     nome_ia: str
@@ -76,6 +78,8 @@ class PersonalityCreate(BaseModel):
     despedida_personalizada: Optional[str] = ""
     regras_formatacao: Optional[str] = ""
     regras_seguranca: Optional[str] = ""
+    emoji_tipo: Optional[str] = "Moderno"
+    emoji_cor: Optional[str] = "Multicolorido"
 
 class FAQCreate(BaseModel):
     pergunta: str
@@ -144,7 +148,8 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
                   posicionamento, publico_alvo, restricoes, linguagem_proibida,
                   contexto_empresa, contexto_extra, abordagem_proativa,
                   exemplos, palavras_proibidas, despedida_personalizada,
-                  regras_formatacao, regras_seguranca
+                  regras_formatacao, regras_seguranca,
+                  emoji_tipo, emoji_cor
            FROM personalidade_ia 
            WHERE empresa_id = $1 
            LIMIT 1""",
@@ -253,7 +258,8 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       posicionamento, publico_alvo, restricoes, linguagem_proibida,
                       contexto_empresa, contexto_extra, abordagem_proativa,
                       exemplos, palavras_proibidas, despedida_personalizada,
-                      regras_formatacao, regras_seguranca
+                      regras_formatacao, regras_seguranca,
+                      emoji_tipo, emoji_cor
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -304,8 +310,10 @@ async def create_personality(
                 posicionamento, publico_alvo, restricoes, linguagem_proibida,
                 contexto_empresa, contexto_extra, abordagem_proativa,
                 exemplos, palavras_proibidas, despedida_personalizada,
-                regras_formatacao, regras_seguranca, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW(),NOW())
+                regras_formatacao, regras_seguranca, 
+                emoji_tipo, emoji_cor,
+                created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -314,7 +322,8 @@ async def create_personality(
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-            data.regras_formatacao, data.regras_seguranca
+            data.regras_formatacao, data.regras_seguranca,
+            data.emoji_tipo, data.emoji_cor
         )
         return {"id": row["id"], "status": "success"}
     except Exception as e:
@@ -349,8 +358,10 @@ async def update_personality_by_id(
                posicionamento=$19, publico_alvo=$20, restricoes=$21, linguagem_proibida=$22,
                contexto_empresa=$23, contexto_extra=$24, abordagem_proativa=$25,
                exemplos=$26, palavras_proibidas=$27, despedida_personalizada=$28,
-               regras_formatacao=$29, regras_seguranca=$30, updated_at=NOW()
-           WHERE id=$31 AND empresa_id=$32""",
+               regras_formatacao=$29, regras_seguranca=$30, 
+               emoji_tipo=$31, emoji_cor=$32,
+               updated_at=NOW()
+           WHERE id=$33 AND empresa_id=$34""",
         data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
         data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
         horario_json, menu_json, data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
@@ -358,7 +369,7 @@ async def update_personality_by_id(
         data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
         data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
         data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-        data.regras_formatacao, data.regras_seguranca, pid, empresa_id
+        data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor, pid, empresa_id
     )
     # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
