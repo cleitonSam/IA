@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
@@ -83,6 +83,38 @@ class PersonalityCreate(BaseModel):
     emoji_cor: Optional[str] = "#00d2ff"
 
     model_config = {"extra": "allow"}
+
+    _STR_FIELDS = [
+        "nome_ia", "personalidade", "instrucoes_base", "tom_voz", "model_name",
+        "idioma", "objetivos_venda", "metas_comerciais", "script_vendas",
+        "scripts_objecoes", "frases_fechamento", "diferenciais", "posicionamento",
+        "publico_alvo", "restricoes", "linguagem_proibida", "contexto_empresa",
+        "contexto_extra", "abordagem_proativa", "exemplos", "palavras_proibidas",
+        "despedida_personalizada", "regras_formatacao", "regras_seguranca",
+        "emoji_tipo", "emoji_cor",
+    ]
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_types(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        for field in cls._STR_FIELDS:
+            v = values.get(field)
+            if v is not None and not isinstance(v, str):
+                values[field] = str(v)
+        # Garante tipos numéricos corretos
+        if "temperature" in values and values["temperature"] is not None:
+            try:
+                values["temperature"] = float(values["temperature"])
+            except (TypeError, ValueError):
+                values["temperature"] = 0.7
+        if "max_tokens" in values and values["max_tokens"] is not None:
+            try:
+                values["max_tokens"] = int(float(values["max_tokens"]))
+            except (TypeError, ValueError):
+                values["max_tokens"] = 1000
+        return values
 
 class FAQCreate(BaseModel):
     pergunta: str
@@ -313,10 +345,10 @@ async def create_personality(
                 posicionamento, publico_alvo, restricoes, linguagem_proibida,
                 contexto_empresa, contexto_extra, abordagem_proativa,
                 exemplos, palavras_proibidas, despedida_personalizada,
-                regras_formatacao, regras_seguranca, 
+                regras_formatacao, regras_seguranca,
                 emoji_tipo, emoji_cor,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -351,29 +383,33 @@ async def update_personality_by_id(
         raise HTTPException(status_code=404, detail="Personalidade não encontrada")
     horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
     menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
-    await _database.db_pool.execute(
-        """UPDATE personalidade_ia
-           SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
-               modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
-               horario_atendimento_ia=$10, menu_triagem=$11,
-               idioma=$12, objetivos_venda=$13, metas_comerciais=$14, script_vendas=$15,
-               scripts_objecoes=$16, frases_fechamento=$17, diferenciais=$18,
-               posicionamento=$19, publico_alvo=$20, restricoes=$21, linguagem_proibida=$22,
-               contexto_empresa=$23, contexto_extra=$24, abordagem_proativa=$25,
-               exemplos=$26, palavras_proibidas=$27, despedida_personalizada=$28,
-               regras_formatacao=$29, regras_seguranca=$30, 
-               emoji_tipo=$31, emoji_cor=$32,
-               updated_at=NOW()
-           WHERE id=$33 AND empresa_id=$34""",
-        data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
-        data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-        horario_json, menu_json, data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
-        data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
-        data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
-        data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
-        data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-        data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor, pid, empresa_id
-    )
+    try:
+        await _database.db_pool.execute(
+            """UPDATE personalidade_ia
+               SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
+                   modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
+                   horario_atendimento_ia=$10::jsonb, menu_triagem=$11::jsonb,
+                   idioma=$12, objetivos_venda=$13, metas_comerciais=$14, script_vendas=$15,
+                   scripts_objecoes=$16, frases_fechamento=$17, diferenciais=$18,
+                   posicionamento=$19, publico_alvo=$20, restricoes=$21, linguagem_proibida=$22,
+                   contexto_empresa=$23, contexto_extra=$24, abordagem_proativa=$25,
+                   exemplos=$26, palavras_proibidas=$27, despedida_personalizada=$28,
+                   regras_formatacao=$29, regras_seguranca=$30,
+                   emoji_tipo=$31, emoji_cor=$32,
+                   updated_at=NOW()
+               WHERE id=$33 AND empresa_id=$34""",
+            data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
+            data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
+            horario_json, menu_json, data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
+            data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
+            data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
+            data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
+            data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
+            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor, pid, empresa_id
+        )
+    except Exception as e:
+        logger.error(f"Erro ao atualizar personalidade {pid}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e)}")
     # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
     await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
