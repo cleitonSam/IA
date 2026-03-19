@@ -48,18 +48,20 @@ class PersonalityUpdate(BaseModel):
     emoji_cor: Optional[str] = None
 
 class PersonalityCreate(BaseModel):
+    model_config = {"extra": "allow"} # Pydantic V2: ignora/permite campos extras
+
     id: Optional[int] = None
-    nome_ia: str
-    personalidade: str = ""
-    instrucoes_base: str = ""
-    tom_voz: str = "Profissional"
-    model_name: str = "openai/gpt-4o"
-    temperature: float = 0.7
-    max_tokens: int = 1000
-    ativo: bool = False
-    usar_emoji: bool = True
-    horario_atendimento_ia: Optional[dict] = None
-    menu_triagem: Optional[dict] = None
+    nome_ia: Optional[str] = "Assistente"
+    personalidade: Optional[str] = ""
+    instrucoes_base: Optional[str] = ""
+    tom_voz: Optional[str] = "Profissional"
+    model_name: Optional[str] = "openai/gpt-4o"
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 1000
+    ativo: Optional[bool] = False
+    usar_emoji: Optional[bool] = True
+    horario_atendimento_ia: Optional[Any] = None
+    menu_triagem: Optional[Any] = None
     idioma: Optional[str] = "Português do Brasil"
     objetivos_venda: Optional[str] = ""
     metas_comerciais: Optional[str] = ""
@@ -79,8 +81,8 @@ class PersonalityCreate(BaseModel):
     despedida_personalizada: Optional[str] = ""
     regras_formatacao: Optional[str] = ""
     regras_seguranca: Optional[str] = ""
-    emoji_tipo: Optional[str] = "Moderno"
-    emoji_cor: Optional[str] = "Multicolorido"
+    emoji_tipo: Optional[str] = "✨"
+    emoji_cor: Optional[str] = "#00d2ff"
 
 class FAQCreate(BaseModel):
     pergunta: str
