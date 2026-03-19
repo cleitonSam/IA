@@ -451,3 +451,31 @@ async def worker_metricas_diarias():
     except asyncio.CancelledError:
         logger.info("🛑 worker_metricas_diarias cancelado")
         raise
+
+async def worker_cleanup_followups():
+    """
+    Worker que remove follow-ups com status 'cancelado' a cada 20 minutos.
+    Evita que o banco de dados e a interface fiquem poluídos.
+    """
+    try:
+        while True:
+            await asyncio.sleep(1200) # 20 minutos
+            if not _database.db_pool:
+                continue
+            
+            # Leader election para garantir que apenas um processo execute a limpeza
+            if not await _is_worker_leader("cleanup_followups", ttl=1300):
+                continue
+
+            try:
+                # Remove apenas os cancelados (conforme solicitado pelo usuário)
+                res = await _database.db_pool.execute(
+                    "DELETE FROM followups WHERE status = 'cancelado'"
+                )
+                if res != "DELETE 0":
+                    logger.info(f"♻️ worker_cleanup_followups: {res} removidos")
+            except Exception as e:
+                logger.error(f"Erro no worker de limpeza de follow-ups: {e}")
+    except asyncio.CancelledError:
+        logger.info("🛑 worker_cleanup_followups cancelado")
+        raise
