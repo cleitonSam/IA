@@ -1021,7 +1021,10 @@ async def processar_ia_e_responder(
             r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano|saber dos planos|quero ver planos|me fala dos planos)",
             _texto_cliente_norm,
         ))
-        # Fast-path desativado para planos, unidades e modalidades — LLM responde todos esses casos.
+        if planos_ativos and intencao in {"planos", "preco"}:
+            _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
+            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
+            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
 
         # Pré-carrega slug para buscar unidade na pergunta de modalidades (sem fast_reply)
         if intencao == "modalidades":
