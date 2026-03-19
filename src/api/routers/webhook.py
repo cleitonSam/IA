@@ -167,6 +167,19 @@ async def chatwoot_webhook(
         contato_fone=contato_fone
     )
 
+    # Fallback: se o fone não veio no payload, tenta buscar no BD (conversa já existente)
+    if not contato_fone and _database.db_pool:
+        try:
+            _db_fone = await _database.db_pool.fetchval(
+                "SELECT contato_fone FROM conversas WHERE conversation_id = $1 AND empresa_id = $2 LIMIT 1",
+                id_conv, empresa_id
+            )
+            if _db_fone:
+                contato_fone = _db_fone
+                logger.info(f"📱 Telefone recuperado do BD: {contato_fone} (conv={id_conv})")
+        except Exception:
+            pass
+
     if message_type == "incoming":
         # Pausa global da IA para o canal Chatwoot (por empresa)
         if await redis_client.get(f"ia:chatwoot:paused:{empresa_id}") == "1":
