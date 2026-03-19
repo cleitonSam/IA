@@ -12,8 +12,9 @@ from src.services.db_queries import (
     buscar_empresa_por_account_id, carregar_integracao, bd_finalizar_conversa,
     bd_iniciar_conversa, bd_registrar_evento_funil, bd_atualizar_msg_cliente,
     listar_unidades_ativas, buscar_unidade_na_pergunta, carregar_unidade,
-    carregar_personalidade,
+    carregar_personalidade, carregar_menu_triagem,
 )
+from src.services.uaz_client import UazAPIClient
 from src.services.chatwoot_client import (
     enviar_mensagem_chatwoot, validar_assinatura, atualizar_nome_contato_chatwoot,
 )
@@ -392,6 +393,50 @@ async def chatwoot_webhook(
 
     if await redis_client.exists(f"pause_ia:{empresa_id}:{id_conv}"):
         return {"status": "ignorado"}
+
+    # --- Menu de Triagem ---
+    # Enviado na primeira mensagem do contato. Após 1h sem mensagens, reenvia na próxima.
+    # Só envia se a IA não está pausada por atendente humano.
+    MENU_INACTIVITY_TTL = 3600  # 1 hora
+    if contato_fone:
+        menu_triagem_key = f"menu_triagem:sent:{empresa_id}:{contato_fone}"
+        menu_already_sent = await redis_client.exists(menu_triagem_key)
+
+        if menu_already_sent:
+            # Renova TTL a cada mensagem do contato
+            await redis_client.expire(menu_triagem_key, MENU_INACTIVITY_TTL)
+        else:
+            menu_config = await carregar_menu_triagem(empresa_id)
+            logger.info(
+                f"📋 Menu triagem (webhook) — empresa {empresa_id} | fone {contato_fone} "
+                f"| config={bool(menu_config)} | ativo={menu_config.get('ativo') if menu_config else None}"
+            )
+            if menu_config and menu_config.get("ativo"):
+                integracao_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                if integracao_uaz:
+                    try:
+                        uaz_menu = UazAPIClient(
+                            base_url=integracao_uaz.get("url", ""),
+                            token=integracao_uaz.get("token", ""),
+                            instance_name=integracao_uaz.get("instance", "default")
+                        )
+                        # Marca como enviado pelo bot antes de enviar
+                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{contato_fone}", 30, "1")
+                        sent = await uaz_menu.send_menu(contato_fone, menu_config)
+                        if sent:
+                            await redis_client.setex(menu_triagem_key, MENU_INACTIVITY_TTL, "1")
+                            logger.info(f"✅ Menu de triagem enviado para {contato_fone} (empresa {empresa_id})")
+                            return {"status": "menu_sent", "phone": contato_fone}
+                        else:
+                            logger.warning(f"⚠️ Falha ao enviar menu para {contato_fone} — seguindo fluxo normal")
+                            await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{contato_fone}")
+                    except Exception as menu_err:
+                        logger.error(f"❌ Erro ao enviar menu de triagem para {contato_fone}: {menu_err}")
+                else:
+                    logger.info(f"📋 Menu triagem: integração UazAPI não encontrada para empresa {empresa_id} — seguindo fluxo normal")
+            else:
+                logger.info(f"📋 Menu triagem: config ausente ou inativo para empresa {empresa_id} — seguindo fluxo normal")
+    # --- Fim do Menu de Triagem ---
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
     arquivos = []
