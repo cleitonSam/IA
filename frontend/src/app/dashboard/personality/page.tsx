@@ -761,6 +761,11 @@ export default function PersonalityPage() {
                               <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest">Contexto Extra / Observações</label>
                               <textarea rows={2} value={formData.contexto_extra} onChange={e => setFormData({...formData, contexto_extra: e.target.value})} className={`${inputClass} text-xs py-3 rounded-xl`} placeholder="Informações adicionais irrelevantes para as outras seções..." />
                             </div>
+
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest">Despedida Personalizada</label>
+                              <textarea rows={2} value={formData.despedida_personalizada} onChange={e => setFormData({...formData, despedida_personalizada: e.target.value})} className={`${inputClass} text-xs py-3 rounded-xl`} placeholder="Mensagem final padrão da IA ao encerrar..." />
+                            </div>
                           </div>
 
                           {/* --- SEGURANÇA & RESTRIÇÕES --- */}
