@@ -784,6 +784,15 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             for key, value in dados.items():
                 if isinstance(value, Decimal):
                     dados[key] = float(value)
+            # Deserializa campos JSONB que asyncpg pode retornar como string
+            for json_field in ("horario_atendimento_ia", "menu_triagem"):
+                val = dados.get(json_field)
+                if isinstance(val, str):
+                    try:
+                        import json as _json
+                        dados[json_field] = _json.loads(val)
+                    except Exception:
+                        dados[json_field] = None
             await redis_set_json(cache_key, dados, 300)
             return dados
         else:

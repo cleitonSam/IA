@@ -169,8 +169,9 @@ async def update_personality(
             *list(update_data.values())
         )
 
-    # Invalida cache do menu_triagem para forçar releitura imediata no webhook
+    # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
+    await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
 
     return {"status": "success", "message": "Personalidade atualizada"}
 
@@ -272,8 +273,9 @@ async def update_personality_by_id(
         data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
         horario_json, menu_json, pid, empresa_id
     )
-    # Invalida cache do menu_triagem para forçar releitura imediata no webhook
+    # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
+    await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
     return {"status": "success"}
 
 
