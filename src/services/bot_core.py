@@ -1386,12 +1386,11 @@ REGRAS DE FORMATO:
 - NUNCA use markdown: sem **, sem ##, sem ```código```, sem [texto](url)
 
 TAMANHO DA RESPOSTA (CRÍTICO — RESPEITE SEMPRE):
-- Tamanho ideal: 2-4 linhas. Máximo absoluto: 8 linhas
-- Se a resposta ficar maior que 8 linhas, RESUMA. Nunca liste todos os dias da semana um por um.
+- Tamanho ideal: 2-4 parágrafos curtos. Seja conciso, mas NUNCA corte uma frase no meio.
+- SEMPRE termine cada frase e parágrafo completos — jamais pare no meio de uma ideia.
 - Horários: agrupe em UMA linha. Ex: "Seg-Sex: 06h-23h • Sáb: 09h-17h • Dom: 09h-13h"
 - NUNCA liste dia por dia (Segunda: ..., Terça: ..., Quarta: ...) — SEMPRE agrupe dias com mesmo horário
 - Planos: mostre no máximo 2-3 opções resumidas, não liste todos os detalhes
-- Se o cliente pedir detalhes completos, AINDA resuma — ofereça enviar por link ou foto
 - REGRA DE OURO: é melhor uma resposta CURTA e COMPLETA do que uma resposta LONGA e CORTADA
 
 REGRAS DE TOM:
