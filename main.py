@@ -890,7 +890,7 @@ async def startup_event():
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
-                    lambda: alembic_command.upgrade(alembic_cfg, "head")
+                    lambda: alembic_command.upgrade(alembic_cfg, "heads")
                 )
                 logger.info("✅ Migrations aplicadas com sucesso (alembic upgrade head)")
             except Exception as migration_err:
