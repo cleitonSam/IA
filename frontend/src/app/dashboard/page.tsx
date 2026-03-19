@@ -11,6 +11,16 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}min` : `${h}h`;
+  return `${m}min`;
+}
+
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<any>(null);
   const [empresaMetrics, setEmpresaMetrics] = useState<any>(null);
@@ -276,7 +286,7 @@ export default function DashboardPage() {
               { label: "Total Conversas", value: (metrics?.total_conversas ?? empresaMetrics?.total_conversas) ?? "—", icon: MsgIcon, color: "blue", delta: undefined },
               { label: "Leads Qualificados", value: (metrics?.leads_qualificados ?? empresaMetrics?.leads_qualificados) ?? "—", icon: Star, color: "sky", delta: undefined },
               { label: "Taxa de Conversão", value: metrics?.taxa_conversao != null ? `${metrics.taxa_conversao}%` : (empresaMetrics?.taxa_conversao != null ? `${empresaMetrics.taxa_conversao}%` : "—"), icon: TrendingUp, color: "emerald", delta: undefined },
-              { label: "Tempo Médio", value: (metrics?.tempo_medio_resposta != null ? metrics.tempo_medio_resposta : empresaMetrics?.tempo_medio_resposta) != null ? `${Math.round(metrics?.tempo_medio_resposta ?? empresaMetrics?.tempo_medio_resposta)}s` : "—", icon: Clock, color: "amber", delta: undefined },
+              { label: "Tempo Médio", value: (metrics?.tempo_medio_resposta != null ? metrics.tempo_medio_resposta : empresaMetrics?.tempo_medio_resposta) != null ? formatDuration(Math.round(metrics?.tempo_medio_resposta ?? empresaMetrics?.tempo_medio_resposta)) : "—", icon: Clock, color: "amber", delta: undefined },
             ].map((card, i) => (
               <motion.div
                 key={card.label}

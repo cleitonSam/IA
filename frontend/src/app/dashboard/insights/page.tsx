@@ -9,6 +9,16 @@ import {
 import { motion } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
 
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}min` : `${h}h`;
+  return `${m}min`;
+}
+
 export default function InsightsPage() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
@@ -73,7 +83,7 @@ export default function InsightsPage() {
                   { label: "Conversas IA", value: totals.total_conversas || 0, icon: MessageSquare },
                   { label: "Taxa de Conversão", value: `${totals.taxa_conversao || 0}%`, icon: Target },
                   { label: "Leads Quentes", value: totals.leads_qualificados || 0, icon: Star },
-                  { label: "Tempo Resposta", value: `${totals.tempo_medio_resposta || 0}s`, icon: Clock },
+                  { label: "Tempo Resposta", value: formatDuration(totals.tempo_medio_resposta || 0), icon: Clock },
                 ].map((kpi, i) => (
                   <motion.div key={kpi.label} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}
                     className="bg-slate-900/50 border border-white/5 rounded-3xl p-7 relative overflow-hidden group hover:border-[#00d2ff]/20 transition-all">
