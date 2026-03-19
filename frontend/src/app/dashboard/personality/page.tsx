@@ -215,16 +215,20 @@ export default function PersonalityPage() {
   const doSave = async () => {
     setSaving(true);
     try {
+      // Filtrar campos para evitar erro 422 (Pydantic não aceita id no body)
+      const { id, ...payload } = formData as any;
+      console.log("Salvando personalidade:", payload);
+
       if (editing) {
-        await axios.put(`/api-backend/management/personalities/${editing.id}`, formData, getConfig());
+        await axios.put(`/api-backend/management/personalities/${editing.id}`, payload, getConfig());
       } else {
-        await axios.post("/api-backend/management/personalities", formData, getConfig());
+        await axios.post("/api-backend/management/personalities", payload, getConfig());
       }
       setSuccess(true);
       setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchPersonalities(); }, 1500);
     } catch (e) {
       console.error("Erro ao salvar personalidade:", e);
-      alert("Erro ao salvar.");
+      alert("Erro ao salvar. Verifique se todos os campos obrigatórios estão preenchidos.");
     } finally {
       setSaving(false);
     }

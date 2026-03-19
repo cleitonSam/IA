@@ -48,6 +48,7 @@ class PersonalityUpdate(BaseModel):
     emoji_cor: Optional[str] = None
 
 class PersonalityCreate(BaseModel):
+    id: Optional[int] = None
     nome_ia: str
     personalidade: str = ""
     instrucoes_base: str = ""

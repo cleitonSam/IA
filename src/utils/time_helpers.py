@@ -226,9 +226,10 @@ def ia_esta_no_horario(config: Any) -> bool:
         try:
             h_ini, m_ini = map(int, periodo["inicio"].split(":"))
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
-            if dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim):
+            esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim)
+            if esta_no_periodo:
                 return True
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, AttributeError):
             continue
 
     return False

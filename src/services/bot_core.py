@@ -899,6 +899,19 @@ async def despachar_resposta(
         )
 
 
+async def enviar_aviso_fora_horario(account_id: int, conversation_id: int, integracao: dict, empresa_id: int):
+    """Envia uma mensagem automática educada se a IA for contatada fora do horário de atendimento."""
+    chave_aviso = get_tenant_key(empresa_id, f"aviso_fora_horario:{conversation_id}")
+    if await redis_client.get(chave_aviso):
+        return
+    
+    mensagem = "Olá! 👋 No momento nossa IA está fora do horário de atendimento, mas sua mensagem foi recebida! Assim que voltarmos, responderemos com prioridade. Obrigado pela compreensão! ✨"
+    try:
+        await enviar_mensagem_chatwoot(account_id, conversation_id, mensagem, integracao, empresa_id)
+        await redis_client.setex(chave_aviso, 3600, "1") # Silêncio de 1 hora para o mesmo aviso
+    except Exception as e:
+        logger.error(f"❌ Erro ao enviar aviso de fora de horário: {e}")
+
 async def processar_ia_e_responder(
     account_id: int,
     conversation_id: int,
@@ -933,7 +946,8 @@ async def processar_ia_e_responder(
         _pers_horario = await carregar_personalidade(empresa_id) or {}
         _horario_config = _pers_horario.get("horario_atendimento_ia")
         if not ia_esta_no_horario(_horario_config):
-            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada")
+            await enviar_aviso_fora_horario(account_id, conversation_id, integracao, empresa_id)
+            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada após aviso")
             return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
