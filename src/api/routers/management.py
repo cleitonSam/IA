@@ -48,8 +48,6 @@ class PersonalityUpdate(BaseModel):
     emoji_cor: Optional[str] = None
 
 class PersonalityCreate(BaseModel):
-    model_config = {"extra": "allow"} # Pydantic V2: ignora/permite campos extras
-
     id: Optional[int] = None
     nome_ia: Optional[str] = "Assistente"
     personalidade: Optional[str] = ""
@@ -83,6 +81,12 @@ class PersonalityCreate(BaseModel):
     regras_seguranca: Optional[str] = ""
     emoji_tipo: Optional[str] = "✨"
     emoji_cor: Optional[str] = "#00d2ff"
+
+    # Compatibilidade Pydantic V1 e V2
+    class Config:
+        extra = "allow"
+    
+    model_config = {"extra": "allow"}
 
 class FAQCreate(BaseModel):
     pergunta: str
