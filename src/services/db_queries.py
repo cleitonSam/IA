@@ -810,7 +810,7 @@ async def carregar_menu_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
 
     try:
         row = await _database.db_pool.fetchrow(
-            "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true LIMIT 1",
+            "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
             empresa_id
         )
         config = None

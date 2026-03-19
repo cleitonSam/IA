@@ -175,7 +175,7 @@ export default function MenuTriagemPage() {
               <div className="p-4 bg-amber-500/5 border border-amber-500/15 rounded-2xl flex items-start gap-3">
                 <Zap className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-slate-400 font-medium leading-relaxed">
-                  O menu é enviado na <strong className="text-white">primeira mensagem</strong> do contato. O TTL é renovado a cada mensagem — após <strong className="text-white">1h de inatividade</strong>, o menu será reenviado automaticamente. Se um atendente humano assumir a conversa, o menu <strong className="text-white">não será enviado</strong>.
+                  O menu é enviado na <strong className="text-white">primeira mensagem</strong> do contato. Após <strong className="text-white">1h sem mensagens</strong>, o menu será enviado novamente caso o contato envie uma nova mensagem. Se um atendente humano assumir a conversa, o menu <strong className="text-white">não será enviado</strong>.
                 </p>
               </div>
 

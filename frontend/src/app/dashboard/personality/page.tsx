@@ -57,6 +57,7 @@ interface Personality {
   ativo: boolean;
   usar_emoji: boolean;
   horario_atendimento_ia: HorarioAtendimento | null;
+  menu_triagem: Record<string, unknown> | null;
 }
 
 const emptyForm = {
@@ -70,6 +71,7 @@ const emptyForm = {
   ativo: false,
   usar_emoji: true,
   horario_atendimento_ia: null as HorarioAtendimento | null,
+  menu_triagem: null as Record<string, unknown> | null,
 };
 
 const MODELS = [
@@ -129,6 +131,7 @@ export default function PersonalityPage() {
         ativo: p.ativo ?? false,
         usar_emoji: p.usar_emoji ?? true,
         horario_atendimento_ia: p.horario_atendimento_ia ?? null,
+        menu_triagem: p.menu_triagem ?? null,
       });
     } else {
       setEditing(null);
