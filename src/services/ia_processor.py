@@ -318,6 +318,7 @@ def montar_saudacao_humanizada(
     pers: dict,
     unidade: dict,
     hor_banco: Any,
+    pergunta_final: Optional[str] = "Como posso te ajudar?",
 ) -> str:
     """
     Monta uma saudação super humanizada:
@@ -349,16 +350,15 @@ def montar_saudacao_humanizada(
     else:
         linha3 = ""
 
-    # Pergunta final
-    linha4 = "Como posso te ajudar?"
-
     # Monta mensagem
     partes = [linha1, linha2]
     if linha3:
         partes.append(linha3)
-    partes.append(linha4)
+    
+    if pergunta_final:
+        partes.append(pergunta_final)
 
-    return "\n\n".join(partes)
+    return "\n".join(partes)
 
 
 # 🏋️ PALAVRAS-CHAVE DE TIPO DE CLIENTE — detecta aluno atual ou usuário de convênio

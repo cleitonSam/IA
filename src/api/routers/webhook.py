@@ -23,6 +23,7 @@ from src.services.bot_core import (
     processar_ia_e_responder, monitorar_escolha_unidade, rate_limit_middleware,
     startup_event, shutdown_event,
 )
+from src.services.ia_processor import montar_saudacao_humanizada, extrair_endereco_unidade
 from src.utils.redis_helper import (
     get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
 )
@@ -340,12 +341,20 @@ async def chatwoot_webhook(
                         return {"status": "aguardando_escolha_unidade"}
 
                     _qtd_unidades = len(unidades_ativas)
-                    msg = (
-                        "Boa pergunta! Somos sim a Red Fitness 💪\n\n"
-                        f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
-                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
+                    _pers = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia = _pers.get('nome_ia') or 'Assistente Virtual'
+                    
+                    # Saudação humanizada (Bom dia/tarde/noite + Nome) - suprime pergunta final padrão
+                    _saudacao_humanizada = montar_saudacao_humanizada(
+                        nome_contato_limpo, _nome_ia, _pers, {}, None, pergunta_final=None
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia="Assistente Virtual")
+                    
+                    msg = (
+                        f"{_saudacao_humanizada}\n\n"
+                        f"Hoje temos *{_qtd_unidades} unidades* e eu quero te direcionar para o atendimento certo. 😊\n\n"
+                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere (ex.: Ricardo Jafet)."
+                    )
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia=_nome_ia)
                     await set_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}", "1", 86400)
                     await set_tenant_cache(empresa_id, prompt_unidade_key, "1", 600)
                     background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
