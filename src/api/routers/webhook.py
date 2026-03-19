@@ -345,11 +345,23 @@ async def chatwoot_webhook(
                     if esperando_unidade or await get_tenant_cache(empresa_id, prompt_unidade_key) == "1":
                         throttle_key = f"esperando_unidade_throttle:{id_conv}"
                         if not await exists_tenant_cache(empresa_id, throttle_key):
-                            msg_retry = (
-                                "Ainda não consegui localizar a unidade certinha 😅\n\n"
-                                "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
-                            )
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, empresa_id, nome_ia="Assistente Virtual")
+                            _pers = await carregar_personalidade(empresa_id) or {}
+                            _nome_ia = _pers.get('nome_ia') or 'Assistente Virtual'
+
+                            if eh_saudacao(conteudo_texto):
+                                _saud = montar_saudacao_humanizada(nome_contato_limpo, _nome_ia, _pers, {}, None, pergunta_final=None)
+                                msg_retry = (
+                                    f"{_saud}\n\n"
+                                    "Ainda não consegui identificar qual unidade você prefere para eu te atender melhor 😊\n\n"
+                                    "Me fala um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
+                                )
+                            else:
+                                msg_retry = (
+                                    "Deixa eu te ajudar! Ainda não consegui localizar a unidade certinha 😅\n\n"
+                                    "Me manda um *bairro*, *cidade* ou o *nome da unidade* de preferência (ex.: Ricardo Jafet)."
+                                )
+                            
+                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, empresa_id, nome_ia=_nome_ia)
                             await set_tenant_cache(empresa_id, throttle_key, "1", 30)
                         return {"status": "aguardando_escolha_unidade"}
 
