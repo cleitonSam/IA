@@ -1021,33 +1021,14 @@ async def processar_ia_e_responder(
             r"(fora o plano|alem do prime|além do prime|outro plano|outros planos|quais planos|todos os planos|opcoes de plano|opções de plano|saber dos planos|quero ver planos|me fala dos planos)",
             _texto_cliente_norm,
         ))
-        if planos_ativos and intencao in {"planos", "preco"}:
-            # Sempre envia planos em blocos estruturados — nunca pelo LLM.
-            # O LLM trunca respostas longas com múltiplos planos.
-            _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
-            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
-            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
+        # Fast-path desativado para planos, unidades e modalidades — LLM responde todos esses casos.
 
-        # Endereça perguntas de unidades/localização sem passar no LLM (evita alucinação de bairro/cidade)
-        if intencao == "unidades" and not fast_reply_lista:
-            fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
-            logger.info("⚡ Unidades: resposta factual direta sem LLM")
-
-        # Perguntas de grade/modalidades: tenta responder da unidade citada na mensagem, sem LLM.
-        if intencao == "modalidades" and not fast_reply_lista and not fast_reply:
+        # Pré-carrega slug para buscar unidade na pergunta de modalidades (sem fast_reply)
+        if intencao == "modalidades":
             slug_modalidades = await buscar_unidade_na_pergunta(texto_cliente_unificado, empresa_id, fuzzy_threshold=82)
-            if slug_modalidades:
-                if slug_modalidades != slug:
-                    slug = slug_modalidades
-                    await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
-                unidade_modalidades = await carregar_unidade(slug_modalidades, empresa_id) or unidade
-                fast_reply = responder_modalidades(unidade_modalidades)
-                logger.info(f"⚡ Modalidades: resposta factual da unidade {slug_modalidades}")
-            else:
-                _tem_pedido_unidade = bool(re.search(r"(unidade|bairro|cidade|grade|aula|aulas)", normalizar(texto_cliente_unificado or "")))
-                if _tem_pedido_unidade:
-                    fast_reply = await responder_lista_unidades(empresa_id, texto_cliente_unificado)
-                    logger.info("⚡ Modalidades: unidade não encontrada, retornando lista segura de unidades")
+            if slug_modalidades and slug_modalidades != slug:
+                slug = slug_modalidades
+                await redis_client.setex(f"unidade_escolhida:{conversation_id}", 86400, slug)
 
         # Pré-carrega horário com status aberta/fechada quando intenção é horário
         if intencao == "horario" and hor_banco:
@@ -1337,7 +1318,8 @@ CONTEXTO DA REDE:
 
 REGRA SOBRE OUTRAS UNIDADES: Você tem os dados acima de TODAS as unidades da rede.
 Se o cliente perguntar sobre qualquer unidade específica (mesmo que não seja a que você está atendendo agora), responda DIRETAMENTE com o que você sabe (endereço, horário, modalidades).
-Se você NÃO souber qual unidade ele quer, pergunte qual região fica melhor para ele, ou cite as unidades disponíveis (usando a lista acima).
+Se você NÃO souber qual unidade ele quer E a pergunta exigir dados de unidade específica (horário, endereço, preço), ENTÃO pergunte qual região fica melhor para ele.
+Se o cliente enviar apenas uma saudação (Oi, Olá, Bom dia, Boa tarde, etc.) SEM fazer nenhuma pergunta, responda apenas com uma saudação calorosa e pergunte como pode ajudar — NÃO pergunte sobre unidades.
 NÃO peça ao cliente para escolher uma unidade ANTES de responder se a pergunta dele for específica sobre uma unidade da lista.
 NUNCA diga "meu sistema é focado em [unidade X]" ou "não tenho informações de [outra unidade]" — você TEM os dados de TODAS as unidades listadas acima.
 NUNCA invente proximidade geográfica ("pertinho", "próxima") sem evidência explícita nos dados.
