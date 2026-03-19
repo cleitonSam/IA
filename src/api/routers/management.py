@@ -173,6 +173,16 @@ async def update_personality(
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
     await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
 
+    # Sincroniza flag Redis de pausa com o campo ativo da personalidade
+    if "ativo" in update_data:
+        paused_key = f"ia:chatwoot:paused:{empresa_id}"
+        if not update_data["ativo"]:
+            await redis_client.set(paused_key, "1")
+            logger.info(f"⏸️ IA pausada via personalidade para empresa {empresa_id}")
+        else:
+            await redis_client.delete(paused_key)
+            logger.info(f"▶️ IA reativada via personalidade para empresa {empresa_id}")
+
     return {"status": "success", "message": "Personalidade atualizada"}
 
 
@@ -276,6 +286,16 @@ async def update_personality_by_id(
     # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
     await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
+
+    # Sincroniza flag Redis de pausa com o campo ativo da personalidade
+    paused_key = f"ia:chatwoot:paused:{empresa_id}"
+    if not data.ativo:
+        await redis_client.set(paused_key, "1")
+        logger.info(f"⏸️ IA pausada via personalidade (id={pid}) para empresa {empresa_id}")
+    else:
+        await redis_client.delete(paused_key)
+        logger.info(f"▶️ IA reativada via personalidade (id={pid}) para empresa {empresa_id}")
+
     return {"status": "success"}
 
 
