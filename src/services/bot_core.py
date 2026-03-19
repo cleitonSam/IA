@@ -609,6 +609,33 @@ async def salvar_cache_semantico(
         logger.warning(f"Erro ao salvar cache semântico: {e}")
 
 
+def dividir_em_blocos(texto: str, min_chars: int = 100) -> list:
+    """Divide uma resposta longa em blocos para envio separado no WhatsApp.
+
+    Regras:
+    - Só divide se houver parágrafos duplos (\\n\\n) e texto longo (> 300 chars)
+    - Blocos muito curtos (< min_chars) são fundidos ao anterior
+    - Mantém a ordem e integridade do texto
+    """
+    if not texto or len(texto) <= 300:
+        return [texto.strip()] if texto else []
+
+    partes = [p.strip() for p in texto.split('\n\n') if p.strip()]
+    if len(partes) <= 1:
+        return [texto.strip()]
+
+    blocos: list = []
+    atual = partes[0]
+    for parte in partes[1:]:
+        if len(atual) < min_chars:
+            atual = atual + '\n\n' + parte
+        else:
+            blocos.append(atual)
+            atual = parte
+    blocos.append(atual)
+    return blocos
+
+
 def detectar_intencao(texto: str) -> Optional[str]:
     """Detecta a intenção principal da pergunta do usuário usando palavras-chave e fuzzy matching"""
     if not texto:
@@ -1911,17 +1938,24 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             else:
                 if resposta_texto and resposta_texto.strip():
                     _texto_final = resposta_texto.strip()
-                    
-                    if source == 'chatwoot':
-                        typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
-                        await simular_digitacao(account_id, conversation_id, integracao, typing_time)
-                    
-                    await despachar_resposta(
-                        account_id, conversation_id, _texto_final, nome_ia, integracao,
-                        empresa_id, source=source, contato_fone=contato_fone
-                    )
-                    await bd_atualizar_msg_ia(conversation_id, empresa_id)
-                    await bd_registrar_primeira_resposta(conversation_id, empresa_id)
+                    _blocos = dividir_em_blocos(_texto_final)
+
+                    for _i, _bloco in enumerate(_blocos):
+                        if not _bloco:
+                            continue
+                        if source == 'chatwoot':
+                            typing_time = min(len(_bloco) * 0.02, 4.0) + random.uniform(0.3, 0.8)
+                            await simular_digitacao(account_id, conversation_id, integracao, typing_time)
+                        elif _i > 0:
+                            await asyncio.sleep(0.6)
+
+                        await despachar_resposta(
+                            account_id, conversation_id, _bloco, nome_ia, integracao,
+                            empresa_id, source=source, contato_fone=contato_fone
+                        )
+                        await bd_atualizar_msg_ia(conversation_id, empresa_id)
+                        if _i == 0:
+                            await bd_registrar_primeira_resposta(conversation_id, empresa_id)
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
