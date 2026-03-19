@@ -1515,8 +1515,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     user_content = mensagens_formatadas
 
                 async def _chamar_llm(model_id: str, extra_timeout: int = 25):
-                    return await asyncio.wait_for(
-                        cliente_ia.chat.completions.create(
+                        if max_tokens:
+                            logger.info(f"🔢 LLM: Enviando max_tokens={max_tokens} para {model_id}")
+                        
+                        return await asyncio.wait_for(
+                            cliente_ia.chat.completions.create(
                             model=model_id,
                             messages=[
                                 {"role": "system", "content": prompt_sistema},
@@ -1533,6 +1536,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         logger.info(f"📡 BotCore: Chamando LLM ({modelo_escolhido}) para conv {conversation_id}")
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
                         resposta_bruta = response.choices[0].message.content
+                        if resposta_bruta:
+                            logger.info(f"✅ LLM: Resposta recebida ({len(resposta_bruta)} chars). Final: '{resposta_bruta[-20:]}'")
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -1615,7 +1620,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     txt = txt.strip()
                     if txt[-1] in '.!?😊💪✅🏋🎯':
                         return txt
-                    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
+                    # Removemos '\n' para evitar que listas (bullets) sejam cortadas prematuramente
+                    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n']:
                         _pos = txt.rfind(_sep)
                         if _pos > len(txt) * 0.3:
                             return txt[:_pos + 1].strip()

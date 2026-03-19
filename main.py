@@ -410,7 +410,8 @@ def garantir_frase_completa(txt: str) -> str:
         return txt
     if txt[-1] in '.!?😊💪✅🏋🎯':
         return txt
-    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n', '\n']:
+    # Removemos '\n' para evitar que listas (bullets) sejam cortadas prematuramente
+    for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n']:
         _pos = txt.rfind(_sep)
         if _pos > len(txt) * 0.3:
             return txt[:_pos + 1].strip()
@@ -3857,6 +3858,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
             )
             temperature = float(pers.get("temperatura") or 0.7)
+            max_tokens = int(pers.get("max_tokens") or 1200)
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
@@ -3917,7 +3919,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 {"role": "user", "content": user_content}
                             ],
                             temperature=temperature,
-                            max_tokens=1200,  # Margem generosa — prompt pede resposta curta, mas nunca trunca
+                            max_tokens=max_tokens,  # Usa o valor da personalidade_ia ou 1200 como porto seguro
                                               # Reduz custo e evita erro 402 de crédito insuficiente
                         ),
                         timeout=extra_timeout
@@ -4036,6 +4038,9 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         novo_estado = _dados_legado.get("estado", estado_atual).strip().lower()
                     except (json.JSONDecodeError, ValueError):
                         pass  # Não é JSON, usa como texto mesmo
+
+                # Aplica a garantia de frase completa para evitar truncamento feio (ativas no main tbm)
+                resposta_texto = _garantir_frase_completa(resposta_texto)
 
                 # Inferir estado emocional a partir das palavras-chave da resposta
                 _resp_norm = normalizar(resposta_texto)
