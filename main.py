@@ -881,6 +881,21 @@ async def startup_event():
 
     if DATABASE_URL:
         try:
+            # Roda migrations pendentes automaticamente
+            try:
+                from alembic.config import Config as AlembicConfig
+                from alembic import command as alembic_command
+                import concurrent.futures
+                alembic_cfg = AlembicConfig("alembic.ini")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: alembic_command.upgrade(alembic_cfg, "head")
+                )
+                logger.info("✅ Migrations aplicadas com sucesso (alembic upgrade head)")
+            except Exception as migration_err:
+                logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
+
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
                 min_size=2,
