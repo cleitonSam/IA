@@ -260,12 +260,34 @@ async def _process_state(
     if node_type == "switch":
         conditions = node.get("data", {}).get("conditions", [])
         msg_lower = mensagem.lower().strip()
-        # Tenta por value (ID da opção) e por label
+        matched_handle = None
+        
         for cond in conditions:
-            val = str(cond.get("value", "")).lower()
-            label = str(cond.get("label", "")).lower()
-            if msg_lower == val or msg_lower in label or label in msg_lower:
-                return _get_next_node_id(fluxo, node_id, cond.get("handle"))
+            val = str(cond.get("value", "")).lower().strip()
+            label = str(cond.get("label", "")).lower().strip()
+
+            # 1. Match exato (valor ou label)
+            if msg_lower == val or msg_lower == label:
+                matched_handle = cond.get("handle")
+                break
+            
+            # 2. Match numérico inteligente (ex: "1" em "1 - Opção")
+            if msg_lower.isdigit():
+                if label.startswith(msg_lower):
+                    # Garante que não é "1" em "10"
+                    suffix = label[len(msg_lower):]
+                    if not suffix or not suffix[0].isdigit():
+                        matched_handle = cond.get("handle")
+                        break
+            
+            # 3. Match de texto por palavra inteira (se mensagem for longa o suficiente)
+            if label and len(msg_lower) > 2:
+                if re.search(rf"\b{re.escape(msg_lower)}\b", label):
+                    matched_handle = cond.get("handle")
+                    break
+
+        if matched_handle:
+            return _get_next_node_id(fluxo, node_id, matched_handle)
         # Nenhum match: tenta a primeira saída padrão
         handles = _get_all_next_handles(fluxo, node_id)
         return handles[0][1] if handles else None
@@ -442,12 +464,28 @@ async def _execute_from(
         conditions = data.get("conditions", [])
         msg_lower = mensagem.lower().strip()
         matched_handle = None
+
         for cond in conditions:
-            val = str(cond.get("value", "")).lower()
-            label = str(cond.get("label", "")).lower()
-            if msg_lower == val or msg_lower in label or label in msg_lower:
+            val = str(cond.get("value", "")).lower().strip()
+            label = str(cond.get("label", "")).lower().strip()
+
+            # 1. Match exato
+            if msg_lower == val or msg_lower == label:
                 matched_handle = cond.get("handle")
                 break
+            
+            # 2. Match numérico (ex: "1" em "1 - Sim")
+            if msg_lower.isdigit() and label.startswith(msg_lower):
+                suffix = label[len(msg_lower):]
+                if not suffix or not suffix[0].isdigit():
+                    matched_handle = cond.get("handle")
+                    break
+
+            # 3. Match de texto (palavra inteira)
+            if label and len(msg_lower) > 2:
+                if re.search(rf"\b{re.escape(msg_lower)}\b", label):
+                    matched_handle = cond.get("handle")
+                    break
         if matched_handle:
             next_id = _get_next_node_id(fluxo, node_id, matched_handle)
         else:
