@@ -47,6 +47,19 @@ class PersonalityUpdate(BaseModel):
     emoji_tipo: Optional[str] = None
     emoji_cor: Optional[str] = None
 
+# Campos string do PersonalityCreate — definido fora da classe para evitar
+# conflito com atributos privados do Pydantic V2 (prefixo _)
+_PERSONALITY_STR_FIELDS = [
+    "nome_ia", "personalidade", "instrucoes_base", "tom_voz", "model_name",
+    "idioma", "objetivos_venda", "metas_comerciais", "script_vendas",
+    "scripts_objecoes", "frases_fechamento", "diferenciais", "posicionamento",
+    "publico_alvo", "restricoes", "linguagem_proibida", "contexto_empresa",
+    "contexto_extra", "abordagem_proativa", "exemplos", "palavras_proibidas",
+    "despedida_personalizada", "regras_formatacao", "regras_seguranca",
+    "emoji_tipo", "emoji_cor",
+]
+
+
 class PersonalityCreate(BaseModel):
     id: Optional[int] = None
     nome_ia: Optional[str] = "Assistente"
@@ -84,22 +97,12 @@ class PersonalityCreate(BaseModel):
 
     model_config = {"extra": "allow"}
 
-    _STR_FIELDS = [
-        "nome_ia", "personalidade", "instrucoes_base", "tom_voz", "model_name",
-        "idioma", "objetivos_venda", "metas_comerciais", "script_vendas",
-        "scripts_objecoes", "frases_fechamento", "diferenciais", "posicionamento",
-        "publico_alvo", "restricoes", "linguagem_proibida", "contexto_empresa",
-        "contexto_extra", "abordagem_proativa", "exemplos", "palavras_proibidas",
-        "despedida_personalizada", "regras_formatacao", "regras_seguranca",
-        "emoji_tipo", "emoji_cor",
-    ]
-
     @model_validator(mode="before")
     @classmethod
     def coerce_types(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
-        for field in cls._STR_FIELDS:
+        for field in _PERSONALITY_STR_FIELDS:
             v = values.get(field)
             if v is not None and not isinstance(v, str):
                 values[field] = str(v)
