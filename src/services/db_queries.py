@@ -242,11 +242,18 @@ async def buscar_planos_evo_da_api(
             else:
                 diffs = []
 
-            valor_total = item.get('value')
-            valor_mensal = (valor_total / 12) if valor_total else 0
+            valor_total = item.get('value') or 0
+            if not valor_total:
+                continue
+
+            # Só divide por 12 se o valor for maior que 1000 (ex: plano anual)
+            valor_mensal = (valor_total / 12) if valor_total > 1000 else valor_total
 
             valor_promo_total = item.get('valuePromotionalPeriod')
-            valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total else None
+            if valor_promo_total:
+                valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total > 1000 else valor_promo_total
+            else:
+                valor_promo_mensal = None
 
             plano = {
                 'id': item.get('idMembership'),
@@ -292,18 +299,19 @@ async def sincronizar_planos_evo(
         
         existing = await _database.db_pool.fetchval("""
             SELECT id FROM planos 
-            WHERE empresa_id = $1 AND id_externo = $2 
-              AND (unidade_id = $3 OR (unidade_id IS NULL AND $3 IS NULL))
-        """, empresa_id, p['id'], unidade_id)
+            WHERE empresa_id = $1 AND id_externo = $2
+        """, empresa_id, p['id'])
 
         if existing:
             await _database.db_pool.execute("""
                 UPDATE planos SET
-                    nome = $1, valor = $2, valor_promocional = $3, meses_promocionais = $4,
-                    descricao = $5, diferenciais = $6, link_venda = $7, updated_at = NOW()
-                WHERE id = $8
-            """, p['nome'], p['valor'], p['valor_promocional'], p['meses_promocionais'],
-               p['descricao'], p['diferenciais'], p['link_venda'], existing)
+                    unidade_id = $1, nome = $2, valor = $3, valor_promocional = $4, 
+                    meses_promocionais = $5, descricao = $6, diferenciais = $7, 
+                    link_venda = $8, updated_at = NOW()
+                WHERE id = $9
+            """, unidade_id, p['nome'], p['valor'], p['valor_promocional'], 
+               p['meses_promocionais'], p['descricao'], p['diferenciais'], 
+               p['link_venda'], existing)
         else:
             await _database.db_pool.execute("""
                 INSERT INTO planos

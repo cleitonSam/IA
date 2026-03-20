@@ -1729,11 +1729,24 @@ async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
             else:
                 diffs = []
 
+            valor_total = item.get('value') or 0
+            if not valor_total:
+                continue
+
+            # Só divide por 12 se o valor for maior que 1000 (ex: plano anual)
+            valor_mensal = (valor_total / 12) if valor_total > 1000 else valor_total
+
+            valor_promo_total = item.get('valuePromotionalPeriod')
+            if valor_promo_total:
+                valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total > 1000 else valor_promo_total
+            else:
+                valor_promo_mensal = None
+
             plano = {
                 'id': item.get('idMembership'),
                 'nome': item.get('displayName') or item.get('nameMembership', 'Plano'),
-                'valor': item.get('value'),
-                'valor_promocional': item.get('valuePromotionalPeriod'),
+                'valor': round(valor_mensal, 2) if valor_mensal else 0,
+                'valor_promocional': round(valor_promo_mensal, 2) if valor_promo_mensal else None,
                 'meses_promocionais': item.get('monthsPromotionalPeriod'),
                 'descricao': item.get('description'),
                 'diferenciais': diffs,
