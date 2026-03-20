@@ -785,6 +785,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             SELECT p.*
             FROM personalidade_ia p
             WHERE p.empresa_id = $1 AND p.ativo = true
+            ORDER BY p.updated_at DESC
             LIMIT 1
         """
         row = await _database.db_pool.fetchrow(query, empresa_id)
