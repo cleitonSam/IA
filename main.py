@@ -2205,8 +2205,12 @@ async def enviar_mensagem_chatwoot(
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
                 
-                # Registra que enviamos direto para evitar eco no webhook
-                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 45, "1")
+                # Registra que enviamos direto para evitar eco no webhook.
+                # Mídia gera múltiplos webhooks do UazAPI (sent + thumbnail + delivered),
+                # por isso usa TTL maior. A flag NÃO é deletada no primeiro eco —
+                # qualquer webhook de saída que chegar dentro do TTL será ignorado.
+                _echo_ttl = 90 if attachment_url else 45
+                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", _echo_ttl, "1")
                 
                 # Sincroniza com Chatwoot via NOTA (Log de Histórico)
                 # Assim a conversa não fica "pausada" por falta de resposta, 
@@ -4422,8 +4426,9 @@ async def chatwoot_webhook(
     )
 
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
+    # NÃO deleta a flag — mídia gera múltiplos webhooks (sent/thumbnail/delivered)
+    # e todos precisam ser ignorados. A flag expira naturalmente via TTL (45-90s).
     if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
-        await redis_client.delete(f"uaz_bot_sent:{id_conv}") # Consome o flag
         logger.info(f"♻️ Echo UazAPI detectado e ignorado para conv {id_conv}")
         return {"status": "eco_uazapi_ignorado"}
 
