@@ -342,51 +342,12 @@ async def chatwoot_webhook(
                             await delete_tenant_cache(empresa_id, lock_key)
                     return {"status": "unidade_confirmada"}
                 else:
-                    if esperando_unidade or await get_tenant_cache(empresa_id, prompt_unidade_key) == "1":
-                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
-                        if not await exists_tenant_cache(empresa_id, throttle_key):
-                            _pers = await carregar_personalidade(empresa_id) or {}
-                            _nome_ia = _pers.get('nome_ia') or 'Assistente Virtual'
+                    # Unidade não identificada — permite que a IA responda
+                    # de forma natural conforme seu prompt de 'Global'.
+                    logger.info(f"🌐 Unidade não detectada para conv {id_conv}, prosseguindo com IA Global")
+                    pass
 
-                            if eh_saudacao(conteudo_texto):
-                                _saud = montar_saudacao_humanizada(nome_contato_limpo, _nome_ia, _pers, {}, None, pergunta_final=None)
-                                msg_retry = (
-                                    f"{_saud}\n\n"
-                                    "Ainda não consegui identificar qual unidade você prefere para eu te atender melhor 😊\n\n"
-                                    "Me fala um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
-                                )
-                            else:
-                                msg_retry = (
-                                    "Deixa eu te ajudar! Ainda não consegui localizar a unidade certinha 😅\n\n"
-                                    "Me manda um *bairro*, *cidade* ou o *nome da unidade* de preferência (ex.: Ricardo Jafet)."
-                                )
-                            
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, empresa_id, nome_ia=_nome_ia)
-                            await set_tenant_cache(empresa_id, throttle_key, "1", 30)
-                        return {"status": "aguardando_escolha_unidade"}
-
-                    _qtd_unidades = len(unidades_ativas)
-                    _pers = await carregar_personalidade(empresa_id) or {}
-                    _nome_ia = _pers.get('nome_ia') or 'Assistente Virtual'
-                    
-                    # Saudação humanizada (Bom dia/tarde/noite + Nome) - suprime pergunta final padrão
-                    _saudacao_humanizada = montar_saudacao_humanizada(
-                        nome_contato_limpo, _nome_ia, _pers, {}, None, pergunta_final=None
-                    )
-                    
-                    msg = (
-                        f"{_saudacao_humanizada}\n\n"
-                        f"Hoje temos *{_qtd_unidades} unidades* e eu quero te direcionar para o atendimento certo. 😊\n\n"
-                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere (ex.: Ricardo Jafet)."
-                    )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, integracao, empresa_id, nome_ia=_nome_ia)
-                    await set_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}", "1", 86400)
-                    await set_tenant_cache(empresa_id, prompt_unidade_key, "1", 600)
-                    background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
-                    return {"status": "aguardando_escolha_unidade"}
-
-    if not slug:
-        return {"status": "erro_sem_unidade"}
+    # Se chegamos aqui sem slug, a IA responderá como Consultor Global
 
     if message_type == "outgoing" and sender_type == "user":
         if is_ai_message:
