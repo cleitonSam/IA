@@ -945,10 +945,18 @@ async def processar_ia_e_responder(
         # Verifica horário de atendimento da IA configurado pelo usuário
         _pers_horario = await carregar_personalidade(empresa_id) or {}
         _horario_config = _pers_horario.get("horario_atendimento_ia")
-        
-        logger.info(f"🕒 [Bot Core] Horário Config para empresa {empresa_id}: {_horario_config}")
 
-        if not ia_esta_no_horario(_horario_config):
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
+        logger.info(
+            f"🕒 [Bot Core] Horário SP={_agora_sp.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+            f"Config empresa {empresa_id}: {_horario_config}"
+        )
+
+        _no_horario = ia_esta_no_horario(_horario_config)
+        logger.info(f"🕒 [Bot Core] Resultado ia_esta_no_horario={_no_horario}")
+        if not _no_horario:
             await enviar_aviso_fora_horario(account_id, conversation_id, integracao, empresa_id)
             logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada após aviso")
             return
