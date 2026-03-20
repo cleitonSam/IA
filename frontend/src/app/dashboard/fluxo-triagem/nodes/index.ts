@@ -5,6 +5,7 @@ import SendTextNode from "./SendTextNode";
 import SendMenuNode from "./SendMenuNode";
 import SendImageNode from "./SendImageNode";
 import SendAudioNode from "./SendAudioNode";
+import SendMediaNode from "./SendMediaNode";
 import AIRespondNode from "./AIRespondNode";
 import AIClassifyNode from "./AIClassifyNode";
 import AISentimentNode from "./AISentimentNode";
@@ -16,6 +17,13 @@ import DelayNode from "./DelayNode";
 import WaitInputNode from "./WaitInputNode";
 import HumanTransferNode from "./HumanTransferNode";
 import WebhookNode from "./WebhookNode";
+import AIMenuNode from "./AIMenuNode";
+import SetVariableNode from "./SetVariableNode";
+import GetVariableNode from "./GetVariableNode";
+import GenerateProtocolNode from "./GenerateProtocolNode";
+import SearchNode from "./SearchNode";
+import RedisNode from "./RedisNode";
+import SourceFilterNode from "./SourceFilterNode";
 
 export const nodeTypes = {
   start:         StartNode,
@@ -25,6 +33,7 @@ export const nodeTypes = {
   sendMenu:      SendMenuNode,
   sendImage:     SendImageNode,
   sendAudio:     SendAudioNode,
+  sendMedia:     SendMediaNode,
   aiRespond:     AIRespondNode,
   aiClassify:    AIClassifyNode,
   aiSentiment:   AISentimentNode,
@@ -36,4 +45,11 @@ export const nodeTypes = {
   waitInput:     WaitInputNode,
   humanTransfer: HumanTransferNode,
   webhook:       WebhookNode,
+  aiMenu:        AIMenuNode,
+  setVariable:   SetVariableNode,
+  getVariable:   GetVariableNode,
+  generateProtocol: GenerateProtocolNode,
+  search:        SearchNode,
+  redis:         RedisNode,
+  sourceFilter:  SourceFilterNode,
 };

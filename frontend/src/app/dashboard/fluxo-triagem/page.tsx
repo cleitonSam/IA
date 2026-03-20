@@ -16,11 +16,12 @@ import {
   MarkerType,
   BackgroundVariant,
   Panel,
+  ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, Info, X
+  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, X
 } from "lucide-react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { nodeTypes } from "./nodes";
@@ -81,7 +82,25 @@ export default function FluxoTriagemPage() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+  const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
+
+  // ─── onChange para nós (atualiza data inline) ───
+  const attachOnChange = useCallback(
+    (node: Node): Node => {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          onChange: (patch: Record<string, unknown>) => {
+            setNodes((nds) =>
+              nds.map((n) => (n.id === node.id ? { ...n, data: { ...n.data, ...patch } } : n))
+            );
+          },
+        },
+      };
+    },
+    [setNodes]
+  );
 
   // ─── Auth ───
   const getConfig = () => ({
@@ -103,7 +122,7 @@ export default function FluxoTriagemPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [attachOnChange, setEdges, setNodes]);
 
   // ─── Salvar fluxo ───
   const handleSave = async () => {
@@ -112,10 +131,10 @@ export default function FluxoTriagemPage() {
     try {
       // Remove função onChange antes de serializar
       const cleanNodes = nodes.map((n) => {
-        const { onChange, ...rest } = n.data as Record<string, unknown>;
-        return { ...n, data: rest };
-      });
-      await axios.post(
+      const { onChange: _, ...rest } = n.data as Record<string, unknown>;
+      return { ...n, data: rest };
+    });
+    await axios.post(
         "/api-backend/management/fluxo-triagem",
         { ativo, nodes: cleanNodes, edges },
         getConfig()
@@ -129,24 +148,6 @@ export default function FluxoTriagemPage() {
     }
   };
 
-  // ─── onChange para nós (atualiza data inline) ───
-  const attachOnChange = useCallback((node: Node): Node => {
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        onChange: (patch: Record<string, unknown>) => {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === node.id
-                ? { ...n, data: { ...n.data, ...patch } }
-                : n
-            )
-          );
-        },
-      },
-    };
-  }, [setNodes]);
 
   // ─── Conectar nós ───
   const onConnect = useCallback(
@@ -262,88 +263,86 @@ export default function FluxoTriagemPage() {
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* ── Topbar ── */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-[#020617]/90 backdrop-blur-sm z-10 flex-shrink-0">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-5 bg-[#00d2ff] rounded-full" />
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-[#020617]/40 backdrop-blur-xl z-20 shrink-0">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-6 bg-linear-to-b from-[#00d2ff] to-[#3b82f6] rounded-full shadow-[0_0_10px_rgba(0,210,255,0.5)]" />
               <div>
                 <h1
-                  className="text-xl font-black tracking-tight"
+                  className="text-2xl font-black tracking-tighter"
                   style={{
                     background: "linear-gradient(135deg,#fff 0%,#00d2ff 100%)",
                     WebkitBackgroundClip: "text",
                     WebkitTextFillColor: "transparent",
                   }}
                 >
-                  Fluxo de Triagem
+                  FlowForge AI
                 </h1>
-                <p className="text-[10px] text-slate-600 -mt-0.5">
-                  Editor visual n8n-style • {nodes.length} nós • {edges.length} conexões
+                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] -mt-1">
+                  Visual Logic Engine • {nodes.length} nodes
                 </p>
               </div>
             </div>
 
             {/* Toggle ativo */}
-            <div className="flex items-center gap-2 bg-slate-900/60 border border-white/5 rounded-xl px-3 py-1.5">
+            <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-4 py-2 backdrop-blur-md shadow-inner">
               <button
                 type="button"
                 onClick={() => setAtivo((v) => !v)}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${
-                  ativo ? "bg-[#00d2ff]" : "bg-slate-700"
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all duration-300 ${
+                  ativo ? "bg-gradient-to-r from-[#00d2ff] to-[#3b82f6]" : "bg-slate-800"
                 }`}
               >
                 <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-all ${
-                    ativo ? "translate-x-4" : "translate-x-0.5"
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-lg transition-all duration-300 ${
+                    ativo ? "translate-x-6" : "translate-x-1"
                   }`}
                 />
               </button>
               <span
-                className={`text-[10px] font-black uppercase tracking-wider ${
-                  ativo ? "text-[#00d2ff]" : "text-slate-500"
+                className={`text-[11px] font-black uppercase tracking-widest ${
+                  ativo ? "text-[#00d2ff] drop-shadow-[0_0_8px_rgba(0,210,255,0.5)]" : "text-slate-500"
                 }`}
               >
-                {ativo ? "Fluxo ativo" : "Fluxo inativo"}
+                {ativo ? "Ativo" : "Pausado"}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Dica de uso */}
-            <div className="hidden lg:flex items-center gap-1.5 text-[10px] text-slate-600 mr-2">
-              <Info className="w-3 h-3" />
-              Arraste nós da paleta · Conecte pelos pontos · Clique para editar
-            </div>
-
+          <div className="flex items-center gap-3">
             {error && (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-xl text-[10px] text-red-400">
-                <AlertCircle className="w-3 h-3" />
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-2xl text-[11px] text-red-400 font-bold"
+              >
+                <AlertCircle className="w-4 h-4" />
                 {error}
-              </div>
+              </motion.div>
             )}
 
             <button
               type="button"
               onClick={clearCanvas}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-500 hover:text-white border border-white/5 hover:border-white/15 transition-all"
+              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="w-4 h-4" />
               Limpar
             </button>
 
             <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
+              whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(0,210,255,0.4)" }}
+              whileTap={{ scale: 0.95 }}
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 bg-[#00d2ff] text-black px-5 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] shadow-[0_0_20px_rgba(0,210,255,0.25)] hover:shadow-[0_0_30px_rgba(0,210,255,0.4)] transition-all disabled:opacity-60"
+              className="flex items-center gap-2 bg-linear-to-r from-[#00d2ff] to-[#3b82f6] text-black px-6 py-2.5 rounded-2xl font-black uppercase tracking-widest text-[11px] shadow-[0_0_20px_rgba(0,210,255,0.3)] disabled:opacity-50"
             >
               {saving ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Salvando...</>
+                <><Loader2 className="w-4 h-4 animate-spin" /> Salvando</>
               ) : saved ? (
-                <><CheckCircle2 className="w-3.5 h-3.5" /> Salvo!</>
+                <><CheckCircle2 className="w-4 h-4" /> Salvo!</>
               ) : (
-                <><Save className="w-3.5 h-3.5" /> Salvar</>
+                <><Save className="w-4 h-4" /> Publicar</>
               )}
             </motion.button>
           </div>
@@ -353,30 +352,34 @@ export default function FluxoTriagemPage() {
         <div className="flex flex-1 overflow-hidden">
 
           {/* ── Paleta de nós (esquerda) ── */}
-          <div className="w-52 flex-shrink-0 bg-[#020617] border-r border-white/5 overflow-y-auto py-3 px-2 space-y-4">
+          <div className="w-56 shrink-0 bg-[#020617]/50 border-r border-white/5 overflow-y-auto py-6 px-3 space-y-6 backdrop-blur-md">
             {paletteGroups.map((group) => (
-              <div key={group.category}>
-                <p className="text-[9px] font-black text-slate-600 uppercase tracking-widest px-2 mb-2">
+              <div key={group.category} className="space-y-3">
+                <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2">
                   {group.label}
                 </p>
-                <div className="space-y-1">
+                <div className="space-y-2">
                   {group.nodes.map(({ type, icon, label, border, headerBg }) => (
-                    <div
+                    <motion.div
                       key={type}
+                      whileHover={{ scale: 1.03, x: 4 }}
+                      whileTap={{ scale: 0.97 }}
                       draggable
                       onDragStart={(e) => {
                         e.dataTransfer.setData("application/reactflow", type);
                         e.dataTransfer.effectAllowed = "move";
                       }}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-xl border cursor-grab active:cursor-grabbing transition-all hover:scale-[1.02]"
+                      className="group flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-grab active:cursor-grabbing transition-all shadow-sm hover:shadow-md"
                       style={{
-                        borderColor: `${border}40`,
-                        background: `${headerBg}88`,
+                        borderColor: `${border}30`,
+                        background: `linear-gradient(135deg, ${headerBg}44, ${headerBg}22)`,
                       }}
                     >
-                      <span className="text-sm">{icon}</span>
-                      <span className="text-[10px] font-bold text-white/80">{label}</span>
-                    </div>
+                      <span className="text-lg group-hover:scale-110 transition-transform">{icon}</span>
+                      <span className="text-[11px] font-bold text-white/70 group-hover:text-white transition-colors">
+                        {label}
+                      </span>
+                    </motion.div>
                   ))}
                 </div>
               </div>
@@ -471,7 +474,7 @@ export default function FluxoTriagemPage() {
                 animate={{ x: 0, opacity: 1 }}
                 exit={{ x: 280, opacity: 0 }}
                 transition={{ type: "spring", stiffness: 400, damping: 35 }}
-                className="w-64 flex-shrink-0 bg-[#0a1628] border-l border-white/5 flex flex-col overflow-hidden"
+                className="w-64 shrink-0 bg-[#0a1628] border-l border-white/5 flex flex-col overflow-hidden"
               >
                 {/* Header do painel */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
@@ -566,6 +569,7 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     },
     sendImage:     { url: "", caption: "" },
     sendAudio:     { url: "" },
+    sendMedia:     { type: "image", url: "", caption: "" },
     aiRespond:     { prompt_extra: "" },
     aiClassify:    { conditions: [], variavel: "intencao" },
     aiSentiment:   { variavel: "sentimento" },
@@ -582,6 +586,13 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     waitInput:     { prompt: "", variavel: "resposta_usuario" },
     humanTransfer: { mensagem: "Transferindo para um atendente humano. Aguarde! 👤" },
     webhook:       { url: "", method: "POST", body: { phone: "{{phone}}" } },
+    aiMenu:        { instrucao: "Gere um menu com base na dúvida do cliente.", botao: "Ver opções", rodape: "Panobianco" },
+    setVariable:   { chave: "", valor: "" },
+    getVariable:   { chave: "" },
+    generateProtocol: { variavel: "protocolo" },
+    search:        { termo: "{{mensagem}}", variavel: "v_busca" },
+    redis:         { operacao: "set", chave: "", valor: "" },
+    sourceFilter:  {},
   };
   return defaults[type] || {};
 }

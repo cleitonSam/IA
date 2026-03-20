@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 
 from src.core.config import logger
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
+from src.services.db_queries import buscar_resposta_faq
+from src.services.ia_processor import buscar_cache_semantico
 
 # TTL do estado de fluxo: 30 minutos de inatividade reativa o fluxo do início
 FLOW_STATE_TTL = 1800
@@ -72,15 +74,24 @@ def _get_all_next_handles(fluxo: Dict, source_id: str) -> List[Tuple[str, str]]:
 # ─────────────────────────────────────────────────────────────
 
 def _render_vars(text: str, vars_dict: Dict) -> str:
-    """Substitui {{variavel}} por valores do dicionário de sessão."""
-    if not text:
+    """Substitui {{variavel.nested}} por valores do dicionário de sessão."""
+    if not text or not isinstance(text, str):
         return text
 
     def replacer(m):
-        key = m.group(1).strip()
-        return str(vars_dict.get(key, m.group(0)))
+        key_path = m.group(1).strip()
+        # Suporte básico a dot notation: "user.name"
+        parts = key_path.split(".")
+        val = vars_dict
+        for p in parts:
+            if isinstance(val, dict) and p in val:
+                val = val[p]
+            else:
+                return m.group(0) # Retorna o original se não achar
+        return str(val)
 
-    return re.sub(r"\{\{(\w+)\}\}", replacer, text)
+    # Regex agora aceita pontos e underscores
+    return re.sub(r"\{\{([\w\.]+)\}\}", replacer, text)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -229,6 +240,18 @@ async def _process_state(
         session_vars[var_name] = mensagem
         return _get_next_node_id(fluxo, node_id)
 
+    # ── setVariable: apenas avança (a lógica é executada no _execute_from) ──
+    if node_type == "setVariable":
+        return _get_next_node_id(fluxo, node_id)
+
+    # ── getVariable: apenas avança (a lógica é executada no _execute_from) ──
+    if node_type == "getVariable":
+        return _get_next_node_id(fluxo, node_id)
+
+    # ── generateProtocol: apenas avança (a lógica é executada no _execute_from) ──
+    if node_type == "generateProtocol":
+        return _get_next_node_id(fluxo, node_id)
+
     # ── Switch: compara seleção de menu ──
     if node_type == "switch":
         conditions = node.get("data", {}).get("conditions", [])
@@ -277,6 +300,19 @@ async def _process_state(
         if matched:
             return handles[0][1] if handles else None
         return handles[1][1] if len(handles) > 1 else None
+
+    # ── Search: ramifica baseado no resultado da busca ──
+    if node_type == "search":
+        # A lógica é executada no _execute_from, aqui apenas avançamos
+        return _get_next_node_id(fluxo, node_id)
+
+    # ── SourceFilter: ramifica baseado na origem (privado/grupo) ──
+    if node_type == "sourceFilter":
+        return _get_next_node_id(fluxo, node_id)
+
+    # ── Redis (DB): apenas avança ──
+    if node_type == "redis":
+        return _get_next_node_id(fluxo, node_id)
 
     return _get_next_node_id(fluxo, node_id)
 
@@ -539,17 +575,161 @@ async def _execute_from(
             data.get("mensagem", "Transferindo para um atendente humano. Aguarde!"),
             session_vars
         )
+        team_id = data.get("team_id")
         await _bot_sent_marker(empresa_id, phone)
-        await uaz_client.send_text(phone, mensagem_transfer)
+        # Se team_id for informado, podemos passar para o uaz_client (exemplo hipotético de suporte no client)
+        if team_id and hasattr(uaz_client, "transfer_to_team"):
+            await uaz_client.transfer_to_team(phone, team_id, mensagem_transfer)
+        else:
+            await uaz_client.send_text(phone, mensagem_transfer)
+            
         # Pausa a IA para este contato (usando chave genérica de fone)
         await redis_client.setex(f"pause_ia_phone:{empresa_id}:{phone}", 86400, "1")
         await _clear_state(empresa_id, phone)
-        logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id}")
+        logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
+        return
+
+    # ── code (Python Snippet) ──
+    if node_type == "code":
+        code_str = data.get("code", "")
+        # Executa em ambiente restrito
+        local_vars = {"vars": session_vars, "mensagem": mensagem, "json": json, "random": __import__("random")}
+        try:
+            # Padrão: o código deve definir uma variável 'output'
+            exec(code_str, {}, local_vars)
+            session_vars.update(local_vars.get("vars", {}))
+            if "output" in local_vars:
+                session_vars["code_output"] = local_vars["output"]
+        except Exception as e:
+            logger.error(f"[FlowExecutor] Erro no nó Code: {e}")
+        
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── setVariable ──
+    if node_type == "setVariable":
+        key = data.get("chave", "")
+        value = _render_vars(data.get("valor", ""), session_vars)
+        if key:
+            await _update_var(empresa_id, phone, key, value)
+            session_vars[key] = value
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── getVariable ──
+    if node_type == "getVariable":
+        key = data.get("chave", "")
+        # A variável já está no session_vars se foi carregada no início do executar_fluxo
+        # mas aqui podemos forçar um 'rename' ou apenas garantir que o fluxo continue
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── generateProtocol ──
+    if node_type == "generateProtocol":
+        import random
+        protocolo = str(random.randint(100000, 999999))
+        var_name = data.get("variavel", "protocolo")
+        await _update_var(empresa_id, phone, var_name, protocolo)
+        session_vars[var_name] = protocolo
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── aiMenu (Inovador) ──
+    if node_type == "aiMenu":
+        await _execute_aimenu(empresa_id, phone, mensagem, fluxo, node, uaz_client, session_vars, _depth)
         return
 
     # ── Webhook ──
     if node_type == "webhook":
         await _execute_webhook(data, session_vars, empresa_id, phone)
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── Search (Busca IA) ──
+    if node_type == "search":
+        termo = _render_vars(data.get("termo", ""), session_vars)
+        if not termo:
+            termo = mensagem
+        
+        # Tenta FAQ (Token Match)
+        # Para isso precisamos do slug da unidade se houver.
+        # Por enquanto, assumimos busca global ou passamos None se não houver contexto claro.
+        slug = session_vars.get("unidade_slug") or "default"
+        resultado = await buscar_resposta_faq(termo, slug, empresa_id)
+        
+        if not resultado:
+            # Tenta Cache Semântico (Embedding)
+            res_cache = await buscar_cache_semantico(termo, slug, empresa_id)
+            if res_cache:
+                resultado = res_cache.get("resposta")
+
+        var_name = data.get("variavel", "v_busca")
+        matched_handle = "not_found"
+        if resultado:
+            await _update_var(empresa_id, phone, var_name, resultado)
+            session_vars[var_name] = resultado
+            matched_handle = "found"
+        
+        next_id = _get_next_node_id(fluxo, node_id, matched_handle)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── Redis (DB) ──
+    if node_type == "redis":
+        operacao = data.get("operacao", "set")
+        chave = _render_vars(data.get("chave", ""), session_vars)
+        if chave:
+            if operacao == "set":
+                valor = _render_vars(data.get("valor", ""), session_vars)
+                await redis_client.setex(chave, 86400, valor)
+            elif operacao == "get":
+                valor = await redis_client.get(chave)
+                var_dest = data.get("variavel_destino", "v_redis")
+                if valor:
+                    await _update_var(empresa_id, phone, var_dest, valor)
+                    session_vars[var_dest] = valor
+            elif operacao == "del":
+                await redis_client.delete(chave)
+        
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── SourceFilter (Privado vs Grupo) ──
+    if node_type == "sourceFilter":
+        # phone geralmente é o número, mas no uazapi para grupos é @g.us
+        # Precisamos de algo mais confiável. No uaz_webhook.py passamos o 'phone' extraído.
+        # Se contiver '-' ou '@g.us' é grupo.
+        is_group = "@g.us" in phone or "-" in phone
+        handle = "group" if is_group else "private"
+        next_id = _get_next_node_id(fluxo, node_id, handle)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── Send Media (Imagem, Vídeo, Documento) ──
+    if node_type == "sendMedia":
+        url = _render_vars(data.get("url", ""), session_vars)
+        if url:
+            m_type = data.get("type", "image")
+            caption = _render_vars(data.get("caption", ""), session_vars)
+            await uaz_client.send_media(phone, url, m_type, delay=1000)
+            # Legenda se houver e for imagem/video
+            if caption and m_type in ["image", "video"]:
+                 await uaz_client.send_text(phone, caption)
+        
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
@@ -652,3 +832,92 @@ async def _execute_webhook(data: Dict, session_vars: Dict, empresa_id: int, phon
 async def _bot_sent_marker(empresa_id: int, phone: str):
     """Marca que o próximo fromMe é do bot (não do atendente humano)."""
     await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 30, "1")
+
+
+# ─────────────────────────────────────────────────────────────
+# AI Menu — Geração dinâmica de menu via LLM
+# ─────────────────────────────────────────────────────────────
+
+async def _execute_aimenu(
+    empresa_id: int,
+    phone: str,
+    mensagem: str,
+    fluxo: Dict,
+    node: Dict,
+    uaz_client,
+    session_vars: Dict,
+    _depth: int,
+):
+    """Usa IA para gerar um menu contextual e enviar ao usuário."""
+    node_id = node["id"]
+    data = node.get("data", {})
+    instrucao = data.get("instrucao", "Gere um menu com opções de atendimento baseado na dúvida do cliente.")
+    
+    # Prompt para o LLM gerar o menu em JSON
+    prompt = (
+        f"Você é um especialista em experiência do cliente e atendimento via WhatsApp.\n"
+        f"Sua missão é gerar um menu interativo extremamente útil, amigável e focado na dúvida do usuário.\n\n"
+        f"Instrução Estratégica: {instrucao}\n"
+        f"Mensagem do Usuário: {mensagem}\n"
+        f"Histórico/Variáveis: {json.dumps(session_vars, ensure_ascii=False)}\n\n"
+        f"REGRAS CRÍTICAS:\n"
+        f"1. Responda APENAS um JSON válido.\n"
+        f"2. O campo 'texto' deve ser caloroso, empático e usar emojis.\n"
+        f"3. O campo 'titulo' deve ser curto e profissional.\n"
+        f"4. O campo 'choices' deve ser uma lista de strings no formato 'Etiqueta Visível|id_curto'.\n"
+        f"5. Gere no máximo 5 opções.\n"
+        f"6. Tudo deve ser em PORTUGUÊS (Brasil).\n\n"
+        f"Exemplo de saída:\n"
+        f"{{\n"
+        f"  \"texto\": \"Olá! Vi que você quer saber sobre planos. Qual tipo de treino você prefere? 😊\",\n"
+        f"  \"titulo\": \"Opções de Planos\",\n"
+        f"  \"choices\": [\"Musculação|plano_musc\", \"Aulas Coletivas|plano_aula\", \"Falar com Humano|atendente\"]\n"
+        f"}}"
+    )
+
+    result_raw = await _call_ia(prompt, mensagem, max_tokens=300)
+    try:
+        # Extrai JSON caso a IA tenha colocado markdown
+        json_str = result_raw.strip()
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0].strip()
+            
+        menu_config = json.loads(json_str)
+        
+        # Prepara dados para o uaz_client.send_menu
+        # uaz_client.send_menu espera: { tipo, titulo, texto, rodape, botao, opcoes: [{id, titulo}] }
+        choices_raw = menu_config.get("choices", [])
+        opcoes = []
+        for choice in choices_raw:
+            if "|" in choice:
+                lbl, cid = choice.split("|", 1)
+                opcoes.append({"titulo": lbl.strip(), "id": cid.strip()})
+            else:
+                opcoes.append({"titulo": choice.strip(), "id": choice.strip().lower().replace(" ", "_")})
+
+        final_menu = {
+            "tipo": "list",
+            "titulo": menu_config.get("titulo", "Menu de IA"),
+            "texto": menu_config.get("texto", "Como posso ajudar?"),
+            "rodape": data.get("rodape", "Powered by IA"),
+            "botao": data.get("botao", "Ver opções"),
+            "opcoes": opcoes
+        }
+
+        await _bot_sent_marker(empresa_id, phone)
+        sent = await uaz_client.send_menu(phone, final_menu)
+        if sent:
+            next_id = _get_next_node_id(fluxo, node_id)
+            if next_id:
+                await _set_state(empresa_id, phone, {
+                    "node_id": next_id,
+                    "step": "awaiting_menu_reply",
+                })
+    except Exception as e:
+        logger.error(f"[FlowExecutor] Erro ao gerar AI Menu: {e} | Resposta: {result_raw}")
+        # Se falhar, tenta apenas responder via IA normal ou end
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
