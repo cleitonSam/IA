@@ -929,6 +929,18 @@ export default function PersonalityPage() {
                               <Clock className="w-4 h-4 text-[#00d2ff]" />
                               <h3 className="font-black text-sm text-white uppercase tracking-wider">Horário de Atendimento</h3>
                             </div>
+
+                            {/* Aviso: personalidade inativa — horário não será aplicado */}
+                            {!fd.ativo && (
+                              <div className="flex items-start gap-2.5 p-3.5 bg-amber-500/8 border border-amber-500/20 rounded-xl mb-2">
+                                <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                                <p className="text-xs text-amber-300/90 leading-relaxed">
+                                  Esta personalidade está <span className="font-black text-amber-400">inativa</span> — o horário configurado não será aplicado.
+                                  Ative-a na seção <span className="font-black text-white">Engine</span> para que o horário entre em vigor.
+                                </p>
+                              </div>
+                            )}
+
                             <div className={card}>
                               <div className="flex gap-2">
                                 {(["dia_todo", "horario_especifico"] as const).map(tipo => {
@@ -975,7 +987,9 @@ export default function PersonalityPage() {
                                           <span className={`text-xs font-bold w-28 ${diaAtivo ? "text-white" : "text-slate-600"}`}>{label}</span>
                                           {diaAtivo ? (
                                             <div className="flex flex-wrap gap-2 flex-1">
-                                              {periodos.map((p, i) => (
+                                              {periodos.map((p, i) => {
+                                                const periodoInvalido = p.inicio && p.fim && p.inicio >= p.fim;
+                                                return (
                                                 <div key={i} className="flex items-center gap-1.5">
                                                   <input type="time" value={p.inicio}
                                                     onChange={e => { const np = [...periodos]; np[i] = {...np[i], inicio: e.target.value}; setDia(np); }}
@@ -984,13 +998,18 @@ export default function PersonalityPage() {
                                                   <span className="text-slate-600 text-xs">–</span>
                                                   <input type="time" value={p.fim}
                                                     onChange={e => { const np = [...periodos]; np[i] = {...np[i], fim: e.target.value}; setDia(np); }}
-                                                    className="bg-[#0a1628] border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-[#00d2ff]/30"
+                                                    className={`bg-[#0a1628] border rounded-lg px-2 py-1 text-xs text-white focus:outline-none transition-colors ${
+                                                      periodoInvalido
+                                                        ? "border-amber-500/60 focus:border-amber-500/80"
+                                                        : "border-white/10 focus:border-[#00d2ff]/30"
+                                                    }`}
+                                                    title={periodoInvalido ? "Fim menor que início — o período cruzará meia-noite" : undefined}
                                                   />
                                                   {periodos.length > 1 && (
                                                     <button type="button" onClick={() => setDia(periodos.filter((_, j) => j !== i))} className="text-slate-600 hover:text-red-400"><X className="w-3 h-3" /></button>
                                                   )}
                                                 </div>
-                                              ))}
+                                              ); })}
                                               {periodos.length < 2 && (
                                                 <button type="button" onClick={() => setDia([...periodos, { inicio: "14:00", fim: "18:00" }])}
                                                   className="text-[10px] text-[#00d2ff]/60 hover:text-[#00d2ff] flex items-center gap-1 font-bold"

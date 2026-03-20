@@ -226,7 +226,17 @@ def ia_esta_no_horario(config: Any) -> bool:
         try:
             h_ini, m_ini = map(int, periodo["inicio"].split(":"))
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
-            esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim)
+            t_ini = dtime(h_ini, m_ini)
+            t_fim = dtime(h_fim, m_fim)
+            if t_ini == t_fim:
+                # Período degenerado (início == fim) — ignora
+                continue
+            elif t_ini < t_fim:
+                # Período normal, ex: 08:00 – 18:00
+                esta_no_periodo = t_ini <= hora_atual < t_fim
+            else:
+                # Período que cruza meia-noite, ex: 23:50 – 01:00
+                esta_no_periodo = hora_atual >= t_ini or hora_atual < t_fim
             if esta_no_periodo:
                 return True
         except (KeyError, ValueError, AttributeError):
