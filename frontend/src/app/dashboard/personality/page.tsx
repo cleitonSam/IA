@@ -932,7 +932,7 @@ export default function PersonalityPage() {
 
                             {/* Aviso: personalidade inativa — horário não será aplicado */}
                             {!fd.ativo && (
-                              <div className="flex items-start gap-2.5 p-3.5 bg-amber-500/8 border border-amber-500/20 rounded-xl mb-2">
+                              <div className="flex items-start gap-2.5 p-3.5 bg-amber-500/8 border border-amber-500/20 rounded-xl mb-4">
                                 <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
                                 <p className="text-xs text-amber-300/90 leading-relaxed">
                                   Esta personalidade está <span className="font-black text-amber-400">inativa</span> — o horário configurado não será aplicado.
@@ -940,7 +940,6 @@ export default function PersonalityPage() {
                                 </p>
                               </div>
                             )}
-
                             <div className={card}>
                               <div className="flex gap-2">
                                 {(["dia_todo", "horario_especifico"] as const).map(tipo => {

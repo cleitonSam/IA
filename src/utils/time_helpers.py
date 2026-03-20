@@ -1,9 +1,12 @@
 import json
+import logging
 import re
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from typing import Optional, Any, Tuple
 from src.utils.text_helpers import normalizar
+
+logger = logging.getLogger(__name__)
 
 def saudacao_por_horario() -> str:
     """
@@ -219,15 +222,24 @@ def ia_esta_no_horario(config: Any) -> bool:
         try:
             h_ini, m_ini = map(int, periodo["inicio"].split(":"))
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
+
             t_ini = dtime(h_ini, m_ini)
-            t_fim = dtime(h_fim, m_fim)
-            # Período só é válido quando fim > inicio.
-            # Se fim <= inicio o período é ignorado (inválido ou cruzamento de
-            # meia-noite não suportado — use dois períodos separados: ex:
-            # 23:00-23:59 e 00:00-01:00).
-            if t_fim <= t_ini:
-                continue
-            if t_ini <= hora_atual < t_fim:
+
+            # Ajuste para fim do dia (00:00 interpretado como o limite final da data atual)
+            if h_fim == 0 and m_fim == 0:
+                # Se o fim é 00:00, tratamos como 23:59:59 daquele mesmo dia
+                esta_no_periodo = t_ini <= hora_atual <= dtime(23, 59, 59)
+            else:
+                t_fim = dtime(h_fim, m_fim)
+                # Período só é válido quando fim > inicio.
+                # Se inicio >= fim o período é ignorado (ex: 23:50-18:00).
+                if t_ini >= t_fim:
+                    logger.info(f"🕒 [Horário IA] Período inválido ignorado: {periodo['inicio']} >= {periodo['fim']}")
+                    continue
+                esta_no_periodo = t_ini <= hora_atual < t_fim
+
+            logger.info(f"🕒 [Horário IA] Check: {periodo['inicio']} - {periodo['fim']} -> {esta_no_periodo}")
+            if esta_no_periodo:
                 return True
         except Exception as e:
             logger.error(f"🕒 [Horário IA] Erro ao processar período {periodo}: {e}")

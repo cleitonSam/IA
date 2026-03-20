@@ -402,6 +402,7 @@ async def update_personality_by_id(
         raise HTTPException(status_code=404, detail="Personalidade não encontrada")
     horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
     menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
+    logger.info(f"💾 [Save Personalidade] pid={pid} empresa={empresa_id} | horario_atendimento_ia={horario_json}")
     try:
         await _database.db_pool.execute(
             """UPDATE personalidade_ia
