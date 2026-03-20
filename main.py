@@ -63,24 +63,13 @@ except ImportError:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
 
-# --- PROMETHEUS METRICS (opcional — instale prometheus-client para ativar) ---
-try:
-    from prometheus_client import (
-        Counter, Histogram, Gauge,
-        generate_latest, CONTENT_TYPE_LATEST
-    )
-    _PROMETHEUS_OK = True
-
-    METRIC_WEBHOOKS_TOTAL  = Counter("saas_webhooks_total",  "Total de webhooks recebidos", ["event"])
-    METRIC_IA_LATENCY      = Histogram("saas_ia_latency_seconds", "Latência do LLM em segundos",
-                                        buckets=[0.5, 1, 2, 5, 10, 30])
-    METRIC_FAST_PATH_TOTAL = Counter("saas_fast_path_total", "Respostas via fast-path", ["tipo"])
-    METRIC_ERROS_TOTAL     = Counter("saas_erros_total",     "Erros críticos por tipo", ["tipo"])
-    METRIC_CONVERSAS_ATIVAS = Gauge("saas_conversas_ativas", "Conversas ativas no Redis")
-    METRIC_PLANOS_ENVIADOS  = Counter("saas_planos_enviados_total", "Planos enviados ao cliente")
-    METRIC_ALUNO_DETECTADO  = Counter("saas_tipo_cliente_total", "Tipo de cliente detectado", ["tipo"])
-except ImportError:
-    _PROMETHEUS_OK = False
+# --- PROMETHEUS METRICS ---
+from src.core.config import (
+    PROMETHEUS_OK as _PROMETHEUS_OK,
+    METRIC_WEBHOOKS_TOTAL, METRIC_IA_LATENCY, METRIC_FAST_PATH_TOTAL,
+    METRIC_ERROS_TOTAL, METRIC_CONVERSAS_ATIVAS, METRIC_PLANOS_ENVIADOS,
+    METRIC_ALUNO_DETECTADO, generate_latest, CONTENT_TYPE_LATEST
+)
 
 load_dotenv()
 
