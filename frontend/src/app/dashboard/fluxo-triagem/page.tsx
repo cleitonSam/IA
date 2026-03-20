@@ -290,7 +290,7 @@ export default function FluxoTriagemPage() {
                 type="button"
                 onClick={() => setAtivo((v) => !v)}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all duration-300 ${
-                  ativo ? "bg-gradient-to-r from-[#00d2ff] to-[#3b82f6]" : "bg-slate-800"
+                  ativo ? "bg-linear-to-r from-[#00d2ff] to-[#3b82f6]" : "bg-slate-800"
                 }`}
               >
                 <span

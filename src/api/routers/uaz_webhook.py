@@ -94,6 +94,8 @@ async def uazapi_webhook(
         # Verificar se há fluxo ativo ANTES do menu simples legado.
         # Se o fluxo tratar a mensagem, retorna imediatamente.
         _fluxo_config = await carregar_fluxo_triagem(empresa_id)
+        logger.debug(f"[FluxoTriagem] Config para empresa {empresa_id}: ativo={_fluxo_config.get('ativo') if _fluxo_config else 'None'}")
+        
         if _fluxo_config and _fluxo_config.get("ativo"):
             _ia_pausada_fluxo = False
             if conversa_existente:
@@ -101,6 +103,9 @@ async def uazapi_webhook(
                 if _conv_id_f:
                     _ia_pausada_fluxo = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{_conv_id_f}"))
             _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{phone}"))
+            
+            logger.debug(f"[FluxoTriagem] IA Pausada: {_ia_pausada_fluxo}, Phone Paused: {_phone_paused}")
+            
             if not _ia_pausada_fluxo and not _phone_paused:
                 _uaz_fluxo = UazAPIClient(
                     base_url=integracao.get("url", ""),

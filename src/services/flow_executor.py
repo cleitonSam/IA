@@ -185,11 +185,12 @@ async def executar_fluxo(
 
     if state:
         # Fluxo em andamento — processar resposta do usuário
+        logger.info(f"🔄 [FlowExecutor] Continuando fluxo para {phone} no nó {state.get('node_id')}")
         next_node_id = await _process_state(
             state, mensagem, fluxo, empresa_id, phone, session_vars
         )
         if next_node_id is None:
-            # Nenhuma ramificação correspondente — encerra
+            logger.info(f"⏹️ [FlowExecutor] Nenhuma ramificação para '{mensagem}', encerrando fluxo.")
             await _clear_state(empresa_id, phone)
             return True
         await _execute_from(
@@ -203,7 +204,10 @@ async def executar_fluxo(
             return False
         first_next = _get_next_node_id(fluxo, start_node["id"])
         if not first_next:
+            logger.warning(f"[FlowExecutor] Nó 'start' ({start_node['id']}) não está conectado a nada.")
             return False
+            
+        logger.info(f"🚀 [FlowExecutor] Iniciando novo fluxo para {phone}")
         await _execute_from(
             empresa_id, phone, mensagem, fluxo, first_next, uaz_client, session_vars
         )
