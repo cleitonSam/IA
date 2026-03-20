@@ -782,7 +782,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
 
     try:
         query = """
-            SELECT p.*
+            SELECT p.*, fn_ia_esta_no_horario_v2(p.horario_atendimento_ia) AS esta_no_horario
             FROM personalidade_ia p
             WHERE p.empresa_id = $1 AND p.ativo = true
             ORDER BY p.updated_at DESC
