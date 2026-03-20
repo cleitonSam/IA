@@ -226,7 +226,15 @@ def ia_esta_no_horario(config: Any) -> bool:
         try:
             h_ini, m_ini = map(int, periodo["inicio"].split(":"))
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
-            esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim)
+            
+            # Ajuste para fim do dia (00:00 interpretado como o limite final da data atual)
+            if h_fim == 0 and m_fim == 0:
+                # Se o fim é 00:00, tratamos como 23:59:59 daquele mesmo dia
+                # para que hora_atual (ex: 22:51) seja corretamente validada.
+                esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual <= dtime(23, 59, 59)
+            else:
+                esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim)
+
             if esta_no_periodo:
                 return True
         except (KeyError, ValueError, AttributeError):
