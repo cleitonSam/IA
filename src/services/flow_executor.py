@@ -271,7 +271,16 @@ async def _process_state(
                 matched_handle = cond.get("handle")
                 break
             
-            # 2. Match numérico inteligente (ex: "1" em "1 - Opção")
+            # 2. Suporte a Formato de Lista UazAPI/Chatwoot
+            # Ex: "Selecao: SAC / Suporte (id_suporte)"
+            if val and f"({val})" in msg_lower:
+                matched_handle = cond.get("handle")
+                break
+            if label and f"selecao: {label}" in msg_lower:
+                matched_handle = cond.get("handle")
+                break
+
+            # 3. Match numérico inteligente (ex: "1" em "1 - Opção")
             if msg_lower.isdigit():
                 if label.startswith(msg_lower):
                     # Garante que não é "1" em "10"
@@ -280,9 +289,13 @@ async def _process_state(
                         matched_handle = cond.get("handle")
                         break
             
-            # 3. Match de texto por palavra inteira (se mensagem for longa o suficiente)
+            # 4. Match de texto por palavra inteira (se mensagem for longa o suficiente)
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
+                    matched_handle = cond.get("handle")
+                    break
+                # Caso inverso: a label (longa) está na mensagem (ex: resposta de lista)
+                if len(label) > 3 and label in msg_lower:
                     matched_handle = cond.get("handle")
                     break
 
@@ -463,8 +476,6 @@ async def _execute_from(
         # Ramifica pela mensagem atual
         conditions = data.get("conditions", [])
         msg_lower = mensagem.lower().strip()
-        matched_handle = None
-
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
@@ -474,16 +485,27 @@ async def _execute_from(
                 matched_handle = cond.get("handle")
                 break
             
-            # 2. Match numérico (ex: "1" em "1 - Sim")
+            # 2. Suporte a UazAPI (id) ou "Selecao: label"
+            if val and f"({val})" in msg_lower:
+                matched_handle = cond.get("handle")
+                break
+            if label and f"selecao: {label}" in msg_lower:
+                matched_handle = cond.get("handle")
+                break
+
+            # 3. Match numérico (ex: "1" em "1 - Sim")
             if msg_lower.isdigit() and label.startswith(msg_lower):
                 suffix = label[len(msg_lower):]
                 if not suffix or not suffix[0].isdigit():
                     matched_handle = cond.get("handle")
                     break
 
-            # 3. Match de texto (palavra inteira)
+            # 4. Match de texto (palavra inteira ou label na mensagem)
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
+                    matched_handle = cond.get("handle")
+                    break
+                if len(label) > 3 and label in msg_lower:
                     matched_handle = cond.get("handle")
                     break
         if matched_handle:
