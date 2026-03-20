@@ -13,6 +13,13 @@ import uuid
 import time
 import zlib
 import unicodedata
+import os
+import sys
+
+# Garante que o diretório raiz esteja no sys.path para imports modularizados
+_root = os.path.dirname(os.path.abspath(__file__))
+if _root not in sys.path:
+    sys.path.append(_root)
 from decimal import Decimal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,6 +31,11 @@ import redis.asyncio as redis
 import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from rapidfuzz import fuzz
+
+# Imports para Fluxo Visual (Triagem)
+from src.services.db_queries import carregar_fluxo_triagem, carregar_integracao
+from src.services.flow_executor import executar_fluxo
+from src.services.uaz_client import UazAPIClient
 
 # --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
 try:
@@ -81,9 +93,11 @@ app = FastAPI()
 from src.api.routers.auth import router as auth_router
 from src.api.routers.dashboard import router as dashboard_router
 from src.api.routers.management import router as management_router
+from src.api.routers.uaz_webhook import router as uaz_webhook_router
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(management_router)
+app.include_router(uaz_webhook_router)
 
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook
@@ -3528,6 +3542,41 @@ async def processar_ia_e_responder(
     try:
         # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
         await asyncio.sleep(0.8)
+
+        # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
+        # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
+        _fluxo_config = await carregar_fluxo_triagem(empresa_id)
+        if _fluxo_config and _fluxo_config.get("ativo"):
+            # Recupera o telefone do Redis (armazenado pelo webhook)
+            _fone_redis = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if _fone_redis:
+                # Verifica se a IA está pausada para esta conversa
+                _ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"))
+                _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis}"))
+                
+                if not _ia_pausada and not _phone_paused:
+                    # Carrega integração para envio
+                    _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                    if _integr_uaz:
+                        _uaz_fluxo_cli = UazAPIClient(
+                            base_url=_integr_uaz.get("url", ""),
+                            token=_integr_uaz.get("token", ""),
+                            instance_name=_integr_uaz.get("instance", "default")
+                        )
+                        # Pega a última mensagem do buffer para o fluxo
+                        _mensagens_pool = await coletar_mensagens_buffer(conversation_id)
+                        if _mensagens_pool:
+                            _ultima_msg = _mensagens_pool[-1]
+                            _tratou = await executar_fluxo(empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli)
+                            if _tratou:
+                                logger.info(f"✅ [FluxoTriagem Monolith] Mensagem tratada pelo fluxo visual para {_fone_redis}")
+                                # Se tratou, libera o lock e encerra para evitar que a IA responda
+                                try:
+                                    await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
+                                except Exception: pass
+                                return True
+
+        # --- FIM Fluxo Visual ---
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
