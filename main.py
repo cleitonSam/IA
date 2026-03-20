@@ -3708,6 +3708,9 @@ Convênios: {convenios_prompt}
                 'tom_voz', 'estilo_comunicacao', 'saudacao_personalizada',
                 'instrucoes_base', 'regras_atendimento', 'modelo_preferido',
                 'temperatura', 'created_at', 'updated_at',
+                # Campos puramente visuais — não entram no prompt
+                'emoji_cor', 'model_name', 'temperature', 'max_tokens',
+                'usar_emoji', 'horario_atendimento_ia', 'menu_triagem',
             }
             _LABEL_MAP = {
                 'objetivos_venda':     'OBJETIVOS DE VENDA',
@@ -3726,6 +3729,8 @@ Convênios: {convenios_prompt}
                 'idioma':              'IDIOMA',
                 'horario_ativo_inicio':'HORÁRIO ATIVO INÍCIO',
                 'horario_ativo_fim':   'HORÁRIO ATIVO FIM',
+                # Emojis rotativos — a IA deve alternar entre eles nas respostas
+                'emoji_tipo':          'EMOJIS ROTATIVOS (alterne entre eles nas respostas)',
             }
 
             _extras_prompt = ""
