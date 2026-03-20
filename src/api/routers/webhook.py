@@ -392,7 +392,7 @@ async def chatwoot_webhook(
         if is_ai_message:
             return {"status": "ignorado"}
             
-        if await exists_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{id_conv}"):
+        if message_type == "outgoing" and await exists_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{id_conv}"):
             logger.info(f"⏭️ Ignorando bloqueio: mensagem reconhecida como eco do UazAPI (conv: {id_conv})")
             return {"status": "ignorado_uazapi_echo"}
                 

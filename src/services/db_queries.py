@@ -494,7 +494,7 @@ async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:

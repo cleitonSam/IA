@@ -2485,7 +2485,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
@@ -4433,7 +4433,7 @@ async def chatwoot_webhook(
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
     # NÃO deleta a flag — mídia gera múltiplos webhooks (sent/thumbnail/delivered)
     # e todos precisam ser ignorados. A flag expira naturalmente via TTL (45-90s).
-    if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
+    if message_type == "outgoing" and await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
         logger.info(f"♻️ Echo UazAPI detectado e ignorado para conv {id_conv}")
         return {"status": "eco_uazapi_ignorado"}
 
