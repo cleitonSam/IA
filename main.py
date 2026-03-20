@@ -3493,6 +3493,24 @@ async def baixar_midia_com_retry(url: str, timeout: float = 15.0, headers: Optio
     return resp
 
 
+def get_tenant_key(empresa_id: int, suffix: str) -> str:
+    """Gera uma chave de cache prefixada pelo ID da empresa para multi-tenancy."""
+    return f"tenant:{empresa_id}:{suffix}"
+
+async def enviar_aviso_fora_horario(account_id: int, conversation_id: int, integracao: dict, empresa_id: int):
+    """Envia uma mensagem automática educada se a IA for contatada fora do horário de atendimento."""
+    chave_aviso = get_tenant_key(empresa_id, f"aviso_fora_horario:{conversation_id}")
+    if await redis_client.get(chave_aviso):
+        return
+    
+    mensagem = "Olá! 👋 No momento nossa IA está fora do horário de atendimento, mas sua mensagem foi recebida! Assim que voltarmos, responderemos com prioridade. Obrigado pela compreensão! ✨"
+    try:
+        await enviar_mensagem_chatwoot(account_id, conversation_id, mensagem, integracao, empresa_id)
+        await redis_client.setex(chave_aviso, 3600, "1") # Silêncio de 1 hora para o mesmo aviso
+    except Exception as e:
+        logger.error(f"❌ Erro ao enviar aviso de fora de horário: {e}")
+
+
 async def processar_ia_e_responder(
     account_id: int,
     conversation_id: int,
