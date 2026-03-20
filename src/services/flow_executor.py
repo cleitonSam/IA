@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from src.core.config import logger
 from src.core.redis_client import redis_client, redis_get_json, redis_set_json
-from src.services.db_queries import buscar_resposta_faq
+from src.services.db_queries import buscar_resposta_faq, carregar_personalidade
 from src.services.ia_processor import buscar_cache_semantico
 
 # TTL do estado de fluxo: 30 minutos de inatividade reativa o fluxo do início
@@ -468,12 +468,20 @@ async def _execute_from(
 
     # ── AIRespond ──
     if node_type == "aiRespond":
-        # Delega ao bot_core via redis pub/sub para usar todo o pipeline de IA
+        # Chama a IA para responder com base na mensagem e contexto
         prompt_extra = data.get("prompt_extra", "")
-        await redis_client.publish(
-            f"flow:ai_respond:{empresa_id}:{phone}",
-            json.dumps({"prompt_extra": prompt_extra, "mensagem": mensagem})
-        )
+        # Carrega personalidade da empresa para contexto global
+        from src.services.db_queries import carregar_personalidade
+        pers = await carregar_personalidade(empresa_id) or {}
+        p_base = pers.get("instrucoes", "Você é um assistente virtual prestativo.")
+        
+        full_prompt = f"{p_base}\n\nREGRAS EXTRA: {prompt_extra}" if prompt_extra else p_base
+        resposta_ia = await _call_ia(full_prompt, mensagem)
+        
+        if resposta_ia:
+            await _bot_sent_marker(empresa_id, phone)
+            await uaz_client.send_text(phone, resposta_ia)
+            
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)

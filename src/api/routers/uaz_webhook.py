@@ -37,8 +37,8 @@ async def uazapi_webhook(
         key = message.get("key", {})
         remote_jid = key.get("remoteJid", "")
 
-        if not remote_jid or "@s.whatsapp.net" not in remote_jid:
-            return {"status": "ignored", "reason": "not_personal_chat"}
+        if not remote_jid or ("@s.whatsapp.net" not in remote_jid and "@g.us" not in remote_jid):
+            return {"status": "ignored", "reason": "not_supported_jid"}
 
         phone = remote_jid.split("@")[0]
 
