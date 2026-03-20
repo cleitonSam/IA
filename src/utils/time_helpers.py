@@ -183,19 +183,9 @@ _DIA_KEYS = {
 def ia_esta_no_horario(config: Any) -> bool:
     """
     Verifica se a IA deve atender agora com base na configuração de horário.
-
-    Estrutura esperada em config:
-        {"tipo": "dia_todo"}
-        ou
-        {"tipo": "horario_especifico", "dias": {
-            "segunda": [{"inicio": "08:00", "fim": "18:00"}],
-            "sabado":  [{"inicio": "09:00", "fim": "13:00"}],
-            "domingo": []
-        }}
-
-    Retorna True se a IA deve atender agora, False caso contrário.
-    Retorna True se config for None ou inválido (comportamento padrão: atende sempre).
     """
+    logger.info(f"🕒 [Horário IA] Raw Config recebido: {config}")
+
     if not config:
         return True
 
@@ -216,10 +206,13 @@ def ia_esta_no_horario(config: Any) -> bool:
     dia_key = _DIA_KEYS.get(agora.weekday(), "segunda")
     hora_atual = agora.time()
 
+    logger.info(f"🕒 [Horário IA] Verificando para {dia_key} às {hora_atual.strftime('%H:%M:%S')} (SP)")
+
     dias = config.get("dias", {})
     periodos = dias.get(dia_key, [])
 
     if not periodos:
+        logger.info(f"🕒 [Horário IA] Nenhum período configurado para {dia_key}. Resultado: False")
         return False
 
     for periodo in periodos:
@@ -239,7 +232,8 @@ def ia_esta_no_horario(config: Any) -> bool:
                 esta_no_periodo = hora_atual >= t_ini or hora_atual < t_fim
             if esta_no_periodo:
                 return True
-        except (KeyError, ValueError, AttributeError):
+        except Exception as e:
+            logger.error(f"🕒 [Horário IA] Erro ao processar período {periodo}: {e}")
             continue
 
     return False

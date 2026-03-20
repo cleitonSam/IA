@@ -261,6 +261,13 @@ async def update_personality(
             *list(update_data.values())
         )
 
+    # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
+    if update_data.get("ativo"):
+        await _database.db_pool.execute(
+            "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != (SELECT id FROM personalidade_ia WHERE empresa_id = $1 ORDER BY updated_at DESC LIMIT 1)",
+            empresa_id
+        )
+
     # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
     await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
@@ -363,7 +370,16 @@ async def create_personality(
             data.regras_formatacao, data.regras_seguranca,
             data.emoji_tipo, data.emoji_cor
         )
-        return {"id": row["id"], "status": "success"}
+        new_id = row["id"]
+        
+        # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
+        if data.ativo:
+            await _database.db_pool.execute(
+                "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
+                empresa_id, new_id
+            )
+        
+        return {"id": new_id, "status": "success"}
     except Exception as e:
         logger.error(f"Erro ao criar personalidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao criar personalidade")
@@ -413,6 +429,13 @@ async def update_personality_by_id(
     except Exception as e:
         logger.error(f"Erro ao atualizar personalidade {pid}: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e)}")
+
+    # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
+    if data.ativo:
+        await _database.db_pool.execute(
+            "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
+            empresa_id, pid
+        )
     # Invalida caches para forçar releitura imediata no bot e no webhook
     await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
     await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")

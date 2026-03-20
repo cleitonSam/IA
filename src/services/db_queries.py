@@ -242,11 +242,18 @@ async def buscar_planos_evo_da_api(
             else:
                 diffs = []
 
-            valor_total = item.get('value')
-            valor_mensal = (valor_total / 12) if valor_total else 0
+            valor_total = item.get('value') or 0
+            if not valor_total:
+                continue
+
+            # Só divide por 12 se o valor for maior que 1000 (ex: plano anual)
+            valor_mensal = (valor_total / 12) if valor_total > 1000 else valor_total
 
             valor_promo_total = item.get('valuePromotionalPeriod')
-            valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total else None
+            if valor_promo_total:
+                valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total > 1000 else valor_promo_total
+            else:
+                valor_promo_mensal = None
 
             plano = {
                 'id': item.get('idMembership'),
@@ -285,25 +292,27 @@ async def sincronizar_planos_evo(
     logger.info(f"✨ Encontrados {len(planos_api)} planos na API para empresa {empresa_id}")
     count = 0
     for p in planos_api:
-        # Removida exigência de link_venda para permitir que a IA conheça todos os planos ativos
+        if not p.get('link_venda'):
+            continue
 
         # Se estamos sincronizando para uma unidade específica, o plano deve ser vinculado a ela.
         # Caso contrário, se for global, unidade_id no banco fica nulo.
         
         existing = await _database.db_pool.fetchval("""
             SELECT id FROM planos 
-            WHERE empresa_id = $1 AND id_externo = $2 
-              AND (unidade_id = $3 OR (unidade_id IS NULL AND $3 IS NULL))
-        """, empresa_id, p['id'], unidade_id)
+            WHERE empresa_id = $1 AND id_externo = $2
+        """, empresa_id, p['id'])
 
         if existing:
             await _database.db_pool.execute("""
                 UPDATE planos SET
-                    nome = $1, valor = $2, valor_promocional = $3, meses_promocionais = $4,
-                    descricao = $5, diferenciais = $6, link_venda = $7, updated_at = NOW()
-                WHERE id = $8
-            """, p['nome'], p['valor'], p['valor_promocional'], p['meses_promocionais'],
-               p['descricao'], p['diferenciais'], p['link_venda'], existing)
+                    unidade_id = $1, nome = $2, valor = $3, valor_promocional = $4, 
+                    meses_promocionais = $5, descricao = $6, diferenciais = $7, 
+                    link_venda = $8, updated_at = NOW()
+                WHERE id = $9
+            """, unidade_id, p['nome'], p['valor'], p['valor_promocional'], 
+               p['meses_promocionais'], p['descricao'], p['diferenciais'], 
+               p['link_venda'], existing)
         else:
             await _database.db_pool.execute("""
                 INSERT INTO planos
@@ -494,7 +503,7 @@ async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
@@ -776,6 +785,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
             SELECT p.*
             FROM personalidade_ia p
             WHERE p.empresa_id = $1 AND p.ativo = true
+            ORDER BY p.updated_at DESC
             LIMIT 1
         """
         row = await _database.db_pool.fetchrow(query, empresa_id)

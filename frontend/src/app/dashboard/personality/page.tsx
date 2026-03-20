@@ -377,10 +377,10 @@ export default function PersonalityPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div
-                            className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-base border border-white/8"
+                            className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-base border border-white/8 overflow-hidden"
                             style={{ backgroundColor: `${p.emoji_cor || "#00d2ff"}18` }}
                           >
-                            {p.emoji_tipo || "✨"}
+                            {getEmojiList(p.emoji_tipo)[0] || "✨"}
                           </div>
                           <div className="min-w-0">
                             <p className={`text-sm font-bold truncate ${selected === p.id ? "text-[#00d2ff]" : "text-white"}`}>
@@ -458,10 +458,10 @@ export default function PersonalityPage() {
                   <div className="flex items-center justify-between px-6 py-4">
                     <div className="flex items-center gap-4">
                       <div
-                        className="w-10 h-10 rounded-xl flex items-center justify-center text-xl border border-white/8 flex-shrink-0"
+                        className="w-10 h-10 rounded-xl flex items-center justify-center text-xl border border-white/8 flex-shrink-0 overflow-hidden"
                         style={{ backgroundColor: `${fd.emoji_cor || "#00d2ff"}15` }}
                       >
-                        {fd.emoji_tipo || "✨"}
+                        {getEmojiList(fd.emoji_tipo)[0] || "✨"}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">

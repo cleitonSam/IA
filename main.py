@@ -1729,11 +1729,24 @@ async def buscar_planos_evo_da_api(empresa_id: int) -> Optional[List[Dict]]:
             else:
                 diffs = []
 
+            valor_total = item.get('value') or 0
+            if not valor_total:
+                continue
+
+            # Só divide por 12 se o valor for maior que 1000 (ex: plano anual)
+            valor_mensal = (valor_total / 12) if valor_total > 1000 else valor_total
+
+            valor_promo_total = item.get('valuePromotionalPeriod')
+            if valor_promo_total:
+                valor_promo_mensal = (valor_promo_total / 12) if valor_promo_total > 1000 else valor_promo_total
+            else:
+                valor_promo_mensal = None
+
             plano = {
                 'id': item.get('idMembership'),
                 'nome': item.get('displayName') or item.get('nameMembership', 'Plano'),
-                'valor': item.get('value'),
-                'valor_promocional': item.get('valuePromotionalPeriod'),
+                'valor': round(valor_mensal, 2) if valor_mensal else 0,
+                'valor_promocional': round(valor_promo_mensal, 2) if valor_promo_mensal else None,
                 'meses_promocionais': item.get('monthsPromotionalPeriod'),
                 'descricao': item.get('description'),
                 'diferenciais': diffs,
@@ -2485,7 +2498,7 @@ async def listar_unidades_ativas(empresa_id: int = EMPRESA_ID_PADRAO) -> List[Di
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 90) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85) -> Optional[str]:
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
@@ -4433,7 +4446,7 @@ async def chatwoot_webhook(
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
     # NÃO deleta a flag — mídia gera múltiplos webhooks (sent/thumbnail/delivered)
     # e todos precisam ser ignorados. A flag expira naturalmente via TTL (45-90s).
-    if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
+    if message_type == "outgoing" and await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
         logger.info(f"♻️ Echo UazAPI detectado e ignorado para conv {id_conv}")
         return {"status": "eco_uazapi_ignorado"}
 
@@ -4623,37 +4636,12 @@ async def chatwoot_webhook(
                     # Confirmação já enviada — NÃO cai no buffer/LLM
                     return {"status": "unidade_confirmada"}
                 else:
-                    # Evita loop de mensagens repetidas quando já pedimos a unidade
-                    # (ex.: múltiplos webhooks da mesma conversa em sequência).
-                    await bd_atualizar_msg_cliente(id_conv)
-                    if esperando_unidade or await redis_client.get(prompt_unidade_key) == "1":
-                        # Não fica em silêncio: envia lembrete curto com throttle
-                        throttle_key = f"esperando_unidade_throttle:{id_conv}"
-                        if not await redis_client.get(throttle_key):
-                            msg_retry = (
-                                "Ainda não consegui localizar a unidade certinha 😅\n\n"
-                                "Me manda um *bairro*, *cidade* ou o *nome da unidade* (ex.: Ricardo Jafet)."
-                            )
-                            await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, "Assistente Virtual", integracao)
-                            await redis_client.setex(throttle_key, 30, "1")
-                        logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
-                        return {"status": "aguardando_escolha_unidade"}
+                    # Unidade não identificada — permite que a IA responda como 'Global'
+                    # e peça a unidade de forma natural conforme o System Prompt.
+                    logger.info(f"🌐 Unidade não detectada para conv {id_conv}, prosseguindo com IA Global")
+                    pass
 
-                    # Unidade não identificada — não assume uma unidade específica.
-                    _qtd_unidades = len(unidades_ativas)
-                    msg = (
-                        "Boa pergunta! Somos sim a Red Fitness 💪\n\n"
-                        f"Hoje temos *{_qtd_unidades} unidades* e quero te direcionar para a certa.\n"
-                        "Me diz sua *cidade*, *bairro* ou o *nome da unidade* que você prefere."
-                    )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg, "Assistente Virtual", integracao, empresa_id)
-                    await redis_client.setex(f"esperando_unidade:{id_conv}", 86400, "1")
-                    await redis_client.setex(prompt_unidade_key, 600, "1")
-                    background_tasks.add_task(monitorar_escolha_unidade, account_id, id_conv, empresa_id)
-                    return {"status": "aguardando_escolha_unidade"}
-
-    if not slug:
-        return {"status": "erro_sem_unidade"}
+    # Se chegamos aqui sem slug, a IA responderá como Consultor Global
 
     # Pausa IA se for mensagem de atendente humano
     if message_type == "outgoing" and sender_type == "user":
