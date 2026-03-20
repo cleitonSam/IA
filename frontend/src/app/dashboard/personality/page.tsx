@@ -75,7 +75,7 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   contexto_extra: "", abordagem_proativa: "", exemplos: "",
   palavras_proibidas: "", despedida_personalizada: "",
   regras_formatacao: "", regras_seguranca: "",
-  emoji_tipo: "✨", emoji_cor: "#00d2ff",
+  emoji_tipo: "✨,💪,🔥", emoji_cor: "#00d2ff",
 };
 
 const MODELS = [
@@ -92,10 +92,14 @@ const TONES = [
   { id: "Entusiasta",   icon: "🚀", desc: "Animado e enérgico" },
 ];
 
+// Emojis organizados por categoria — lista ampla para seleção múltipla rotativa
 const EMOJI_CATEGORIES = [
-  { label: "Rostos",   emojis: ["😊","😇","🙂","😉","😍","😎","🤓","🧐","🥳","🤖"] },
-  { label: "Símbolos", emojis: ["✨","💎","🔥","🚀","💡","✅","💙","⭐","🎉","📢"] },
-  { label: "Negócios", emojis: ["💼","📈","💰","🤝","📅","✉️","📱","🏢","🏆","🎯"] },
+  { label: "Fitness",   emojis: ["🏋️","💪","⚡","🔥","🎯","🏃","🧘","🤸","🏊","🚴","⛹️","🥊","🏆","🎽","🧗","🏄","🤾","🏇","🥋","🏂"] },
+  { label: "Energia",   emojis: ["✨","💥","🌟","⭐","🌈","☀️","💫","🎆","🎇","🔆","🌤️","❄️","🌺","🌻","🌊","🎐","🎑","🎋","🍀","🌙"] },
+  { label: "Sucesso",   emojis: ["✅","💯","🎉","🥳","👑","💎","🥇","🏅","🎊","🔝","🎁","💝","🎀","🔑","🏵️","🎖️","🎗️","🏴","🎫","🎟️"] },
+  { label: "Negócios",  emojis: ["💼","📈","💰","🤝","📅","✉️","📱","🏢","💡","📊","🔍","💳","🖥️","📌","📋","🗂️","📁","🗓️","🖨️","🔒"] },
+  { label: "Amigáveis", emojis: ["😊","😍","🥰","😎","🤩","😇","🙌","👋","❤️","💙","💚","💛","🧡","💜","🤍","🫶","👏","🤗","😄","🥹"] },
+  { label: "Natureza",  emojis: ["🌿","🍃","🌱","🌲","🌳","🦋","🐬","🦁","🐯","🦊","🦅","🌺","🌸","🌼","🌻","🍁","🌾","🍄","🌵","🪴"] },
 ];
 
 const SECTIONS: { key: SectionKey; label: string; icon: React.ReactNode; desc: string }[] = [
@@ -120,7 +124,7 @@ export default function PersonalityPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("config");
   const [activeSection, setActiveSection] = useState<SectionKey>("identidade");
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiCatIdx, setEmojiCatIdx] = useState(0);
   const [search, setSearch] = useState("");
   const [playHistory, setPlayHistory] = useState<{ role: string; content: string }[]>([]);
   const [testMessage, setTestMessage] = useState("");
@@ -128,6 +132,14 @@ export default function PersonalityPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+
+  // Helpers para emoji_tipo como lista separada por vírgula
+  const getEmojiList = (s: string) => s ? s.split(",").map(e => e.trim()).filter(Boolean) : [];
+  const toggleEmoji = (e: string) => {
+    const list = getEmojiList(fd.emoji_tipo);
+    const next = list.includes(e) ? list.filter(x => x !== e) : list.length < 6 ? [...list, e] : list;
+    setFormData({ ...formData, emoji_tipo: next.join(",") });
+  };
 
   const fetchPersonalities = useCallback(async () => {
     setLoading(true);
@@ -741,93 +753,110 @@ export default function PersonalityPage() {
                             </div>
 
                             <div className={card}>
-                              <p className="text-xs font-black text-[#00d2ff] uppercase tracking-widest">Visual da IA</p>
-                              <div className="grid grid-cols-2 gap-6">
-                                <div className="space-y-4">
-                                  {/* Emoji */}
-                                  <div className="relative">
-                                    <label className={lClass}>Emoji Principal</label>
-                                    <div className="flex items-center gap-3">
-                                      <button type="button" onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                                        className="w-12 h-12 rounded-xl bg-black/40 border border-white/10 flex items-center justify-center text-2xl hover:bg-black/60 transition-all"
-                                      >
-                                        {fd.emoji_tipo || "✨"}
-                                      </button>
-                                      <span className="text-[10px] text-slate-500">Clique para escolher</span>
-                                    </div>
-                                    <AnimatePresence>
-                                      {showEmojiPicker && (
-                                        <motion.div
-                                          initial={{ opacity: 0, y: 8, scale: 0.95 }}
-                                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                                          exit={{ opacity: 0, y: 8, scale: 0.95 }}
-                                          className="absolute z-50 top-full mt-2 left-0 w-60 bg-[#0a1628] border border-white/10 rounded-2xl p-4 shadow-2xl"
-                                        >
-                                          <div className="flex justify-between items-center mb-3 pb-2 border-b border-white/5">
-                                            <span className="text-[10px] font-black text-[#00d2ff] uppercase">Escolha</span>
-                                            <button type="button" onClick={() => setShowEmojiPicker(false)}><X className="w-3 h-3 text-slate-500" /></button>
-                                          </div>
-                                          <div className="space-y-3 max-h-48 overflow-y-auto custom-scrollbar">
-                                            {EMOJI_CATEGORIES.map(cat => (
-                                              <div key={cat.label}>
-                                                <p className="text-[9px] font-black text-slate-600 uppercase mb-1.5">{cat.label}</p>
-                                                <div className="grid grid-cols-5 gap-1">
-                                                  {cat.emojis.map(e => (
-                                                    <button key={e} type="button" onClick={() => { setFormData({...formData, emoji_tipo: e}); setShowEmojiPicker(false); }}
-                                                      className="w-9 h-9 flex items-center justify-center text-xl hover:bg-white/5 rounded-lg transition-all"
-                                                    >{e}</button>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </motion.div>
-                                      )}
-                                    </AnimatePresence>
-                                  </div>
-                                  {/* Color */}
-                                  <div>
-                                    <label className={lClass}>Cor de Branding</label>
-                                    <div className="flex items-center gap-3">
-                                      <div className="relative">
-                                        <input type="color" value={fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff"}
-                                          onChange={e => setFormData({...formData, emoji_cor: e.target.value})}
-                                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                        />
-                                        <div className="w-11 h-11 rounded-xl border-2 border-white/10 shadow-md"
-                                          style={{ backgroundColor: fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff" }}
-                                        />
-                                      </div>
-                                      <input type="text" value={fd.emoji_cor}
-                                        onChange={e => setFormData({...formData, emoji_cor: e.target.value})}
-                                        className="flex-1 bg-black/20 border border-white/5 rounded-xl px-3 py-2 text-xs font-mono text-[#00d2ff] focus:outline-none focus:border-[#00d2ff]/30"
-                                        placeholder="#00d2ff"
-                                      />
-                                    </div>
-                                  </div>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-black text-[#00d2ff] uppercase tracking-widest">Emojis Rotativos da IA</p>
+                                  <p className="text-[10px] text-slate-500 mt-0.5">A IA alterna entre os emojis escolhidos. Selecione até 6.</p>
                                 </div>
+                                <span className="text-[10px] font-black text-slate-500 bg-white/5 px-2 py-1 rounded-lg">
+                                  {getEmojiList(fd.emoji_tipo).length}/6
+                                </span>
+                              </div>
 
-                                {/* Preview */}
-                                <div className="bg-black/30 rounded-xl p-4 border border-white/5 flex flex-col gap-2 justify-center">
-                                  <p className="text-[9px] font-black text-slate-600 uppercase mb-1">Preview</p>
-                                  <div className="max-w-[85%]">
-                                    <div className="rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white"
-                                      style={{ backgroundColor: `${fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff"}22`, border: `1px solid ${fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff"}44` }}
-                                    >
-                                      Olá! Como posso ajudar? {fd.emoji_tipo || "✨"}
-                                    </div>
-                                  </div>
-                                  <div className="max-w-[80%] ml-auto bg-slate-800 rounded-2xl rounded-tr-none p-3 text-[11px] text-slate-300">
-                                    Gostaria de ver os preços.
-                                  </div>
-                                  <div className="max-w-[85%]">
-                                    <div className="rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white"
+                              {/* Selecionados */}
+                              <div className="flex flex-wrap gap-2 min-h-[44px] p-3 bg-black/30 rounded-xl border border-white/5">
+                                {getEmojiList(fd.emoji_tipo).length === 0 ? (
+                                  <span className="text-[10px] text-slate-600 self-center">Nenhum selecionado — escolha abaixo</span>
+                                ) : getEmojiList(fd.emoji_tipo).map((e, i) => (
+                                  <button key={i} type="button" onClick={() => toggleEmoji(e)}
+                                    className="flex items-center gap-1 bg-[#00d2ff]/10 border border-[#00d2ff]/30 rounded-lg px-2 py-1 text-base hover:bg-red-500/10 hover:border-red-500/30 transition-all group"
+                                    title="Clique para remover"
+                                  >
+                                    {e}
+                                    <X className="w-2.5 h-2.5 text-slate-500 group-hover:text-red-400 flex-shrink-0" />
+                                  </button>
+                                ))}
+                              </div>
+
+                              {/* Abas de categoria */}
+                              <div className="flex gap-1 flex-wrap">
+                                {EMOJI_CATEGORIES.map((cat, i) => (
+                                  <button key={cat.label} type="button" onClick={() => setEmojiCatIdx(i)}
+                                    className={`text-[10px] font-black px-2.5 py-1 rounded-lg transition-all ${
+                                      emojiCatIdx === i
+                                        ? "bg-[#00d2ff]/15 text-[#00d2ff] border border-[#00d2ff]/30"
+                                        : "text-slate-500 hover:text-slate-300 bg-white/3 border border-transparent"
+                                    }`}
+                                  >{cat.label}</button>
+                                ))}
+                              </div>
+
+                              {/* Grid de emojis da categoria ativa */}
+                              <div className="grid grid-cols-10 gap-1">
+                                {EMOJI_CATEGORIES[emojiCatIdx].emojis.map(e => {
+                                  const selected = getEmojiList(fd.emoji_tipo).includes(e);
+                                  return (
+                                    <button key={e} type="button" onClick={() => toggleEmoji(e)}
+                                      title={selected ? "Remover" : getEmojiList(fd.emoji_tipo).length >= 6 ? "Máximo atingido" : "Adicionar"}
+                                      className={`h-9 flex items-center justify-center text-lg rounded-lg transition-all ${
+                                        selected
+                                          ? "bg-[#00d2ff]/20 border border-[#00d2ff]/50 scale-110"
+                                          : getEmojiList(fd.emoji_tipo).length >= 6
+                                            ? "opacity-30 cursor-not-allowed"
+                                            : "hover:bg-white/8 border border-transparent hover:scale-110"
+                                      }`}
+                                    >{e}</button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Cor de Branding + Preview */}
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className={card}>
+                                <label className={lClass}>Cor de Branding</label>
+                                <div className="flex items-center gap-3">
+                                  <div className="relative">
+                                    <input type="color" value={fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff"}
+                                      onChange={e => setFormData({...formData, emoji_cor: e.target.value})}
+                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                    />
+                                    <div className="w-11 h-11 rounded-xl border-2 border-white/10 shadow-md"
                                       style={{ backgroundColor: fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff" }}
-                                    >
-                                      Temos planos a partir de R$ 99! {fd.emoji_tipo || "✨"}
-                                    </div>
+                                    />
                                   </div>
+                                  <input type="text" value={fd.emoji_cor}
+                                    onChange={e => setFormData({...formData, emoji_cor: e.target.value})}
+                                    className="flex-1 bg-black/20 border border-white/5 rounded-xl px-3 py-2 text-xs font-mono text-[#00d2ff] focus:outline-none focus:border-[#00d2ff]/30"
+                                    placeholder="#00d2ff"
+                                  />
                                 </div>
+                              </div>
+
+                              {/* Preview rotativo */}
+                              <div className="bg-black/30 rounded-xl p-4 border border-white/5 flex flex-col gap-2 justify-center">
+                                <p className="text-[9px] font-black text-slate-600 uppercase mb-1">Preview</p>
+                                {(() => {
+                                  const list = getEmojiList(fd.emoji_tipo);
+                                  const e0 = list[0] || "✨";
+                                  const e1 = list[1] || e0;
+                                  const cor = fd.emoji_cor?.startsWith('#') ? fd.emoji_cor : "#00d2ff";
+                                  return (<>
+                                    <div className="max-w-[85%]">
+                                      <div className="rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white"
+                                        style={{ backgroundColor: `${cor}22`, border: `1px solid ${cor}44` }}
+                                      >Olá! Como posso ajudar? {e0}</div>
+                                    </div>
+                                    <div className="max-w-[80%] ml-auto bg-slate-800 rounded-2xl rounded-tr-none p-3 text-[11px] text-slate-300">
+                                      Quanto custa o plano?
+                                    </div>
+                                    <div className="max-w-[85%]">
+                                      <div className="rounded-2xl rounded-tl-none p-3 text-[11px] font-medium text-white"
+                                        style={{ backgroundColor: `${cor}dd` }}
+                                      >Temos planos a partir de R$ 99! {e1}</div>
+                                    </div>
+                                  </>);
+                                })()}
                               </div>
                             </div>
                           </>)}
