@@ -468,6 +468,59 @@ async def delete_personality(
     return {"status": "success"}
 
 
+# --- Fluxo de Triagem Visual (n8n-style) ---
+
+@router.get("/fluxo-triagem")
+async def get_fluxo_triagem(token_payload: dict = Depends(get_current_user_token)):
+    """Carrega o fluxo visual de triagem da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    try:
+        row = await _database.db_pool.fetchrow(
+            "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+            empresa_id
+        )
+        if row and row["fluxo_triagem"]:
+            val = row["fluxo_triagem"]
+            return json.loads(val) if isinstance(val, str) else val
+    except Exception as e:
+        logger.warning(f"Erro ao carregar fluxo_triagem empresa {empresa_id}: {e}")
+    return {"ativo": False, "nodes": [], "edges": []}
+
+
+@router.post("/fluxo-triagem")
+async def save_fluxo_triagem(
+    data: dict,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Salva o fluxo visual de triagem da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    try:
+        payload = json.dumps(data)
+        existing = await _database.db_pool.fetchval(
+            "SELECT id FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1", empresa_id
+        )
+        if existing:
+            await _database.db_pool.execute(
+                "UPDATE personalidade_ia SET fluxo_triagem = $1::jsonb, updated_at = NOW() WHERE empresa_id = $2",
+                payload, empresa_id
+            )
+        else:
+            await _database.db_pool.execute(
+                "INSERT INTO personalidade_ia (empresa_id, fluxo_triagem, created_at, updated_at) VALUES ($1, $2::jsonb, NOW(), NOW())",
+                empresa_id, payload
+            )
+        await redis_client.delete(f"cfg:fluxo_triagem:{empresa_id}")
+        logger.info(f"✅ Fluxo triagem salvo para empresa {empresa_id} | nodes={len(data.get('nodes', []))} edges={len(data.get('edges', []))}")
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Erro ao salvar fluxo_triagem empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar fluxo: {str(e)}")
+
+
 class PlaygroundMessage(BaseModel):
     role: str   # "user" | "assistant"
     content: str

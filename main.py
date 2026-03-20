@@ -2794,9 +2794,10 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
 
     try:
         query = """
-            SELECT p.*
+            SELECT p.*, fn_ia_esta_no_horario_v2(p.horario_atendimento_ia) AS esta_no_horario
             FROM personalidade_ia p
             WHERE p.empresa_id = $1 AND p.ativo = true
+            ORDER BY p.updated_at DESC
             LIMIT 1
         """
         row = await db_pool.fetchrow(query, empresa_id)
@@ -3512,6 +3513,24 @@ async def processar_ia_e_responder(
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
+            return
+
+        # Verifica horário de atendimento da IA via Banco de Dados
+        _pers_horario = await carregar_personalidade(empresa_id) or {}
+        _db_esta_no_horario = _pers_horario.get("esta_no_horario", True)
+        _horario_config = _pers_horario.get("horario_atendimento_ia")
+
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
+        logger.info(
+            f"🕒 [Bot Core Monolith] Horário SP={_agora_sp.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+            f"DB_Check={_db_esta_no_horario} | Config: {_horario_config}"
+        )
+
+        if not _db_esta_no_horario:
+            await enviar_aviso_fora_horario(account_id, conversation_id, integracao_chatwoot, empresa_id)
+            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada após aviso")
             return
 
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)

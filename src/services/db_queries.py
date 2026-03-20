@@ -847,6 +847,40 @@ async def carregar_menu_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
         return None
 
 
+async def carregar_fluxo_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Carrega o fluxo visual de triagem da empresa (n8n-style).
+    Retorna None se não houver fluxo ou se ativo=False.
+    Cacheia em Redis por 120s.
+    """
+    if not _database.db_pool:
+        return None
+
+    cache_key = f"cfg:fluxo_triagem:{empresa_id}"
+    cached = await redis_get_json(cache_key)
+    if cached is not None:
+        return cached if cached else None
+
+    try:
+        row = await _database.db_pool.fetchrow(
+            "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+            empresa_id
+        )
+        config = None
+        if row and row["fluxo_triagem"]:
+            val = row["fluxo_triagem"]
+            if isinstance(val, str):
+                import json as _json
+                config = _json.loads(val)
+            elif isinstance(val, dict):
+                config = val
+        await redis_set_json(cache_key, config or {}, 120)
+        return config if config else None
+    except Exception as e:
+        logger.error(f"Erro ao carregar fluxo_triagem da empresa {empresa_id}: {e}")
+        return None
+
+
 async def carregar_configuracao_global(empresa_id: int) -> Dict[str, Any]:
     if not _database.db_pool:
         return {}

@@ -2,7 +2,8 @@ import uuid
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
-from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem
+from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem, carregar_fluxo_triagem
+from src.services.flow_executor import executar_fluxo
 from src.services.uaz_client import UazAPIClient
 
 router = APIRouter()
@@ -89,7 +90,32 @@ async def uazapi_webhook(
         # Buscar se já existe uma conversa interna para este telefone
         conversa_existente = await buscar_conversa_por_fone(phone, empresa_id)
 
-        # --- Menu de Triagem ---
+        # --- Fluxo Visual de Triagem (n8n-style) ---
+        # Verificar se há fluxo ativo ANTES do menu simples legado.
+        # Se o fluxo tratar a mensagem, retorna imediatamente.
+        _fluxo_config = await carregar_fluxo_triagem(empresa_id)
+        if _fluxo_config and _fluxo_config.get("ativo"):
+            _ia_pausada_fluxo = False
+            if conversa_existente:
+                _conv_id_f = conversa_existente.get("conversation_id")
+                if _conv_id_f:
+                    _ia_pausada_fluxo = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{_conv_id_f}"))
+            _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{phone}"))
+            if not _ia_pausada_fluxo and not _phone_paused:
+                _uaz_fluxo = UazAPIClient(
+                    base_url=integracao.get("url", ""),
+                    token=integracao.get("token", ""),
+                    instance_name=integracao.get("instance", "default")
+                )
+                try:
+                    _fluxo_tratou = await executar_fluxo(empresa_id, phone, content, _fluxo_config, _uaz_fluxo)
+                    if _fluxo_tratou:
+                        logger.info(f"✅ [FluxoTriagem] Mensagem de {phone} tratada pelo fluxo visual (empresa {empresa_id})")
+                        return {"status": "flow_handled", "phone": phone}
+                except Exception as _fe:
+                    logger.error(f"❌ [FluxoTriagem] Erro ao executar fluxo para {phone}: {_fe}")
+
+        # --- Menu de Triagem (legado) ---
         # Lógica de inatividade: a chave Redis expira após 1h sem mensagens do contato.
         # A cada mensagem recebida, o TTL é renovado. Se o contato ficar 1h sem mandar
         # mensagem, a chave expira e o menu será reenviado na próxima mensagem.
