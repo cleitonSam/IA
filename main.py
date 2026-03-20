@@ -4518,9 +4518,14 @@ async def chatwoot_webhook(
     )
 
     # --- ECHO PROTECTION: Ignora mensagens que o próprio bot enviou direto via UazAPI ---
-    # NÃO deleta a flag — mídia gera múltiplos webhooks (sent/thumbnail/delivered)
-    # e todos precisam ser ignorados. A flag expira naturalmente via TTL (45-90s).
-    if message_type == "outgoing" and await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
+    _fone_echo = await redis_client.get(f"fone_cliente:{id_conv}")
+    is_uaz_echo = False
+    if await redis_client.exists(f"uaz_bot_sent:{id_conv}"):
+        is_uaz_echo = True
+    elif _fone_echo and await redis_client.exists(f"uaz_bot_sent:{empresa_id}:{_fone_echo}"):
+        is_uaz_echo = True
+
+    if message_type == "outgoing" and is_uaz_echo:
         logger.info(f"♻️ Echo UazAPI detectado e ignorado para conv {id_conv}")
         return {"status": "eco_uazapi_ignorado"}
 
