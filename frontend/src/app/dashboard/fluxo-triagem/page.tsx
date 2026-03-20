@@ -360,16 +360,14 @@ export default function FluxoTriagemPage() {
                 </p>
                 <div className="space-y-2">
                   {group.nodes.map(({ type, icon, label, border, headerBg }) => (
-                    <motion.div
+                    <div
                       key={type}
-                      whileHover={{ scale: 1.03, x: 4 }}
-                      whileTap={{ scale: 0.97 }}
                       draggable
-                      onDragStart={(e) => {
+                      onDragStart={(e: React.DragEvent) => {
                         e.dataTransfer.setData("application/reactflow", type);
                         e.dataTransfer.effectAllowed = "move";
                       }}
-                      className="group flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-grab active:cursor-grabbing transition-all shadow-sm hover:shadow-md"
+                      className="group flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-grab active:cursor-grabbing transition-all shadow-sm hover:shadow-md hover:scale-[1.03] hover:translate-x-1"
                       style={{
                         borderColor: `${border}30`,
                         background: `linear-gradient(135deg, ${headerBg}44, ${headerBg}22)`,
@@ -379,7 +377,7 @@ export default function FluxoTriagemPage() {
                       <span className="text-[11px] font-bold text-white/70 group-hover:text-white transition-colors">
                         {label}
                       </span>
-                    </motion.div>
+                    </div>
                   ))}
                 </div>
               </div>
