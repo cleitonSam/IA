@@ -964,8 +964,7 @@ async def processar_ia_e_responder(
 
         logger.info(f"🕒 [Bot Core] Resultado Final Horário: {_no_horario}")
         if not _no_horario:
-            await enviar_aviso_fora_horario(account_id, conversation_id, integracao, empresa_id)
-            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada após aviso")
+            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada (silencioso)")
             return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):

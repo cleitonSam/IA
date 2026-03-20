@@ -3547,8 +3547,7 @@ async def processar_ia_e_responder(
         )
 
         if not _db_esta_no_horario:
-            await enviar_aviso_fora_horario(account_id, conversation_id, integracao_chatwoot, empresa_id)
-            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada após aviso")
+            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada (silencioso)")
             return
 
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)
