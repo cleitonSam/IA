@@ -221,16 +221,13 @@ def ia_esta_no_horario(config: Any) -> bool:
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
             t_ini = dtime(h_ini, m_ini)
             t_fim = dtime(h_fim, m_fim)
-            if t_ini == t_fim:
-                # Período degenerado (início == fim) — ignora
+            # Período só é válido quando fim > inicio.
+            # Se fim <= inicio o período é ignorado (inválido ou cruzamento de
+            # meia-noite não suportado — use dois períodos separados: ex:
+            # 23:00-23:59 e 00:00-01:00).
+            if t_fim <= t_ini:
                 continue
-            elif t_ini < t_fim:
-                # Período normal, ex: 08:00 – 18:00
-                esta_no_periodo = t_ini <= hora_atual < t_fim
-            else:
-                # Período que cruza meia-noite, ex: 23:50 – 01:00
-                esta_no_periodo = hora_atual >= t_ini or hora_atual < t_fim
-            if esta_no_periodo:
+            if t_ini <= hora_atual < t_fim:
                 return True
         except Exception as e:
             logger.error(f"🕒 [Horário IA] Erro ao processar período {periodo}: {e}")

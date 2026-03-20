@@ -992,7 +992,19 @@ export default function PersonalityPage() {
                                                 return (
                                                 <div key={i} className="flex items-center gap-1.5">
                                                   <input type="time" value={p.inicio}
-                                                    onChange={e => { const np = [...periodos]; np[i] = {...np[i], inicio: e.target.value}; setDia(np); }}
+                                                    onChange={e => {
+                                                      const np = [...periodos];
+                                                      const newIni = e.target.value;
+                                                      // Auto-corrige fim se ficou <= inicio
+                                                      const curFim = np[i].fim;
+                                                      const newFim = curFim && newIni >= curFim
+                                                        ? parseInt(newIni.split(":")[0]) >= 23
+                                                          ? "23:59"
+                                                          : `${String(Math.min(parseInt(newIni.split(":")[0]) + 4, 23)).padStart(2, "0")}:${newIni.split(":")[1]}`
+                                                        : curFim;
+                                                      np[i] = { inicio: newIni, fim: newFim };
+                                                      setDia(np);
+                                                    }}
                                                     className="bg-[#0a1628] border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-[#00d2ff]/30"
                                                   />
                                                   <span className="text-slate-600 text-xs">–</span>
@@ -1003,7 +1015,7 @@ export default function PersonalityPage() {
                                                         ? "border-amber-500/60 focus:border-amber-500/80"
                                                         : "border-white/10 focus:border-[#00d2ff]/30"
                                                     }`}
-                                                    title={periodoInvalido ? "Fim menor que início — o período cruzará meia-noite" : undefined}
+                                                    title={periodoInvalido ? "Fim deve ser maior que o início" : undefined}
                                                   />
                                                   {periodos.length > 1 && (
                                                     <button type="button" onClick={() => setDia(periodos.filter((_, j) => j !== i))} className="text-slate-600 hover:text-red-400"><X className="w-3 h-3" /></button>
