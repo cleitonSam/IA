@@ -292,7 +292,8 @@ async def sincronizar_planos_evo(
     logger.info(f"✨ Encontrados {len(planos_api)} planos na API para empresa {empresa_id}")
     count = 0
     for p in planos_api:
-        # Removida exigência de link_venda para permitir que a IA conheça todos os planos ativos
+        if not p.get('link_venda'):
+            continue
 
         # Se estamos sincronizando para uma unidade específica, o plano deve ser vinculado a ela.
         # Caso contrário, se for global, unidade_id no banco fica nulo.
