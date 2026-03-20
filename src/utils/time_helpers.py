@@ -219,16 +219,17 @@ def ia_esta_no_horario(config: Any) -> bool:
         try:
             h_ini, m_ini = map(int, periodo["inicio"].split(":"))
             h_fim, m_fim = map(int, periodo["fim"].split(":"))
-
-            # Ajuste para fim do dia (00:00 interpretado como o limite final da data atual)
-            if h_fim == 0 and m_fim == 0:
-                # Se o fim é 00:00, tratamos como 23:59:59 daquele mesmo dia
-                # para que hora_atual (ex: 22:51) seja corretamente validada.
-                esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual <= dtime(23, 59, 59)
+            t_ini = dtime(h_ini, m_ini)
+            t_fim = dtime(h_fim, m_fim)
+            if t_ini == t_fim:
+                # Período degenerado (início == fim) — ignora
+                continue
+            elif t_ini < t_fim:
+                # Período normal, ex: 08:00 – 18:00
+                esta_no_periodo = t_ini <= hora_atual < t_fim
             else:
-                esta_no_periodo = dtime(h_ini, m_ini) <= hora_atual < dtime(h_fim, m_fim)
-
-            logger.info(f"🕒 [Horário IA] Check: {periodo['inicio']} - {periodo['fim']} -> {esta_no_periodo}")
+                # Período que cruza meia-noite, ex: 23:50 – 01:00
+                esta_no_periodo = hora_atual >= t_ini or hora_atual < t_fim
             if esta_no_periodo:
                 return True
         except Exception as e:
