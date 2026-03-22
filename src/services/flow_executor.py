@@ -266,60 +266,73 @@ async def _process_state(
         _PREFIX_MENU = "[selecionou no menu]: "
         if msg_lower.startswith(_PREFIX_MENU):
             msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
+
+        logger.info(f"[Switch] msg_lower='{msg_lower}' | conditions={[(c.get('label',''), c.get('value','')) for c in conditions]}")
         matched_handle = None
+
+        def _save_match(cond: dict) -> str:
+            h = cond.get("handle")
+            session_vars["last_choice"] = str(cond.get("value", "")).lower().strip()
+            session_vars["last_choice_label"] = str(cond.get("label", "")).lower().strip()
+            if node.get("data", {}).get("variavel"):
+                session_vars[node["data"]["variavel"]] = session_vars["last_choice_label"]
+            return h
 
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
 
             # 1. Match exato (valor ou label)
-            if msg_lower == val or msg_lower == label:
-                matched_handle = cond.get("handle")
-                # Salva a escolha na memória
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
-                if node.get("data", {}).get("variavel"):
-                    session_vars[node["data"]["variavel"]] = label
-                break
-            
-            # 2. Suporte a Formato de Lista UazAPI/Chatwoot
-            if val and f"({val})" in msg_lower:
-                matched_handle = cond.get("handle")
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
-                break
-            if label and f"selecao: {label}" in msg_lower:
-                matched_handle = cond.get("handle")
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
+            if msg_lower == val or (label and msg_lower == label):
+                matched_handle = _save_match(cond)
                 break
 
+            # 2. Suporte a Formato de Lista UazAPI/Chatwoot
+            if val and f"({val})" in msg_lower:
+                matched_handle = _save_match(cond)
+                break
+            if label and f"selecao: {label}" in msg_lower:
+                matched_handle = _save_match(cond)
+                break
 
             # 3. Match numérico inteligente (ex: "1" em "1 - Opção")
             if msg_lower.isdigit():
+                if val == msg_lower:
+                    matched_handle = _save_match(cond)
+                    break
                 if label.startswith(msg_lower):
-                    # Garante que não é "1" em "10"
                     suffix = label[len(msg_lower):]
                     if not suffix or not suffix[0].isdigit():
-                        matched_handle = cond.get("handle")
-                        session_vars["last_choice"] = val
-                        session_vars["last_choice_label"] = label
+                        matched_handle = _save_match(cond)
                         break
-            
-            # 4. Match de texto por palavra inteira (se mensagem for longa o suficiente)
+
+            # 4. Match de texto por palavra inteira
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
-                    matched_handle = cond.get("handle")
-                    session_vars["last_choice"] = val
-                    session_vars["last_choice_label"] = label
+                    matched_handle = _save_match(cond)
                     break
-                # Caso inverso: a label (longa) está na mensagem (ex: resposta de lista)
                 if len(label) > 3 and label in msg_lower:
-                    matched_handle = cond.get("handle")
-                    session_vars["last_choice"] = val
-                    session_vars["last_choice_label"] = label
+                    matched_handle = _save_match(cond)
                     break
 
+        # 5. Fallback: match por posição usando _menu_opcoes salvo no estado
+        if not matched_handle:
+            menu_opcoes = state.get("_menu_opcoes", [])
+            if menu_opcoes and msg_lower:
+                for i, titulo in enumerate(menu_opcoes):
+                    if titulo.lower().strip() == msg_lower or titulo.lower().strip() in msg_lower:
+                        pos_str = str(i + 1)
+                        logger.info(f"[Switch] match por posição: '{msg_lower}' = opcao {pos_str} ('{titulo}')")
+                        for cond in conditions:
+                            val = str(cond.get("value", "")).lower().strip()
+                            label = str(cond.get("label", "")).lower().strip()
+                            if val == pos_str or label == titulo.lower().strip():
+                                matched_handle = _save_match(cond)
+                                break
+                        if matched_handle:
+                            break
+
+        logger.info(f"[Switch] matched_handle={matched_handle}")
         if matched_handle:
             return _get_next_node_id(fluxo, node_id, matched_handle)
         # Nenhum match: tenta a primeira saída padrão
@@ -505,9 +518,12 @@ async def _execute_from(
             # Pausa o fluxo: aguarda resposta
             next_id = _get_next_node_id(fluxo, node_id)
             if next_id:
+                # Salva as opções do menu para match por posição no switch
+                _opcoes_titulos = [op.get("titulo", "") for op in menu_data.get("opcoes", [])]
                 await _set_state(empresa_id, phone, {
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
+                    "_menu_opcoes": _opcoes_titulos,
                 })
         return
 
@@ -565,53 +581,56 @@ async def _execute_from(
         _PREFIX_MENU = "[selecionou no menu]: "
         if msg_lower.startswith(_PREFIX_MENU):
             msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
+
+        logger.info(f"[Switch/exec] msg_lower='{msg_lower}' | conditions={[(c.get('label',''), c.get('value','')) for c in conditions]}")
         matched_handle = None
+
+        def _sv(cond: dict) -> str:
+            h = cond.get("handle")
+            session_vars["last_choice"] = str(cond.get("value", "")).lower().strip()
+            session_vars["last_choice_label"] = str(cond.get("label", "")).lower().strip()
+            if data.get("variavel"):
+                session_vars[data["variavel"]] = session_vars["last_choice_label"]
+            return h
+
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
 
             # 1. Match exato
-            if msg_lower == val or msg_lower == label:
-                matched_handle = cond.get("handle")
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
-                if data.get("variavel"):
-                    session_vars[data["variavel"]] = label
-                break
-            
-            # 2. Suporte a UazAPI (id) ou "Selecao: label"
-            if val and f"({val})" in msg_lower:
-                matched_handle = cond.get("handle")
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
-                break
-            if label and f"selecao: {label}" in msg_lower:
-                matched_handle = cond.get("handle")
-                session_vars["last_choice"] = val
-                session_vars["last_choice_label"] = label
+            if msg_lower == val or (label and msg_lower == label):
+                matched_handle = _sv(cond)
                 break
 
-            # 3. Match numérico (ex: "1" em "1 - Sim")
-            if msg_lower.isdigit() and label.startswith(msg_lower):
-                suffix = label[len(msg_lower):]
-                if not suffix or not suffix[0].isdigit():
-                    matched_handle = cond.get("handle")
-                    session_vars["last_choice"] = val
-                    session_vars["last_choice_label"] = label
+            # 2. Suporte a UazAPI (id) ou "Selecao: label"
+            if val and f"({val})" in msg_lower:
+                matched_handle = _sv(cond)
+                break
+            if label and f"selecao: {label}" in msg_lower:
+                matched_handle = _sv(cond)
+                break
+
+            # 3. Match numérico
+            if msg_lower.isdigit():
+                if val == msg_lower:
+                    matched_handle = _sv(cond)
                     break
+                if label.startswith(msg_lower):
+                    suffix = label[len(msg_lower):]
+                    if not suffix or not suffix[0].isdigit():
+                        matched_handle = _sv(cond)
+                        break
 
             # 4. Match de texto (palavra inteira ou label na mensagem)
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
-                    matched_handle = cond.get("handle")
-                    session_vars["last_choice"] = val
-                    session_vars["last_choice_label"] = label
+                    matched_handle = _sv(cond)
                     break
                 if len(label) > 3 and label in msg_lower:
-                    matched_handle = cond.get("handle")
-                    session_vars["last_choice"] = val
-                    session_vars["last_choice_label"] = label
+                    matched_handle = _sv(cond)
                     break
+
+        logger.info(f"[Switch/exec] matched_handle={matched_handle}")
         if matched_handle:
             next_id = _get_next_node_id(fluxo, node_id, matched_handle)
         else:

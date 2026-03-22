@@ -27,6 +27,7 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 import { nodeTypes } from "./nodes";
 import { NODE_CONFIG, CATEGORY_LABELS, NodeTypeName } from "./nodes/nodeStyles";
 import TemplatesModal from "./components/TemplatesModal";
+import TutorialModal from "./components/TutorialModal";
 
 // ─────────────────────────────────────────────────────────────
 // Tipagem
@@ -83,6 +84,7 @@ export default function FluxoTriagemPage() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [paletteSearch, setPaletteSearch] = useState("");
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -208,7 +210,10 @@ export default function FluxoTriagemPage() {
   );
 
   // ─── Seleção de nó ───
-  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+  const onNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
+    // Não abre painel ao clicar em campos interativos dentro do nó
+    const tag = (e.target as HTMLElement).tagName;
+    if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag)) return;
     setSelectedNode(node);
   }, []);
 
@@ -336,6 +341,14 @@ export default function FluxoTriagemPage() {
               className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
             >
               🗂 Templates
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowTutorial(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-[#00d2ff] hover:text-white border border-[#00d2ff]/20 hover:bg-[#00d2ff]/10 transition-all"
+            >
+              📚 Tutorial
             </button>
 
             <button
@@ -622,6 +635,9 @@ export default function FluxoTriagemPage() {
           }
         }}
       />
+
+      {/* ── Modal de Tutorial ── */}
+      <TutorialModal open={showTutorial} onClose={() => setShowTutorial(false)} />
     </div>
   );
 }
