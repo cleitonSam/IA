@@ -49,7 +49,8 @@ export default function SwitchNode(props: NodeProps) {
         </span>
       </div>
 
-      <div className="p-3 space-y-1.5">
+      <div className="p-3 space-y-2">
+        {/* Cabeçalho */}
         <div className="flex items-center justify-between">
           <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Condições</p>
           <button type="button" onClick={addCond}
@@ -58,43 +59,62 @@ export default function SwitchNode(props: NodeProps) {
           </button>
         </div>
 
-        <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1 nodrag">
-        {conditions.map((cond, idx) => (
-          <div key={cond.handle} className="relative flex gap-1.5 items-start bg-black/30 rounded-lg p-1.5 border border-white/5">
-            <div className="flex-1 space-y-1">
-              <input
-                className="nodrag w-full bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none border-b border-white/5 pb-0.5"
-                value={cond.label}
-                onChange={(e) => setCond(idx, "label", e.target.value)}
-                placeholder="Label (ex: Suporte)"
-              />
-              <input
-                className="nodrag w-full bg-transparent text-[10px] text-slate-500 placeholder-slate-700 focus:outline-none"
-                value={cond.value}
-                onChange={(e) => setCond(idx, "value", e.target.value)}
-                placeholder="ID da opção (ex: 1)"
-              />
+        {/* Inputs com scroll — SEM handles aqui */}
+        <div className="space-y-1.5 max-h-[180px] overflow-y-auto nodrag">
+          {conditions.map((cond, idx) => (
+            <div key={cond.handle} className="flex gap-1.5 items-start bg-black/30 rounded-lg p-1.5 border border-white/5">
+              <div className="flex-1 space-y-1 min-w-0">
+                <input
+                  className="nodrag w-full bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none border-b border-white/5 pb-0.5"
+                  value={cond.label}
+                  onChange={(e) => setCond(idx, "label", e.target.value)}
+                  placeholder="Label (ex: Suporte)"
+                />
+                <input
+                  className="nodrag w-full bg-transparent text-[10px] text-slate-500 placeholder-slate-700 focus:outline-none"
+                  value={cond.value}
+                  onChange={(e) => setCond(idx, "value", e.target.value)}
+                  placeholder="Valor (ex: 1)"
+                />
+              </div>
+              <button type="button" onClick={() => removeCond(idx)}
+                className="nodrag text-slate-700 hover:text-red-400 text-[10px] mt-0.5 flex-shrink-0">✕</button>
             </div>
-            <button type="button" onClick={() => removeCond(idx)}
-              className="nodrag text-slate-700 hover:text-red-400 text-[10px] mt-0.5">✕</button>
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={cond.handle}
-              style={{
-                background: cfg.border,
-                width: 8,
-                height: 8,
-                border: `2px solid ${cfg.border}`,
-                boxShadow: `0 0 4px ${cfg.border}`,
-                right: -12,
-                top: "50%",
-              }}
-            />
-          </div>
-        ))}
+          ))}
         </div>
-        <p className="text-[9px] text-purple-900 mt-1">
+
+        {/* Saídas — fora do scroll, handles funcionam normalmente */}
+        {conditions.length > 0 && (
+          <div className="space-y-1 pt-1 border-t border-white/5">
+            <p className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Saídas</p>
+            {conditions.map((cond) => (
+              <div key={cond.handle} className="relative flex items-center bg-black/20 rounded-lg px-2 py-1.5 border border-white/5">
+                <div className="w-1.5 h-1.5 rounded-full mr-2 flex-shrink-0" style={{ background: cfg.border }} />
+                <span className="text-[10px] font-bold flex-1 truncate" style={{ color: cfg.headerText }}>
+                  {cond.label || "—"}
+                </span>
+                <Handle
+                  type="source"
+                  position={Position.Right}
+                  id={cond.handle}
+                  style={{
+                    background: cfg.border,
+                    width: 10,
+                    height: 10,
+                    border: `2px solid ${cfg.border}`,
+                    boxShadow: `0 0 6px ${cfg.border}`,
+                    right: -12,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    position: "absolute",
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="text-[9px] text-purple-900">
           Ramifica de acordo com a opção de menu selecionada pelo usuário.
         </p>
       </div>

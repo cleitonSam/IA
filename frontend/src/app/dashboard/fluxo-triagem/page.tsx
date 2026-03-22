@@ -28,6 +28,7 @@ import { nodeTypes } from "./nodes";
 import { NODE_CONFIG, CATEGORY_LABELS, NodeTypeName } from "./nodes/nodeStyles";
 import TemplatesModal from "./components/TemplatesModal";
 import TutorialModal from "./components/TutorialModal";
+import DeletableEdge from "./components/DeletableEdge";
 
 // ─────────────────────────────────────────────────────────────
 // Tipagem
@@ -63,10 +64,13 @@ const PALETTE_ORDER: CategoryKey[] = ["control", "send", "ai", "logic", "system"
 // Edge style global
 // ─────────────────────────────────────────────────────────────
 const EDGE_STYLE: Partial<Edge> = {
+  type: "deletable",
   markerEnd: { type: MarkerType.ArrowClosed, color: "#00d2ff" },
   style: { stroke: "#00d2ff55", strokeWidth: 2 },
   animated: true,
 };
+
+const EDGE_TYPES = { deletable: DeletableEdge };
 
 // ─────────────────────────────────────────────────────────────
 // Componente principal
@@ -125,7 +129,7 @@ export default function FluxoTriagemPage() {
         if (d.nodes && d.nodes.length > 0) {
           // Reconecta onChange para cada nó carregado
           setNodes(d.nodes.map((n) => attachOnChange(n)));
-          setEdges(d.edges || []);
+          setEdges((d.edges || []).map((e) => attachEdgeDelete(e)));
           setAtivo(d.ativo ?? false);
         }
       })
@@ -158,21 +162,29 @@ export default function FluxoTriagemPage() {
   };
 
 
+  // ─── Injetar onDelete nas edges ───
+  const attachEdgeDelete = useCallback(
+    (edge: Edge): Edge => ({
+      ...edge,
+      data: {
+        ...((edge.data as Record<string, unknown>) || {}),
+        onDelete: () => setEdges((eds) => eds.filter((e) => e.id !== edge.id)),
+      },
+    }),
+    [setEdges]
+  );
+
   // ─── Conectar nós ───
   const onConnect = useCallback(
     (params: Connection) => {
-      setEdges((eds) =>
-        addEdge(
-          {
-            ...params,
-            ...EDGE_STYLE,
-            id: `e-${params.source}-${params.sourceHandle || "out"}-${params.target}`,
-          },
-          eds
-        )
-      );
+      const newEdge: Edge = {
+        ...params,
+        ...EDGE_STYLE,
+        id: `e-${params.source}-${params.sourceHandle || "out"}-${params.target}`,
+      } as Edge;
+      setEdges((eds) => addEdge(attachEdgeDelete(newEdge), eds));
     },
-    [setEdges]
+    [setEdges, attachEdgeDelete]
   );
 
   // ─── Drop de nó do painel ───
@@ -499,6 +511,7 @@ export default function FluxoTriagemPage() {
               onNodeMouseLeave={onNodeMouseLeave}
               onInit={setReactFlowInstance}
               nodeTypes={nodeTypes}
+              edgeTypes={EDGE_TYPES}
               defaultEdgeOptions={EDGE_STYLE as Edge}
               fitView
               fitViewOptions={{ padding: 0.2 }}
@@ -603,7 +616,7 @@ export default function FluxoTriagemPage() {
         onLoadTemplate={(flowData) => {
           if (flowData.nodes && flowData.nodes.length > 0) {
             setNodes((flowData.nodes as Node[]).map((n) => attachOnChange(n as Node)));
-            setEdges((flowData.edges as Edge[]) || []);
+            setEdges(((flowData.edges as Edge[]) || []).map((e) => attachEdgeDelete(e)));
             setAtivo(flowData.ativo ?? false);
           }
         }}
