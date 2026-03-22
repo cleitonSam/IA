@@ -521,6 +521,96 @@ async def save_fluxo_triagem(
         raise HTTPException(status_code=500, detail=f"Erro ao salvar fluxo: {str(e)}")
 
 
+# ─────────────────────────────────────────────────────────────
+# Flow Templates
+# ─────────────────────────────────────────────────────────────
+
+class FlowTemplateCreate(BaseModel):
+    nome: str
+    categoria: str = "geral"
+    descricao: Optional[str] = None
+    flow_data: dict
+    publico: bool = False
+
+
+@router.get("/flow-templates")
+async def list_flow_templates(
+    categoria: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista templates de fluxo (públicos + da própria empresa)."""
+    empresa_id = token_payload.get("empresa_id")
+    query = """
+        SELECT id, nome, categoria, descricao, publico, empresa_id,
+               created_at,
+               CASE WHEN empresa_id = $1 THEN true ELSE false END AS proprio
+        FROM flow_templates
+        WHERE publico = true OR empresa_id = $1
+    """
+    params = [empresa_id]
+    if categoria:
+        query += " AND categoria = $2"
+        params.append(categoria)
+    query += " ORDER BY publico DESC, created_at DESC"
+    rows = await _database.db_pool.fetch(query, *params)
+    return [dict(r) for r in rows]
+
+
+@router.post("/flow-templates")
+async def create_flow_template(
+    payload: FlowTemplateCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Salva o fluxo atual como template."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    try:
+        row = await _database.db_pool.fetchrow(
+            """INSERT INTO flow_templates (nome, categoria, descricao, flow_data, empresa_id, publico)
+               VALUES ($1, $2, $3, $4::jsonb, $5, $6) RETURNING id""",
+            payload.nome, payload.categoria, payload.descricao,
+            json.dumps(payload.flow_data), empresa_id, payload.publico
+        )
+        logger.info(f"✅ Template '{payload.nome}' criado por empresa {empresa_id}")
+        return {"status": "ok", "id": row["id"]}
+    except Exception as e:
+        logger.error(f"Erro ao criar template empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/flow-templates/{template_id}")
+async def get_flow_template(
+    template_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Carrega um template específico pelo ID."""
+    empresa_id = token_payload.get("empresa_id")
+    row = await _database.db_pool.fetchrow(
+        "SELECT * FROM flow_templates WHERE id = $1 AND (publico = true OR empresa_id = $2)",
+        template_id, empresa_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    return dict(row)
+
+
+@router.delete("/flow-templates/{template_id}")
+async def delete_flow_template(
+    template_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Remove um template da própria empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    result = await _database.db_pool.execute(
+        "DELETE FROM flow_templates WHERE id = $1 AND empresa_id = $2",
+        template_id, empresa_id
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Template não encontrado ou sem permissão")
+    return {"status": "ok"}
+
+
 class PlaygroundMessage(BaseModel):
     role: str   # "user" | "assistant"
     content: str

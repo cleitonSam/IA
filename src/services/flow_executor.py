@@ -262,8 +262,12 @@ async def _process_state(
     if node_type == "switch":
         conditions = node.get("data", {}).get("conditions", [])
         msg_lower = mensagem.lower().strip()
+        # Strip prefixo de seleção de menu UazAPI ("[Selecionou no menu]: X")
+        _PREFIX_MENU = "[selecionou no menu]: "
+        if msg_lower.startswith(_PREFIX_MENU):
+            msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
         matched_handle = None
-        
+
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
@@ -321,6 +325,70 @@ async def _process_state(
         # Nenhum match: tenta a primeira saída padrão
         handles = _get_all_next_handles(fluxo, node_id)
         return handles[0][1] if handles else None
+
+    # ── MenuFixoIA: identifica a opção escolhida e salva handle para o _execute_from ──
+    if node_type == "menuFixoIA":
+        opcoes = node.get("data", {}).get("opcoes", [])
+        msg_lower = mensagem.lower().strip()
+        _PREFIX_MENU = "[selecionou no menu]: "
+        if msg_lower.startswith(_PREFIX_MENU):
+            msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
+
+        matched_handle = None
+        matched_label = ""
+        for i, op in enumerate(opcoes):
+            op_id = str(op.get("id", "")).lower().strip()
+            op_titulo = str(op.get("titulo", "")).lower().strip()
+            if msg_lower == op_id or msg_lower == op_titulo:
+                matched_handle = op.get("handle")
+                matched_label = op.get("titulo", "")
+                break
+            if op_titulo and op_titulo in msg_lower:
+                matched_handle = op.get("handle")
+                matched_label = op.get("titulo", "")
+                break
+            if msg_lower.isdigit() and int(msg_lower) == i + 1:
+                matched_handle = op.get("handle")
+                matched_label = op.get("titulo", "")
+                break
+
+        if not matched_handle and opcoes:
+            matched_handle = opcoes[0].get("handle", "")
+            matched_label = opcoes[0].get("titulo", "")
+
+        session_vars["last_choice_label"] = matched_label
+        session_vars["_menuFixoIA_handle"] = matched_handle or ""
+        return node_id  # re-executa em _execute_from para chamar IA e rotear
+
+    # ── AIMenuDinamicoIA: identifica posição da opção escolhida ──
+    if node_type == "aiMenuDinamicoIA":
+        generated_options = state.get("generated_options", [])
+        msg_lower = mensagem.lower().strip()
+        _PREFIX_MENU = "[selecionou no menu]: "
+        if msg_lower.startswith(_PREFIX_MENU):
+            msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
+
+        matched_pos = 0
+        matched_label = ""
+        for i, opt in enumerate(generated_options):
+            opt_id = str(opt.get("id", "")).lower().strip()
+            opt_titulo = str(opt.get("titulo", "")).lower().strip()
+            if msg_lower == opt_id or msg_lower == opt_titulo:
+                matched_pos = i
+                matched_label = opt.get("titulo", "")
+                break
+            if opt_titulo and opt_titulo in msg_lower:
+                matched_pos = i
+                matched_label = opt.get("titulo", "")
+                break
+            if msg_lower.isdigit() and int(msg_lower) == i + 1:
+                matched_pos = i
+                matched_label = opt.get("titulo", "")
+                break
+
+        session_vars["last_choice_label"] = matched_label
+        session_vars["_aimenudionamicoIA_pos"] = matched_pos
+        return node_id  # re-executa em _execute_from para chamar IA e rotear
 
     # ── AIClassify: aguarda que a resposta já foi avaliada no nó ──
     if node_type == "aiClassify":
@@ -493,6 +561,11 @@ async def _execute_from(
         # Ramifica pela mensagem atual
         conditions = data.get("conditions", [])
         msg_lower = mensagem.lower().strip()
+        # Strip prefixo de seleção de menu UazAPI ("[Selecionou no menu]: X")
+        _PREFIX_MENU = "[selecionou no menu]: "
+        if msg_lower.startswith(_PREFIX_MENU):
+            msg_lower = msg_lower[len(_PREFIX_MENU):].strip()
+        matched_handle = None
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
@@ -855,6 +928,141 @@ async def _execute_from(
         else:
             await redis_client.setex(loop_key, FLOW_STATE_TTL, str(count + 1))
             await _execute_from(empresa_id, phone, mensagem, fluxo, target_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── MenuFixoIA (Menu Fixo + IA Responde) ──
+    if node_type == "menuFixoIA":
+        selected_handle = session_vars.get("_menuFixoIA_handle")
+        if "_menuFixoIA_handle" in session_vars:
+            # Segunda fase: IA gera resposta e roteia pelo handle
+            instrucaoIA = _render_vars(data.get("instrucaoIA", "Responda de forma personalizada sobre a opção escolhida."), session_vars)
+            ia_response = await _call_ia(instrucaoIA, mensagem, max_tokens=300)
+            if ia_response:
+                await _bot_sent_marker(empresa_id, phone)
+                await uaz_client.send_text(phone, ia_response)
+            # Limpa flag temporária
+            session_vars.pop("_menuFixoIA_handle", None)
+            await _set_vars(empresa_id, phone, session_vars)
+            next_id = _get_next_node_id(fluxo, node_id, selected_handle) if selected_handle else None
+            if not next_id:
+                handles = _get_all_next_handles(fluxo, node_id)
+                next_id = handles[0][1] if handles else None
+            if next_id:
+                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        else:
+            # Primeira fase: envia o menu fixo
+            opcoes = [{"id": op.get("id", ""), "titulo": op.get("titulo", "")} for op in data.get("opcoes", [])]
+            menu_data = {
+                "tipo": data.get("tipo", "list"),
+                "titulo": _render_vars(data.get("titulo", ""), session_vars),
+                "texto": _render_vars(data.get("texto", ""), session_vars),
+                "rodape": data.get("rodape", ""),
+                "botao": data.get("botao", "Ver opções"),
+                "opcoes": opcoes,
+            }
+            await _bot_sent_marker(empresa_id, phone)
+            sent = await uaz_client.send_menu(phone, menu_data)
+            if sent:
+                await _set_state(empresa_id, phone, {
+                    "node_id": node_id,
+                    "step": "awaiting_menufixoia",
+                })
+        return
+
+    # ── AIMenuDinamicoIA (IA gera menu + IA responde à seleção) ──
+    if node_type == "aiMenuDinamicoIA":
+        matched_pos = session_vars.get("_aimenudionamicoIA_pos")
+        if "_aimenudionamicoIA_pos" in session_vars:
+            # Segunda fase: IA gera resposta contextual e roteia por posição
+            instrucaoResposta = _render_vars(data.get("instrucaoResposta", "Responda sobre a escolha do usuário: {{last_choice_label}}."), session_vars)
+            ia_response = await _call_ia(instrucaoResposta, mensagem, max_tokens=300)
+            if ia_response:
+                await _bot_sent_marker(empresa_id, phone)
+                await uaz_client.send_text(phone, ia_response)
+            handle = f"h{int(matched_pos) + 1}"
+            session_vars.pop("_aimenudionamicoIA_pos", None)
+            await _set_vars(empresa_id, phone, session_vars)
+            next_id = _get_next_node_id(fluxo, node_id, handle)
+            if not next_id:
+                handles = _get_all_next_handles(fluxo, node_id)
+                next_id = handles[0][1] if handles else None
+            if next_id:
+                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        else:
+            # Primeira fase: gera menu dinamicamente com IA
+            instrucaoMenu = _render_vars(data.get("instrucaoMenu", "Gere um menu de opções relevante para o usuário."), session_vars)
+            opcoes_count = int(data.get("opcoes_count", 3))
+            prompt = (
+                f"Você é um assistente de atendimento via WhatsApp.\n"
+                f"Instrução: {instrucaoMenu}\n"
+                f"Mensagem do usuário: {mensagem}\n"
+                f"Contexto: {json.dumps(session_vars, ensure_ascii=False)}\n\n"
+                f"Gere exatamente {opcoes_count} opções de menu. Responda APENAS com JSON válido:\n"
+                f"{{\"texto\": \"...\", \"titulo\": \"...\", \"choices\": [\"Opção Visível|id_curto\", ...]}}"
+            )
+            result_raw = await _call_ia(prompt, mensagem, max_tokens=400)
+            try:
+                json_str = result_raw.strip()
+                for marker in ("```json", "```"):
+                    if marker in json_str:
+                        json_str = json_str.split(marker)[1].split("```")[0].strip()
+                        break
+                menu_config = json.loads(json_str)
+                choices_raw = menu_config.get("choices", [])
+                opcoes = []
+                for choice in choices_raw:
+                    if "|" in choice:
+                        lbl, cid = choice.split("|", 1)
+                        opcoes.append({"titulo": lbl.strip(), "id": cid.strip()})
+                    else:
+                        opcoes.append({"titulo": choice.strip(), "id": choice.strip().lower().replace(" ", "_")})
+                final_menu = {
+                    "tipo": "list",
+                    "titulo": menu_config.get("titulo", "Opções"),
+                    "texto": menu_config.get("texto", "Como posso ajudar?"),
+                    "rodape": data.get("rodape", "Powered by IA"),
+                    "botao": data.get("botao", "Ver opções"),
+                    "opcoes": opcoes,
+                }
+                await _bot_sent_marker(empresa_id, phone)
+                sent = await uaz_client.send_menu(phone, final_menu)
+                if sent:
+                    await _set_state(empresa_id, phone, {
+                        "node_id": node_id,
+                        "step": "awaiting_aimenudionamicoIA",
+                        "generated_options": opcoes,
+                    })
+            except Exception as e:
+                logger.error(f"[FlowExecutor] aiMenuDinamicoIA erro ao gerar menu empresa {empresa_id}: {e}")
+                next_id = _get_next_node_id(fluxo, node_id)
+                if next_id:
+                    await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+        return
+
+    # ── BusinessHours (Horário Comercial) ──
+    if node_type == "businessHours":
+        tz_name = data.get("fusoHorario", "America/Sao_Paulo")
+        try:
+            now = datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        # Python weekday(): 0=segunda, 6=domingo
+        dia = now.weekday()
+        horarios = data.get("horarios", {})
+        horario_dia = horarios.get(str(dia), {})
+        is_open = False
+        if horario_dia.get("ativo"):
+            hora_atual = now.strftime("%H:%M")
+            hora_inicio = horario_dia.get("inicio", "00:00")
+            hora_fim = horario_dia.get("fim", "23:59")
+            is_open = hora_inicio <= hora_atual <= hora_fim
+        handle = "aberto" if is_open else "fechado"
+        next_id = _get_next_node_id(fluxo, node_id, handle)
+        if not next_id:
+            handles = _get_all_next_handles(fluxo, node_id)
+            next_id = handles[0][1] if handles else None
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
         return
 
     logger.warning(f"[FlowExecutor] Tipo de nó desconhecido: {node_type}")

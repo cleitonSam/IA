@@ -24,6 +24,9 @@ import GenerateProtocolNode from "./GenerateProtocolNode";
 import SearchNode from "./SearchNode";
 import RedisNode from "./RedisNode";
 import SourceFilterNode from "./SourceFilterNode";
+import MenuFixoIANode from "./MenuFixoIANode";
+import AIMenuDinamicoIANode from "./AIMenuDinamicoIANode";
+import BusinessHoursNode from "./BusinessHoursNode";
 
 export const nodeTypes = {
   start:         StartNode,
@@ -49,7 +52,10 @@ export const nodeTypes = {
   setVariable:   SetVariableNode,
   getVariable:   GetVariableNode,
   generateProtocol: GenerateProtocolNode,
-  search:        SearchNode,
-  redis:         RedisNode,
-  sourceFilter:  SourceFilterNode,
+  search:           SearchNode,
+  redis:            RedisNode,
+  sourceFilter:     SourceFilterNode,
+  menuFixoIA:       MenuFixoIANode,
+  aiMenuDinamicoIA: AIMenuDinamicoIANode,
+  businessHours:    BusinessHoursNode,
 };

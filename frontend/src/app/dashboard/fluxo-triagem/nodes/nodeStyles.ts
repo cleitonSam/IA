@@ -7,7 +7,9 @@ export type NodeTypeName =
   | "start" | "end" | "loop"
   | "sendText" | "sendMenu" | "sendImage" | "sendAudio" | "sendMedia"
   | "aiRespond" | "aiClassify" | "aiSentiment" | "aiQualify" | "aiExtract" | "aiMenu"
+  | "menuFixoIA" | "aiMenuDinamicoIA"
   | "switch" | "condition" | "delay" | "waitInput" | "setVariable" | "getVariable"
+  | "businessHours"
   | "humanTransfer" | "webhook" | "generateProtocol"
   | "search" | "redis" | "sourceFilter";
 
@@ -32,14 +34,17 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   aiSentiment:   { label: "IA: Sentimento",  icon: "😊", border: "#f472b6", headerBg: "#700733",  headerText: "#fbcfe8", category: "ai"      },
   aiQualify:     { label: "IA: Qualificar",  icon: "📝", border: "#10b981", headerBg: "#064e3b",  headerText: "#a7f3d0", category: "ai"      },
   aiExtract:     { label: "IA: Extrair",     icon: "🔍", border: "#fbbf24", headerBg: "#78350f",  headerText: "#fef3c7", category: "ai"      },
-  aiMenu:        { label: "IA: Menu",        icon: "🪄", border: "#06b6d4", headerBg: "#164e63",  headerText: "#67e8f9", category: "ai"      },
-  search:        { label: "Busca IA",        icon: "🔎", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#99f6e4", category: "ai"      },
-  switch:        { label: "Switch",          icon: "⚡", border: "#8b5cf6", headerBg: "#2e1065",  headerText: "#ddd6fe", category: "logic"   },
+  aiMenu:           { label: "IA: Menu",              icon: "🪄", border: "#06b6d4", headerBg: "#164e63",  headerText: "#67e8f9", category: "ai"      },
+  menuFixoIA:       { label: "Menu Fixo + IA",        icon: "✨", border: "#a855f7", headerBg: "#3b0764",  headerText: "#e9d5ff", category: "ai"      },
+  aiMenuDinamicoIA: { label: "IA: Menu Dinâmico + IA", icon: "🧠", border: "#ec4899", headerBg: "#500724",  headerText: "#fbcfe8", category: "ai"      },
+  search:           { label: "Busca IA",              icon: "🔎", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#99f6e4", category: "ai"      },
+  switch:           { label: "Switch",                icon: "⚡", border: "#8b5cf6", headerBg: "#2e1065",  headerText: "#ddd6fe", category: "logic"   },
   condition:     { label: "Condição",        icon: "❓", border: "#f59e0b", headerBg: "#7c2d12",  headerText: "#fde68a", category: "logic"   },
   delay:         { label: "Delay",           icon: "⏱", border: "#64748b", headerBg: "#1e293b",  headerText: "#cbd5e1", category: "logic"   },
-  waitInput:     { label: "Aguardar Input",  icon: "⌨", border: "#71717a", headerBg: "#27272a",  headerText: "#d4d4d8", category: "logic"   },
-  setVariable:   { label: "Definir Var",     icon: "📥", border: "#3b82f6", headerBg: "#1e3a8a",  headerText: "#bfdbfe", category: "logic"   },
-  getVariable:   { label: "Obter Var",       icon: "📤", border: "#3b82f6", headerBg: "#1e3a8a",  headerText: "#bfdbfe", category: "logic"   },
+  waitInput:     { label: "Aguardar Input",   icon: "⌨", border: "#71717a", headerBg: "#27272a",  headerText: "#d4d4d8", category: "logic"   },
+  setVariable:   { label: "Definir Var",      icon: "📥", border: "#3b82f6", headerBg: "#1e3a8a",  headerText: "#bfdbfe", category: "logic"   },
+  getVariable:   { label: "Obter Var",        icon: "📤", border: "#3b82f6", headerBg: "#1e3a8a",  headerText: "#bfdbfe", category: "logic"   },
+  businessHours: { label: "Horário Comercial", icon: "🕐", border: "#0ea5e9", headerBg: "#082f49",  headerText: "#7dd3fc", category: "logic"   },
   redis:         { label: "Redis (DB)",      icon: "💾", border: "#ef4444", headerBg: "#7f1d1d",  headerText: "#fecaca", category: "system"  },
   sourceFilter:  { label: "Filtro Origem",   icon: "🛂", border: "#84cc16", headerBg: "#365314",  headerText: "#d9f99d", category: "system"  },
   humanTransfer: { label: "Transferir",      icon: "👤", border: "#f97316", headerBg: "#7c2d12",  headerText: "#ffedd5", category: "system"  },

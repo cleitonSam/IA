@@ -26,6 +26,7 @@ import {
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { nodeTypes } from "./nodes";
 import { NODE_CONFIG, CATEGORY_LABELS, NodeTypeName } from "./nodes/nodeStyles";
+import TemplatesModal from "./components/TemplatesModal";
 
 // ─────────────────────────────────────────────────────────────
 // Tipagem
@@ -63,7 +64,7 @@ const PALETTE_ORDER: CategoryKey[] = ["control", "send", "ai", "logic", "system"
 const EDGE_STYLE: Partial<Edge> = {
   markerEnd: { type: MarkerType.ArrowClosed, color: "#00d2ff" },
   style: { stroke: "#00d2ff55", strokeWidth: 2 },
-  animated: false,
+  animated: true,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -80,6 +81,8 @@ export default function FluxoTriagemPage() {
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [paletteSearch, setPaletteSearch] = useState("");
+  const [showTemplates, setShowTemplates] = useState(false);
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -232,14 +235,20 @@ export default function FluxoTriagemPage() {
     setSelectedNode(null);
   };
 
-  // ─── Grupos de nós para a paleta ───
+  // ─── Grupos de nós para a paleta (com filtro de busca) ───
+  const searchLower = paletteSearch.toLowerCase();
   const paletteGroups = PALETTE_ORDER.map((cat) => ({
     category: cat,
     label: CATEGORY_LABELS[cat],
     nodes: Object.entries(NODE_CONFIG)
       .filter(([, cfg]) => cfg.category === cat)
+      .filter(([type, cfg]) =>
+        !searchLower ||
+        cfg.label.toLowerCase().includes(searchLower) ||
+        type.toLowerCase().includes(searchLower)
+      )
       .map(([type, cfg]) => ({ type: type as NodeTypeName, ...cfg })),
-  }));
+  })).filter((g) => g.nodes.length > 0);
 
   if (loading) {
     return (
@@ -279,7 +288,7 @@ export default function FluxoTriagemPage() {
                   FlowForge AI
                 </h1>
                 <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] -mt-1">
-                  Visual Logic Engine • {nodes.length} nodes
+                  Visual Logic Engine • {nodes.length} nós • {edges.length} conexões
                 </p>
               </div>
             </div>
@@ -323,6 +332,14 @@ export default function FluxoTriagemPage() {
 
             <button
               type="button"
+              onClick={() => setShowTemplates(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
+            >
+              🗂 Templates
+            </button>
+
+            <button
+              type="button"
               onClick={clearCanvas}
               className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
             >
@@ -352,7 +369,21 @@ export default function FluxoTriagemPage() {
         <div className="flex flex-1 overflow-hidden">
 
           {/* ── Paleta de nós (esquerda) ── */}
-          <div className="w-56 shrink-0 bg-[#020617]/50 border-r border-white/5 overflow-y-auto py-6 px-3 space-y-6 backdrop-blur-md">
+          <div className="w-56 shrink-0 bg-[#020617]/50 border-r border-white/5 flex flex-col backdrop-blur-md">
+            {/* Busca */}
+            <div className="px-3 pt-4 pb-2 border-b border-white/5">
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600 text-[11px]">🔍</span>
+                <input
+                  type="text"
+                  value={paletteSearch}
+                  onChange={(e) => setPaletteSearch(e.target.value)}
+                  placeholder="Buscar nó..."
+                  className="w-full bg-black/40 border border-white/8 rounded-xl pl-7 pr-2 py-1.5 text-white text-[11px] placeholder-slate-700 focus:outline-none focus:border-white/20"
+                />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
             {paletteGroups.map((group) => (
               <div key={group.category} className="space-y-3">
                 <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-2">
@@ -382,6 +413,7 @@ export default function FluxoTriagemPage() {
                 </div>
               </div>
             ))}
+            </div>
           </div>
 
           {/* ── Canvas ReactFlow ── */}
@@ -517,11 +549,43 @@ export default function FluxoTriagemPage() {
                       </p>
                     </div>
 
-                    {/* Os campos do nó já aparecem inline no canvas.
-                        Aqui mostramos apenas informações complementares. */}
-                    <div className="p-3 bg-[#00d2ff]/5 border border-[#00d2ff]/10 rounded-xl">
-                      <p className="text-[9px] text-slate-500 leading-relaxed">
-                        Edite os campos do nó diretamente no canvas. Clique e arraste para reposicionar.
+                    {/* Descrição do tipo de nó */}
+                    {(() => {
+                      const descs: Partial<Record<NodeTypeName, string>> = {
+                        start: "Ponto de entrada do fluxo. Toda conversa começa aqui.",
+                        end: "Encerra o fluxo e limpa o estado da conversa.",
+                        sendMenu: "Envia menu interativo (lista ou botões) e aguarda seleção.",
+                        menuFixoIA: "Envia menu fixo → usuário escolhe → IA gera resposta personalizada → roteia.",
+                        aiMenuDinamicoIA: "IA gera menu contextual → usuário escolhe → IA responde → roteia por posição.",
+                        aiRespond: "A IA gera uma resposta usando a personalidade configurada.",
+                        aiClassify: "Classifica a mensagem em categorias e roteia pelo handle correto.",
+                        aiSentiment: "Detecta sentimento (positivo/neutro/negativo) e roteia.",
+                        aiQualify: "Faz perguntas sequenciais e salva respostas em variáveis.",
+                        aiExtract: "Extrai campos estruturados da mensagem como variáveis.",
+                        aiMenu: "IA gera um menu dinamicamente baseado no contexto.",
+                        switch: "Roteia baseado na opção de menu selecionada pelo usuário.",
+                        condition: "Verifica padrão regex na mensagem e roteia (sim/não).",
+                        businessHours: "Roteia por horário comercial configurado (aberto/fechado).",
+                        humanTransfer: "Transfere para atendente humano e pausa a IA.",
+                        webhook: "Chama URL externa com dados da sessão (GET ou POST).",
+                        delay: "Aguarda N segundos antes de continuar.",
+                        waitInput: "Envia uma pergunta e salva a resposta do usuário.",
+                        setVariable: "Define o valor de uma variável de sessão.",
+                        search: "Busca na base de FAQs/cache semântico.",
+                        generateProtocol: "Gera número de protocolo aleatório de 6 dígitos.",
+                        loop: "Repete o fluxo conectado (máx. 3 vezes).",
+                      };
+                      const desc = descs[selectedNode.type as NodeTypeName];
+                      if (!desc) return null;
+                      return (
+                        <div className="p-3 bg-[#00d2ff]/5 border border-[#00d2ff]/10 rounded-xl">
+                          <p className="text-[9px] text-slate-400 leading-relaxed">{desc}</p>
+                        </div>
+                      );
+                    })()}
+                    <div className="p-3 bg-white/3 border border-white/5 rounded-xl">
+                      <p className="text-[9px] text-slate-600 leading-relaxed">
+                        Edite os campos diretamente no nó no canvas. Clique e arraste para reposicionar.
                       </p>
                     </div>
 
@@ -544,6 +608,20 @@ export default function FluxoTriagemPage() {
           </AnimatePresence>
         </div>
       </main>
+
+      {/* ── Modal de Templates ── */}
+      <TemplatesModal
+        open={showTemplates}
+        onClose={() => setShowTemplates(false)}
+        currentFlow={{ ativo, nodes: nodes.map((n) => { const { onChange: _, ...rest } = n.data as Record<string, unknown>; return { ...n, data: rest }; }), edges }}
+        onLoadTemplate={(flowData) => {
+          if (flowData.nodes && flowData.nodes.length > 0) {
+            setNodes((flowData.nodes as Node[]).map((n) => attachOnChange(n as Node)));
+            setEdges((flowData.edges as Edge[]) || []);
+            setAtivo(flowData.ativo ?? false);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -585,6 +663,32 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     humanTransfer: { mensagem: "Transferindo para um atendente humano. Aguarde! 👤" },
     webhook:       { url: "", method: "POST", body: { phone: "{{phone}}" } },
     aiMenu:        { instrucao: "Gere um menu com base na dúvida do cliente.", botao: "Ver opções", rodape: "Panobianco" },
+    menuFixoIA:    {
+      tipo: "list", titulo: "Como posso ajudar?", texto: "Olá! Selecione uma das opções abaixo 👇",
+      rodape: "Escolha uma opção", botao: "Ver opções",
+      instrucaoIA: "Responda de forma acolhedora e detalhada sobre {{last_choice_label}}.",
+      opcoes: [
+        { id: "1", titulo: "Planos e Preços", handle: "h1" },
+        { id: "2", titulo: "Agendar Visita", handle: "h2" },
+      ],
+    },
+    aiMenuDinamicoIA: {
+      instrucaoMenu: "Gere um menu com opções relevantes baseado na mensagem do usuário.",
+      instrucaoResposta: "O usuário escolheu {{last_choice_label}}. Responda com entusiasmo e forneça informações detalhadas.",
+      opcoes_count: 3, botao: "Ver opções", rodape: "Powered by IA",
+    },
+    businessHours: {
+      fusoHorario: "America/Sao_Paulo",
+      horarios: {
+        "0": { ativo: true, inicio: "08:00", fim: "18:00" },
+        "1": { ativo: true, inicio: "08:00", fim: "18:00" },
+        "2": { ativo: true, inicio: "08:00", fim: "18:00" },
+        "3": { ativo: true, inicio: "08:00", fim: "18:00" },
+        "4": { ativo: true, inicio: "08:00", fim: "18:00" },
+        "5": { ativo: true, inicio: "08:00", fim: "13:00" },
+        "6": { ativo: false, inicio: "00:00", fim: "00:00" },
+      },
+    },
     setVariable:   { chave: "", valor: "" },
     getVariable:   { chave: "" },
     generateProtocol: { variavel: "protocolo" },
