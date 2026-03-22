@@ -85,18 +85,20 @@ export default function SendMenuNode(props: NodeProps) {
             + Adicionar
           </button>
         </div>
-        {opcoes.map((op, idx) => (
-          <div key={op.id} className="flex gap-1.5 items-center bg-black/30 rounded-lg p-1.5 border border-white/5">
-            <span className="text-[9px] text-blue-400 font-black w-4">{idx + 1}</span>
-            <input
-              className="nodrag flex-1 bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
-              value={op.titulo}
-              onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
-              placeholder="Título da opção"
-            />
-            <button type="button" onClick={() => removeOpcao(idx)} className="nodrag text-slate-700 hover:text-red-400 text-[10px] transition-colors">✕</button>
-          </div>
-        ))}
+        <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1 nodrag">
+          {opcoes.map((op, idx) => (
+            <div key={op.id} className="flex gap-1.5 items-center bg-black/30 rounded-lg p-1.5 border border-white/5">
+              <span className="text-[9px] text-blue-400 font-black w-4">{idx + 1}</span>
+              <input
+                className="nodrag flex-1 bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
+                value={op.titulo}
+                onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
+                placeholder="Título da opção"
+              />
+              <button type="button" onClick={() => removeOpcao(idx)} className="nodrag text-slate-700 hover:text-red-400 text-[10px] transition-colors">✕</button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {tipo === "button" && opcoes.length > 3 && (

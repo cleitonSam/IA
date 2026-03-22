@@ -91,6 +91,7 @@ export default function FluxoTriagemPage() {
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const justDroppedRef = useRef(false);
   const clipboardRef = useRef<Node | null>(null);
+  const hoverLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── onChange para nós (atualiza data inline) ───
   const attachOnChange = useCallback(
@@ -227,12 +228,13 @@ export default function FluxoTriagemPage() {
     setSelectedNode(null);
   }, []);
 
-  // ─── Hover no nó ───
+  // ─── Hover no nó (com delay no leave para não sumir ao mover para toolbar) ───
   const onNodeMouseEnter = useCallback((_: React.MouseEvent, node: Node) => {
+    if (hoverLeaveTimer.current) clearTimeout(hoverLeaveTimer.current);
     setHoveredNodeId(node.id);
   }, []);
   const onNodeMouseLeave = useCallback(() => {
-    setHoveredNodeId(null);
+    hoverLeaveTimer.current = setTimeout(() => setHoveredNodeId(null), 180);
   }, []);
 
   // ─── Duplicar nó ───
@@ -554,7 +556,8 @@ export default function FluxoTriagemPage() {
                 return (
                   <div
                     style={{ position: "absolute", left, top, transform: "translateX(-50%)", zIndex: 100, pointerEvents: "all" }}
-                    onMouseEnter={() => setHoveredNodeId(hoveredNodeId)}
+                    onMouseEnter={() => { if (hoverLeaveTimer.current) clearTimeout(hoverLeaveTimer.current); setHoveredNodeId(hoveredNodeId); }}
+                    onMouseLeave={() => { hoverLeaveTimer.current = setTimeout(() => setHoveredNodeId(null), 180); }}
                     className="flex items-center gap-1 px-2 py-1 rounded-xl border border-white/10 bg-[#0a1628]/95 backdrop-blur-md shadow-2xl"
                   >
                     <div className="w-2 h-2 rounded-full mr-1 flex-shrink-0" style={{ background: cfg?.border || "#888" }} />

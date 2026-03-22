@@ -105,33 +105,35 @@ export default function MenuFixoIANode(props: NodeProps) {
             </button>
           </div>
 
-          {opcoes.map((op, idx) => (
-            <div key={op.handle} className="relative flex gap-1.5 items-center bg-black/30 rounded-lg p-1.5 border border-white/5">
-              <span className="text-[9px] text-purple-400 font-black w-4">{idx + 1}</span>
-              <input
-                className="nodrag flex-1 bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
-                value={op.titulo}
-                onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
-                placeholder="Título da opção"
-              />
-              <button type="button" onClick={() => removeOpcao(idx)}
-                className="nodrag text-slate-700 hover:text-red-400 text-[10px]">✕</button>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={op.handle}
-                style={{
-                  background: cfg.border,
-                  width: 8,
-                  height: 8,
-                  border: `2px solid ${cfg.border}`,
-                  boxShadow: `0 0 4px ${cfg.border}`,
-                  right: -12,
-                  top: "50%",
-                }}
-              />
-            </div>
-          ))}
+          <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1 nodrag">
+            {opcoes.map((op, idx) => (
+              <div key={op.handle} className="relative flex gap-1.5 items-center bg-black/30 rounded-lg p-1.5 border border-white/5">
+                <span className="text-[9px] text-purple-400 font-black w-4">{idx + 1}</span>
+                <input
+                  className="nodrag flex-1 bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
+                  value={op.titulo}
+                  onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
+                  placeholder="Título da opção"
+                />
+                <button type="button" onClick={() => removeOpcao(idx)}
+                  className="nodrag text-slate-700 hover:text-red-400 text-[10px]">✕</button>
+                <Handle
+                  type="source"
+                  position={Position.Right}
+                  id={op.handle}
+                  style={{
+                    background: cfg.border,
+                    width: 8,
+                    height: 8,
+                    border: `2px solid ${cfg.border}`,
+                    boxShadow: `0 0 4px ${cfg.border}`,
+                    right: -12,
+                    top: "50%",
+                  }}
+                />
+              </div>
+            ))}
+          </div>
         </div>
 
         {tipo === "button" && opcoes.length > 3 && (

@@ -58,6 +58,7 @@ export default function SwitchNode(props: NodeProps) {
           </button>
         </div>
 
+        <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1 nodrag">
         {conditions.map((cond, idx) => (
           <div key={cond.handle} className="relative flex gap-1.5 items-start bg-black/30 rounded-lg p-1.5 border border-white/5">
             <div className="flex-1 space-y-1">
@@ -92,6 +93,7 @@ export default function SwitchNode(props: NodeProps) {
             />
           </div>
         ))}
+        </div>
         <p className="text-[9px] text-purple-900 mt-1">
           Ramifica de acordo com a opção de menu selecionada pelo usuário.
         </p>
