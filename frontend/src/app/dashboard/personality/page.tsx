@@ -129,6 +129,7 @@ export default function PersonalityPage() {
   const [playHistory, setPlayHistory] = useState<{ role: string; content: string }[]>([]);
   const [testMessage, setTestMessage] = useState("");
   const [testLoading, setTestLoading] = useState(false);
+  const [playModel, setPlayModel] = useState<string>("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
@@ -250,18 +251,25 @@ export default function PersonalityPage() {
 
   const runTest = async () => {
     if (!testMessage.trim() || testLoading) return;
+    if (selected === "new") {
+      setPlayHistory(prev => [...prev,
+        { role: "user", content: testMessage },
+        { role: "bot", content: "⚠️ Salve a personalidade antes de testar no Playground." }
+      ]);
+      setTestMessage("");
+      return;
+    }
     setTestLoading(true);
     const newHistory = [...playHistory, { role: "user", content: testMessage }];
     setPlayHistory(newHistory);
     setTestMessage("");
     try {
       const res = await axios.post("/api-backend/management/personalities/playground", {
-        model_name: formData.model_name, instrucoes_base: formData.instrucoes_base,
-        personalidade: formData.personalidade, tom_voz: formData.tom_voz,
-        temperature: formData.temperature, max_tokens: formData.max_tokens,
+        personality_id: typeof selected === "number" ? selected : undefined,
         messages: newHistory.map(m => ({ role: m.role === "bot" ? "assistant" : m.role, content: m.content })),
       }, getConfig());
       setPlayHistory(prev => [...prev, { role: "bot", content: res.data.reply }]);
+      if (res.data.model) setPlayModel(res.data.model);
     } catch (err) {
       let detail = "Erro ao conectar com a IA.";
       if (axios.isAxiosError(err)) detail = err.response?.data?.detail || detail;
@@ -1052,10 +1060,13 @@ export default function PersonalityPage() {
                       <div className="flex items-center gap-2.5">
                         <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                         <p className="text-xs text-emerald-300 font-bold">
-                          Conversando com <span className="text-white">{MODELS.find(m => m.id === fd.model_name)?.label || fd.model_name}</span> em tempo real
+                          Testando personalidade salva
+                          {playModel && (
+                            <span className="text-slate-400 font-normal"> · {MODELS.find(m => m.id === playModel)?.label || playModel}</span>
+                          )}
                         </p>
                       </div>
-                      <button onClick={() => setPlayHistory([])} className="text-[10px] text-slate-500 hover:text-white font-bold uppercase tracking-widest transition-colors">
+                      <button onClick={() => { setPlayHistory([]); setPlayModel(""); }} className="text-[10px] text-slate-500 hover:text-white font-bold uppercase tracking-widest transition-colors">
                         Limpar
                       </button>
                     </div>
@@ -1065,7 +1076,11 @@ export default function PersonalityPage() {
                         <div className="flex flex-col items-center justify-center flex-1 text-center opacity-40 py-12">
                           <Bot className="w-12 h-12 mb-3" />
                           <p className="text-sm font-bold">Converse com a IA agora mesmo.</p>
-                          <p className="text-xs mt-1 opacity-70">As configurações desta tela são usadas em tempo real.</p>
+                          <p className="text-xs mt-1 opacity-70">
+                            {selected === "new"
+                              ? "Salve a personalidade primeiro para testá-la."
+                              : "Usa 100% a personalidade salva no banco — modelo, instruções e todos os campos."}
+                          </p>
                         </div>
                       ) : playHistory.map((m, i) => (
                         <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>

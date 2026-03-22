@@ -626,13 +626,72 @@ class PlaygroundMessage(BaseModel):
     content: str
 
 class PlaygroundRequest(BaseModel):
-    model_name: str = "openai/gpt-4o"
-    instrucoes_base: str = ""
-    personalidade: str = ""
-    tom_voz: str = "Profissional"
-    temperature: float = 0.7
-    max_tokens: int = 1000
+    personality_id: Optional[int] = None   # Se None, usa a personalidade ativa da empresa
     messages: List[PlaygroundMessage] = []
+
+
+# Mapeamento de campos da personalidade para títulos no system prompt
+_PG_LABEL_MAP = {
+    "objetivos_venda":       "OBJETIVOS DE VENDA",
+    "metas_comerciais":      "METAS COMERCIAIS",
+    "script_vendas":         "SCRIPT DE VENDAS",
+    "scripts_objecoes":      "RESPOSTAS A OBJEÇÕES",
+    "frases_fechamento":     "FRASES DE FECHAMENTO",
+    "diferenciais":          "DIFERENCIAIS DA EMPRESA",
+    "posicionamento":        "POSICIONAMENTO DE MERCADO",
+    "publico_alvo":          "PÚBLICO-ALVO",
+    "restricoes":            "RESTRIÇÕES CRÍTICAS",
+    "linguagem_proibida":    "LINGUAGEM PROIBIDA",
+    "contexto_empresa":      "CONTEXTO DA EMPRESA",
+    "contexto_extra":        "CONTEXTO EXTRA",
+    "abordagem_proativa":    "ABORDAGEM PROATIVA",
+    "exemplos":              "EXEMPLOS DE INTERAÇÃO",
+    "palavras_proibidas":    "PALAVRAS E TERMOS PROIBIDOS",
+    "despedida_personalizada": "DESPEDIDA PERSONALIZADA",
+    "regras_formatacao":     "REGRAS DE FORMATAÇÃO",
+    "regras_seguranca":      "REGRAS DE SEGURANÇA E PRIVACIDADE",
+}
+
+
+def _build_playground_prompt(p: dict) -> str:
+    """Constrói o system prompt completo a partir dos campos da personalidade."""
+    nome     = p.get("nome_ia") or "Assistente"
+    idioma   = p.get("idioma") or "Português do Brasil"
+    blocos: List[str] = []
+
+    # Identidade
+    blocos.append(f"[IDENTIDADE]\nVocê é {nome}, assistente virtual desta empresa.")
+
+    # Linguagem
+    blocos.append(f"[IDIOMA]\nResponda sempre em {idioma}. Não use markdown.")
+
+    # Personalidade
+    if p.get("personalidade"):
+        blocos.append(f"[PERSONALIDADE]\n{p['personalidade']}")
+
+    # Tom de voz
+    if p.get("tom_voz"):
+        blocos.append(f"[TOM DE VOZ]\n{p['tom_voz']}")
+
+    # Instruções base
+    if p.get("instrucoes_base"):
+        blocos.append(f"[INSTRUÇÕES BASE]\n{p['instrucoes_base']}")
+
+    # Campos dinâmicos via _PG_LABEL_MAP
+    for campo, titulo in _PG_LABEL_MAP.items():
+        valor = p.get(campo)
+        if valor and str(valor).strip():
+            blocos.append(f"[{titulo}]\n{valor}")
+
+    # Emojis
+    usar_emoji = p.get("usar_emoji", True)
+    emoji_tipo = p.get("emoji_tipo") or ""
+    if usar_emoji and emoji_tipo:
+        blocos.append(f"[FORMATAÇÃO]\nUse os seguintes emojis quando adequado: {emoji_tipo}")
+    elif not usar_emoji:
+        blocos.append("[FORMATAÇÃO]\nNão use emojis nas respostas.")
+
+    return "\n\n".join(blocos)
 
 
 @router.post("/personalities/playground")
@@ -641,26 +700,45 @@ async def personality_playground(
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Executa uma mensagem real no LLM com a configuração de personalidade fornecida.
-    Usado pelo Playground no painel de Personalidade IA.
+    Executa o Playground usando 100% os dados da personalidade salva no banco.
+    Carrega modelo, temperatura, max_tokens e todos os campos de configuração do DB.
     """
     from src.services.llm_service import cliente_ia
 
     if not cliente_ia:
         raise HTTPException(status_code=503, detail="Serviço de IA não configurado (OPENROUTER_API_KEY ausente)")
 
-    # Monta system prompt combinando personalidade + instruções + tom
-    partes = []
-    if body.personalidade:
-        partes.append(f"Objetivo: {body.personalidade}")
-    if body.instrucoes_base:
-        partes.append(body.instrucoes_base)
-    if body.tom_voz:
-        partes.append(f"Tom de voz: {body.tom_voz}.")
-    system_prompt = "\n\n".join(partes) if partes else "Você é um assistente prestativo."
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao token")
 
-    # Monta histórico de mensagens
-    msgs = [{"role": "system", "content": system_prompt}]
+    # Carrega personalidade do banco
+    if body.personality_id:
+        row = await _database.db_pool.fetchrow(
+            """SELECT * FROM personalidade_ia WHERE id = $1 AND empresa_id = $2""",
+            body.personality_id, empresa_id
+        )
+    else:
+        row = await _database.db_pool.fetchrow(
+            """SELECT * FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true ORDER BY updated_at DESC LIMIT 1""",
+            empresa_id
+        )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Personalidade não encontrada. Salve a personalidade antes de testar.")
+
+    p = dict(row)
+
+    # Extrai configurações do LLM diretamente do banco
+    model       = p.get("modelo_preferido") or "openai/gpt-4o-mini"
+    temperature = float(p.get("temperatura") or 0.7)
+    max_tokens  = int(p.get("max_tokens") or 500)
+
+    # Constrói system prompt completo com todos os campos
+    system_prompt = _build_playground_prompt(p)
+
+    # Monta histórico
+    msgs: List[dict] = [{"role": "system", "content": system_prompt}]
     for m in body.messages:
         if m.role in ("user", "assistant"):
             msgs.append({"role": m.role, "content": m.content})
@@ -668,15 +746,19 @@ async def personality_playground(
     try:
         response = await asyncio.wait_for(
             cliente_ia.chat.completions.create(
-                model=body.model_name,
+                model=model,
                 messages=msgs,
-                temperature=body.temperature,
-                max_tokens=min(body.max_tokens, 500),  # limita resposta no playground
+                temperature=temperature,
+                max_tokens=max_tokens,
             ),
             timeout=30
         )
         reply = response.choices[0].message.content or ""
-        return {"reply": reply, "model": body.model_name}
+        return {
+            "reply": reply,
+            "model": model,
+            "nome_ia": p.get("nome_ia") or "Assistente",
+        }
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="IA demorou demais para responder. Tente novamente.")
     except Exception as e:
