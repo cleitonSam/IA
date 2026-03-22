@@ -133,12 +133,11 @@ async def _call_ia(prompt: str, user_message: str, max_tokens: int = 150) -> str
     """Chama o LLM com um prompt simples e retorna texto."""
     try:
         from src.services.llm_service import cliente_ia
-        from src.core.config import MODEL_NAME_PADRAO
         if not cliente_ia:
             return ""
         resp = await asyncio.wait_for(
             cliente_ia.chat.completions.create(
-                model=MODEL_NAME_PADRAO or "openai/gpt-4o-mini",
+                model="openai/gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user",   "content": user_message},
