@@ -804,41 +804,14 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
         return
 
-    # ── BusinessHours ──
+    # ── BusinessHours — lê horário da personalidade (configurado em Settings) ──
     if node_type == "businessHours":
-        horarios = data.get("horarios", {})
-        fuso = data.get("fusoHorario", "America/Sao_Paulo")
-        try:
-            agora = datetime.now(ZoneInfo(fuso))
-        except Exception:
-            agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-
-        dia_semana = agora.weekday()  # 0=Segunda ... 6=Domingo
-        dia_cfg = horarios.get(str(dia_semana), {})
-        ativo = dia_cfg.get("ativo", False)
-        handle = "fechado"
-
-        if ativo:
-            try:
-                h_ini, m_ini = map(int, dia_cfg.get("inicio", "00:00").split(":"))
-                h_fim, m_fim = map(int, dia_cfg.get("fim",   "00:00").split(":"))
-                from datetime import time as dtime
-                t_ini = dtime(h_ini, m_ini)
-                t_fim = dtime(23, 59, 59) if (h_fim == 0 and m_fim == 0) else dtime(h_fim, m_fim)
-                hora_atual = agora.time().replace(tzinfo=None)
-                if t_ini < t_fim and t_ini <= hora_atual < t_fim:
-                    handle = "aberto"
-                elif t_ini >= t_fim:
-                    # período inválido — trata como fechado
-                    handle = "fechado"
-            except Exception as e:
-                logger.warning(f"[FlowExecutor] BusinessHours erro ao calcular horário: {e}")
-
-        logger.info(
-            f"[FlowExecutor] BusinessHours: dia={dia_semana} ativo={ativo} "
-            f"hora={agora.strftime('%H:%M')} → handle={handle}"
-        )
-
+        from src.utils.time_helpers import ia_esta_no_horario
+        pers = await carregar_personalidade(empresa_id) or {}
+        horario_cfg = pers.get("horario_atendimento_ia")
+        aberto = ia_esta_no_horario(horario_cfg)
+        handle = "aberto" if aberto else "fechado"
+        logger.info(f"[FlowExecutor] BusinessHours empresa={empresa_id} → {handle}")
         next_id = _get_next_node_id(fluxo, node_id, source_handle=handle)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
