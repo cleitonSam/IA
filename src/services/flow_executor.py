@@ -533,7 +533,7 @@ async def _execute_from(
         caption = _render_vars(data.get("caption", ""), session_vars)
         if url:
             await _bot_sent_marker(empresa_id, phone)
-            await uaz_client.send_media(phone, url, caption, media_type="image")
+            await uaz_client.send_media(phone, url, media_type="image", caption=caption)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)

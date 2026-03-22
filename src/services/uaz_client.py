@@ -65,7 +65,7 @@ class UazAPIClient:
         res = await self._request("POST", "/send/presence", json=payload)
         return res is not None
 
-    async def send_media(self, number: str, file_url: str, media_type: str = "image", delay: int = 0) -> bool:
+    async def send_media(self, number: str, file_url: str, media_type: str = "image", caption: str = "", delay: int = 0) -> bool:
         """Envia imagem, vídeo ou documento via URL seguindo padrão UazAPI."""
         clean_number = "".join(filter(str.isdigit, number))
         payload = {
@@ -74,6 +74,8 @@ class UazAPIClient:
             "file": file_url,
             "delay": str(delay)
         }
+        if caption:
+            payload["caption"] = caption
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None
 
