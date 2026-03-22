@@ -21,7 +21,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, X
+  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, X, Copy, LayoutTemplate, BookOpen, Power
 } from "lucide-react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { nodeTypes } from "./nodes";
@@ -81,6 +81,7 @@ export default function FluxoTriagemPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [paletteSearch, setPaletteSearch] = useState("");
   const [showTemplates, setShowTemplates] = useState(false);
@@ -88,6 +89,8 @@ export default function FluxoTriagemPage() {
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const justDroppedRef = useRef(false);
+  const clipboardRef = useRef<Node | null>(null);
 
   // ─── onChange para nós (atualiza data inline) ───
   const attachOnChange = useCallback(
@@ -205,33 +208,78 @@ export default function FluxoTriagemPage() {
         data: getDefaultData(type),
       });
       setNodes((nds) => [...nds, newNode]);
+      // Sinaliza que acabamos de soltar — próximo click não abre painel
+      justDroppedRef.current = true;
+      setTimeout(() => { justDroppedRef.current = false; }, 300);
     },
     [reactFlowInstance, attachOnChange, setNodes]
   );
 
   // ─── Seleção de nó ───
   const onNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
-    // Não abre painel ao clicar em campos interativos dentro do nó
+    if (justDroppedRef.current) return;
     const tag = (e.target as HTMLElement).tagName;
     if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag)) return;
-    setSelectedNode(node);
+    setSelectedNode((prev) => (prev?.id === node.id ? null : node));
   }, []);
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
   }, []);
 
-  // ─── Deletar nó selecionado ───
-  const deleteSelectedNode = () => {
-    if (!selectedNode) return;
-    setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
-    setEdges((eds) =>
-      eds.filter(
-        (e) => e.source !== selectedNode.id && e.target !== selectedNode.id
-      )
-    );
-    setSelectedNode(null);
-  };
+  // ─── Hover no nó ───
+  const onNodeMouseEnter = useCallback((_: React.MouseEvent, node: Node) => {
+    setHoveredNodeId(node.id);
+  }, []);
+  const onNodeMouseLeave = useCallback(() => {
+    setHoveredNodeId(null);
+  }, []);
+
+  // ─── Duplicar nó ───
+  const duplicateNode = useCallback((nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const newId = `${node.type}-${Date.now()}`;
+    const { onChange: _, onDelete: __, onDuplicate: ___, ...cleanData } = node.data as Record<string, unknown>;
+    const newNode = attachOnChange({
+      ...node,
+      id: newId,
+      position: { x: node.position.x + 40, y: node.position.y + 40 },
+      data: cleanData,
+      selected: false,
+    });
+    setNodes((nds) => [...nds, newNode]);
+  }, [nodes, attachOnChange, setNodes]);
+
+  // ─── Ctrl+C / Ctrl+V ───
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement)?.tagName;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+        const target = selectedNode || (hoveredNodeId ? nodes.find((n) => n.id === hoveredNodeId) || null : null);
+        if (target) clipboardRef.current = target;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "v") {
+        const node = clipboardRef.current;
+        if (!node) return;
+        const newId = `${node.type}-${Date.now()}`;
+        const { onChange: _, onDelete: __, onDuplicate: ___, ...cleanData } = node.data as Record<string, unknown>;
+        const newNode = attachOnChange({
+          ...node,
+          id: newId,
+          position: { x: node.position.x + 40, y: node.position.y + 40 },
+          data: cleanData,
+          selected: false,
+        });
+        setNodes((nds) => [...nds, newNode]);
+        clipboardRef.current = { ...newNode, position: { x: newNode.position.x + 40, y: newNode.position.y + 40 } };
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedNode, hoveredNodeId, nodes, attachOnChange, setNodes]);
+
 
   // ─── Limpar canvas ───
   const clearCanvas = () => {
@@ -277,103 +325,86 @@ export default function FluxoTriagemPage() {
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* ── Topbar ── */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-[#020617]/40 backdrop-blur-xl z-20 shrink-0">
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-3">
-              <div className="w-2 h-6 bg-linear-to-b from-[#00d2ff] to-[#3b82f6] rounded-full shadow-[0_0_10px_rgba(0,210,255,0.5)]" />
-              <div>
-                <h1
-                  className="text-2xl font-black tracking-tighter"
-                  style={{
-                    background: "linear-gradient(135deg,#fff 0%,#00d2ff 100%)",
-                    WebkitBackgroundClip: "text",
-                    WebkitTextFillColor: "transparent",
-                  }}
-                >
-                  FlowForge AI
-                </h1>
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] -mt-1">
-                  Visual Logic Engine • {nodes.length} nós • {edges.length} conexões
-                </p>
-              </div>
-            </div>
-
-            {/* Toggle ativo */}
-            <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-4 py-2 backdrop-blur-md shadow-inner">
-              <button
-                type="button"
-                onClick={() => setAtivo((v) => !v)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all duration-300 ${
-                  ativo ? "bg-linear-to-r from-[#00d2ff] to-[#3b82f6]" : "bg-slate-800"
-                }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-lg transition-all duration-300 ${
-                    ativo ? "translate-x-6" : "translate-x-1"
-                  }`}
-                />
-              </button>
-              <span
-                className={`text-[11px] font-black uppercase tracking-widest ${
-                  ativo ? "text-[#00d2ff] drop-shadow-[0_0_8px_rgba(0,210,255,0.5)]" : "text-slate-500"
-                }`}
-              >
-                {ativo ? "Ativo" : "Pausado"}
-              </span>
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5 bg-[#020617]/60 backdrop-blur-xl z-20 shrink-0 gap-3">
+          {/* Logo + stats */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-1.5 h-5 rounded-full flex-shrink-0" style={{ background: "linear-gradient(to bottom,#00d2ff,#3b82f6)", boxShadow: "0 0 8px #00d2ff88" }} />
+            <div className="min-w-0">
+              <h1 className="text-sm font-black tracking-tight leading-none" style={{ background: "linear-gradient(135deg,#fff 0%,#00d2ff 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                FlowForge AI
+              </h1>
+              <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-0.5">{nodes.length} nós · {edges.length} conexões</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {error && (
-              <motion.div 
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-2xl text-[11px] text-red-400 font-bold"
-              >
-                <AlertCircle className="w-4 h-4" />
-                {error}
-              </motion.div>
-            )}
+          {/* Centro: Toggle + ações secundárias */}
+          <div className="flex items-center gap-1.5 flex-1 justify-center">
+            {/* Toggle Ativo/Pausado */}
+            <button
+              type="button"
+              onClick={() => setAtivo((v) => !v)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all ${
+                ativo
+                  ? "border-[#00d2ff]/40 bg-[#00d2ff]/10 text-[#00d2ff]"
+                  : "border-white/10 bg-white/3 text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <Power className="w-3 h-3" />
+              {ativo ? "Ativo" : "Pausado"}
+            </button>
+
+            <div className="w-px h-5 bg-white/8 mx-1" />
 
             <button
               type="button"
               onClick={() => setShowTemplates(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
             >
-              🗂 Templates
+              <LayoutTemplate className="w-3.5 h-3.5" />
+              Templates
             </button>
 
             <button
               type="button"
               onClick={() => setShowTutorial(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-[#00d2ff] hover:text-white border border-[#00d2ff]/20 hover:bg-[#00d2ff]/10 transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold text-[#00d2ff]/80 hover:text-[#00d2ff] border border-[#00d2ff]/15 hover:bg-[#00d2ff]/8 transition-all"
             >
-              📚 Tutorial
+              <BookOpen className="w-3.5 h-3.5" />
+              Tutorial
             </button>
 
             <button
               type="button"
               onClick={clearCanvas}
-              className="flex items-center gap-2 px-4 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/5 hover:bg-white/5 transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold text-slate-500 hover:text-red-400 border border-white/5 hover:border-red-500/20 hover:bg-red-500/5 transition-all"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3.5 h-3.5" />
               Limpar
             </button>
+          </div>
+
+          {/* Direita: erro + salvar */}
+          <div className="flex items-center gap-2">
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-xl text-[10px] text-red-400 font-bold"
+              >
+                <AlertCircle className="w-3 h-3" />
+                {error}
+              </motion.div>
+            )}
 
             <motion.button
-              whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(0,210,255,0.4)" }}
-              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.04, boxShadow: "0 0 24px rgba(0,210,255,0.35)" }}
+              whileTap={{ scale: 0.96 }}
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 bg-linear-to-r from-[#00d2ff] to-[#3b82f6] text-black px-6 py-2.5 rounded-2xl font-black uppercase tracking-widest text-[11px] shadow-[0_0_20px_rgba(0,210,255,0.3)] disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] text-black disabled:opacity-50 shadow-[0_0_16px_rgba(0,210,255,0.25)]"
+              style={{ background: "linear-gradient(135deg,#00d2ff,#3b82f6)" }}
             >
-              {saving ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Salvando</>
-              ) : saved ? (
-                <><CheckCircle2 className="w-4 h-4" /> Salvo!</>
-              ) : (
-                <><Save className="w-4 h-4" /> Publicar</>
-              )}
+              {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Salvando</> : saved ? <><CheckCircle2 className="w-3.5 h-3.5" /> Salvo!</> : <><Save className="w-3.5 h-3.5" /> Publicar</>}
             </motion.button>
           </div>
         </div>
@@ -462,6 +493,8 @@ export default function FluxoTriagemPage() {
               onConnect={onConnect}
               onNodeClick={onNodeClick}
               onPaneClick={onPaneClick}
+              onNodeMouseEnter={onNodeMouseEnter}
+              onNodeMouseLeave={onNodeMouseLeave}
               onInit={setReactFlowInstance}
               nodeTypes={nodeTypes}
               defaultEdgeOptions={EDGE_STYLE as Edge}
@@ -506,119 +539,56 @@ export default function FluxoTriagemPage() {
                   </div>
                 </Panel>
               )}
+
+              {/* Toolbar flutuante: aparece ao passar o mouse sobre um nó */}
+              {hoveredNodeId && reactFlowInstance && (() => {
+                const node = nodes.find((n) => n.id === hoveredNodeId);
+                if (!node) return null;
+                const cfg = NODE_CONFIG[node.type as NodeTypeName];
+                const w = (node.measured as { width?: number })?.width || 240;
+                const screenPos = reactFlowInstance.flowToScreenPosition({ x: node.position.x + w / 2, y: node.position.y });
+                const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+                if (!bounds) return null;
+                const left = screenPos.x - bounds.left;
+                const top = screenPos.y - bounds.top - 40;
+                return (
+                  <div
+                    style={{ position: "absolute", left, top, transform: "translateX(-50%)", zIndex: 100, pointerEvents: "all" }}
+                    onMouseEnter={() => setHoveredNodeId(hoveredNodeId)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-xl border border-white/10 bg-[#0a1628]/95 backdrop-blur-md shadow-2xl"
+                  >
+                    <div className="w-2 h-2 rounded-full mr-1 flex-shrink-0" style={{ background: cfg?.border || "#888" }} />
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mr-2 max-w-[80px] truncate">
+                      {cfg?.label || node.type}
+                    </span>
+                    <div className="w-px h-3 bg-white/10" />
+                    <button
+                      type="button"
+                      onClick={() => duplicateNode(hoveredNodeId)}
+                      className="p-1 rounded-lg text-slate-400 hover:text-[#00d2ff] hover:bg-[#00d2ff]/10 transition-all"
+                      title="Duplicar (Ctrl+C → Ctrl+V)"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNodes((nds) => nds.filter((n) => n.id !== hoveredNodeId));
+                        setEdges((eds) => eds.filter((e) => e.source !== hoveredNodeId && e.target !== hoveredNodeId));
+                        if (selectedNode?.id === hoveredNodeId) setSelectedNode(null);
+                        setHoveredNodeId(null);
+                      }}
+                      className="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                      title="Excluir (Delete)"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })()}
             </ReactFlow>
           </div>
 
-          {/* ── Painel de propriedades (direita) ── */}
-          <AnimatePresence>
-            {selectedNode && (
-              <motion.div
-                initial={{ x: 280, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                exit={{ x: 280, opacity: 0 }}
-                transition={{ type: "spring", stiffness: 400, damping: 35 }}
-                className="w-64 shrink-0 bg-[#0a1628] border-l border-white/5 flex flex-col overflow-hidden"
-              >
-                {/* Header do painel */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">
-                      {NODE_CONFIG[selectedNode.type as NodeTypeName]?.icon || "⬜"}
-                    </span>
-                    <div>
-                      <p className="text-[10px] font-black text-white uppercase tracking-wider">
-                        {NODE_CONFIG[selectedNode.type as NodeTypeName]?.label || selectedNode.type}
-                      </p>
-                      <p className="text-[9px] text-slate-600 font-mono">{selectedNode.id}</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={deleteSelectedNode}
-                      className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                      title="Deletar nó"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedNode(null)}
-                      className="p-1.5 rounded-lg text-slate-600 hover:text-white transition-all"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Conteúdo: o próprio nó renderizado no painel */}
-                <div className="flex-1 overflow-y-auto p-4">
-                  <div className="space-y-3">
-                    {/* ID do nó */}
-                    <div>
-                      <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">ID do Nó</p>
-                      <p className="text-[10px] text-slate-400 font-mono bg-black/30 px-2 py-1 rounded-lg">
-                        {selectedNode.id}
-                      </p>
-                    </div>
-
-                    {/* Descrição do tipo de nó */}
-                    {(() => {
-                      const descs: Partial<Record<NodeTypeName, string>> = {
-                        start: "Ponto de entrada do fluxo. Toda conversa começa aqui.",
-                        end: "Encerra o fluxo e limpa o estado da conversa.",
-                        sendMenu: "Envia menu interativo (lista ou botões) e aguarda seleção.",
-                        menuFixoIA: "Envia menu fixo → usuário escolhe → IA gera resposta personalizada → roteia.",
-                        aiMenuDinamicoIA: "IA gera menu contextual → usuário escolhe → IA responde → roteia por posição.",
-                        aiRespond: "A IA gera uma resposta usando a personalidade configurada.",
-                        aiClassify: "Classifica a mensagem em categorias e roteia pelo handle correto.",
-                        aiSentiment: "Detecta sentimento (positivo/neutro/negativo) e roteia.",
-                        aiQualify: "Faz perguntas sequenciais e salva respostas em variáveis.",
-                        aiExtract: "Extrai campos estruturados da mensagem como variáveis.",
-                        aiMenu: "IA gera um menu dinamicamente baseado no contexto.",
-                        switch: "Roteia baseado na opção de menu selecionada pelo usuário.",
-                        condition: "Verifica padrão regex na mensagem e roteia (sim/não).",
-                        businessHours: "Roteia por horário comercial configurado (aberto/fechado).",
-                        humanTransfer: "Transfere para atendente humano e pausa a IA.",
-                        webhook: "Chama URL externa com dados da sessão (GET ou POST).",
-                        delay: "Aguarda N segundos antes de continuar.",
-                        waitInput: "Envia uma pergunta e salva a resposta do usuário.",
-                        setVariable: "Define o valor de uma variável de sessão.",
-                        search: "Busca na base de FAQs/cache semântico.",
-                        generateProtocol: "Gera número de protocolo aleatório de 6 dígitos.",
-                        loop: "Repete o fluxo conectado (máx. 3 vezes).",
-                      };
-                      const desc = descs[selectedNode.type as NodeTypeName];
-                      if (!desc) return null;
-                      return (
-                        <div className="p-3 bg-[#00d2ff]/5 border border-[#00d2ff]/10 rounded-xl">
-                          <p className="text-[9px] text-slate-400 leading-relaxed">{desc}</p>
-                        </div>
-                      );
-                    })()}
-                    <div className="p-3 bg-white/3 border border-white/5 rounded-xl">
-                      <p className="text-[9px] text-slate-600 leading-relaxed">
-                        Edite os campos diretamente no nó no canvas. Clique e arraste para reposicionar.
-                      </p>
-                    </div>
-
-                    {/* Ações */}
-                    <div>
-                      <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">Ações</p>
-                      <button
-                        type="button"
-                        onClick={deleteSelectedNode}
-                        className="w-full flex items-center gap-2 justify-center px-3 py-2 rounded-xl text-[10px] font-black text-red-400 border border-red-500/20 hover:bg-red-500/10 transition-all uppercase tracking-wider"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Deletar nó
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
       </main>
 
