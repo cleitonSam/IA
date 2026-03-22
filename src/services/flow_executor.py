@@ -212,6 +212,8 @@ async def executar_fluxo(
             empresa_id, phone, mensagem, fluxo, first_next, uaz_client, session_vars
         )
 
+    # Persiste todas as variáveis alteradas durante o processamento/execução
+    await _set_vars(empresa_id, phone, session_vars)
     return True
 
 
@@ -269,16 +271,25 @@ async def _process_state(
             # 1. Match exato (valor ou label)
             if msg_lower == val or msg_lower == label:
                 matched_handle = cond.get("handle")
+                # Salva a escolha na memória
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
+                if node.get("data", {}).get("variavel"):
+                    session_vars[node["data"]["variavel"]] = label
                 break
             
             # 2. Suporte a Formato de Lista UazAPI/Chatwoot
-            # Ex: "Selecao: SAC / Suporte (id_suporte)"
             if val and f"({val})" in msg_lower:
                 matched_handle = cond.get("handle")
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
                 break
             if label and f"selecao: {label}" in msg_lower:
                 matched_handle = cond.get("handle")
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
                 break
+
 
             # 3. Match numérico inteligente (ex: "1" em "1 - Opção")
             if msg_lower.isdigit():
@@ -287,16 +298,22 @@ async def _process_state(
                     suffix = label[len(msg_lower):]
                     if not suffix or not suffix[0].isdigit():
                         matched_handle = cond.get("handle")
+                        session_vars["last_choice"] = val
+                        session_vars["last_choice_label"] = label
                         break
             
             # 4. Match de texto por palavra inteira (se mensagem for longa o suficiente)
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
                     matched_handle = cond.get("handle")
+                    session_vars["last_choice"] = val
+                    session_vars["last_choice_label"] = label
                     break
                 # Caso inverso: a label (longa) está na mensagem (ex: resposta de lista)
                 if len(label) > 3 and label in msg_lower:
                     matched_handle = cond.get("handle")
+                    session_vars["last_choice"] = val
+                    session_vars["last_choice_label"] = label
                     break
 
         if matched_handle:
@@ -483,14 +500,22 @@ async def _execute_from(
             # 1. Match exato
             if msg_lower == val or msg_lower == label:
                 matched_handle = cond.get("handle")
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
+                if data.get("variavel"):
+                    session_vars[data["variavel"]] = label
                 break
             
             # 2. Suporte a UazAPI (id) ou "Selecao: label"
             if val and f"({val})" in msg_lower:
                 matched_handle = cond.get("handle")
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
                 break
             if label and f"selecao: {label}" in msg_lower:
                 matched_handle = cond.get("handle")
+                session_vars["last_choice"] = val
+                session_vars["last_choice_label"] = label
                 break
 
             # 3. Match numérico (ex: "1" em "1 - Sim")
@@ -498,15 +523,21 @@ async def _execute_from(
                 suffix = label[len(msg_lower):]
                 if not suffix or not suffix[0].isdigit():
                     matched_handle = cond.get("handle")
+                    session_vars["last_choice"] = val
+                    session_vars["last_choice_label"] = label
                     break
 
             # 4. Match de texto (palavra inteira ou label na mensagem)
             if label and len(msg_lower) > 2:
                 if re.search(rf"\b{re.escape(msg_lower)}\b", label):
                     matched_handle = cond.get("handle")
+                    session_vars["last_choice"] = val
+                    session_vars["last_choice_label"] = label
                     break
                 if len(label) > 3 and label in msg_lower:
                     matched_handle = cond.get("handle")
+                    session_vars["last_choice"] = val
+                    session_vars["last_choice_label"] = label
                     break
         if matched_handle:
             next_id = _get_next_node_id(fluxo, node_id, matched_handle)
