@@ -129,21 +129,27 @@ async def _update_var(empresa_id: int, phone: str, key: str, value: Any):
 # IA helper (chama LLM diretamente via openai/openrouter)
 # ─────────────────────────────────────────────────────────────
 
-async def _call_ia(prompt: str, user_message: str, max_tokens: int = 150) -> str:
-    """Chama o LLM com um prompt simples e retorna texto."""
+async def _call_ia(empresa_id: int, prompt: str, user_message: str, max_tokens: int = 0) -> str:
+    """Chama o LLM usando modelo/temperatura/max_tokens da personalidade da empresa."""
     try:
         from src.services.llm_service import cliente_ia
         if not cliente_ia:
             return ""
+
+        pers    = await carregar_personalidade(empresa_id) or {}
+        model   = pers.get("modelo_preferido") or "openai/gpt-4o-mini"
+        temp    = float(pers.get("temperatura") or 0.7)
+        max_tok = max_tokens or int(pers.get("max_tokens") or 500)
+
         resp = await asyncio.wait_for(
             cliente_ia.chat.completions.create(
-                model="openai/gpt-4o-mini",
+                model=model,
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user",   "content": user_message},
                 ],
-                max_tokens=max_tokens,
-                temperature=0.3,
+                max_tokens=max_tok,
+                temperature=temp,
             ),
             timeout=20,
         )
@@ -654,15 +660,30 @@ async def _execute_from(
 
     # ── AIRespond ──
     if node_type == "aiRespond":
-        # Chama a IA para responder com base na mensagem e contexto
         prompt_extra = data.get("prompt_extra", "")
-        # Carrega personalidade da empresa para contexto global
-        from src.services.db_queries import carregar_personalidade
         pers = await carregar_personalidade(empresa_id) or {}
-        p_base = pers.get("instrucoes", "Você é um assistente virtual prestativo.")
-        
-        full_prompt = f"{p_base}\n\nREGRAS EXTRA: {prompt_extra}" if prompt_extra else p_base
-        resposta_ia = await _call_ia(full_prompt, mensagem)
+
+        nome        = pers.get("nome_ia") or "Assistente"
+        personalid  = pers.get("personalidade") or ""
+        instrucoes  = pers.get("instrucoes_base") or ""
+        tom_voz     = pers.get("tom_voz") or ""
+        usar_emoji  = pers.get("usar_emoji", True)
+        objetivos   = pers.get("objetivos_venda") or ""
+        idioma      = pers.get("idioma") or "Português"
+
+        partes = [f"Você é {nome}, um assistente virtual."]
+        if personalid:  partes.append(f"Personalidade: {personalid}")
+        if instrucoes:  partes.append(f"Instruções: {instrucoes}")
+        if tom_voz:     partes.append(f"Tom de voz: {tom_voz}")
+        if objetivos:   partes.append(f"Objetivos: {objetivos}")
+        partes.append(f"Responda sempre em: {idioma}")
+        if not usar_emoji:
+            partes.append("Não utilize emojis nas respostas.")
+        if prompt_extra:
+            partes.append(f"INSTRUÇÕES EXTRAS DO FLUXO: {prompt_extra}")
+
+        full_prompt = "\n".join(partes)
+        resposta_ia = await _call_ia(empresa_id, full_prompt, mensagem)
         
         if resposta_ia:
             await _bot_sent_marker(empresa_id, phone)
@@ -682,7 +703,7 @@ async def _execute_from(
                 f"Classifique a mensagem do usuário em UMA das seguintes categorias: {', '.join(labels)}.\n"
                 f"Responda APENAS com o nome exato da categoria, sem pontuação ou explicação."
             )
-            classification = await _call_ia(prompt, mensagem, max_tokens=20)
+            classification = await _call_ia(empresa_id, prompt, mensagem, max_tokens=20)
             classification_lower = classification.lower().strip()
             matched_handle = None
             for cond in conditions:
@@ -708,7 +729,7 @@ async def _execute_from(
             "Analise o sentimento da mensagem do usuário.\n"
             "Responda APENAS com uma palavra: 'positivo', 'neutro' ou 'negativo'."
         )
-        sentiment = await _call_ia(prompt, mensagem, max_tokens=10)
+        sentiment = await _call_ia(empresa_id, prompt, mensagem, max_tokens=10)
         sentiment_lower = sentiment.lower().strip()
         var_name = data.get("variavel", "sentimento")
         await _update_var(empresa_id, phone, var_name, sentiment_lower)
@@ -746,7 +767,7 @@ async def _execute_from(
                 f"Se uma informação não estiver presente, use null.\n"
                 f"Responda APENAS com o JSON, sem explicações."
             )
-            result_raw = await _call_ia(prompt, mensagem, max_tokens=200)
+            result_raw = await _call_ia(empresa_id, prompt, mensagem, max_tokens=200)
             try:
                 extracted = json.loads(result_raw)
                 for campo in campos:
@@ -994,7 +1015,7 @@ async def _execute_from(
         if "_menuFixoIA_handle" in session_vars:
             # Segunda fase: IA gera resposta e roteia pelo handle
             instrucaoIA = _render_vars(data.get("instrucaoIA", "Responda de forma personalizada sobre a opção escolhida."), session_vars)
-            ia_response = await _call_ia(instrucaoIA, mensagem, max_tokens=300)
+            ia_response = await _call_ia(empresa_id, instrucaoIA, mensagem, max_tokens=300)
             if ia_response:
                 await _bot_sent_marker(empresa_id, phone)
                 await uaz_client.send_text(phone, ia_response)
@@ -1033,7 +1054,7 @@ async def _execute_from(
         if "_aimenudionamicoIA_pos" in session_vars:
             # Segunda fase: IA gera resposta contextual e roteia por posição
             instrucaoResposta = _render_vars(data.get("instrucaoResposta", "Responda sobre a escolha do usuário: {{last_choice_label}}."), session_vars)
-            ia_response = await _call_ia(instrucaoResposta, mensagem, max_tokens=300)
+            ia_response = await _call_ia(empresa_id, instrucaoResposta, mensagem, max_tokens=300)
             if ia_response:
                 await _bot_sent_marker(empresa_id, phone)
                 await uaz_client.send_text(phone, ia_response)
@@ -1058,7 +1079,7 @@ async def _execute_from(
                 f"Gere exatamente {opcoes_count} opções de menu. Responda APENAS com JSON válido:\n"
                 f"{{\"texto\": \"...\", \"titulo\": \"...\", \"choices\": [\"Opção Visível|id_curto\", ...]}}"
             )
-            result_raw = await _call_ia(prompt, mensagem, max_tokens=400)
+            result_raw = await _call_ia(empresa_id, prompt, mensagem, max_tokens=400)
             try:
                 json_str = result_raw.strip()
                 for marker in ("```json", "```"):
@@ -1244,7 +1265,7 @@ async def _execute_aimenu(
         f"}}"
     )
 
-    result_raw = await _call_ia(prompt, mensagem, max_tokens=300)
+    result_raw = await _call_ia(empresa_id, prompt, mensagem, max_tokens=300)
     try:
         # Extrai JSON caso a IA tenha colocado markdown
         json_str = result_raw.strip()
