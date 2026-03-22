@@ -24,6 +24,7 @@ class PersonalityUpdate(BaseModel):
     ativo: Optional[bool] = None
     usar_emoji: Optional[bool] = None
     horario_atendimento_ia: Optional[dict] = None
+    horario_comercial: Optional[dict] = None
     menu_triagem: Optional[dict] = None
     idioma: Optional[str] = None
     objetivos_venda: Optional[str] = None
@@ -72,6 +73,7 @@ class PersonalityCreate(BaseModel):
     ativo: Optional[bool] = False
     usar_emoji: Optional[bool] = True
     horario_atendimento_ia: Optional[Any] = None
+    horario_comercial: Optional[Any] = None
     menu_triagem: Optional[Any] = None
     idioma: Optional[str] = "Português do Brasil"
     objetivos_venda: Optional[str] = ""
@@ -178,9 +180,9 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
     row = await _database.db_pool.fetchrow(
-        """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz, 
-                  modelo_preferido as model_name, temperatura as temperature, max_tokens, 
-                  ativo, usar_emoji, horario_atendimento_ia, menu_triagem,
+        """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                  modelo_preferido as model_name, temperatura as temperature, max_tokens,
+                  ativo, usar_emoji, horario_atendimento_ia, horario_comercial, menu_triagem,
                   idioma, objetivos_venda, metas_comerciais, script_vendas,
                   scripts_objecoes, frases_fechamento, diferenciais,
                   posicionamento, publico_alvo, restricoes, linguagem_proibida,
@@ -206,11 +208,12 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
             "ativo": False,
             "usar_emoji": True,
             "horario_atendimento_ia": None,
+            "horario_comercial": None,
             "menu_triagem": None
         }
     result = dict(row)
     # Deserializar campos JSONB que asyncpg pode retornar como string
-    for json_field in ("horario_atendimento_ia", "menu_triagem"):
+    for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
         if isinstance(result.get(json_field), str):
             try:
                 result[json_field] = json.loads(result[json_field])
@@ -233,6 +236,8 @@ async def update_personality(
         update_data["temperatura"] = update_data.pop("temperature")
     if "horario_atendimento_ia" in update_data and update_data["horario_atendimento_ia"] is not None:
         update_data["horario_atendimento_ia"] = json.dumps(update_data["horario_atendimento_ia"])
+    if "horario_comercial" in update_data and update_data["horario_comercial"] is not None:
+        update_data["horario_comercial"] = json.dumps(update_data["horario_comercial"])
     if "menu_triagem" in update_data and update_data["menu_triagem"] is not None:
         update_data["menu_triagem"] = json.dumps(update_data["menu_triagem"])
 
@@ -297,7 +302,7 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
         rows = await _database.db_pool.fetch(
             """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
                       modelo_preferido AS model_name, temperatura AS temperature,
-                      max_tokens, ativo, usar_emoji, horario_atendimento_ia, menu_triagem,
+                      max_tokens, ativo, usar_emoji, horario_atendimento_ia, horario_comercial, menu_triagem,
                       idioma, objetivos_venda, metas_comerciais, script_vendas,
                       scripts_objecoes, frases_fechamento, diferenciais,
                       posicionamento, publico_alvo, restricoes, linguagem_proibida,
@@ -324,7 +329,7 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     result = []
     for r in rows:
         d = dict(r)
-        for json_field in ("horario_atendimento_ia", "menu_triagem"):
+        for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
             if isinstance(d.get(json_field), str):
                 try:
                     d[json_field] = json.loads(d[json_field])
@@ -345,11 +350,13 @@ async def create_personality(
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     try:
         horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
+        horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
         menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
         row = await _database.db_pool.fetchrow(
             """INSERT INTO personalidade_ia
                (empresa_id, nome_ia, personalidade, instrucoes_base, tom_voz,
-                modelo_preferido, temperatura, max_tokens, ativo, usar_emoji, horario_atendimento_ia, menu_triagem,
+                modelo_preferido, temperatura, max_tokens, ativo, usar_emoji,
+                horario_atendimento_ia, horario_comercial, menu_triagem,
                 idioma, objetivos_venda, metas_comerciais, script_vendas,
                 scripts_objecoes, frases_fechamento, diferenciais,
                 posicionamento, publico_alvo, restricoes, linguagem_proibida,
@@ -358,11 +365,12 @@ async def create_personality(
                 regras_formatacao, regras_seguranca,
                 emoji_tipo, emoji_cor,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-            horario_json, menu_json, data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
+            horario_json, horario_comercial_json, menu_json,
+            data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
             data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
@@ -401,6 +409,7 @@ async def update_personality_by_id(
     if not existing:
         raise HTTPException(status_code=404, detail="Personalidade não encontrada")
     horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
+    horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
     menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
     logger.info(f"💾 [Save Personalidade] pid={pid} empresa={empresa_id} | horario_atendimento_ia={horario_json}")
     try:
@@ -408,19 +417,20 @@ async def update_personality_by_id(
             """UPDATE personalidade_ia
                SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
                    modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
-                   horario_atendimento_ia=$10::jsonb, menu_triagem=$11::jsonb,
-                   idioma=$12, objetivos_venda=$13, metas_comerciais=$14, script_vendas=$15,
-                   scripts_objecoes=$16, frases_fechamento=$17, diferenciais=$18,
-                   posicionamento=$19, publico_alvo=$20, restricoes=$21, linguagem_proibida=$22,
-                   contexto_empresa=$23, contexto_extra=$24, abordagem_proativa=$25,
-                   exemplos=$26, palavras_proibidas=$27, despedida_personalizada=$28,
-                   regras_formatacao=$29, regras_seguranca=$30,
-                   emoji_tipo=$31, emoji_cor=$32,
+                   horario_atendimento_ia=$10::jsonb, horario_comercial=$11::jsonb, menu_triagem=$12::jsonb,
+                   idioma=$13, objetivos_venda=$14, metas_comerciais=$15, script_vendas=$16,
+                   scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
+                   posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
+                   contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
+                   exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
+                   regras_formatacao=$30, regras_seguranca=$31,
+                   emoji_tipo=$32, emoji_cor=$33,
                    updated_at=NOW()
-               WHERE id=$33 AND empresa_id=$34""",
+               WHERE id=$34 AND empresa_id=$35""",
             data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
             data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-            horario_json, menu_json, data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
+            horario_json, horario_comercial_json, menu_json,
+            data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
             data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,

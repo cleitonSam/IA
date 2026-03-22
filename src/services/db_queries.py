@@ -795,7 +795,7 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
                 if isinstance(value, Decimal):
                     dados[key] = float(value)
             # Deserializa campos JSONB que asyncpg pode retornar como string
-            for json_field in ("horario_atendimento_ia", "menu_triagem"):
+            for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
                 val = dados.get(json_field)
                 if isinstance(val, str):
                     try:

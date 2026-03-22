@@ -808,7 +808,7 @@ async def _execute_from(
     if node_type == "businessHours":
         from src.utils.time_helpers import ia_esta_no_horario
         pers = await carregar_personalidade(empresa_id) or {}
-        horario_cfg = pers.get("horario_atendimento_ia")
+        horario_cfg = pers.get("horario_comercial")
         aberto = ia_esta_no_horario(horario_cfg)
         handle = "aberto" if aberto else "fechado"
         logger.info(f"[FlowExecutor] BusinessHours empresa={empresa_id} → {handle}")

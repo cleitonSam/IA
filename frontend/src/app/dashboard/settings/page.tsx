@@ -70,6 +70,7 @@ interface Personality {
   tom_voz: string;
   ativo: boolean;
   horario_atendimento_ia: HorarioAtendimento | null;
+  horario_comercial: HorarioAtendimento | null;
 }
 
 interface FAQ {
@@ -105,7 +106,7 @@ export default function SettingsPage() {
   // --- Personality State ---
   const [personality, setPersonality] = useState<Personality>({
     nome_ia: "", personalidade: "", instrucoes_base: "", tom_voz: "Profissional", ativo: true,
-    horario_atendimento_ia: null
+    horario_atendimento_ia: null, horario_comercial: null
   });
 
   // --- FAQ State ---
@@ -460,6 +461,123 @@ export default function SettingsPage() {
                             </button>
                             <span className="text-sm font-bold w-32">{label}</span>
                             {!ativo && <span className="text-xs text-gray-600 uppercase tracking-widest">Inativo</span>}
+                          </div>
+
+                          {ativo && (
+                            <div className="space-y-2 ml-13 pl-14">
+                              {periodos.map((p, i) => (
+                                <div key={i} className="flex items-center gap-2">
+                                  <input
+                                    type="time"
+                                    value={p.inicio}
+                                    onChange={(e) => {
+                                      const np = [...periodos];
+                                      np[i] = { ...np[i], inicio: e.target.value };
+                                      setDia(np);
+                                    }}
+                                    className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-primary/40"
+                                  />
+                                  <span className="text-gray-600 text-sm">até</span>
+                                  <input
+                                    type="time"
+                                    value={p.fim}
+                                    onChange={(e) => {
+                                      const np = [...periodos];
+                                      np[i] = { ...np[i], fim: e.target.value };
+                                      setDia(np);
+                                    }}
+                                    className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-primary/40"
+                                  />
+                                  {periodos.length > 1 && (
+                                    <button type="button" onClick={() => setDia(periodos.filter((_, j) => j !== i))} className="text-gray-600 hover:text-red-400 transition-colors">
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              {periodos.length < 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDia([...periodos, { inicio: "14:00", fim: "18:00" }])}
+                                  className="text-xs text-primary/60 hover:text-primary flex items-center gap-1 mt-1 transition-colors"
+                                >
+                                  <Plus className="w-3 h-3" /> Adicionar período
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Horário Comercial (usado pelo nó de Horário Comercial no fluxo) */}
+              <div className="border-t border-white/10 pt-8">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-1 flex items-center gap-2">
+                  <HistoryIcon className="w-4 h-4 text-primary/60" /> Horário Comercial
+                </h3>
+                <p className="text-xs text-gray-600 mb-4">
+                  Usado pelo bloco <span className="text-sky-400 font-bold">🕐 Horário Comercial</span> no editor de fluxo para rotear clientes entre "Aberto" e "Fechado".
+                </p>
+
+                <div className="flex gap-4 mb-6">
+                  {(["dia_todo", "horario_especifico"] as const).map((tipo) => {
+                    const atual = personality.horario_comercial?.tipo ?? "dia_todo";
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => {
+                          if (tipo === "dia_todo") {
+                            setPersonality({ ...personality, horario_comercial: { tipo: "dia_todo", dias: HORARIO_DEFAULT.dias } });
+                          } else {
+                            const base = personality.horario_comercial?.dias ?? HORARIO_DEFAULT.dias;
+                            setPersonality({ ...personality, horario_comercial: { tipo: "horario_especifico", dias: base } });
+                          }
+                        }}
+                        className={`flex-1 py-3 rounded-xl font-bold border transition-all ${
+                          atual === tipo
+                            ? "bg-primary/20 text-primary border-primary"
+                            : "bg-black/20 text-gray-500 border-white/10 hover:text-white"
+                        }`}
+                      >
+                        {tipo === "dia_todo" ? "🌐 Aberto o dia todo (24h)" : "🕐 Horário específico"}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {(personality.horario_comercial?.tipo ?? "dia_todo") === "horario_especifico" && (
+                  <div className="space-y-3">
+                    {DIAS_SEMANA.map(({ key, label }) => {
+                      const periodos: Periodo[] = personality.horario_comercial?.dias?.[key] ?? [];
+                      const ativo = periodos.length > 0;
+
+                      const setDia = (novosPeriodos: Periodo[]) => {
+                        const diasAtuais = personality.horario_comercial?.dias ?? HORARIO_DEFAULT.dias;
+                        setPersonality({
+                          ...personality,
+                          horario_comercial: {
+                            tipo: "horario_especifico",
+                            dias: { ...diasAtuais, [key]: novosPeriodos },
+                          },
+                        });
+                      };
+
+                      return (
+                        <div key={key} className="bg-slate-950/40 border border-white/10 rounded-xl p-4">
+                          <div className="flex items-center gap-3 mb-2">
+                            <button
+                              type="button"
+                              onClick={() => setDia(ativo ? [] : [{ inicio: "08:00", fim: "18:00" }])}
+                              className={`relative inline-flex h-6 w-10 items-center rounded-full transition-all ${ativo ? "bg-primary" : "bg-slate-700"}`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${ativo ? "translate-x-5" : "translate-x-1"}`} />
+                            </button>
+                            <span className="text-sm font-bold w-32">{label}</span>
+                            {!ativo && <span className="text-xs text-gray-600 uppercase tracking-widest">Fechado</span>}
                           </div>
 
                           {ativo && (
