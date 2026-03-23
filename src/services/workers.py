@@ -105,7 +105,11 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
     if not _database.db_pool:
         return
     try:
+        # Cancela followups pendentes anteriores desta conversa antes de reagendar
         await _database.db_pool.execute("""
+            UPDATE followups SET status = 'cancelado', updated_at = NOW()
+            WHERE (
+                conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2)
                 OR conversation_id = $1
             ) AND empresa_id = $2 AND status = 'pendente'
         """, conversation_id, empresa_id)
@@ -154,11 +158,11 @@ async def worker_followup():
                 agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
 
                 pendentes = await _database.db_pool.fetch("""
-                    SELECT f.*, c.conversation_id, c.account_id, u.slug, c.empresa_id,
-                           u.nome AS nome_unidade, c.contato_nome
+                    SELECT f.*, c.conversation_id, c.account_id, c.empresa_id,
+                           u.slug, u.nome AS nome_unidade, c.contato_nome
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
-                    JOIN unidades u ON u.id = f.unidade_id
+                    LEFT JOIN unidades u ON u.id = f.unidade_id
                     WHERE f.status = 'pendente' AND f.agendado_para <= $1
                 """, agora)
 
@@ -212,8 +216,8 @@ async def worker_followup():
                     # Carrega personalidade para usar modelo escolhido pelo cliente
                     from src.services.db_queries import carregar_personalidade
                     pers = await carregar_personalidade(emp_id)
-                    modelo_followup = pers.get("model_name") or "gpt-4o-mini"
-                    temp_followup = float(pers.get("temperature") or 0.7)
+                    modelo_followup = pers.get("modelo_preferido") or "openai/gpt-4o-mini"
+                    temp_followup = float(pers.get("temperatura") or 0.7)
                     usar_emoji = pers.get("usar_emoji", True)
 
                     # ── Lógica do Score e Geração IA ────────────────────────
