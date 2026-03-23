@@ -1091,7 +1091,7 @@ async def bd_registrar_evento_funil(
         if not conversa:
             return
         conversa_id = conversa['id']
-        empresa_id = conversa['empresa_id']
+        # empresa_id já vem como parâmetro — não re-lemos da row (SELECT só traz 'id')
 
         # Deduplicação: Garante que cada tipo de evento seja registrado apenas UMA vez por conversa
         existe = await _database.db_pool.fetchval("""
@@ -1109,8 +1109,7 @@ async def bd_registrar_evento_funil(
 
         await _database.db_pool.execute("""
             UPDATE conversas
-            SET score_interesse = COALESCE(score_interesse, 0) + $2,
-                score_lead = LEAST(5, COALESCE(score_lead, 0) + $2),
+            SET score_lead = LEAST(5, COALESCE(score_lead, 0) + $2),
                 updated_at = NOW()
             WHERE id = $1
         """, conversa_id, score_incremento)
