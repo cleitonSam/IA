@@ -47,6 +47,9 @@ class PersonalityUpdate(BaseModel):
     regras_seguranca: Optional[str] = None
     emoji_tipo: Optional[str] = None
     emoji_cor: Optional[str] = None
+    estilo_comunicacao: Optional[str] = None
+    saudacao_personalizada: Optional[str] = None
+    regras_atendimento: Optional[str] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -58,6 +61,7 @@ _PERSONALITY_STR_FIELDS = [
     "contexto_extra", "abordagem_proativa", "exemplos", "palavras_proibidas",
     "despedida_personalizada", "regras_formatacao", "regras_seguranca",
     "emoji_tipo", "emoji_cor",
+    "estilo_comunicacao", "saudacao_personalizada", "regras_atendimento",
 ]
 
 
@@ -96,6 +100,9 @@ class PersonalityCreate(BaseModel):
     regras_seguranca: Optional[str] = ""
     emoji_tipo: Optional[str] = "✨"
     emoji_cor: Optional[str] = "#00d2ff"
+    estilo_comunicacao: Optional[str] = ""
+    saudacao_personalizada: Optional[str] = ""
+    regras_atendimento: Optional[str] = ""
 
     model_config = {"extra": "allow"}
 
@@ -630,7 +637,7 @@ class PlaygroundRequest(BaseModel):
     messages: List[PlaygroundMessage] = []
 
 
-# Mapeamento de campos da personalidade para títulos no system prompt
+# Campos dinâmicos de "diretrizes de negócio" (mesma lógica do bot_core.py _LABEL_MAP)
 _PG_LABEL_MAP = {
     "objetivos_venda":       "OBJETIVOS DE VENDA",
     "metas_comerciais":      "METAS COMERCIAIS",
@@ -640,56 +647,142 @@ _PG_LABEL_MAP = {
     "diferenciais":          "DIFERENCIAIS DA EMPRESA",
     "posicionamento":        "POSICIONAMENTO DE MERCADO",
     "publico_alvo":          "PÚBLICO-ALVO",
-    "restricoes":            "RESTRIÇÕES CRÍTICAS",
     "linguagem_proibida":    "LINGUAGEM PROIBIDA",
     "contexto_empresa":      "CONTEXTO DA EMPRESA",
     "contexto_extra":        "CONTEXTO EXTRA",
     "abordagem_proativa":    "ABORDAGEM PROATIVA",
-    "exemplos":              "EXEMPLOS DE INTERAÇÃO",
-    "palavras_proibidas":    "PALAVRAS E TERMOS PROIBIDOS",
-    "despedida_personalizada": "DESPEDIDA PERSONALIZADA",
-    "regras_formatacao":     "REGRAS DE FORMATAÇÃO",
-    "regras_seguranca":      "REGRAS DE SEGURANÇA E PRIVACIDADE",
+}
+
+# Campos que possuem blocos dedicados — NÃO incluir no loop dinâmico
+_PG_SKIP_IN_LOOP = {
+    "restricoes", "palavras_proibidas", "despedida_personalizada",
+    "regras_formatacao", "regras_seguranca", "exemplos", "idioma",
+    "estilo_comunicacao", "saudacao_personalizada", "regras_atendimento",
 }
 
 
-def _build_playground_prompt(p: dict) -> str:
-    """Constrói o system prompt completo a partir dos campos da personalidade."""
-    nome     = p.get("nome_ia") or "Assistente"
-    idioma   = p.get("idioma") or "Português do Brasil"
+def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
+    """
+    Constrói o system prompt completo a partir dos campos da personalidade salva.
+    Espelha fielmente a estrutura de blocos do bot_core.py para garantir que o
+    Playground se comporte identicamente à IA em produção.
+    """
+    nome   = p.get("nome_ia") or "Assistente"
+    idioma = p.get("idioma") or "Português do Brasil"
     blocos: List[str] = []
 
-    # Identidade
+    # 1. Regras gerais (linguagem + comportamento base)
+    blocos.append(
+        f"[REGRAS GERAIS]\n"
+        f"- Idioma obrigatório: {idioma}.\n"
+        f"- NUNCA use inglês ou outros idiomas a menos que o cliente use.\n"
+        f"- NUNCA mostre tags internas, avisos de sistema ou colunas técnicas.\n"
+        f"- NUNCA se apresente como IA ou robô."
+    )
+
+    # 2. Identidade
     blocos.append(f"[IDENTIDADE]\nVocê é {nome}, assistente virtual desta empresa.")
 
-    # Linguagem
-    blocos.append(f"[IDIOMA]\nResponda sempre em {idioma}. Não use markdown.")
-
-    # Personalidade
+    # 3. Personalidade
     if p.get("personalidade"):
         blocos.append(f"[PERSONALIDADE]\n{p['personalidade']}")
 
-    # Tom de voz
+    # 4. Tom de voz
     if p.get("tom_voz"):
         blocos.append(f"[TOM DE VOZ]\n{p['tom_voz']}")
 
-    # Instruções base
+    # 5. Estilo de comunicação
+    estilo = p.get("estilo_comunicacao") or ""
+    if estilo.strip():
+        blocos.append(f"[ESTILO DE COMUNICAÇÃO]\n{estilo}")
+
+    # 6. Saudação padrão
+    saudacao = p.get("saudacao_personalizada") or ""
+    if saudacao.strip():
+        blocos.append(f"[SAUDAÇÃO PADRÃO]\n{saudacao}")
+
+    # 7. Instruções base
     if p.get("instrucoes_base"):
         blocos.append(f"[INSTRUÇÕES BASE]\n{p['instrucoes_base']}")
 
-    # Campos dinâmicos via _PG_LABEL_MAP
+    # 8. Diretrizes de negócio (campos dinâmicos — sem duplicar blocos dedicados)
+    extras = ""
     for campo, titulo in _PG_LABEL_MAP.items():
+        if campo in _PG_SKIP_IN_LOOP:
+            continue
         valor = p.get(campo)
         if valor and str(valor).strip():
-            blocos.append(f"[{titulo}]\n{valor}")
+            extras += f"\n\n[{titulo}]\n{valor}"
+    if extras:
+        blocos.append(f"[DIRETRIZES DE NEGÓCIO]{extras}")
 
-    # Emojis
+    # 9. Regras de atendimento
+    regras_atend = p.get("regras_atendimento") or ""
+    if regras_atend.strip():
+        blocos.append(f"[REGRAS DE ATENDIMENTO]\n{regras_atend}")
+
+    # 10. FAQ (respostas prontas)
+    if faq_text.strip():
+        blocos.append(f"[FAQ — RESPOSTAS PRONTAS]\n{faq_text}")
+
+    # 11. Exemplos de interações
+    if p.get("exemplos"):
+        blocos.append(f"[EXEMPLOS DE INTERAÇÕES]\n{p['exemplos']}")
+
+    # 12. Regras de sistema
+    regras_seg = p.get("regras_seguranca") or ""
+    bloco_sistema = (
+        "[REGRAS DE SISTEMA]\n"
+        "- Responda diretamente se tiver os dados disponíveis.\n"
+        "- Se o cliente enviar apenas saudação social, responda somente saudação e pergunte como ajudar.\n"
+        "- Seja honesto: se não souber algo, diga que vai verificar."
+    )
+    if regras_seg.strip():
+        bloco_sistema += f"\n{regras_seg}"
+    blocos.append(bloco_sistema)
+
+    # 13. Anti-alucinação
+    restricoes       = p.get("restricoes") or ""
+    palavras_proib   = p.get("palavras_proibidas") or ""
+    bloco_anti = (
+        "[REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO]\n"
+        "- Use EXCLUSIVAMENTE os dados fornecidos neste prompt.\n"
+        "- Se não souber, diga que não tem a informação.\n"
+        "- Nunca invente endereços, telefones, horários ou valores."
+    )
+    if restricoes.strip():
+        bloco_anti += f"\n- RESTRIÇÕES: {restricoes}"
+    if palavras_proib.strip():
+        bloco_anti += f"\n- NUNCA USE ESTAS PALAVRAS/TERMOS: {palavras_proib}"
+    blocos.append(bloco_anti)
+
+    # 14. Formatação WhatsApp
     usar_emoji = p.get("usar_emoji", True)
-    emoji_tipo = p.get("emoji_tipo") or ""
+    emoji_tipo = p.get("emoji_tipo") or "✨"
+    emoji_cor  = p.get("emoji_cor") or ""
+    r_format   = p.get("regras_formatacao") or ""
+    bloco_fmt = (
+        "[FORMATAÇÃO WHATSAPP]\n"
+        "- Use *bold* para destaque. Listas com •.\n"
+        "- Separe blocos com linha em branco.\n"
+        "- NUNCA use markdown (**, ##, ```).\n"
+        "- Tamanho ideal: 2-4 parágrafos curtos.\n"
+        "- TERMINAR sempre com frases completas."
+    )
     if usar_emoji and emoji_tipo:
-        blocos.append(f"[FORMATAÇÃO]\nUse os seguintes emojis quando adequado: {emoji_tipo}")
-    elif not usar_emoji:
-        blocos.append("[FORMATAÇÃO]\nNão use emojis nas respostas.")
+        bloco_fmt += f"\n- EMOJI PRINCIPAL DA IA: {emoji_tipo}. Use-o com frequência."
+    if emoji_cor:
+        bloco_fmt += f"\n- PALETA DE CORES/VIBE: {emoji_cor}. Priorize emojis que combinem com esta cor."
+    if not usar_emoji:
+        bloco_fmt += "\n- NÃO use emojis nas respostas."
+    if r_format.strip():
+        bloco_fmt += f"\n{r_format}"
+    blocos.append(bloco_fmt)
+
+    # 15. Despedida padrão
+    despedida = p.get("despedida_personalizada") or ""
+    if despedida.strip():
+        blocos.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
 
     return "\n\n".join(blocos)
 
@@ -734,8 +827,24 @@ async def personality_playground(
     temperature = float(p.get("temperatura") or 0.7)
     max_tokens  = int(p.get("max_tokens") or 500)
 
-    # Constrói system prompt completo com todos os campos
-    system_prompt = _build_playground_prompt(p)
+    # Carrega FAQ da empresa (sem filtro de unidade — todos os itens ativos)
+    faq_text = ""
+    try:
+        faq_rows = await _database.db_pool.fetch("""
+            SELECT pergunta, resposta FROM faq
+            WHERE empresa_id = $1 AND ativo = true
+            ORDER BY prioridade DESC NULLS LAST
+            LIMIT 30
+        """, empresa_id)
+        if faq_rows:
+            faq_text = "\n\n".join(
+                f"P: {r['pergunta']}\nR: {r['resposta']}" for r in faq_rows
+            )
+    except Exception:
+        pass  # FAQ é opcional — tabela pode não existir
+
+    # Constrói system prompt completo com todos os campos + FAQ
+    system_prompt = _build_playground_prompt(p, faq_text=faq_text)
 
     # Monta histórico
     msgs: List[dict] = [{"role": "system", "content": system_prompt}]

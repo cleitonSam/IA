@@ -37,6 +37,7 @@ interface Personality {
   palavras_proibidas: string; despedida_personalizada: string;
   regras_formatacao: string; regras_seguranca: string;
   emoji_tipo: string; emoji_cor: string;
+  estilo_comunicacao: string; saudacao_personalizada: string; regras_atendimento: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -76,6 +77,7 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   palavras_proibidas: "", despedida_personalizada: "",
   regras_formatacao: "", regras_seguranca: "",
   emoji_tipo: "✨,💪,🔥", emoji_cor: "#00d2ff",
+  estilo_comunicacao: "", saudacao_personalizada: "", regras_atendimento: "",
 };
 
 const MODELS = [
@@ -197,6 +199,9 @@ export default function PersonalityPage() {
       regras_seguranca: p.regras_seguranca || "",
       emoji_tipo: p.emoji_tipo || "✨",
       emoji_cor: p.emoji_cor || "#00d2ff",
+      estilo_comunicacao: p.estilo_comunicacao || "",
+      saudacao_personalizada: p.saudacao_personalizada || "",
+      regras_atendimento: p.regras_atendimento || "",
     });
   };
 
@@ -590,6 +595,36 @@ export default function PersonalityPage() {
                                   onChange={e => setFormData({ ...formData, instrucoes_base: e.target.value })}
                                   className={`${taClass} font-mono text-sm text-slate-200`}
                                   placeholder="Você é [nome], assistente da [empresa]...&#10;&#10;Seu objetivo é...&#10;&#10;Regras de comportamento:&#10;- ..."
+                                />
+                              </div>
+                            </div>
+
+                            <div className={card}>
+                              <div>
+                                <label className={lClass}><span className="flex items-center gap-1">💬 Estilo de Comunicação</span></label>
+                                <p className="text-[11px] text-slate-500 mb-3">Como a IA deve se comunicar. Ex: usa linguagem jovem, é formal, faz perguntas para engajar, etc.</p>
+                                <textarea rows={4} value={fd.estilo_comunicacao}
+                                  onChange={e => setFormData({ ...formData, estilo_comunicacao: e.target.value })}
+                                  className={taClass}
+                                  placeholder="Ex: Use linguagem jovem e descontraída. Faça perguntas para engajar. Seja direto e objetivo."
+                                />
+                              </div>
+                              <div>
+                                <label className={lClass}><span className="flex items-center gap-1">👋 Saudação Padrão</span></label>
+                                <p className="text-[11px] text-slate-500 mb-3">Mensagem de abertura quando o cliente iniciar uma conversa. Deixe vazio para a IA gerar automaticamente.</p>
+                                <textarea rows={3} value={fd.saudacao_personalizada}
+                                  onChange={e => setFormData({ ...formData, saudacao_personalizada: e.target.value })}
+                                  className={taClass}
+                                  placeholder={`Ex: Olá! Sou ${fd.nome_ia || "a IA"}, como posso te ajudar hoje? 😊`}
+                                />
+                              </div>
+                              <div>
+                                <label className={lClass}><span className="flex items-center gap-1">📋 Regras de Atendimento</span></label>
+                                <p className="text-[11px] text-slate-500 mb-3">Regras específicas do atendimento. Ex: sempre ofereça visita, nunca mencione concorrentes, etc.</p>
+                                <textarea rows={5} value={fd.regras_atendimento}
+                                  onChange={e => setFormData({ ...formData, regras_atendimento: e.target.value })}
+                                  className={taClass}
+                                  placeholder="Ex: Sempre ofereça uma aula experimental gratuita. Nunca mencione concorrentes. Priorize agendamentos."
                                 />
                               </div>
                             </div>
