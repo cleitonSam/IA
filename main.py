@@ -2234,23 +2234,15 @@ async def enviar_mensagem_chatwoot(
                 logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)}) url={uaz_url} token_len={len(uaz_token)} token_prefix={uaz_token[:8] if uaz_token else 'VAZIO'}...")
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
-                
+
                 # Registra que enviamos direto para evitar eco no webhook.
-                # Mídia gera múltiplos webhooks do UazAPI (sent + thumbnail + delivered),
-                # por isso usa TTL maior. A flag NÃO é deletada no primeiro eco —
-                # qualquer webhook de saída que chegar dentro do TTL será ignorado.
                 _echo_ttl = 90 if attachment_url else 45
                 await redis_client.setex(f"uaz_bot_sent:{conversation_id}", _echo_ttl, "1")
-                
-                # Sincroniza com Chatwoot via NOTA (Log de Histórico)
-                # Assim a conversa não fica "pausada" por falta de resposta, 
-                # mas também não enviamos duplicado (já que o note é interno).
-                payload["private"] = True
-                if attachment_url:
-                    payload["content"] = f"[Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
-                else:
-                    payload["content"] = f"[Bot Direto]: {content}"
-                    
+
+                # UazAPI enviou com sucesso — retorna sem sync Chatwoot para evitar duplicação
+                logger.info(f"✅ [UAZAPI-DIRETO] Enviado com sucesso para {_fone_clean}")
+                return uaz_resp
+
         except Exception as e:
             logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
 
