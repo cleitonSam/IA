@@ -784,7 +784,7 @@ REGRAS:
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
 - NUNCA adicione dados que o cliente NÃO pediu.
 - Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
-- Se o cliente demonstra interesse, ofereça agendar uma visita ou aula experimental.""")
+- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.""")
 
     # 10. Unidades da rede
     if unidades:

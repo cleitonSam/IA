@@ -1376,7 +1376,7 @@ REGRAS:
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
 - NUNCA adicione dados que o cliente NÃO pediu (ex: não jogue horários se ele perguntou preço).
 - Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
-- Se o cliente demonstra interesse, ofereça agendar uma visita ou aula experimental.""")
+- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.""")
 
             # 7. Dados da Unidade e Rede
             blocos_prompt.append(f"""[INFORMAÇÕES DA UNIDADE ATUAL]
