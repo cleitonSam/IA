@@ -3664,7 +3664,7 @@ async def processar_ia_e_responder(
         # Campos da unidade
         end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
-        link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
+        link_mat = unidade.get('link_matricula') or unidade.get('site') or ''
         tel_banco = extrair_telefone_unidade(unidade)
 
         # Planos ativos
@@ -3786,6 +3786,7 @@ Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estad
 Telefone: {tel_banco or 'não informado'}
 Horários:
 {horarios_str}
+Link de Matrícula / LP: {unidade.get('link_matricula') or 'não disponível'}
 Planos (com links de matricula):
 {planos_detalhados}
 Site: {unidade.get('site') or 'não informado'}
@@ -3919,10 +3920,12 @@ HISTÓRICO DA CONVERSA
 
 REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
-- Se um campo estiver como "não informado", diga que não tem essa informação agora.
-- NUNCA invente endereços, telefones, horários ou qualquer dado não informado.
+- Se um campo estiver como "não informado" ou "não disponível", diga que não tem essa informação agora e ofereça encaminhar para um atendente.
+- NUNCA invente endereços, telefones, horários, links, planos, preços ou qualquer dado não informado.
+- NUNCA ofereça ou prometa algo que NÃO esteja nos dados acima (promoções, descontos, benefícios, diárias, aulas experimentais, etc).
 - NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
 - Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
+- Se "Link de Matrícula / LP" estiver como "não disponível", NUNCA invente um link — diga que vai encaminhar para um consultor.
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo:
