@@ -4415,6 +4415,12 @@ async def validar_assinatura(request: Request, signature: str):
         raise HTTPException(status_code=401, detail="Assinatura inválida")
 
 
+@app.get("/webhook")
+async def chatwoot_webhook_verify():
+    """Endpoint de verificação para o Chatwoot (requisição GET de handshake)."""
+    return {"status": "ok", "message": "Webhook ativo"}
+
+
 @app.post("/webhook")
 async def chatwoot_webhook(
     request: Request,
