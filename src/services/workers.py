@@ -254,8 +254,9 @@ async def worker_followup():
                         logger.error(f"Erro no LLM do follow-up (fallback para template estático): {e_llm}")
                         mensagem_final = template_base
 
+                    _nome_ia_fu = pers.get('nome_ia') or 'Atendente'
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), integracao, emp_id, nome_ia="Assistente Virtual", evitar_prefixo_nome=True
+                        f['account_id'], f['conversation_id'], randomizar_mensagem(mensagem_final), integracao, emp_id, nome_ia=_nome_ia_fu, evitar_prefixo_nome=True
                     )
                     await _database.db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
