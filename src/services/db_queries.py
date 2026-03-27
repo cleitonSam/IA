@@ -1010,7 +1010,7 @@ async def buscar_conversa_por_fone(contato_fone: str, empresa_id: int) -> Option
         query = """
             SELECT c.*, u.slug as unidade_slug
             FROM conversas c
-            JOIN unidades u ON u.id = c.unidade_id
+            LEFT JOIN unidades u ON u.id = c.unidade_id
             WHERE c.contato_fone = $1 AND c.empresa_id = $2
             ORDER BY c.updated_at DESC
             LIMIT 1

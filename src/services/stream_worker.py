@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 import time
+import httpx
 from src.core.config import (
     logger, REDIS_URL, EMPRESA_ID_PADRAO,
     PROMETHEUS_OK, METRIC_QUEUE_SIZE, METRIC_WORKER_LATENCY, METRIC_WORKER_PROCESSED
@@ -113,7 +114,76 @@ async def run_stream_worker():
                             logger.error(f"❌ Job inválido no stream {msg_id}: {payload}")
                             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
                             continue
-                        
+
+                        # --- Áudio UazAPI: popular buffet com URL do áudio ---
+                        if source == "uazapi" and payload.get("has_audio") == "1":
+                            _audio_url = payload.get("audio_url", "")
+                            _buffet_key = f"{empresa_id}:buffet:{conversation_id}"
+                            if _audio_url:
+                                # URL do áudio veio direto no payload UazAPI
+                                await redis_client.rpush(_buffet_key, json.dumps({
+                                    "text": "",
+                                    "files": [{"url": _audio_url, "type": "audio"}]
+                                }))
+                                await redis_client.expire(_buffet_key, 60)
+                                logger.info(f"🎙️ Áudio UazAPI → buffet: {contato_fone} conv={conversation_id}")
+                            else:
+                                # Sem mediaUrl do UazAPI → busca no Chatwoot
+                                _integracao_cw = await carregar_integracao(empresa_id, 'chatwoot')
+                                if _integracao_cw:
+                                    _cw_url = _integracao_cw.get("url") or _integracao_cw.get("base_url") or ""
+                                    _cw_token = _integracao_cw.get("access_token") or _integracao_cw.get("token") or ""
+                                    _cw_account = _integracao_cw.get("account_id") or account_id
+                                    # Usa o conversation_id real (Chatwoot) — pega do BD se possível
+                                    _cw_conv = conversation_id if conversation_id > 0 else None
+                                    if not _cw_conv:
+                                        # Conversation negativa = criada pelo UazAPI, busca a real do Chatwoot
+                                        try:
+                                            _row = await _database.db_pool.fetchval(
+                                                "SELECT conversation_id FROM conversas WHERE contato_fone = $1 AND empresa_id = $2 AND conversation_id > 0 ORDER BY updated_at DESC LIMIT 1",
+                                                contato_fone, empresa_id
+                                            )
+                                            if _row:
+                                                _cw_conv = _row
+                                        except Exception:
+                                            pass
+
+                                    if _cw_url and _cw_token and _cw_account and _cw_conv:
+                                        logger.info(f"🎙️ Buscando áudio no Chatwoot para {contato_fone} (account={_cw_account} conv={_cw_conv})...")
+                                        await asyncio.sleep(5)  # Chatwoot precisa de tempo para processar o áudio
+                                        try:
+                                            async with httpx.AsyncClient(timeout=10.0) as _cw_client:
+                                                _cw_resp = await _cw_client.get(
+                                                    f"{_cw_url.rstrip('/')}/api/v1/accounts/{_cw_account}/conversations/{_cw_conv}/messages",
+                                                    headers={"api_access_token": str(_cw_token)},
+                                                )
+                                                if _cw_resp.status_code == 200:
+                                                    _cw_msgs = _cw_resp.json().get("payload", [])
+                                                    for _m in _cw_msgs:
+                                                        for _att in (_m.get("attachments") or []):
+                                                            if str(_att.get("file_type", "")).startswith("audio"):
+                                                                _audio_url = _att.get("data_url")
+                                                                break
+                                                        if _audio_url:
+                                                            break
+                                                    if _audio_url:
+                                                        await redis_client.rpush(_buffet_key, json.dumps({
+                                                            "text": "",
+                                                            "files": [{"url": _audio_url, "type": "audio"}]
+                                                        }))
+                                                        await redis_client.expire(_buffet_key, 60)
+                                                        logger.info(f"🎙️ Áudio Chatwoot → buffet: {contato_fone} conv={conversation_id} | {_audio_url[:80]}...")
+                                                    else:
+                                                        logger.warning(f"⚠️ Áudio não encontrado no Chatwoot para {contato_fone}")
+                                                else:
+                                                    logger.warning(f"⚠️ Chatwoot retornou {_cw_resp.status_code} ao buscar áudio para conv {_cw_conv}")
+                                        except Exception as _cw_err:
+                                            logger.error(f"❌ Erro ao buscar áudio no Chatwoot: {_cw_err}")
+                                    else:
+                                        logger.warning(f"⚠️ Sem dados Chatwoot para buscar áudio: url={bool(_cw_url)} token={bool(_cw_token)} account={_cw_account} conv={_cw_conv}")
+                                else:
+                                    logger.warning(f"⚠️ Integração Chatwoot não encontrada para buscar áudio (empresa {empresa_id})")
+
                         integracao = await carregar_integracao(empresa_id, 'chatwoot' if source == "chatwoot" else 'uazapi')
                         if not integracao:
                             logger.error(f"❌ Falha ao carregar integração {source} para empresa {empresa_id}. Job abortado.")
