@@ -98,10 +98,14 @@ async def resolver_contexto_unidade(
     slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if tem_geo else None
 
     if slug_detectado:
-        # Se a conversa já tem uma unidade escolhida, mantê-la.
-        # O bot responde sobre outras unidades via resumo_todas_unidades sem trocar o contexto.
-        if slug_salvo:
+        if slug_salvo and slug_detectado == slug_salvo:
+            # Mesma unidade — mantém sem alteração
             return {"slug": slug_salvo, "origem": "contexto", "mudou": "false"}
+        if slug_salvo and slug_detectado != slug_salvo:
+            # Cliente mencionou OUTRA unidade explicitamente — troca o contexto
+            await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
+            logger.info(f"🔄 Unidade trocada: {slug_salvo} → {slug_detectado} (conv {conversation_id})")
+            return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true"}
         # Primeira detecção de unidade — salva no Redis
         await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
         return {"slug": slug_detectado, "origem": "mensagem", "mudou": "false"}
