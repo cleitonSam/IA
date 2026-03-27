@@ -875,7 +875,7 @@ async def despachar_resposta(
         # Para UazAPI, usamos o contato_fone (ou conversation_id como fallback)
         chat_id = contato_fone if contato_fone else str(conversation_id)
             
-        uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+        uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
         
         # Substitui proporção por um tempo de digitação rígido e "redondo" (solicitação do usuário)
         import random
@@ -1660,7 +1660,7 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             await asyncio.sleep(random.uniform(1.5, 3.5))
                             if source == 'uazapi' and contato_fone:
                                 try:
-                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
                                     await uaz.set_presence(contato_fone, presence="composing", delay=1500)
                                 except Exception: pass
                             await enviar_mensagem_chatwoot(
@@ -1689,7 +1689,7 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             await asyncio.sleep(random.uniform(2.0, 4.5))
                             if source == 'uazapi' and contato_fone:
                                 try:
-                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
                                     await uaz.set_presence(contato_fone, presence="composing", delay=2000)
                                 except Exception: pass
                             await enviar_mensagem_chatwoot(
@@ -1716,7 +1716,7 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             await asyncio.sleep(random.uniform(1.5, 3.5))
                             if source == 'uazapi' and contato_fone:
                                 try:
-                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
                                     await uaz.set_presence(contato_fone, presence="composing", delay=1500)
                                 except Exception: pass
                             
@@ -1749,7 +1749,7 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             await asyncio.sleep(random.uniform(2.0, 4.5))
                             if source == 'uazapi' and contato_fone:
                                 try:
-                                    uaz = UazAPIClient(integracao.get('url'), integracao.get('token'), integracao.get('instance', 'default'))
+                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
                                     await uaz.set_presence(contato_fone, presence="composing", delay=2000)
                                 except Exception: pass
 

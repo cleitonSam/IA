@@ -108,7 +108,7 @@ async def uazapi_webhook(
             
             if not _ia_pausada_fluxo and not _phone_paused:
                 _uaz_fluxo = UazAPIClient(
-                    base_url=integracao.get("url", ""),
+                    base_url=integracao.get("url") or integracao.get("api_url") or "",
                     token=integracao.get("token", ""),
                     instance_name=integracao.get("instance", "default")
                 )
@@ -148,7 +148,7 @@ async def uazapi_webhook(
                 if menu_config and menu_config.get("ativo"):
                     try:
                         uaz_menu = UazAPIClient(
-                            base_url=integracao.get("url", ""),
+                            base_url=integracao.get("url") or integracao.get("api_url") or "",
                             token=integracao.get("token", ""),
                             instance_name=integracao.get("instance", "default")
                         )
