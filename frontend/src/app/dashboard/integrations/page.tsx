@@ -92,14 +92,14 @@ export default function IntegrationsPage() {
   const currentConfig = integrations[activeTab] || {
     tipo: activeTab,
     config: activeTab === "chatwoot" ? { url: "", access_token: "", account_id: "" }
-      : { api_url: "", token: "" },
+      : { url: "", token: "" },
     ativo: false,
   };
 
   // Check if integration has filled config
   const isConfigured = activeTab === "chatwoot"
     ? !!(currentConfig.config.url && currentConfig.config.access_token && currentConfig.config.account_id)
-    : !!(currentConfig.config.api_url && currentConfig.config.token);
+    : !!(currentConfig.config.url && currentConfig.config.token);
 
   const updateField = (field: string, value: any) => setIntegrations({
     ...integrations,
@@ -190,7 +190,7 @@ export default function IntegrationsPage() {
   const tabs = [
     { id: "chatwoot", label: "Chatwoot", icon: MessageSquare },
     { id: "evo", label: "EVO W12", icon: Zap },
-    { id: "uzap", label: "UazAPI", icon: Hash },
+    { id: "uazapi", label: "UazAPI", icon: Hash },
   ];
 
   return (
@@ -551,15 +551,15 @@ export default function IntegrationsPage() {
                         </>
                       )}
 
-                      {activeTab === "uzap" && (
+                      {activeTab === "uazapi" && (
                         <div className="grid grid-cols-1 gap-8">
                           <div className="space-y-3">
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
                               <Globe className="w-3 h-3 text-[#00d2ff]" />Endpoint API
-                              {currentConfig.config.api_url && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                              {currentConfig.config.url && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
                             </label>
-                            <input type="text" value={currentConfig.config.api_url || ""} onChange={e => updateField("api_url", e.target.value)}
-                              className={`${inputClass} ${currentConfig.config.api_url && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                            <input type="text" value={currentConfig.config.url || ""} onChange={e => updateField("url", e.target.value)}
+                              className={`${inputClass} ${currentConfig.config.url && currentConfig.id ? "border-emerald-500/15" : ""}`}
                               placeholder="https://api.uazapi.com/v1" />
                           </div>
                           <div className="space-y-3">
