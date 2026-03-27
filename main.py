@@ -1971,10 +1971,17 @@ async def simular_digitacao(account_id: int, conversation_id: int, integracao: d
     if is_uazapi and uaz_integracao:
         try:
             _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if not _fone and db_pool:
+                _fone = await db_pool.fetchval(
+                    "SELECT COALESCE(contato_fone, contato_telefone) FROM conversas WHERE conversation_id = $1",
+                    conversation_id
+                )
+                if _fone:
+                    await redis_client.setex(f"fone_cliente:{conversation_id}", 86400, str(_fone))
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
-                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url') or uaz_integracao.get('api_url')
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
 
                 uaz_url = f"{str(uaz_base).rstrip('/')}/send/presence"
                 uaz_payload = {
@@ -2192,10 +2199,17 @@ async def enviar_mensagem_chatwoot(
     if is_uazapi and uaz_integracao:
         try:
             _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if not _fone and db_pool:
+                _fone = await db_pool.fetchval(
+                    "SELECT COALESCE(contato_fone, contato_telefone) FROM conversas WHERE conversation_id = $1",
+                    conversation_id
+                )
+                if _fone:
+                    await redis_client.setex(f"fone_cliente:{conversation_id}", 86400, str(_fone))
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
-                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url') or uaz_integracao.get('api_url')
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
 
                 # Cabeçalho sem emoticons
                 _header = f"*{nome_ia}*\n" if nome_ia else ""
