@@ -1,5 +1,6 @@
 import uuid
 import json
+import asyncio
 import httpx
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
@@ -179,37 +180,51 @@ async def uazapi_webhook(
 
         # --- Fim do Menu de Triagem ---
 
-        # --- Transcrição de Áudio via Chatwoot ---
+        # --- Transcrição de Áudio ---
         if has_audio and conversa_existente:
             audio_url = None
             _conv_id_audio = conversa_existente.get("conversation_id")
             _account_id_audio = conversa_existente.get("account_id")
-            integracao_chatwoot = await carregar_integracao(empresa_id, 'chatwoot')
 
-            if integracao_chatwoot and _conv_id_audio and _account_id_audio:
-                _cw_url = integracao_chatwoot.get("url") or integracao_chatwoot.get("base_url") or ""
-                _cw_token = integracao_chatwoot.get("access_token") or integracao_chatwoot.get("token") or ""
+            # 1) Tenta mediaUrl direto do payload UazAPI (instantâneo)
+            audio_url = data.get("mediaUrl") or ""
+            if audio_url:
+                logger.info(f"🎙️ UazAPI: Áudio via mediaUrl direta para {phone} | {audio_url[:80]}...")
+            else:
+                # 2) Fallback: busca no Chatwoot (aguarda 3s para Chatwoot processar)
+                logger.info(f"🎙️ UazAPI: mediaUrl não disponível para {phone}, tentando Chatwoot em 3s...")
+                integracao_chatwoot = await carregar_integracao(empresa_id, 'chatwoot')
 
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as _cw_client:
-                        _cw_resp = await _cw_client.get(
-                            f"{_cw_url.rstrip('/')}/api/v1/accounts/{_account_id_audio}/conversations/{_conv_id_audio}/messages",
-                            headers={"api_access_token": str(_cw_token)},
-                        )
-                        if _cw_resp.status_code == 200:
-                            _cw_msgs = _cw_resp.json().get("payload", [])
-                            for _m in _cw_msgs:
-                                for _att in (_m.get("attachments") or []):
-                                    if str(_att.get("file_type", "")).startswith("audio"):
-                                        audio_url = _att.get("data_url")
+                if integracao_chatwoot and _conv_id_audio and _account_id_audio:
+                    _cw_url = integracao_chatwoot.get("url") or integracao_chatwoot.get("base_url") or ""
+                    _cw_token = integracao_chatwoot.get("access_token") or integracao_chatwoot.get("token") or ""
+
+                    await asyncio.sleep(3)  # Dá tempo do Chatwoot receber o áudio
+
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as _cw_client:
+                            _cw_resp = await _cw_client.get(
+                                f"{_cw_url.rstrip('/')}/api/v1/accounts/{_account_id_audio}/conversations/{_conv_id_audio}/messages",
+                                headers={"api_access_token": str(_cw_token)},
+                            )
+                            if _cw_resp.status_code == 200:
+                                _cw_msgs = _cw_resp.json().get("payload", [])
+                                for _m in _cw_msgs:
+                                    for _att in (_m.get("attachments") or []):
+                                        if str(_att.get("file_type", "")).startswith("audio"):
+                                            audio_url = _att.get("data_url")
+                                            break
+                                    if audio_url:
                                         break
-                                if audio_url:
-                                    break
-                except Exception as _cw_err:
-                    logger.error(f"❌ Erro ao buscar áudio no Chatwoot para {phone}: {_cw_err}")
+                            else:
+                                logger.warning(f"⚠️ Chatwoot retornou status {_cw_resp.status_code} para conv {_conv_id_audio}")
+                    except Exception as _cw_err:
+                        logger.error(f"❌ Erro ao buscar áudio no Chatwoot para {phone}: {_cw_err}")
+
+                if audio_url:
+                    logger.info(f"🎙️ UazAPI: Áudio encontrado no Chatwoot para {phone} | {audio_url[:80]}...")
 
             if audio_url:
-                logger.info(f"🎙️ UazAPI: Áudio detectado para {phone} | URL Chatwoot: {audio_url[:80]}...")
                 buffet_key = f"{empresa_id}:buffet:{_conv_id_audio}"
                 await redis_client.rpush(buffet_key, json.dumps({
                     "text": "",
@@ -217,7 +232,7 @@ async def uazapi_webhook(
                 }))
                 await redis_client.expire(buffet_key, 60)
             else:
-                logger.warning(f"⚠️ UazAPI: Áudio detectado para {phone} mas URL não encontrada no Chatwoot")
+                logger.warning(f"⚠️ UazAPI: Áudio detectado para {phone} mas nenhuma URL encontrada (nem UazAPI nem Chatwoot)")
         # --- Fim Transcrição de Áudio ---
 
         # Se não existe, usamos um ID temporário ou mapeamos depois no worker
