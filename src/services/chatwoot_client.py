@@ -103,7 +103,7 @@ async def enviar_mensagem_chatwoot(
         from src.services.uaz_client import UazAPIClient
         _cfg = url_base_ou_integracao if isinstance(url_base_ou_integracao, dict) else {}
         client = UazAPIClient(
-            base_url=_cfg.get("url") or _cfg.get("base_url") or "",
+            base_url=_cfg.get("url") or _cfg.get("base_url") or _cfg.get("api_url") or "",
             token=_cfg.get("token") or token or "",
             instance_name=_cfg.get("instance_name") or "lead"
         )
