@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import axios from "axios";
 import {
   Brain, Plus, Pencil, Trash2, Save, Loader2, CheckCircle2,
   Sparkles, Target, Cpu, Thermometer, Send, Bot, PlayCircle,
   Mic2, MessageSquare, Clock, TrendingUp, ShieldAlert, ListChecks,
-  AlertCircle, Search, ChevronRight, Zap, X
+  AlertCircle, Search, ChevronRight, Zap, X, RotateCcw, Copy
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -16,6 +16,17 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
 type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios";
 type TabKey = "config" | "playground";
+
+interface PlaygroundMsg { role: string; content: string; timestamp: number; }
+interface PlaygroundSession {
+  id: string;
+  personality_id: number | null;
+  nome_ia: string;
+  messages: PlaygroundMsg[];
+  summary: string;
+  created_at: number;
+  updated_at: number;
+}
 
 interface Periodo { inicio: string; fim: string; }
 interface HorarioAtendimento {
@@ -128,11 +139,82 @@ export default function PersonalityPage() {
   const [activeSection, setActiveSection] = useState<SectionKey>("identidade");
   const [emojiCatIdx, setEmojiCatIdx] = useState(0);
   const [search, setSearch] = useState("");
-  const [playHistory, setPlayHistory] = useState<{ role: string; content: string }[]>([]);
+  // ── Playground state ──
+  const [pgSessions, setPgSessions] = useState<PlaygroundSession[]>([]);
+  const [pgActiveId, setPgActiveId] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState("");
   const [testLoading, setTestLoading] = useState(false);
   const [playModel, setPlayModel] = useState<string>("");
+  const [streamingText, setStreamingText] = useState("");
+  const [pgShowSessions, setPgShowSessions] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const PG_STORAGE_KEY = "pg_sessions_v2";
+  const PG_MAX_SESSIONS = 20;
+
+  // Load sessions from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PG_STORAGE_KEY);
+      if (raw) {
+        const parsed: PlaygroundSession[] = JSON.parse(raw);
+        setPgSessions(parsed);
+        if (parsed.length > 0) setPgActiveId(parsed[0].id);
+      }
+    } catch { /* corrupted data — start fresh */ }
+  }, []);
+
+  // Save sessions to localStorage on change
+  useEffect(() => {
+    if (pgSessions.length > 0) {
+      localStorage.setItem(PG_STORAGE_KEY, JSON.stringify(pgSessions.slice(0, PG_MAX_SESSIONS)));
+    }
+  }, [pgSessions]);
+
+  const pgActiveSession = useMemo(() =>
+    pgSessions.find(s => s.id === pgActiveId) || null,
+  [pgSessions, pgActiveId]);
+
+  const playHistory = pgActiveSession?.messages || [];
+
+  const pgCreateSession = useCallback((personalityId: number | null, nomeIa: string, saudacao?: string) => {
+    const id = `pg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const greeting: PlaygroundMsg[] = saudacao?.trim()
+      ? [{ role: "bot", content: saudacao, timestamp: Date.now() }]
+      : [];
+    const session: PlaygroundSession = {
+      id,
+      personality_id: personalityId,
+      nome_ia: nomeIa || "Assistente",
+      messages: greeting,
+      summary: "",
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+    setPgSessions(prev => [session, ...prev].slice(0, PG_MAX_SESSIONS));
+    setPgActiveId(id);
+    return id;
+  }, []);
+
+  const pgUpdateMessages = useCallback((sessionId: string, msgs: PlaygroundMsg[], summary?: string) => {
+    setPgSessions(prev => prev.map(s =>
+      s.id === sessionId
+        ? { ...s, messages: msgs, updated_at: Date.now(), ...(summary !== undefined ? { summary } : {}) }
+        : s
+    ));
+  }, []);
+
+  const pgDeleteSession = useCallback((sessionId: string) => {
+    setPgSessions(prev => {
+      const next = prev.filter(s => s.id !== sessionId);
+      if (pgActiveId === sessionId) {
+        setPgActiveId(next.length > 0 ? next[0].id : null);
+      }
+      if (next.length === 0) localStorage.removeItem(PG_STORAGE_KEY);
+      return next;
+    });
+  }, [pgActiveId]);
 
   const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
@@ -156,7 +238,7 @@ export default function PersonalityPage() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [playHistory]);
+  }, [playHistory, streamingText]);
 
   const selectPersonality = (p: Personality) => {
     setSelected(p.id);
@@ -164,7 +246,6 @@ export default function PersonalityPage() {
     setActiveSection("identidade");
     setSaveError(null);
     setSuccess(false);
-    setPlayHistory([]);
     setFormData({
       id: p.id,
       nome_ia: p.nome_ia || "",
@@ -211,7 +292,6 @@ export default function PersonalityPage() {
     setActiveSection("identidade");
     setSaveError(null);
     setSuccess(false);
-    setPlayHistory([]);
     setFormData(EMPTY_FORM);
   };
 
@@ -254,32 +334,175 @@ export default function PersonalityPage() {
     } catch { alert("Erro ao excluir."); }
   };
 
+  // Auto-create session when switching to playground tab
+  useEffect(() => {
+    if (activeTab === "playground" && typeof selected === "number" && !pgActiveSession) {
+      const p = personalities.find(x => x.id === selected);
+      pgCreateSession(selected, p?.nome_ia || "Assistente", p?.saudacao_personalizada);
+    }
+  }, [activeTab, selected, pgActiveSession, personalities, pgCreateSession]);
+
+  // Auto-create new session when switching personality while on playground
+  useEffect(() => {
+    if (activeTab === "playground" && typeof selected === "number" && pgActiveSession && pgActiveSession.personality_id !== selected) {
+      const p = personalities.find(x => x.id === selected);
+      pgCreateSession(selected, p?.nome_ia || "Assistente", p?.saudacao_personalizada);
+    }
+  }, [selected, activeTab, pgActiveSession, personalities, pgCreateSession]);
+
+  const runSummarize = useCallback(async (sessionId: string, messages: PlaygroundMsg[]) => {
+    try {
+      const session = pgSessions.find(s => s.id === sessionId);
+      const res = await axios.post("/api-backend/management/personalities/playground/summarize", {
+        personality_id: session?.personality_id || (typeof selected === "number" ? selected : undefined),
+        messages: messages.map(m => ({ role: m.role === "bot" ? "assistant" : m.role, content: m.content })),
+      }, getConfig());
+      if (res.data.summary) {
+        pgUpdateMessages(sessionId, messages, res.data.summary);
+      }
+    } catch { /* summarize is best-effort */ }
+  }, [pgSessions, selected, pgUpdateMessages]);
+
   const runTest = async () => {
     if (!testMessage.trim() || testLoading) return;
     if (selected === "new") {
-      setPlayHistory(prev => [...prev,
-        { role: "user", content: testMessage },
-        { role: "bot", content: "⚠️ Salve a personalidade antes de testar no Playground." }
-      ]);
       setTestMessage("");
       return;
     }
+
+    // Ensure session exists
+    let sessionId = pgActiveId;
+    if (!sessionId || !pgActiveSession) {
+      const p = personalities.find(x => x.id === selected);
+      sessionId = pgCreateSession(
+        typeof selected === "number" ? selected : null,
+        p?.nome_ia || "Assistente",
+        p?.saudacao_personalizada
+      );
+    }
+
     setTestLoading(true);
-    const newHistory = [...playHistory, { role: "user", content: testMessage }];
-    setPlayHistory(newHistory);
+    setStreamingText("");
+    const userMsg: PlaygroundMsg = { role: "user", content: testMessage, timestamp: Date.now() };
+    const currentMessages = [...playHistory, userMsg];
+    pgUpdateMessages(sessionId!, currentMessages);
     setTestMessage("");
+
+    // Reset textarea height
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+
     try {
-      const res = await axios.post("/api-backend/management/personalities/playground", {
-        personality_id: typeof selected === "number" ? selected : undefined,
-        messages: newHistory.map(m => ({ role: m.role === "bot" ? "assistant" : m.role, content: m.content })),
-      }, getConfig());
-      setPlayHistory(prev => [...prev, { role: "bot", content: res.data.reply }]);
-      if (res.data.model) setPlayModel(res.data.model);
+      const token = localStorage.getItem("token");
+      const session = pgSessions.find(s => s.id === sessionId) || pgActiveSession;
+      const response = await fetch("/api-backend/management/personalities/playground/stream", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          personality_id: typeof selected === "number" ? selected : undefined,
+          messages: currentMessages.map(m => ({ role: m.role === "bot" ? "assistant" : m.role, content: m.content })),
+          conversation_summary: session?.summary || "",
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: "Erro ao conectar." }));
+        const botMsg: PlaygroundMsg = { role: "bot", content: `⚠️ ${err.detail || "Erro"}`, timestamp: Date.now() };
+        pgUpdateMessages(sessionId!, [...currentMessages, botMsg]);
+        setTestLoading(false);
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No reader");
+      const decoder = new TextDecoder();
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split("\n");
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const payload = JSON.parse(jsonStr);
+            if (payload.error) {
+              accumulated += `\n⚠️ ${payload.error}`;
+              setStreamingText(accumulated);
+            } else if (payload.done) {
+              if (payload.model) setPlayModel(payload.model);
+            } else if (payload.token) {
+              accumulated += payload.token;
+              setStreamingText(accumulated);
+            }
+          } catch { /* skip malformed SSE */ }
+        }
+      }
+
+      // Save final bot message to session
+      const botMsg: PlaygroundMsg = { role: "bot", content: accumulated || "...", timestamp: Date.now() };
+      const finalMessages = [...currentMessages, botMsg];
+      pgUpdateMessages(sessionId!, finalMessages);
+      setStreamingText("");
+
+      // Trigger summarization every 10 messages (5 user + 5 bot)
+      const msgCount = finalMessages.filter(m => m.role === "user").length;
+      if (msgCount > 0 && msgCount % 5 === 0) {
+        runSummarize(sessionId!, finalMessages);
+      }
     } catch (err) {
-      let detail = "Erro ao conectar com a IA.";
-      if (axios.isAxiosError(err)) detail = err.response?.data?.detail || detail;
-      setPlayHistory(prev => [...prev, { role: "bot", content: `⚠️ ${detail}` }]);
-    } finally { setTestLoading(false); }
+      // Fallback to non-streaming endpoint
+      try {
+        const res = await axios.post("/api-backend/management/personalities/playground", {
+          personality_id: typeof selected === "number" ? selected : undefined,
+          messages: currentMessages.map(m => ({ role: m.role === "bot" ? "assistant" : m.role, content: m.content })),
+          conversation_summary: pgActiveSession?.summary || "",
+        }, getConfig());
+        const botMsg: PlaygroundMsg = { role: "bot", content: res.data.reply, timestamp: Date.now() };
+        pgUpdateMessages(sessionId!, [...currentMessages, botMsg]);
+        if (res.data.model) setPlayModel(res.data.model);
+      } catch (fallbackErr) {
+        let detail = "Erro ao conectar com a IA.";
+        if (axios.isAxiosError(fallbackErr)) detail = fallbackErr.response?.data?.detail || detail;
+        const botMsg: PlaygroundMsg = { role: "bot", content: `⚠️ ${detail}`, timestamp: Date.now() };
+        pgUpdateMessages(sessionId!, [...currentMessages, botMsg]);
+      }
+      setStreamingText("");
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts);
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  };
+
+  const formatWhatsApp = (text: string) => {
+    // Sanitize then convert WhatsApp-style formatting to simple HTML
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return escaped
+      .replace(/\*(.*?)\*/g, "<strong>$1</strong>")
+      .replace(/\n/g, "<br />");
+  };
+
+  const copyConversation = () => {
+    if (!pgActiveSession) return;
+    const text = pgActiveSession.messages
+      .map(m => `${m.role === "user" ? "Eu" : pgActiveSession.nome_ia}: ${m.content}`)
+      .join("\n\n");
+    navigator.clipboard.writeText(text);
   };
 
   // Filtered list
@@ -1089,64 +1312,221 @@ export default function PersonalityPage() {
                     </div>
                   </div>
                 ) : (
-                  /* ── Playground ─────────────────────────────────── */
-                  <div className="flex-1 flex flex-col overflow-hidden p-6">
-                    <div className="flex items-center justify-between mb-4 p-3.5 bg-emerald-500/5 border border-emerald-500/15 rounded-xl">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <p className="text-xs text-emerald-300 font-bold">
-                          Testando personalidade salva
-                          {playModel && (
-                            <span className="text-slate-400 font-normal"> · {MODELS.find(m => m.id === playModel)?.label || playModel}</span>
-                          )}
-                        </p>
-                      </div>
-                      <button onClick={() => { setPlayHistory([]); setPlayModel(""); }} className="text-[10px] text-slate-500 hover:text-white font-bold uppercase tracking-widest transition-colors">
-                        Limpar
-                      </button>
-                    </div>
+                  /* ── Playground Sensacional ────────────────────── */
+                  <div className="flex-1 flex overflow-hidden">
 
-                    <div className="flex-1 overflow-y-auto custom-scrollbar bg-black/20 border border-white/5 rounded-2xl p-5 flex flex-col gap-3 mb-4">
-                      {playHistory.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center flex-1 text-center opacity-40 py-12">
-                          <Bot className="w-12 h-12 mb-3" />
-                          <p className="text-sm font-bold">Converse com a IA agora mesmo.</p>
-                          <p className="text-xs mt-1 opacity-70">
-                            {selected === "new"
-                              ? "Salve a personalidade primeiro para testá-la."
-                              : "Usa 100% a personalidade salva no banco — modelo, instruções e todos os campos."}
-                          </p>
+                    {/* Sessions sidebar */}
+                    {pgShowSessions && (
+                      <motion.div
+                        initial={{ width: 0, opacity: 0 }}
+                        animate={{ width: 200, opacity: 1 }}
+                        exit={{ width: 0, opacity: 0 }}
+                        className="flex-shrink-0 border-r border-white/6 bg-[#06101f]/60 flex flex-col overflow-hidden"
+                      >
+                        <div className="p-3 border-b border-white/6">
+                          <button
+                            onClick={() => {
+                              const p = personalities.find(x => x.id === selected);
+                              pgCreateSession(
+                                typeof selected === "number" ? selected : null,
+                                p?.nome_ia || "Assistente",
+                                p?.saudacao_personalizada
+                              );
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#00d2ff]/10 text-[#00d2ff] text-xs font-bold hover:bg-[#00d2ff]/20 transition-all"
+                          >
+                            <Plus className="w-3 h-3" /> Nova conversa
+                          </button>
                         </div>
-                      ) : playHistory.map((m, i) => (
-                        <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                          <div className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-                            m.role === "user" ? "bg-[#00d2ff] text-black font-semibold" : "bg-white/5 text-slate-200 border border-white/8"
-                          }`}>
-                            {m.content}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+                          {pgSessions.filter(s => typeof selected !== "number" || s.personality_id === selected).map(s => (
+                            <div
+                              key={s.id}
+                              onClick={() => setPgActiveId(s.id)}
+                              className={`group px-3 py-2.5 rounded-lg cursor-pointer transition-all text-xs ${
+                                s.id === pgActiveId
+                                  ? "bg-[#00d2ff]/10 border border-[#00d2ff]/20 text-white"
+                                  : "hover:bg-white/5 text-slate-400"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold truncate flex-1">{s.nome_ia}</span>
+                                <button
+                                  onClick={e => { e.stopPropagation(); pgDeleteSession(s.id); }}
+                                  className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-all p-0.5"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                              <p className="text-[10px] text-slate-600 mt-1 truncate">
+                                {s.messages.length > 0 ? s.messages[s.messages.length - 1].content.slice(0, 40) + "..." : "Sem mensagens"}
+                              </p>
+                              {s.summary && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  <Zap className="w-2.5 h-2.5 text-purple-400" />
+                                  <span className="text-[9px] text-purple-400">Memória</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+
+                    {/* Chat area */}
+                    <div className="flex-1 flex flex-col overflow-hidden p-6">
+                      {/* Header bar */}
+                      <div className="flex items-center justify-between mb-4 p-3.5 bg-emerald-500/5 border border-emerald-500/15 rounded-xl">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => setPgShowSessions(!pgShowSessions)}
+                            className="p-1.5 rounded-lg hover:bg-white/5 transition-all"
+                            title="Sessões"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
+                          </button>
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <div>
+                              <p className="text-xs text-emerald-300 font-bold">
+                                {pgActiveSession?.nome_ia || "Playground"}
+                                {playModel && (
+                                  <span className="text-slate-500 font-normal"> · {MODELS.find(m => m.id === playModel)?.label || playModel}</span>
+                                )}
+                              </p>
+                              {pgActiveSession?.summary && (
+                                <p className="text-[10px] text-purple-400 flex items-center gap-1 mt-0.5">
+                                  <Zap className="w-2.5 h-2.5" /> Memória ativa — a IA lembra do contexto
+                                </p>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      ))}
-                      {testLoading && (
-                        <div className="flex items-center gap-2 text-xs text-[#00d2ff]">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          <span className="animate-pulse">Pensando...</span>
+                        <div className="flex items-center gap-2">
+                          <button onClick={copyConversation} className="p-1.5 rounded-lg hover:bg-white/5 transition-all" title="Copiar conversa">
+                            <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const p = personalities.find(x => x.id === selected);
+                              pgCreateSession(
+                                typeof selected === "number" ? selected : null,
+                                p?.nome_ia || "Assistente",
+                                p?.saudacao_personalizada
+                              );
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-white/5 transition-all"
+                            title="Nova conversa"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                          </button>
                         </div>
-                      )}
-                      <div ref={chatEndRef} />
-                    </div>
+                      </div>
 
-                    <div className="relative flex-shrink-0">
-                      <input type="text" value={testMessage}
-                        onChange={e => setTestMessage(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); runTest(); } }}
-                        placeholder="Digite sua mensagem e pressione Enter..."
-                        className="w-full bg-[#0a1628]/80 border border-white/8 rounded-xl px-4 py-3.5 pr-14 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all text-sm"
-                      />
-                      <button type="button" onClick={runTest}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-[#00d2ff] text-black rounded-lg hover:bg-[#00d2ff]/90 transition-all"
-                      >
-                        <Send className="w-4 h-4" />
-                      </button>
+                      {/* Messages area */}
+                      <div className="flex-1 overflow-y-auto custom-scrollbar bg-black/20 border border-white/5 rounded-2xl p-5 flex flex-col gap-3 mb-4">
+                        {playHistory.length === 0 && !streamingText ? (
+                          <div className="flex flex-col items-center justify-center flex-1 text-center opacity-40 py-12">
+                            <Bot className="w-12 h-12 mb-3" />
+                            <p className="text-sm font-bold">Converse com a IA agora mesmo.</p>
+                            <p className="text-xs mt-1 opacity-70">
+                              {selected === "new"
+                                ? "Salve a personalidade primeiro para testá-la."
+                                : "Usa 100% a personalidade salva — modelo, instruções, memória e todos os campos."}
+                            </p>
+                          </div>
+                        ) : (
+                          <>
+                            {playHistory.map((m, i) => (
+                              <motion.div
+                                key={`${pgActiveId}-${i}`}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                              >
+                                <div className={`max-w-[75%] group relative ${
+                                  m.role === "user"
+                                    ? "bg-[#00d2ff] text-black rounded-2xl rounded-br-md"
+                                    : "bg-white/5 text-slate-200 border border-white/8 rounded-2xl rounded-bl-md"
+                                }`}>
+                                  <div
+                                    className={`px-4 py-3 text-sm leading-relaxed ${m.role === "user" ? "font-semibold" : ""}`}
+                                    dangerouslySetInnerHTML={{ __html: m.role === "bot" ? formatWhatsApp(m.content) : formatWhatsApp(m.content) }}
+                                  />
+                                  {m.timestamp && (
+                                    <span className={`text-[9px] px-4 pb-2 block ${
+                                      m.role === "user" ? "text-black/40 text-right" : "text-slate-600"
+                                    }`}>
+                                      {formatTime(m.timestamp)}
+                                    </span>
+                                  )}
+                                </div>
+                              </motion.div>
+                            ))}
+
+                            {/* Streaming message being generated */}
+                            {testLoading && streamingText && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="flex justify-start"
+                              >
+                                <div className="max-w-[75%] bg-white/5 text-slate-200 border border-[#00d2ff]/20 rounded-2xl rounded-bl-md">
+                                  <div
+                                    className="px-4 py-3 text-sm leading-relaxed"
+                                    dangerouslySetInnerHTML={{ __html: formatWhatsApp(streamingText) }}
+                                  />
+                                </div>
+                              </motion.div>
+                            )}
+
+                            {/* Typing indicator */}
+                            {testLoading && !streamingText && (
+                              <div className="flex justify-start">
+                                <div className="bg-white/5 border border-white/8 rounded-2xl rounded-bl-md px-5 py-4">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full bg-[#00d2ff] animate-bounce" style={{ animationDelay: "0ms" }} />
+                                    <span className="w-2 h-2 rounded-full bg-[#00d2ff] animate-bounce" style={{ animationDelay: "150ms" }} />
+                                    <span className="w-2 h-2 rounded-full bg-[#00d2ff] animate-bounce" style={{ animationDelay: "300ms" }} />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        <div ref={chatEndRef} />
+                      </div>
+
+                      {/* Input area */}
+                      <div className="relative flex-shrink-0">
+                        <textarea
+                          ref={textareaRef}
+                          value={testMessage}
+                          onChange={e => {
+                            setTestMessage(e.target.value);
+                            // Auto-resize
+                            e.target.style.height = "auto";
+                            e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runTest(); }
+                          }}
+                          placeholder={selected === "new" ? "Salve a personalidade primeiro..." : "Digite sua mensagem... (Shift+Enter para nova linha)"}
+                          disabled={selected === "new"}
+                          rows={1}
+                          className="w-full bg-[#0a1628]/80 border border-white/8 rounded-xl px-4 py-3.5 pr-14 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all text-sm resize-none"
+                          style={{ minHeight: "48px", maxHeight: "120px" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={runTest}
+                          disabled={testLoading || !testMessage.trim() || selected === "new"}
+                          className="absolute right-2 bottom-2 p-2.5 bg-[#00d2ff] text-black rounded-lg hover:bg-[#00d2ff]/90 transition-all disabled:opacity-30"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
 import src.core.database as _database
 from src.core.security import get_current_user_token
@@ -635,6 +636,11 @@ class PlaygroundMessage(BaseModel):
 class PlaygroundRequest(BaseModel):
     personality_id: Optional[int] = None   # Se None, usa a personalidade ativa da empresa
     messages: List[PlaygroundMessage] = []
+    conversation_summary: Optional[str] = None  # Resumo acumulado para memória de longo prazo
+
+class PlaygroundSummarizeRequest(BaseModel):
+    personality_id: Optional[int] = None
+    messages: List[PlaygroundMessage] = []
 
 
 # Campos dinâmicos de "diretrizes de negócio" (mesma lógica do bot_core.py _LABEL_MAP)
@@ -843,12 +849,19 @@ async def personality_playground(
     except Exception:
         pass  # FAQ é opcional — tabela pode não existir
 
-    # Constrói system prompt completo com todos os campos + FAQ
+    # Constrói system prompt completo com todos os campos + FAQ + memória
     system_prompt = _build_playground_prompt(p, faq_text=faq_text)
+    if body.conversation_summary and body.conversation_summary.strip():
+        system_prompt += (
+            f"\n\n[CONTEXTO DA CONVERSA ANTERIOR]\n"
+            f"Resumo do que foi discutido até agora (use para manter continuidade):\n"
+            f"{body.conversation_summary}"
+        )
 
-    # Monta histórico
+    # Monta histórico — janela deslizante (últimas 20 mensagens) para não estourar tokens
     msgs: List[dict] = [{"role": "system", "content": system_prompt}]
-    for m in body.messages:
+    recent_messages = body.messages[-20:] if len(body.messages) > 20 else body.messages
+    for m in recent_messages:
         if m.role in ("user", "assistant"):
             msgs.append({"role": m.role, "content": m.content})
 
@@ -873,6 +886,165 @@ async def personality_playground(
     except Exception as e:
         logger.error(f"Playground LLM error: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao chamar a IA: {str(e)[:200]}")
+
+
+# ─── Playground helpers ──────────────────────────────────────────────────────
+
+async def _load_playground_context(personality_id: Optional[int], empresa_id: int):
+    """Carrega personalidade + FAQ + configs LLM. Reutilizado por todos os endpoints de playground."""
+    if personality_id:
+        row = await _database.db_pool.fetchrow(
+            "SELECT * FROM personalidade_ia WHERE id = $1 AND empresa_id = $2",
+            personality_id, empresa_id
+        )
+    else:
+        row = await _database.db_pool.fetchrow(
+            "SELECT * FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true ORDER BY updated_at DESC LIMIT 1",
+            empresa_id
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Personalidade não encontrada. Salve antes de testar.")
+
+    p = dict(row)
+    model       = p.get("modelo_preferido") or "openai/gpt-4o-mini"
+    temperature = float(p.get("temperatura") or 0.7)
+    max_tokens  = int(p.get("max_tokens") or 500)
+
+    faq_text = ""
+    try:
+        faq_rows = await _database.db_pool.fetch(
+            "SELECT pergunta, resposta FROM faq WHERE empresa_id = $1 AND ativo = true ORDER BY prioridade DESC NULLS LAST LIMIT 30",
+            empresa_id
+        )
+        if faq_rows:
+            faq_text = "\n\n".join(f"P: {r['pergunta']}\nR: {r['resposta']}" for r in faq_rows)
+    except Exception:
+        pass
+
+    return p, model, temperature, max_tokens, faq_text
+
+
+@router.post("/personalities/playground/stream")
+async def personality_playground_stream(
+    body: PlaygroundRequest,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Playground com streaming SSE — resposta token a token."""
+    from src.services.llm_service import cliente_ia
+
+    if not cliente_ia:
+        raise HTTPException(status_code=503, detail="Serviço de IA não configurado")
+
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao token")
+
+    p, model, temperature, max_tokens, faq_text = await _load_playground_context(
+        body.personality_id, empresa_id
+    )
+
+    system_prompt = _build_playground_prompt(p, faq_text=faq_text)
+    if body.conversation_summary and body.conversation_summary.strip():
+        system_prompt += (
+            f"\n\n[CONTEXTO DA CONVERSA ANTERIOR]\n"
+            f"Resumo do que foi discutido até agora (use para manter continuidade):\n"
+            f"{body.conversation_summary}"
+        )
+
+    msgs: List[dict] = [{"role": "system", "content": system_prompt}]
+    recent_messages = body.messages[-20:] if len(body.messages) > 20 else body.messages
+    for m in recent_messages:
+        if m.role in ("user", "assistant"):
+            msgs.append({"role": m.role, "content": m.content})
+
+    nome_ia = p.get("nome_ia") or "Assistente"
+
+    async def event_generator():
+        try:
+            stream = await asyncio.wait_for(
+                cliente_ia.chat.completions.create(
+                    model=model,
+                    messages=msgs,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                ),
+                timeout=30
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    payload = json.dumps({"token": delta.content}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+            # Evento final
+            done_payload = json.dumps({"done": True, "model": model, "nome_ia": nome_ia}, ensure_ascii=False)
+            yield f"data: {done_payload}\n\n"
+        except asyncio.TimeoutError:
+            err = json.dumps({"error": "IA demorou demais para responder."}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
+        except Exception as e:
+            logger.error(f"Playground stream error: {e}")
+            err = json.dumps({"error": str(e)[:200]}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/personalities/playground/summarize")
+async def personality_playground_summarize(
+    body: PlaygroundSummarizeRequest,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Gera resumo da conversa para memória de longo prazo do playground."""
+    from src.services.llm_service import cliente_ia
+
+    if not cliente_ia:
+        raise HTTPException(status_code=503, detail="Serviço de IA não configurado")
+
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao token")
+
+    if len(body.messages) < 4:
+        return {"summary": ""}
+
+    p, model, _, _, _ = await _load_playground_context(body.personality_id, empresa_id)
+    nome_ia = p.get("nome_ia") or "Assistente"
+
+    # Monta conversa formatada para o sumarizador
+    convo_lines = []
+    for m in body.messages:
+        speaker = "Usuário" if m.role == "user" else nome_ia
+        convo_lines.append(f"{speaker}: {m.content}")
+    convo_text = "\n".join(convo_lines)
+
+    summary_prompt = (
+        "Você é um assistente que cria resumos concisos de conversas.\n"
+        "Analise a conversa abaixo e crie um resumo em 3-5 bullet points.\n"
+        "Capture: preferências do usuário, decisões tomadas, contexto importante e tom da conversa.\n"
+        "Responda APENAS com os bullet points, sem introdução.\n\n"
+        f"--- CONVERSA ---\n{convo_text}\n--- FIM ---"
+    )
+
+    try:
+        response = await asyncio.wait_for(
+            cliente_ia.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            ),
+            timeout=20
+        )
+        summary = response.choices[0].message.content or ""
+        return {"summary": summary.strip()}
+    except Exception as e:
+        logger.error(f"Playground summarize error: {e}")
+        return {"summary": ""}
 
 
 # --- FAQ Endpoints ---
