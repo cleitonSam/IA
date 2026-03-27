@@ -133,6 +133,29 @@ async def carregar_integracao(
         return None
 
 
+async def buscar_unidade_por_instancia_uaz(empresa_id: int, instance_name: str) -> Optional[int]:
+    """
+    Retorna o unidade_id que tem esta instância UazAPI configurada na empresa.
+    Usado pelo webhook UazAPI para rotear mensagens para a unidade correta.
+    """
+    if not _database.db_pool or not instance_name:
+        return None
+    try:
+        row = await _database.db_pool.fetchrow(
+            """
+            SELECT unidade_id FROM integracoes
+            WHERE empresa_id = $1 AND tipo = 'uazapi' AND ativo = true
+              AND config->>'instance' = $2 AND unidade_id IS NOT NULL
+            LIMIT 1
+            """,
+            empresa_id, instance_name
+        )
+        return row['unidade_id'] if row else None
+    except Exception as e:
+        logger.error(f"Erro ao buscar unidade por instância UazAPI '{instance_name}' (emp={empresa_id}): {e}")
+        return None
+
+
 async def bd_salvar_resumo_ia(conversation_id: int, empresa_id: int, resumo: str):
     """
     Salva o resumo gerado pela IA para uma conversa específica.
@@ -828,25 +851,37 @@ async def carregar_personalidade(empresa_id: int) -> Dict[str, Any]:
         return {}
 
 
-async def carregar_menu_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
+async def carregar_menu_triagem(empresa_id: int, unidade_id: int = None) -> Optional[Dict[str, Any]]:
     """
-    Carrega a configuração do menu de triagem da empresa (da personalidade ativa).
+    Carrega a configuração do menu de triagem da empresa/unidade (da personalidade ativa).
     Retorna None se não houver configuração ou se o menu estiver inativo.
     Cacheia em Redis por 120s.
     """
     if not _database.db_pool:
         return None
 
-    cache_key = f"cfg:menu_triagem:{empresa_id}"
+    cache_key = f"cfg:menu_triagem:{empresa_id}:u:{unidade_id or 'global'}"
     cached = await redis_get_json(cache_key)
     if cached is not None:
         return cached if cached else None
 
     try:
-        row = await _database.db_pool.fetchrow(
-            "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
-            empresa_id
-        )
+        row = None
+        if unidade_id:
+            row = await _database.db_pool.fetchrow(
+                "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id = $2 AND ativo = true LIMIT 1",
+                empresa_id, unidade_id
+            )
+        if not row:
+            row = await _database.db_pool.fetchrow(
+                "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id IS NULL AND ativo = true LIMIT 1",
+                empresa_id
+            )
+        if not row:
+            row = await _database.db_pool.fetchrow(
+                "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+                empresa_id
+            )
         config = None
         if row and row["menu_triagem"]:
             val = row["menu_triagem"]
@@ -862,25 +897,37 @@ async def carregar_menu_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def carregar_fluxo_triagem(empresa_id: int) -> Optional[Dict[str, Any]]:
+async def carregar_fluxo_triagem(empresa_id: int, unidade_id: int = None) -> Optional[Dict[str, Any]]:
     """
-    Carrega o fluxo visual de triagem da empresa (n8n-style).
+    Carrega o fluxo visual de triagem da empresa/unidade (n8n-style).
     Retorna None se não houver fluxo ou se ativo=False.
     Cacheia em Redis por 120s.
     """
     if not _database.db_pool:
         return None
 
-    cache_key = f"cfg:fluxo_triagem:{empresa_id}"
+    cache_key = f"cfg:fluxo_triagem:{empresa_id}:u:{unidade_id or 'global'}"
     cached = await redis_get_json(cache_key)
     if cached is not None:
         return cached if cached else None
 
     try:
-        row = await _database.db_pool.fetchrow(
-            "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
-            empresa_id
-        )
+        row = None
+        if unidade_id:
+            row = await _database.db_pool.fetchrow(
+                "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id = $2 AND ativo = true LIMIT 1",
+                empresa_id, unidade_id
+            )
+        if not row:
+            row = await _database.db_pool.fetchrow(
+                "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id IS NULL AND ativo = true LIMIT 1",
+                empresa_id
+            )
+        if not row:
+            row = await _database.db_pool.fetchrow(
+                "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+                empresa_id
+            )
         config = None
         if row and row["fluxo_triagem"]:
             val = row["fluxo_triagem"]
