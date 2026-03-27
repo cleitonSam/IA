@@ -327,6 +327,20 @@ export default function UnitsPage() {
                             <span>@{unit.instagram}</span>
                           </div>
                         )}
+                        {unit.convenios && typeof unit.convenios === "object" && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {unit.convenios.gympass_wellhub && unit.convenios.gympass_wellhub !== "Não aceita" && (
+                              <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                                GP {unit.convenios.gympass_wellhub}
+                              </span>
+                            )}
+                            {unit.convenios.totalpass && unit.convenios.totalpass !== "Não aceita" && (
+                              <span className="px-2.5 py-1 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-bold uppercase tracking-wider">
+                                TP {unit.convenios.totalpass}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -623,10 +637,53 @@ export default function UnitsPage() {
                           />
                         </Field>
                         <Field label="Convênios Parceiros" icon={HeartHandshake}>
-                          <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
-                            value={typeof formData.convenios === "object" ? JSON.stringify(formData.convenios, null, 2) : formData.convenios}
-                            onChange={e => { try { setFormData({ ...formData, convenios: JSON.parse(e.target.value) }); } catch { setFormData({ ...formData, convenios: e.target.value }); } }}
-                          />
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Gympass / Wellhub</label>
+                                <select
+                                  value={typeof formData.convenios === "object" ? (formData.convenios?.gympass_wellhub || "Não aceita") : "Não aceita"}
+                                  onChange={e => {
+                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                    setFormData({ ...formData, convenios: { ...prev, gympass_wellhub: e.target.value } });
+                                  }}
+                                  className={inputClass}
+                                >
+                                  {["Não aceita","Basic","Basic+","Silver","Gold","Gold+","Platinum","Diamond","Black"].map(o => (
+                                    <option key={o} value={o}>{o}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Totalpass</label>
+                                <select
+                                  value={typeof formData.convenios === "object" ? (formData.convenios?.totalpass || "Não aceita") : "Não aceita"}
+                                  onChange={e => {
+                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                    setFormData({ ...formData, convenios: { ...prev, totalpass: e.target.value } });
+                                  }}
+                                  className={inputClass}
+                                >
+                                  {["Não aceita","TP1","TP1+","TP2","TP2+","TP3","TP3+"].map(o => (
+                                    <option key={o} value={o}>{o}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Outros convênios (Sesc, Sesi…)</label>
+                              <input
+                                type="text"
+                                placeholder="Ex: Sesc, Sesi, Convênio Empresa XYZ"
+                                value={typeof formData.convenios === "object" ? (formData.convenios?.outros || "") : ""}
+                                onChange={e => {
+                                  const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                  setFormData({ ...formData, convenios: { ...prev, outros: e.target.value } });
+                                }}
+                                className={inputClass}
+                              />
+                            </div>
+                          </div>
                         </Field>
                       </div>
                     )}

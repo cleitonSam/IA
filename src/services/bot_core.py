@@ -1233,7 +1233,21 @@ async def processar_ia_e_responder(
             planos_detalhados = formatar_planos_para_prompt(planos_ativos) if planos_ativos else "não informado"
             modalidades_prompt = ", ".join(normalizar_lista_campo(unidade.get("modalidades"))) or "não informado"
             pagamentos_prompt = ", ".join(normalizar_lista_campo(unidade.get("formas_pagamento"))) or "não informado"
-            convenios_prompt = ", ".join(normalizar_lista_campo(unidade.get("convenios"))) or "não informado"
+            convenios_raw = unidade.get("convenios")
+            if isinstance(convenios_raw, dict):
+                _parts = []
+                _gw = convenios_raw.get("gympass_wellhub", "")
+                if _gw and _gw != "Não aceita":
+                    _parts.append(f"Gympass/Wellhub {_gw}")
+                _tp = convenios_raw.get("totalpass", "")
+                if _tp and _tp != "Não aceita":
+                    _parts.append(f"Totalpass {_tp}")
+                _outros = convenios_raw.get("outros", "")
+                if _outros:
+                    _parts.append(_outros)
+                convenios_prompt = ", ".join(_parts) or "não aceita convênios"
+            else:
+                convenios_prompt = ", ".join(normalizar_lista_campo(convenios_raw)) or "não informado"
 
             dados_unidade = f"""
 DADOS COMPLETOS DA UNIDADE

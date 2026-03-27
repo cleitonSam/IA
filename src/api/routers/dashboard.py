@@ -76,7 +76,18 @@ async def get_unidades(
             raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
 
         unidades = await listar_unidades_ativas(empresa_id)
-        return [{"id": u["id"], "nome": u["nome"], "slug": u["slug"]} for u in unidades]
+        return [{
+            "id": u["id"],
+            "nome": u["nome"],
+            "slug": u["slug"],
+            "nome_abreviado": u.get("nome_abreviado"),
+            "cidade": u.get("cidade"),
+            "bairro": u.get("bairro"),
+            "estado": u.get("estado"),
+            "whatsapp": u.get("whatsapp"),
+            "instagram": u.get("instagram"),
+            "convenios": u.get("convenios"),
+        } for u in unidades]
     except HTTPException:
         raise
     except Exception as e:
