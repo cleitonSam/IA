@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   MessageSquare, Search, ChevronLeft, ChevronRight,
   Building2, Star, Flame, Clock, X, RefreshCw,
-  Download, Zap, Bot, BarChart3, Target, Brain, Trash2
+  Download, Zap, Bot, BarChart3, Target, Brain, Trash2, TrendingUp, CheckCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -29,6 +29,21 @@ interface Conversation {
   unidade_nome: string;
   pausada: boolean;
 }
+
+interface EventoFunil {
+  tipo_evento: string;
+  descricao: string | null;
+  score_incremento: number;
+  created_at: string;
+}
+
+const eventoLabels: Record<string, string> = {
+  mudanca_unidade: "Unidade Identificada",
+  link_matricula_enviado: "Link de Matrícula Enviado",
+  solicitacao_telefone: "Contato Solicitado",
+  interesse_detectado: "Interesse Detectado",
+  unidade_escolhida: "Unidade Escolhida",
+};
 
 const statusColor: Record<string, string> = {
   open: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
@@ -57,6 +72,8 @@ export default function ConversasPage() {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterUnidade, setFilterUnidade] = useState<number | "">("");
   const [selected, setSelected] = useState<Conversation | null>(null);
+  const [eventos, setEventos] = useState<EventoFunil[]>([]);
+  const [loadingEventos, setLoadingEventos] = useState(false);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
   const config = { headers: { Authorization: `Bearer ${token}` } };
@@ -82,6 +99,15 @@ export default function ConversasPage() {
   }, []);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
+
+  useEffect(() => {
+    if (!selected) { setEventos([]); return; }
+    setLoadingEventos(true);
+    axios.get(`/api-backend/dashboard/conversations/${selected.conversation_id}/eventos`, config)
+      .then(r => setEventos(r.data || []))
+      .catch(() => setEventos([]))
+      .finally(() => setLoadingEventos(false));
+  }, [selected?.conversation_id]);
 
   const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setBusca(buscaInput); setOffset(0); };
   const clearFilters = () => { setBusca(""); setBuscaInput(""); setFilterStatus(""); setFilterUnidade(""); setOffset(0); };
@@ -353,20 +379,59 @@ export default function ConversasPage() {
 
                 <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {[
-                      { label: "Lead Score", value: `${selected.score_lead || 0}/5`, icon: Star },
-                      { label: "Intenção", value: selected.intencao_de_compra ? "ALTA 🔥" : "MÉDIA", icon: Flame },
-                      { label: "Mensagens", value: (selected.total_mensagens_cliente || 0) + (selected.total_mensagens_ia || 0), icon: MessageSquare },
-                      { label: "Fase Funil", value: selected.status === "open" ? "NEGOCIAÇÃO" : "FINALIZADO", icon: Target },
-                    ].map(stat => (
-                      <div key={stat.label} className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#00d2ff]/15 transition-all">
-                        <div className="flex items-center gap-2 mb-3">
-                          <stat.icon className="w-4 h-4 text-[#00d2ff]/50" />
-                          <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{stat.label}</span>
-                        </div>
-                        <p className="text-xl font-black">{stat.value}</p>
+                    {/* Lead Score — dots visuais */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#00d2ff]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Star className="w-4 h-4 text-[#00d2ff]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Lead Score</span>
                       </div>
-                    ))}
+                      <div className="flex gap-1.5 items-center">
+                        {[1, 2, 3, 4, 5].map(s => (
+                          <div key={s} className={`w-3 h-3 rounded-full transition-all ${
+                            s <= (selected.score_lead || 0)
+                              ? "bg-[#00d2ff] shadow-[0_0_6px_rgba(0,210,255,0.6)]"
+                              : "bg-white/10"
+                          }`} />
+                        ))}
+                        <span className="text-xs font-black text-slate-400 ml-1">{selected.score_lead || 0}/5</span>
+                      </div>
+                    </div>
+
+                    {/* Intenção — ALTA / MÉDIA / BAIXA */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#00d2ff]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Flame className="w-4 h-4 text-[#00d2ff]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Intenção</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {selected.intencao_de_compra ? "ALTA 🔥" : (selected.score_lead || 0) > 0 ? "MÉDIA" : "BAIXA"}
+                      </p>
+                    </div>
+
+                    {/* Mensagens */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#00d2ff]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <MessageSquare className="w-4 h-4 text-[#00d2ff]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mensagens</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {(selected.total_mensagens_cliente || 0) + (selected.total_mensagens_ia || 0)}
+                      </p>
+                    </div>
+
+                    {/* Fase Funil — mapeamento completo */}
+                    <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 hover:border-[#00d2ff]/15 transition-all">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Target className="w-4 h-4 text-[#00d2ff]/50" />
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Fase Funil</span>
+                      </div>
+                      <p className="text-xl font-black">
+                        {selected.status === "open" ? "NEGOCIAÇÃO"
+                          : selected.status === "resolved" ? "CONVERTIDO"
+                          : selected.status === "pending" ? "PENDENTE"
+                          : "FINALIZADO"}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 hover:border-[#00d2ff]/15 transition-all">
@@ -392,12 +457,13 @@ export default function ConversasPage() {
                     </p>
                   </div>
 
-                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 space-y-4">
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 space-y-4 hover:border-[#00d2ff]/15 transition-all">
                     <h4 className="text-[11px] font-black text-slate-500 uppercase tracking-widest mb-2">Informações de Tráfego</h4>
                     {[
-                      { label: "Unidade de Origem", value: selected.unidade_nome, icon: Building2 },
-                      { label: "Canal de Entrada", value: selected.canal, icon: Zap },
+                      { label: "Unidade de Origem", value: selected.unidade_nome || "—", icon: Building2 },
+                      { label: "Canal de Entrada", value: selected.canal || "—", icon: Zap },
                       { label: "Registrado em", value: selected.created_at ? new Date(selected.created_at).toLocaleString("pt-BR") : "—", icon: Clock },
+                      { label: "Última Atividade", value: selected.updated_at ? new Date(selected.updated_at).toLocaleString("pt-BR") : "—", icon: Clock },
                     ].map(row => (
                       <div key={row.label} className="flex justify-between items-center py-3 border-b border-white/5 last:border-0 last:pb-0">
                         <span className="text-sm font-bold text-slate-500 flex items-center gap-2.5">
@@ -406,6 +472,64 @@ export default function ConversasPage() {
                         <span className="text-sm font-black">{row.value}</span>
                       </div>
                     ))}
+                    <div className="flex justify-between items-center py-3">
+                      <span className="text-sm font-bold text-slate-500 flex items-center gap-2.5">
+                        <CheckCircle className="w-4 h-4 text-[#00d2ff]/40" /> Lead Qualificado
+                      </span>
+                      <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider ${
+                        selected.lead_qualificado
+                          ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                          : "bg-slate-700/20 text-slate-500 border border-slate-700/20"
+                      }`}>
+                        {selected.lead_qualificado ? "Sim" : "Não"}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Histórico de Pontuação */}
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-7 hover:border-[#00d2ff]/15 transition-all">
+                    <div className="flex items-center gap-3 mb-5">
+                      <TrendingUp className="w-5 h-5 text-[#00d2ff]" />
+                      <h3 className="text-lg font-black uppercase tracking-widest">Histórico de Pontuação</h3>
+                    </div>
+
+                    {loadingEventos ? (
+                      <div className="space-y-3">
+                        {[...Array(3)].map((_, i) => (
+                          <div key={i} className="flex items-center gap-4 animate-pulse">
+                            <div className="w-8 h-8 bg-white/5 rounded-xl flex-shrink-0" />
+                            <div className="flex-1 space-y-1.5">
+                              <div className="h-2.5 bg-white/5 rounded w-1/3" />
+                              <div className="h-2 bg-white/5 rounded w-2/3" />
+                            </div>
+                            <div className="w-12 h-5 bg-white/5 rounded-full" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : eventos.length === 0 ? (
+                      <p className="text-slate-500 text-sm italic">Nenhum evento de pontuação registrado ainda.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {eventos.map((ev, idx) => (
+                          <div key={idx} className="flex items-start gap-4 py-3 border-b border-white/5 last:border-0 last:pb-0">
+                            <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 border border-[#00d2ff]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <Star className="w-3.5 h-3.5 text-[#00d2ff]" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-black">{eventoLabels[ev.tipo_evento] ?? ev.tipo_evento}</p>
+                              {ev.descricao && (
+                                <p className="text-xs text-slate-500 mt-0.5 truncate">{ev.descricao}</p>
+                              )}
+                              <p className="text-[10px] text-slate-600 mt-1">
+                                {new Date(ev.created_at).toLocaleString("pt-BR")}
+                              </p>
+                            </div>
+                            <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 flex-shrink-0 self-start">
+                              +{ev.score_incremento} pts
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>

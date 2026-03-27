@@ -325,6 +325,37 @@ async def limpar_memoria_conversa(
     return {"status": "ok", "mensagem": "Memória da IA limpa com sucesso"}
 
 
+@router.get("/conversations/{conversation_id}/eventos")
+async def get_eventos_funil(
+    conversation_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna o histórico de eventos de pontuação (funil) de uma conversa específica.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    row = await _database.db_pool.fetchrow(
+        "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+        conversation_id, empresa_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+
+    try:
+        eventos = await _database.db_pool.fetch(
+            """SELECT tipo_evento, descricao, score_incremento, created_at
+               FROM eventos_funil WHERE conversa_id = $1 ORDER BY created_at ASC""",
+            row["id"]
+        )
+        return [dict(e) for e in eventos]
+    except Exception as e:
+        logger.error(f"Erro ao buscar eventos funil para conversa {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar eventos de pontuação")
+
+
 @router.get("/metrics/empresa")
 async def get_metrics_empresa(
     data: Optional[date] = Query(None),
