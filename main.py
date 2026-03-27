@@ -2345,7 +2345,7 @@ async def worker_followup():
                     WHERE f.status = 'pendente' AND f.agendado_para <= $1
                     ORDER BY f.agendado_para
                     LIMIT 20
-                    FOR UPDATE SKIP LOCKED
+                    FOR UPDATE OF f SKIP LOCKED
                 """, agora)
 
                 for f in pendentes:
