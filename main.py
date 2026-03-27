@@ -3644,6 +3644,7 @@ async def processar_ia_e_responder(
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+        nome_unidade = unidade.get('nome') or 'Unidade Matriz'
 
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
