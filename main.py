@@ -1458,7 +1458,8 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     chave_buffet = f"buffet:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
-    deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
+    deadline = time.time() + 2.0  # janela para juntar burst (rajada WhatsApp)
+    _checks_vazios = 0  # quantas vezes consecutivas o buffer estava vazio
 
     while True:
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -1468,13 +1469,19 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
         lote = resultado[0] or []
         if lote:
             mensagens_acumuladas.extend(lote)
+            _checks_vazios = 0
             if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
                 break
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.3)
             continue
-        if mensagens_acumuladas or time.time() >= deadline:
+        # Buffer vazio
+        _checks_vazios += 1
+        if time.time() >= deadline:
             break
-        await asyncio.sleep(0.15)
+        if mensagens_acumuladas and _checks_vazios >= 3:
+            # Já tem msgs e buffer ficou vazio 3x seguidas — rajada acabou
+            break
+        await asyncio.sleep(0.4)
 
     logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
@@ -3537,8 +3544,8 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
-        await asyncio.sleep(0.8)
+        # ⏱️ Aguarda período para acumular rajada de mensagens (WhatsApp = msgs curtas em sequência)
+        await asyncio.sleep(2.5)
 
         # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
         # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
