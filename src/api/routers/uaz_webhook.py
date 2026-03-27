@@ -1,4 +1,6 @@
 import uuid
+import json
+import httpx
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
@@ -66,6 +68,10 @@ async def uazapi_webhook(
         image_caption = msg_payload.get("imageMessage", {}).get("caption")
         video_caption = msg_payload.get("videoMessage", {}).get("caption")
 
+        # Áudio (PTT ou arquivo de áudio)
+        audio_msg = msg_payload.get("audioMessage") or msg_payload.get("pttMessage")
+        has_audio = bool(audio_msg)
+
         # Seleção de lista interativa (type=list)
         list_reply    = msg_payload.get("listResponseMessage", {})
         list_title    = list_reply.get("title", "") or list_reply.get("singleSelectReply", {}).get("selectedRowId", "")
@@ -83,9 +89,12 @@ async def uazapi_webhook(
         else:
             content = conversation or extended or image_caption or video_caption or ""
 
-        if not content:
-            # Caso seja apenas mídia sem texto, podemos tratar futuramente
+        if not content and not has_audio:
             return {"status": "ignored", "reason": "empty_content"}
+
+        # Placeholder para áudio sem texto — será substituído pela transcrição
+        if not content and has_audio:
+            content = "[Áudio recebido]"
 
         # Buscar se já existe uma conversa interna para este telefone
         conversa_existente = await buscar_conversa_por_fone(phone, empresa_id)
@@ -169,6 +178,47 @@ async def uazapi_webhook(
                     logger.info(f"📋 Menu triagem: config ausente ou inativo para empresa {empresa_id} — seguindo fluxo normal")
 
         # --- Fim do Menu de Triagem ---
+
+        # --- Transcrição de Áudio via Chatwoot ---
+        if has_audio and conversa_existente:
+            audio_url = None
+            _conv_id_audio = conversa_existente.get("conversation_id")
+            _account_id_audio = conversa_existente.get("account_id")
+            integracao_chatwoot = await carregar_integracao(empresa_id, 'chatwoot')
+
+            if integracao_chatwoot and _conv_id_audio and _account_id_audio:
+                _cw_url = integracao_chatwoot.get("url") or integracao_chatwoot.get("base_url") or ""
+                _cw_token = integracao_chatwoot.get("access_token") or integracao_chatwoot.get("token") or ""
+
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as _cw_client:
+                        _cw_resp = await _cw_client.get(
+                            f"{_cw_url.rstrip('/')}/api/v1/accounts/{_account_id_audio}/conversations/{_conv_id_audio}/messages",
+                            headers={"api_access_token": str(_cw_token)},
+                        )
+                        if _cw_resp.status_code == 200:
+                            _cw_msgs = _cw_resp.json().get("payload", [])
+                            for _m in _cw_msgs:
+                                for _att in (_m.get("attachments") or []):
+                                    if str(_att.get("file_type", "")).startswith("audio"):
+                                        audio_url = _att.get("data_url")
+                                        break
+                                if audio_url:
+                                    break
+                except Exception as _cw_err:
+                    logger.error(f"❌ Erro ao buscar áudio no Chatwoot para {phone}: {_cw_err}")
+
+            if audio_url:
+                logger.info(f"🎙️ UazAPI: Áudio detectado para {phone} | URL Chatwoot: {audio_url[:80]}...")
+                buffet_key = f"{empresa_id}:buffet:{_conv_id_audio}"
+                await redis_client.rpush(buffet_key, json.dumps({
+                    "text": "",
+                    "files": [{"url": audio_url, "type": "audio"}]
+                }))
+                await redis_client.expire(buffet_key, 60)
+            else:
+                logger.warning(f"⚠️ UazAPI: Áudio detectado para {phone} mas URL não encontrada no Chatwoot")
+        # --- Fim Transcrição de Áudio ---
 
         # Se não existe, usamos um ID temporário ou mapeamos depois no worker
         # Para manter compatibilidade com a fila atual:
