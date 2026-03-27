@@ -2312,9 +2312,9 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
                 INSERT INTO followups
                     (conversa_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
                 VALUES (
-                    (SELECT id FROM conversas WHERE conversation_id = $1),
+                    (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2),
                     $2,
-                    (SELECT id FROM unidades WHERE slug = $3),
+                    (SELECT id FROM unidades WHERE slug = $3 AND empresa_id = $2),
                     $4, $5, $6, $7, $8, 'pendente'
                 )
             """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para)
@@ -2341,7 +2341,7 @@ async def worker_followup():
                            u.nome AS nome_unidade, c.contato_nome
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
-                    JOIN unidades u ON u.id = f.unidade_id
+                    LEFT JOIN unidades u ON u.id = f.unidade_id
                     WHERE f.status = 'pendente' AND f.agendado_para <= $1
                     ORDER BY f.agendado_para
                     LIMIT 20
@@ -2371,6 +2371,10 @@ async def worker_followup():
                         )
                         continue
 
+                    # Carrega nome_ia da personalidade (evita "Assistente Virtual" hardcoded)
+                    _pers_fu = await carregar_personalidade(f['empresa_id']) or {}
+                    _nome_ia_fu = _pers_fu.get('nome_ia') or 'Atendente'
+
                     nome_contato = (f['contato_nome'] or '').split()[0] if f['contato_nome'] else 'você'
                     nome_unidade = (f['nome_unidade'] or '').strip()
                     if not nome_unidade and f.get('slug'):
@@ -2378,7 +2382,7 @@ async def worker_followup():
                     mensagem_followup = _render_followup_template(f['mensagem'] or '', nome_contato, nome_unidade)
 
                     await enviar_mensagem_chatwoot(
-                        f['account_id'], f['conversation_id'], mensagem_followup, "Assistente Virtual", integracao, f['empresa_id']
+                        f['account_id'], f['conversation_id'], mensagem_followup, _nome_ia_fu, integracao, f['empresa_id']
                     )
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
@@ -2430,11 +2434,14 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     if not integracao:
         return
 
+    _pers_mon = await carregar_personalidade(empresa_id) or {}
+    _nome_ia_mon = _pers_mon.get('nome_ia') or 'Atendente'
+
     # Lembrete amigável — pergunta de novo sem listar todas as unidades
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
         "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
-        "Assistente Virtual", integracao, empresa_id
+        _nome_ia_mon, integracao, empresa_id
     )
 
     await asyncio.sleep(480)
@@ -3642,7 +3649,7 @@ async def processar_ia_e_responder(
 
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
-        nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+        nome_ia = pers.get('nome_ia') or 'Atendente'
         nome_unidade = unidade.get('nome') or 'Unidade Matriz'
 
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
@@ -3920,12 +3927,14 @@ HISTÓRICO DA CONVERSA
 
 REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - Use EXCLUSIVAMENTE as informações presentes em "INFORMAÇÕES DA UNIDADE" acima.
-- Se um campo estiver como "não informado" ou "não disponível", diga que não tem essa informação agora e ofereça encaminhar para um atendente.
+- Se um campo estiver como "não informado" ou "não disponível", diga que não tem essa informação agora e que vai verificar com a equipe.
 - NUNCA invente endereços, telefones, horários, links, planos, preços ou qualquer dado não informado.
 - NUNCA ofereça ou prometa algo que NÃO esteja nos dados acima (promoções, descontos, benefícios, diárias, aulas experimentais, etc).
 - NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
 - Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
-- Se "Link de Matrícula / LP" estiver como "não disponível", NUNCA invente um link — diga que vai encaminhar para um consultor.
+- Se "Link de Matrícula / LP" estiver disponível, SEMPRE direcione o cliente para esse link quando perguntar sobre planos, preços ou matrícula. Exemplo: "Dá uma olhada nos nossos planos aqui: [link]"
+- Se "Link de Matrícula / LP" estiver como "não disponível", NÃO invente link — diga que vai verificar com a equipe os planos disponíveis.
+- NUNCA diga "vou pedir para um consultor te chamar" ou "vou encaminhar para um consultor" — responda com as informações que você tem ou direcione para o link.
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo:
@@ -4596,16 +4605,7 @@ async def chatwoot_webhook(
                 await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
                 await redis_client.delete(f"aguardando_nome:{id_conv}")
                 await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
-            else:
-                _aguardando_nome = await redis_client.get(f"aguardando_nome:{id_conv}")
-                if not _aguardando_nome:
-                    msg_nome = (
-                        "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
-                        "Pode me responder só com seu primeiro nome."
-                    )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, "Assistente Virtual", integracao, empresa_id)
-                    await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
-                    return {"status": "aguardando_nome"}
+            # Não bloqueia a conversa — a IA responde normalmente mesmo sem nome
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
@@ -4727,7 +4727,7 @@ async def chatwoot_webhook(
                     _end_unid = extrair_endereco_unidade(_unid_dados) or ''
                     _hor_unid = _unid_dados.get('horarios')
                     _pers_temp = await carregar_personalidade(empresa_id) or {}
-                    _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
+                    _nome_ia_temp = _pers_temp.get('nome_ia') or 'Atendente'
 
                     _cumpr = saudacao_por_horario()
                     _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
