@@ -2868,13 +2868,15 @@ async def bd_iniciar_conversa(
     if not db_pool:
         return
     try:
-        unidade = await db_pool.fetchrow(
-            "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
-        )
-        if not unidade:
-            logger.error(f"Unidade {slug} não encontrada para empresa {empresa_id}")
-            return
-        unidade_id = unidade['id']
+        unidade_id = None
+        if slug and slug != "uazapi":
+            unidade = await db_pool.fetchrow(
+                "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2", slug, empresa_id
+            )
+            if unidade:
+                unidade_id = unidade['id']
+            else:
+                logger.warning(f"Unidade {slug} não encontrada para empresa {empresa_id}. Prosseguindo sem unidade_id.")
         # Compatível com bancos sem constraint UNIQUE em conversation_id.
         # 1) tenta atualizar registro existente da mesma conta/conversa
         _updated = await db_pool.execute("""
