@@ -1266,14 +1266,20 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
     # EVO é excluído — gerenciado pelo endpoint /evo/units.
     rows = await _database.db_pool.fetch(
         """
-        SELECT DISTINCT ON (tipo) id, tipo, config, ativo
+        SELECT DISTINCT ON (tipo) id, tipo, config, ativo, updated_at
         FROM integracoes
         WHERE empresa_id = $1 AND tipo != 'evo'
         ORDER BY tipo, (unidade_id IS NULL) DESC, id DESC
         """,
         empresa_id
     )
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("updated_at"):
+            d["updated_at"] = d["updated_at"].isoformat()
+        result.append(d)
+    return result
 
 
 @router.get("/integrations/evo/units")
@@ -1385,6 +1391,75 @@ async def update_integration(
             empresa_id, tipo, config_json, body.ativo
         )
     return {"status": "success"}
+
+
+@router.post("/integrations/{tipo}/test")
+async def test_integration_connection(
+    tipo: str,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Testa a conexão com a integração configurada (Chatwoot ou UazAPI)."""
+    import httpx
+
+    perfil = token_payload.get("perfil", "")
+    if perfil == "admin_master":
+        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações")
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    row = await _database.db_pool.fetchrow(
+        "SELECT config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = $2 AND unidade_id IS NULL ORDER BY id DESC LIMIT 1",
+        empresa_id, tipo
+    )
+    if not row:
+        return {"ok": False, "message": "Integração não configurada"}
+
+    config = row["config"]
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            return {"ok": False, "message": "Configuração inválida"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            if tipo == "chatwoot":
+                url = (config.get("url") or config.get("base_url") or "").rstrip("/")
+                token = config.get("access_token") or config.get("token") or ""
+                if not url or not token:
+                    return {"ok": False, "message": "URL ou token não configurados"}
+                resp = await client.get(
+                    f"{url}/api/v1/profile",
+                    headers={"api_access_token": token}
+                )
+                if resp.status_code == 200:
+                    return {"ok": True, "message": "Conexão com Chatwoot OK"}
+                return {"ok": False, "message": f"Chatwoot retornou status {resp.status_code}"}
+
+            elif tipo == "uzap":
+                api_url = (config.get("api_url") or "").rstrip("/")
+                token = config.get("token") or ""
+                if not api_url or not token:
+                    return {"ok": False, "message": "URL ou token não configurados"}
+                resp = await client.get(
+                    f"{api_url}/status",
+                    headers={"token": token}
+                )
+                if resp.status_code == 200:
+                    return {"ok": True, "message": "Conexão com UazAPI OK"}
+                return {"ok": False, "message": f"UazAPI retornou status {resp.status_code}"}
+
+            else:
+                return {"ok": False, "message": f"Tipo '{tipo}' não suporta teste de conexão"}
+    except httpx.ConnectError:
+        return {"ok": False, "message": "Não foi possível conectar ao servidor"}
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Timeout — servidor não respondeu em 10s"}
+    except Exception as e:
+        return {"ok": False, "message": f"Erro: {str(e)[:100]}"}
+
 
 # --- Logs Endpoints ---
 
