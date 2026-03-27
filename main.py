@@ -1974,8 +1974,8 @@ async def simular_digitacao(account_id: int, conversation_id: int, integracao: d
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
-                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
-                
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url') or uaz_integracao.get('api_url')
+
                 uaz_url = f"{str(uaz_base).rstrip('/')}/send/presence"
                 uaz_payload = {
                     "number": _fone_clean,
@@ -2195,11 +2195,11 @@ async def enviar_mensagem_chatwoot(
             if _fone:
                 _fone_clean = "".join(filter(str.isdigit, str(_fone)))
                 uaz_token = extrair_token_chatwoot(uaz_integracao)
-                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url')
-                
+                uaz_base = uaz_integracao.get('url') or uaz_integracao.get('base_url') or uaz_integracao.get('api_url')
+
                 # Cabeçalho sem emoticons
                 _header = f"*{nome_ia}*\n" if nome_ia else ""
-                
+
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
                     uaz_payload = {
@@ -2217,7 +2217,7 @@ async def enviar_mensagem_chatwoot(
                     }
 
                 uaz_headers = {"token": uaz_token, "Content-Type": "application/json", "Accept": "application/json"}
-                logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)})")
+                logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)}) url={uaz_url} token_len={len(uaz_token)} token_prefix={uaz_token[:8] if uaz_token else 'VAZIO'}...")
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
                 
