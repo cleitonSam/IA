@@ -4406,15 +4406,6 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
 # --- WEBHOOK ENDPOINT ---
 
-async def validar_assinatura(request: Request, signature: str):
-    if not CHATWOOT_WEBHOOK_SECRET:
-        return
-    body = await request.body()
-    expected = hmac.new(CHATWOOT_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature or "", expected):
-        raise HTTPException(status_code=401, detail="Assinatura inválida")
-
-
 @app.get("/webhook")
 async def chatwoot_webhook_verify():
     """Endpoint de verificação para o Chatwoot (requisição GET de handshake)."""
@@ -4425,7 +4416,8 @@ async def chatwoot_webhook_verify():
 async def chatwoot_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    x_chatwoot_signature: str = Header(None)
+    x_chatwoot_signature: str = Header(None),
+    x_chatwoot_timestamp: str = Header(None)
 ):
     # Lê body bruto uma vez (FastAPI faz cache — pode ser lido novamente como JSON)
     body = await request.body()
@@ -4471,13 +4463,25 @@ async def chatwoot_webhook(
         logger.error(f"Empresa {empresa_id} sem integracao Chatwoot ativa")
         return {"status": "erro_sem_integracao"}
 
-    # Valida assinatura HMAC usando secret da integração (prioridade) ou variável de ambiente
+    # Valida assinatura HMAC — Chatwoot v4+ usa formato: sha256=HMAC(secret, "{timestamp}.{body}")
     webhook_secret = integracao.get("webhook_secret") or CHATWOOT_WEBHOOK_SECRET
-    if webhook_secret:
-        expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(x_chatwoot_signature or "", expected):
-            logger.warning(f"Assinatura invalida para account={account_id}")
-            raise HTTPException(status_code=401, detail="Assinatura inválida")
+    if webhook_secret and x_chatwoot_signature:
+        sig = x_chatwoot_signature
+        # Chatwoot v4+ envia "sha256={hex}" com message = "{timestamp}.{body}"
+        if x_chatwoot_timestamp:
+            message = f"{x_chatwoot_timestamp}.{body.decode()}"
+            expected_hex = hmac.new(webhook_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+            expected_sig = f"sha256={expected_hex}"
+            if not hmac.compare_digest(sig, expected_sig):
+                logger.warning(f"Assinatura invalida para account={account_id} (formato timestamp.body)")
+                raise HTTPException(status_code=401, detail="Assinatura inválida")
+        else:
+            # Fallback: formato legado (body puro, sem timestamp, sem prefixo sha256=)
+            raw_sig = sig.removeprefix("sha256=") if sig.startswith("sha256=") else sig
+            expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(raw_sig, expected):
+                logger.warning(f"Assinatura invalida para account={account_id} (formato legado)")
+                raise HTTPException(status_code=401, detail="Assinatura inválida")
 
     logger.info(f"Webhook validado: empresa={empresa_id} event={event}")
 
