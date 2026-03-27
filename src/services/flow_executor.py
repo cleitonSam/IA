@@ -804,14 +804,33 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
         return
 
-    # ── BusinessHours — lê horário da personalidade (configurado em Settings) ──
+    # ── BusinessHours — suporta modo "global" (personalidade) e "custom" (inline no nó) ──
     if node_type == "businessHours":
         from src.utils.time_helpers import ia_esta_no_horario
-        pers = await carregar_personalidade(empresa_id) or {}
-        horario_cfg = pers.get("horario_comercial")
-        aberto = ia_esta_no_horario(horario_cfg)
-        handle = "aberto" if aberto else "fechado"
-        logger.info(f"[FlowExecutor] BusinessHours empresa={empresa_id} → {handle}")
+        modo = data.get("modo", "global")
+
+        if modo == "custom" and data.get("horarios"):
+            tz_name = data.get("fusoHorario", "America/Sao_Paulo")
+            try:
+                now = datetime.now(ZoneInfo(tz_name))
+            except Exception:
+                now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            dia = now.weekday()
+            horarios = data.get("horarios", {})
+            horario_dia = horarios.get(str(dia), {})
+            is_open = False
+            if horario_dia.get("ativo"):
+                hora_atual = now.strftime("%H:%M")
+                hora_inicio = horario_dia.get("inicio", "00:00")
+                hora_fim = horario_dia.get("fim", "23:59")
+                is_open = hora_inicio <= hora_atual <= hora_fim
+        else:
+            pers = await carregar_personalidade(empresa_id) or {}
+            horario_cfg = pers.get("horario_comercial")
+            is_open = ia_esta_no_horario(horario_cfg)
+
+        handle = "aberto" if is_open else "fechado"
+        logger.info(f"[FlowExecutor] BusinessHours empresa={empresa_id} modo={modo} → {handle}")
         next_id = _get_next_node_id(fluxo, node_id, source_handle=handle)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
@@ -1089,32 +1108,6 @@ async def _execute_from(
                 next_id = _get_next_node_id(fluxo, node_id)
                 if next_id:
                     await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
-        return
-
-    # ── BusinessHours (Horário Comercial) ──
-    if node_type == "businessHours":
-        tz_name = data.get("fusoHorario", "America/Sao_Paulo")
-        try:
-            now = datetime.now(ZoneInfo(tz_name))
-        except Exception:
-            now = datetime.now(ZoneInfo("America/Sao_Paulo"))
-        # Python weekday(): 0=segunda, 6=domingo
-        dia = now.weekday()
-        horarios = data.get("horarios", {})
-        horario_dia = horarios.get(str(dia), {})
-        is_open = False
-        if horario_dia.get("ativo"):
-            hora_atual = now.strftime("%H:%M")
-            hora_inicio = horario_dia.get("inicio", "00:00")
-            hora_fim = horario_dia.get("fim", "23:59")
-            is_open = hora_inicio <= hora_atual <= hora_fim
-        handle = "aberto" if is_open else "fechado"
-        next_id = _get_next_node_id(fluxo, node_id, handle)
-        if not next_id:
-            handles = _get_all_next_handles(fluxo, node_id)
-            next_id = handles[0][1] if handles else None
-        if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
         return
 
     logger.warning(f"[FlowExecutor] Tipo de nó desconhecido: {node_type}")
