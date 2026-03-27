@@ -9,6 +9,7 @@ from src.core.config import logger
 from src.core.redis_client import redis_client
 import json
 import asyncio
+from src.services.db_queries import listar_unidades_ativas, buscar_planos_ativos, formatar_planos_para_prompt
 
 router = APIRouter(prefix="/management", tags=["management"])
 
@@ -667,7 +668,46 @@ _PG_SKIP_IN_LOOP = {
 }
 
 
-def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
+def _resumo_unidade_playground(u: dict) -> str:
+    """Formata resumo de uma unidade para o prompt do playground (sem tags WhatsApp)."""
+    partes = [f"• {u.get('nome', '?')}"]
+    cidade = u.get('cidade') or u.get('bairro') or ''
+    estado = u.get('estado') or ''
+    if cidade or estado:
+        partes.append(f"  Localização: {cidade}{', ' + estado if estado else ''}")
+    end = u.get('endereco_completo') or u.get('endereco') or ''
+    if end:
+        partes.append(f"  Endereço: {end}")
+    tel = u.get('telefone') or u.get('whatsapp') or ''
+    if tel:
+        partes.append(f"  Telefone: {tel}")
+    hor = u.get('horarios')
+    if hor:
+        hor_str = hor if isinstance(hor, str) else json.dumps(hor, ensure_ascii=False)
+        partes.append(f"  Horários: {hor_str}")
+    infra = u.get('infraestrutura')
+    if infra:
+        if isinstance(infra, dict):
+            itens = [k for k, v in infra.items() if v]
+            infra_str = ", ".join(itens) if itens else json.dumps(infra, ensure_ascii=False)
+        else:
+            infra_str = str(infra)
+        if infra_str:
+            partes.append(f"  Infraestrutura: {infra_str}")
+    mods = u.get('modalidades')
+    if mods:
+        if isinstance(mods, list):
+            mods_str = ", ".join(str(m) for m in mods if m)
+        elif isinstance(mods, dict):
+            mods_str = ", ".join(k for k, v in mods.items() if v)
+        else:
+            mods_str = str(mods)
+        if mods_str:
+            partes.append(f"  Modalidades: {mods_str}")
+    return "\n".join(partes)
+
+
+def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None, planos: list = None) -> str:
     """
     Constrói o system prompt completo a partir dos campos da personalidade salva.
     Espelha fielmente a estrutura de blocos do bot_core.py para garantir que o
@@ -727,15 +767,42 @@ def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
     if regras_atend.strip():
         blocos.append(f"[REGRAS DE ATENDIMENTO]\n{regras_atend}")
 
-    # 10. FAQ (respostas prontas)
+    # 10. Unidades da rede
+    if unidades:
+        nomes_unidades = ", ".join(u.get("nome", "?") for u in unidades)
+        resumos = "\n\n".join(_resumo_unidade_playground(u) for u in unidades)
+        nome_empresa = unidades[0].get("nome_empresa") or "Nossa Empresa"
+        qtd = len(unidades)
+        contexto_rede = (
+            f"A rede {nome_empresa} possui {qtd} unidades ativas."
+            if qtd > 1 else
+            f"A rede {nome_empresa} está operando com 1 unidade ativa."
+        )
+        blocos.append(
+            f"[UNIDADES DA REDE]\n"
+            f"{contexto_rede}\n"
+            f"Unidades: {nomes_unidades}\n\n"
+            f"{resumos}"
+        )
+
+    # 11. Planos e preços
+    if planos:
+        planos_texto = formatar_planos_para_prompt(planos)
+        blocos.append(
+            f"[PLANOS E PREÇOS]\n"
+            f"Planos disponíveis (com links de matrícula):\n"
+            f"{planos_texto}"
+        )
+
+    # 12. FAQ (respostas prontas)
     if faq_text.strip():
         blocos.append(f"[FAQ — RESPOSTAS PRONTAS]\n{faq_text}")
 
-    # 11. Exemplos de interações
+    # 13. Exemplos de interações
     if p.get("exemplos"):
         blocos.append(f"[EXEMPLOS DE INTERAÇÕES]\n{p['exemplos']}")
 
-    # 12. Regras de sistema
+    # 14. Regras de sistema
     regras_seg = p.get("regras_seguranca") or ""
     bloco_sistema = (
         "[REGRAS DE SISTEMA]\n"
@@ -747,7 +814,7 @@ def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
         bloco_sistema += f"\n{regras_seg}"
     blocos.append(bloco_sistema)
 
-    # 13. Anti-alucinação
+    # 15. Anti-alucinação
     restricoes       = p.get("restricoes") or ""
     palavras_proib   = p.get("palavras_proibidas") or ""
     bloco_anti = (
@@ -762,7 +829,7 @@ def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
         bloco_anti += f"\n- NUNCA USE ESTAS PALAVRAS/TERMOS: {palavras_proib}"
     blocos.append(bloco_anti)
 
-    # 14. Formatação WhatsApp
+    # 16. Formatação WhatsApp
     usar_emoji = p.get("usar_emoji", True)
     emoji_tipo = p.get("emoji_tipo") or "✨"
     emoji_cor  = p.get("emoji_cor") or ""
@@ -785,7 +852,7 @@ def _build_playground_prompt(p: dict, faq_text: str = "") -> str:
         bloco_fmt += f"\n{r_format}"
     blocos.append(bloco_fmt)
 
-    # 15. Despedida padrão
+    # 17. Despedida padrão
     despedida = p.get("despedida_personalizada") or ""
     if despedida.strip():
         blocos.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
@@ -800,7 +867,7 @@ async def personality_playground(
 ):
     """
     Executa o Playground usando 100% os dados da personalidade salva no banco.
-    Carrega modelo, temperatura, max_tokens e todos os campos de configuração do DB.
+    Carrega modelo, temperatura, max_tokens, personalidade, FAQ, unidades e planos do DB.
     """
     from src.services.llm_service import cliente_ia
 
@@ -811,46 +878,11 @@ async def personality_playground(
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao token")
 
-    # Carrega personalidade do banco
-    if body.personality_id:
-        row = await _database.db_pool.fetchrow(
-            """SELECT * FROM personalidade_ia WHERE id = $1 AND empresa_id = $2""",
-            body.personality_id, empresa_id
-        )
-    else:
-        row = await _database.db_pool.fetchrow(
-            """SELECT * FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true ORDER BY updated_at DESC LIMIT 1""",
-            empresa_id
-        )
+    p, model, temperature, max_tokens, faq_text, unidades, planos = await _load_playground_context(
+        body.personality_id, empresa_id
+    )
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Personalidade não encontrada. Salve a personalidade antes de testar.")
-
-    p = dict(row)
-
-    # Extrai configurações do LLM diretamente do banco
-    model       = p.get("modelo_preferido") or "openai/gpt-4o-mini"
-    temperature = float(p.get("temperatura") or 0.7)
-    max_tokens  = int(p.get("max_tokens") or 500)
-
-    # Carrega FAQ da empresa (sem filtro de unidade — todos os itens ativos)
-    faq_text = ""
-    try:
-        faq_rows = await _database.db_pool.fetch("""
-            SELECT pergunta, resposta FROM faq
-            WHERE empresa_id = $1 AND ativo = true
-            ORDER BY prioridade DESC NULLS LAST
-            LIMIT 30
-        """, empresa_id)
-        if faq_rows:
-            faq_text = "\n\n".join(
-                f"P: {r['pergunta']}\nR: {r['resposta']}" for r in faq_rows
-            )
-    except Exception:
-        pass  # FAQ é opcional — tabela pode não existir
-
-    # Constrói system prompt completo com todos os campos + FAQ + memória
-    system_prompt = _build_playground_prompt(p, faq_text=faq_text)
+    system_prompt = _build_playground_prompt(p, faq_text=faq_text, unidades=unidades, planos=planos)
     if body.conversation_summary and body.conversation_summary.strip():
         system_prompt += (
             f"\n\n[CONTEXTO DA CONVERSA ANTERIOR]\n"
@@ -891,7 +923,7 @@ async def personality_playground(
 # ─── Playground helpers ──────────────────────────────────────────────────────
 
 async def _load_playground_context(personality_id: Optional[int], empresa_id: int):
-    """Carrega personalidade + FAQ + configs LLM. Reutilizado por todos os endpoints de playground."""
+    """Carrega personalidade + FAQ + unidades + planos + configs LLM. Reutilizado por todos os endpoints de playground."""
     if personality_id:
         row = await _database.db_pool.fetchrow(
             "SELECT * FROM personalidade_ia WHERE id = $1 AND empresa_id = $2",
@@ -908,7 +940,7 @@ async def _load_playground_context(personality_id: Optional[int], empresa_id: in
     p = dict(row)
     model       = p.get("modelo_preferido") or "openai/gpt-4o-mini"
     temperature = float(p.get("temperatura") or 0.7)
-    max_tokens  = int(p.get("max_tokens") or 500)
+    max_tokens  = int(p.get("max_tokens") or 1000)
 
     faq_text = ""
     try:
@@ -921,7 +953,19 @@ async def _load_playground_context(personality_id: Optional[int], empresa_id: in
     except Exception:
         pass
 
-    return p, model, temperature, max_tokens, faq_text
+    # Carregar unidades ativas da empresa
+    try:
+        todas_unidades = await listar_unidades_ativas(empresa_id)
+    except Exception:
+        todas_unidades = []
+
+    # Carregar todos os planos ativos da empresa
+    try:
+        planos_ativos = await buscar_planos_ativos(empresa_id)
+    except Exception:
+        planos_ativos = []
+
+    return p, model, temperature, max_tokens, faq_text, todas_unidades, planos_ativos
 
 
 @router.post("/personalities/playground/stream")
@@ -939,11 +983,11 @@ async def personality_playground_stream(
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao token")
 
-    p, model, temperature, max_tokens, faq_text = await _load_playground_context(
+    p, model, temperature, max_tokens, faq_text, unidades, planos = await _load_playground_context(
         body.personality_id, empresa_id
     )
 
-    system_prompt = _build_playground_prompt(p, faq_text=faq_text)
+    system_prompt = _build_playground_prompt(p, faq_text=faq_text, unidades=unidades, planos=planos)
     if body.conversation_summary and body.conversation_summary.strip():
         system_prompt += (
             f"\n\n[CONTEXTO DA CONVERSA ANTERIOR]\n"
@@ -1012,7 +1056,7 @@ async def personality_playground_summarize(
     if len(body.messages) < 4:
         return {"summary": ""}
 
-    p, model, _, _, _ = await _load_playground_context(body.personality_id, empresa_id)
+    p, model, _, _, _, _, _ = await _load_playground_context(body.personality_id, empresa_id)
     nome_ia = p.get("nome_ia") or "Assistente"
 
     # Monta conversa formatada para o sumarizador
