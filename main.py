@@ -1458,7 +1458,8 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     chave_buffet = f"buffet:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
-    deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
+    deadline = time.time() + 2.0  # janela para juntar burst (rajada WhatsApp)
+    _checks_vazios = 0  # quantas vezes consecutivas o buffer estava vazio
 
     while True:
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -1468,13 +1469,19 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
         lote = resultado[0] or []
         if lote:
             mensagens_acumuladas.extend(lote)
+            _checks_vazios = 0
             if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
                 break
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.3)
             continue
-        if mensagens_acumuladas or time.time() >= deadline:
+        # Buffer vazio
+        _checks_vazios += 1
+        if time.time() >= deadline:
             break
-        await asyncio.sleep(0.15)
+        if mensagens_acumuladas and _checks_vazios >= 3:
+            # Já tem msgs e buffer ficou vazio 3x seguidas — rajada acabou
+            break
+        await asyncio.sleep(0.4)
 
     logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
@@ -2234,23 +2241,15 @@ async def enviar_mensagem_chatwoot(
                 logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)}) url={uaz_url} token_len={len(uaz_token)} token_prefix={uaz_token[:8] if uaz_token else 'VAZIO'}...")
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
-                
+
                 # Registra que enviamos direto para evitar eco no webhook.
-                # Mídia gera múltiplos webhooks do UazAPI (sent + thumbnail + delivered),
-                # por isso usa TTL maior. A flag NÃO é deletada no primeiro eco —
-                # qualquer webhook de saída que chegar dentro do TTL será ignorado.
                 _echo_ttl = 90 if attachment_url else 45
                 await redis_client.setex(f"uaz_bot_sent:{conversation_id}", _echo_ttl, "1")
-                
-                # Sincroniza com Chatwoot via NOTA (Log de Histórico)
-                # Assim a conversa não fica "pausada" por falta de resposta, 
-                # mas também não enviamos duplicado (já que o note é interno).
-                payload["private"] = True
-                if attachment_url:
-                    payload["content"] = f"[Mídia Enviada Direto]\n{attachment_url}\n\n{content}"
-                else:
-                    payload["content"] = f"[Bot Direto]: {content}"
-                    
+
+                # UazAPI enviou com sucesso — retorna sem sync Chatwoot para evitar duplicação
+                logger.info(f"✅ [UAZAPI-DIRETO] Enviado com sucesso para {_fone_clean}")
+                return uaz_resp
+
         except Exception as e:
             logger.error(f"❌ Falha no UAZAPI DIRETO (Fallback p/ Chatwoot): {e}")
 
@@ -3545,8 +3544,8 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
-        await asyncio.sleep(0.8)
+        # ⏱️ Aguarda período para acumular rajada de mensagens (WhatsApp = msgs curtas em sequência)
+        await asyncio.sleep(2.5)
 
         # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
         # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
@@ -3644,6 +3643,7 @@ async def processar_ia_e_responder(
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
+        nome_unidade = unidade.get('nome') or 'Unidade Matriz'
 
         estado_raw = await redis_client.get(f"estado:{conversation_id}")
         estado_atual = descomprimir_texto(estado_raw) or "neutro"
