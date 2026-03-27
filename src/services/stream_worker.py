@@ -85,7 +85,17 @@ async def run_stream_worker():
                             slug = payload.get("slug")
                             nome_cliente = payload.get("nome_cliente")
                             contato_fone = payload.get("contato_fone")
-                            
+
+                            # Safety net: garante que a conversa existe no BD local
+                            # (ON CONFLICT não duplica, apenas atualiza se já existir)
+                            await bd_iniciar_conversa(
+                                conversation_id, slug or "", account_id,
+                                contato_id=contact_id,
+                                contato_nome=nome_cliente,
+                                empresa_id=empresa_id,
+                                contato_fone=contato_fone
+                            )
+
                             # Se não veio no payload, tenta buscar no BD se já conhecemos esse telefone
                             if not contato_fone:
                                 _db_fone = await _database.db_pool.fetchval(
