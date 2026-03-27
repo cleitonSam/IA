@@ -4427,13 +4427,14 @@ async def chatwoot_webhook(
     background_tasks: BackgroundTasks,
     x_chatwoot_signature: str = Header(None)
 ):
-    await validar_assinatura(request, x_chatwoot_signature)
-    payload = await request.json()
+    # Lê body bruto uma vez (FastAPI faz cache — pode ser lido novamente como JSON)
+    body = await request.body()
+    payload = json.loads(body)
 
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
-    
+
     # Extrai flags importantes do Chatwoot
     is_private = payload.get("private") is True or (payload.get("message") or {}).get("private") is True
 
@@ -4461,6 +4462,13 @@ async def chatwoot_webhook(
 
     # Carrega integração Chatwoot da empresa
     integracao = await carregar_integracao(empresa_id, 'chatwoot')
+
+    # Valida assinatura HMAC usando secret da integração (prioridade) ou variável de ambiente
+    webhook_secret = (integracao or {}).get("webhook_secret") or CHATWOOT_WEBHOOK_SECRET
+    if webhook_secret:
+        expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(x_chatwoot_signature or "", expected):
+            raise HTTPException(status_code=401, detail="Assinatura inválida")
     if not integracao:
         logger.error(f"Empresa {empresa_id} sem integração Chatwoot ativa")
         return {"status": "erro_sem_integracao"}

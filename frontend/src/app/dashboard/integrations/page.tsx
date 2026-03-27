@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   Network, Loader2, Save, CheckCircle2, MessageSquare, Zap, Hash,
   Globe, ShieldCheck, Building2, X, Eye, EyeOff,
-  CheckCircle, XCircle, Settings2, Wifi, WifiOff, Clock,
+  CheckCircle, XCircle, Settings2, Wifi, WifiOff, Clock, KeyRound,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -513,6 +513,24 @@ export default function IntegrationsPage() {
                               <button type="button" onClick={() => toggleTokenVisibility("chatwoot_token")}
                                 className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
                                 {showTokens["chatwoot_token"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="md:col-span-2 space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                              <KeyRound className="w-3 h-3 text-[#00d2ff]" />Segredo do Webhook
+                              {currentConfig.config.webhook_secret && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showTokens["chatwoot_webhook_secret"] ? "text" : "password"}
+                                value={currentConfig.config.webhook_secret || ""}
+                                onChange={e => updateField("webhook_secret", e.target.value)}
+                                className={`${inputClass} font-mono pr-14 ${currentConfig.config.webhook_secret && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                                placeholder="Segredo gerado pelo Chatwoot" />
+                              <button type="button" onClick={() => toggleTokenVisibility("chatwoot_webhook_secret")}
+                                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
+                                {showTokens["chatwoot_webhook_secret"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                               </button>
                             </div>
                           </div>
