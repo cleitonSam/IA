@@ -898,6 +898,55 @@ async def despachar_resposta(
         logger.info(f"✅ UazAPI Result: {res}")
         return res
     else:
+        # ── TTS via Chatwoot → UazAPI: envia PTT antes do texto ──────────────
+        if enviar_audio:
+            logger.info(f"🔊 [TTS-CW] Iniciando TTS via Chatwoot→UazAPI conv={conversation_id} (voz={tts_voz})")
+            try:
+                from src.services.tts_service import gerar_audio_resposta
+                from src.utils.imagekit import upload_to_imagekit
+                import uuid
+
+                # Busca integração UazAPI e telefone do cliente
+                _uaz_integ = await carregar_integracao(empresa_id, 'uazapi')
+                if _uaz_integ:
+                    _fone = contato_fone
+                    if not _fone:
+                        _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+                    if not _fone:
+                        _row = await _database.db_pool.fetchrow(
+                            "SELECT COALESCE(contato_fone, contato_telefone) AS fone FROM conversas WHERE conversation_id = $1",
+                            conversation_id
+                        )
+                        _fone = _row['fone'] if _row else None
+
+                    if _fone:
+                        audio_bytes = await gerar_audio_resposta(content, voz=tts_voz)
+                        if audio_bytes:
+                            logger.info(f"🔊 [TTS-CW] Áudio gerado: {len(audio_bytes)} bytes")
+                            audio_url = await upload_to_imagekit(
+                                audio_bytes,
+                                f"tts_{uuid.uuid4().hex[:8]}.wav",
+                                folder="/tts"
+                            )
+                            if audio_url:
+                                _uaz = UazAPIClient(
+                                    _uaz_integ.get('url') or _uaz_integ.get('api_url'),
+                                    _uaz_integ.get('token'),
+                                    _uaz_integ.get('instance', 'default')
+                                )
+                                ptt_ok = await _uaz.send_ptt(str(_fone), audio_url, delay=500)
+                                logger.info(f"🔊 [TTS-CW] PTT enviado: ok={ptt_ok} url={audio_url}")
+                            else:
+                                logger.warning(f"⚠️ [TTS-CW] Upload ImageKit falhou")
+                        else:
+                            logger.warning(f"⚠️ [TTS-CW] gerar_audio_resposta retornou None")
+                    else:
+                        logger.warning(f"⚠️ [TTS-CW] Telefone não encontrado para conv={conversation_id}")
+                else:
+                    logger.warning(f"⚠️ [TTS-CW] Sem integração UazAPI para empresa={empresa_id}")
+            except Exception as e:
+                logger.error(f"❌ [TTS-CW] Erro: {e}", exc_info=True)
+
         logger.info(f"📤 Despachando via Chatwoot conv={conversation_id} emp={empresa_id}")
         return await enviar_mensagem_chatwoot(
             account_id, conversation_id, content, integracao, empresa_id, nome_ia=nome_ia
@@ -2026,8 +2075,13 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             _tts_ativo = pers.get("tts_ativo", True) if pers else True
             _tts_voz = pers.get("tts_voz", None) if pers else None
             _cliente_enviou_audio = len(transcricoes) > 0 if transcricoes else False
-            _enviar_audio = _cliente_enviou_audio and _tts_ativo and source == "uazapi"
-            logger.info(f"🔊 [TTS Check] conv={conversation_id} | audio_cliente={_cliente_enviou_audio} | tts_ativo={_tts_ativo} | voz={_tts_voz} | source={source} | enviar_audio={_enviar_audio}")
+            # TTS funciona para UazAPI direto OU Chatwoot com integração UazAPI (WhatsApp)
+            _has_whatsapp = source == "uazapi"
+            if not _has_whatsapp and source == "chatwoot":
+                _uaz_check = await carregar_integracao(empresa_id, 'uazapi')
+                _has_whatsapp = bool(_uaz_check)
+            _enviar_audio = _cliente_enviou_audio and _tts_ativo and _has_whatsapp
+            logger.info(f"🔊 [TTS Check] conv={conversation_id} | audio_cliente={_cliente_enviou_audio} | tts_ativo={_tts_ativo} | voz={_tts_voz} | source={source} | has_whatsapp={_has_whatsapp} | enviar_audio={_enviar_audio}")
 
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────

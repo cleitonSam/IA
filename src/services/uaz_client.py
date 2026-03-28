@@ -80,14 +80,13 @@ class UazAPIClient:
         return res is not None
 
     async def send_ptt(self, number: str, file_url: str, delay: int = 0) -> bool:
-        """Envia áudio como PTT (gravado na hora)."""
+        """Envia áudio como PTT (Push-to-Talk / mensagem de voz)."""
         clean_number = "".join(filter(str.isdigit, number))
         payload = {
             "number": clean_number,
-            "type": "audio",
+            "type": "ptt",
             "file": file_url,
-            "ptt": True,
-            "delay": str(delay)
+            "delay": delay
         }
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None

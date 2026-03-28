@@ -130,49 +130,64 @@ async def gerar_audio_resposta(
     if len(texto_limpo) > 2000:
         texto_limpo = texto_limpo[:2000] + "..."
 
-    try:
-        from google.genai import types
+    # Retry com backoff para rate limits (429)
+    max_tentativas = 3
+    for tentativa in range(max_tentativas):
+        try:
+            from google.genai import types
 
-        config = types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=voz_final,
+            config = types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=voz_final,
+                        )
                     )
-                )
-            ),
-        )
+                ),
+            )
 
-        # generate_content é síncrono — roda em thread para não bloquear
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model="gemini-2.5-flash-preview-tts",
-            contents=texto_limpo,
-            config=config,
-        )
+            # generate_content é síncrono — roda em thread para não bloquear
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.5-flash-preview-tts",
+                contents=texto_limpo,
+                config=config,
+            )
 
-        # Extrai PCM raw
-        pcm_data = response.candidates[0].content.parts[0].inline_data.data
-        if not pcm_data or len(pcm_data) < 100:
-            logger.warning("⚠️ TTS retornou áudio vazio/muito curto")
+            # Extrai PCM raw
+            pcm_data = response.candidates[0].content.parts[0].inline_data.data
+            if not pcm_data or len(pcm_data) < 100:
+                logger.warning("⚠️ TTS retornou áudio vazio/muito curto")
+                return None
+
+            # Converte PCM → WAV em memória (24kHz, 16-bit, mono)
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)       # 16-bit
+                wf.setframerate(24000)   # 24kHz
+                wf.writeframes(pcm_data)
+
+            wav_bytes = wav_buffer.getvalue()
+            logger.info(f"🔊 TTS Gemini OK: {len(wav_bytes)} bytes, voz={voz_final}")
+            return wav_bytes
+
+        except Exception as e:
+            erro_str = str(e)
+            if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str:
+                if tentativa < max_tentativas - 1:
+                    wait_time = (tentativa + 1) * 5  # 5s, 10s
+                    logger.warning(f"⚠️ TTS rate limit (tentativa {tentativa+1}/{max_tentativas}), aguardando {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"❌ TTS rate limit esgotado após {max_tentativas} tentativas")
+                    return None
+            logger.error(f"❌ Erro Gemini TTS: {e}")
             return None
 
-        # Converte PCM → WAV em memória (24kHz, 16-bit, mono)
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)       # 16-bit
-            wf.setframerate(24000)   # 24kHz
-            wf.writeframes(pcm_data)
-
-        wav_bytes = wav_buffer.getvalue()
-        logger.info(f"🔊 TTS Gemini OK: {len(wav_bytes)} bytes, voz={voz_final}")
-        return wav_bytes
-
-    except Exception as e:
-        logger.error(f"❌ Erro Gemini TTS: {e}")
-        return None
+    return None
 
 
 async def gerar_preview_voz(voz: str) -> Optional[bytes]:

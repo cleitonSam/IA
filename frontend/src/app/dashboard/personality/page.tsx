@@ -6,7 +6,7 @@ import {
   Brain, Plus, Pencil, Trash2, Save, Loader2, CheckCircle2,
   Sparkles, Target, Cpu, Thermometer, Send, Bot, PlayCircle,
   Mic2, MessageSquare, Clock, TrendingUp, ShieldAlert, ListChecks,
-  AlertCircle, Search, ChevronRight, Zap, X, RotateCcw, Copy
+  AlertCircle, AlertTriangle, Search, ChevronRight, Zap, X, RotateCcw, Copy
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -146,6 +146,7 @@ export default function PersonalityPage() {
   const [ttsVoices, setTtsVoices] = useState<{nome:string;genero:string;descricao:string;tag:string}[]>([]);
   const [ttsPreviewLoading, setTtsPreviewLoading] = useState<string | null>(null);
   const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
+  const [ttsPreviewError, setTtsPreviewError] = useState<string | null>(null);
   const [ttsGenderFilter, setTtsGenderFilter] = useState<"todas"|"feminina"|"masculina">("todas");
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   // ── Playground state ──
@@ -182,6 +183,7 @@ export default function PersonalityPage() {
     }
     setTtsPreviewLoading(vozNome);
     setTtsPreviewUrl(null);
+    setTtsPreviewError(null);
     try {
       const res = await axios.post("/api-backend/management/tts/preview",
         { voz: vozNome },
@@ -194,8 +196,15 @@ export default function PersonalityPage() {
         ttsAudioRef.current = audio;
         audio.play().catch(() => {});
       }
-    } catch {
-      /* preview falhou */
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 503) {
+        setTtsPreviewError("Limite de previews atingido. Tente novamente em alguns minutos.");
+      } else {
+        setTtsPreviewError(detail || "Erro ao gerar preview de voz.");
+      }
+      setTimeout(() => setTtsPreviewError(null), 5000);
     } finally {
       setTtsPreviewLoading(null);
     }
@@ -1461,6 +1470,12 @@ export default function PersonalityPage() {
                                   <div className="text-center py-6">
                                     <Loader2 className="w-5 h-5 animate-spin text-slate-600 mx-auto mb-2" />
                                     <p className="text-[10px] text-slate-600">Carregando vozes...</p>
+                                  </div>
+                                )}
+                                {ttsPreviewError && (
+                                  <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl mt-2">
+                                    <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                                    <p className="text-[10px] text-red-400 font-medium">{ttsPreviewError}</p>
                                   </div>
                                 )}
                               </div>
