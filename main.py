@@ -3962,8 +3962,8 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                 _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
                 _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
 
-                # Redis dedup: por conversa + por telefone+unidade (7 dias)
-                _tour_sent_key = f"tour_enviado:{empresa_id}:{conversation_id}"
+                # Redis dedup: por conversa+unidade + por telefone+unidade (7 dias)
+                _tour_sent_key = f"tour_enviado:{empresa_id}:{conversation_id}:{slug}"
                 _fone_dedup = await redis_client.get(f"fone_cliente:{conversation_id}")
                 _phone_unit_key = f"tour_enviado:{empresa_id}:{_fone_dedup}:{slug}" if _fone_dedup else None
                 _ja_enviou_tour = (
@@ -4611,7 +4611,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
         # ── PÓS-PROCESSAMENTO: Tour Virtual (vídeo) com dedup Redis ──
         if _enviar_tour and _link_tour_unidade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
-            _tour_dedup_key = f"tour_enviado:{empresa_id}:{conversation_id}"
+            _tour_dedup_key = f"tour_enviado:{empresa_id}:{conversation_id}:{slug}"
             _tour_ja_enviou = await redis_client.exists(_tour_dedup_key)
             if _tour_ja_enviou:
                 logger.info(f"⏭️ Tour já enviado para conv {conversation_id}, ignorando duplicata")
