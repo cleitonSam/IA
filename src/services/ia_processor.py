@@ -68,36 +68,9 @@ async def resolver_contexto_unidade(
     slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}")
     slug_salvo = slug_redis or slug_atual
 
-    # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
-    # Aqui consideramos:
-    # 1) match direto de nome/cidade/bairro
-    # 2) interseção de tokens significativos com nome da unidade (ex.: "ricardo jafet")
-    texto_norm = normalizar(texto or "")
-    tokens_texto_sig = {t for t in texto_norm.split() if len(t) >= 4}
-    tem_geo = False
-    try:
-        unidades = await listar_unidades_ativas(empresa_id)
-        for u in unidades:
-            nome_u = normalizar(u.get("nome", "") or "")
-            cidade_u = normalizar(u.get("cidade", "") or "")
-            bairro_u = normalizar(u.get("bairro", "") or "")
-
-            # Match direto
-            if any(ind and len(ind) >= 4 and ind in texto_norm for ind in (nome_u, cidade_u, bairro_u)):
-                tem_geo = True
-                break
-
-            # Match por tokens do nome da unidade (suporta "ricardo jafet" sem nome completo)
-            tokens_nome_sig = {t for t in nome_u.split() if len(t) >= 4 and t not in {"red", "fitness", "academia", "unidade"}}
-            if len(tokens_texto_sig & tokens_nome_sig) >= 1:
-                tem_geo = True
-                break
-    except Exception:
-        tem_geo = False
-
-    # Busca se tem evidência geográfica OU se menciona "unidade" explicitamente
-    _pedido_explicito = any(k in texto_norm for k in ("unidade", "bairro", "cidade", "endereco"))
-    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if (tem_geo or _pedido_explicito) else None
+    # Sempre tenta detectar unidade na mensagem — buscar_unidade_na_pergunta
+    # já tem 4 camadas de detecção (SQL, exato, tokens, fuzzy) e retorna None se não achar.
+    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if texto else None
 
     if slug_detectado:
         if slug_salvo and slug_detectado == slug_salvo:

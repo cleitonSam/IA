@@ -2212,50 +2212,19 @@ async def chatwoot_webhook(
     esperando_unidade = await get_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
     prompt_unidade_key = f"prompt_unidade_enviado:{id_conv}"
 
-    # Detecta unidade na mensagem APENAS em dois cenários:
-    # 1) Já existe um slug definido (cliente quer trocar de unidade)
-    # 2) Cliente está no fluxo de escolha de unidade (esperando_unidade=1)
-    # PROTEÇÃO: só roda se a mensagem contém um indicador geográfico real
-    # (nome de unidade, cidade ou bairro). Mensagens genéricas NUNCA trocam o slug.
+    # Detecta unidade na mensagem — sempre tenta buscar.
+    # buscar_unidade_na_pergunta tem 4 camadas (SQL, exato, tokens, fuzzy).
     if message_type == "incoming" and conteudo_texto and (slug or esperando_unidade):
-        _msg_norm_wh = normalizar(conteudo_texto)
-        _pedido_troca_unidade = any(k in _msg_norm_wh for k in (
-            "unidade", "trocar", "mudar", "outra", "bairro", "cidade", "endereco", "endereço"
-        ))
-        _tokens_msg_wh = {t for t in _msg_norm_wh.split() if len(t) >= 4}
-        _tem_geo_wh = False
-        try:
-            _units_wh = await listar_unidades_ativas(empresa_id)
-            for _u in _units_wh:
-                for _campo in ['nome', 'cidade', 'bairro']:
-                    _val = normalizar(_u.get(_campo, '') or '')
-                    if not _val or len(_val) < 4:
-                        continue
-                    # Match exato (substring) ou por tokens significativos
-                    if _val in _msg_norm_wh:
-                        _tem_geo_wh = True
-                        break
-                    _tokens_campo = {t for t in _val.split() if len(t) >= 4 and t not in {"fitness", "academia", "unidade"}}
-                    if _tokens_campo and _tokens_campo & _tokens_msg_wh:
-                        _tem_geo_wh = True
-                        break
-                if _tem_geo_wh:
-                    break
-        except Exception:
-            pass
-
-        # Só troca unidade fora do fluxo de escolha quando houver pedido explícito do cliente.
-        if esperando_unidade or (_tem_geo_wh and _pedido_troca_unidade):
-            slug_detectado = await buscar_unidade_na_pergunta(
-                conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
-            )
-            if slug_detectado and slug_detectado != slug:
-                logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
-                slug = slug_detectado
-                await set_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}", slug, 86400)
-                if esperando_unidade:
-                    await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
-                await delete_tenant_cache(empresa_id, prompt_unidade_key)
+        slug_detectado = await buscar_unidade_na_pergunta(
+            conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
+        )
+        if slug_detectado and slug_detectado != slug:
+            logger.info(f"🔄 Webhook mudou contexto para {slug_detectado}")
+            slug = slug_detectado
+            await set_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}", slug, 86400)
+            if esperando_unidade:
+                await delete_tenant_cache(empresa_id, f"esperando_unidade:{id_conv}")
+            await delete_tenant_cache(empresa_id, prompt_unidade_key)
 
     # Sem unidade ainda — tenta definir
     if not slug and message_type == "incoming":
@@ -2270,34 +2239,10 @@ async def chatwoot_webhook(
 
         else:
             if not slug:
-                # Múltiplas unidades — fluxo inteligente de identificação
+                # Múltiplas unidades — sempre tenta detectar na mensagem
                 texto_cliente = normalizar(conteudo_texto).strip()
 
-                # Tenta por nome/cidade/bairro já na primeira mensagem APENAS
-                # quando houver indicador geográfico claro (match exato ou por tokens).
-                _tokens_msg_multi = {t for t in texto_cliente.split() if len(t) >= 4}
-                _tem_geo_multi = False
-                for _u in unidades_ativas:
-                    for _campo in ["nome", "cidade", "bairro"]:
-                        _v = normalizar(_u.get(_campo, "") or "")
-                        if not _v or len(_v) < 4:
-                            continue
-                        if _v in texto_cliente:
-                            _tem_geo_multi = True
-                            break
-                        _tokens_campo = {t for t in _v.split() if len(t) >= 4 and t not in {"fitness", "academia", "unidade"}}
-                        if _tokens_campo and _tokens_campo & _tokens_msg_multi:
-                            _tem_geo_multi = True
-                            break
-                    if _tem_geo_multi:
-                        break
-
-                _pedido_unidade_explicito = any(k in texto_cliente for k in (
-                    "unidade", "bairro", "cidade", "endereco", "endereço"
-                ))
-                _msg_curta_geo = len([t for t in texto_cliente.split() if t]) <= 5
-
-                if not slug_detectado and (_pedido_unidade_explicito or (_tem_geo_multi and _msg_curta_geo)):
+                if not slug_detectado and conteudo_texto:
                     slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
                 # Tenta por número digitado (ex: "1", "2")
