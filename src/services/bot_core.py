@@ -1477,7 +1477,7 @@ REGRAS:
 - NUNCA adicione dados que o cliente NÃO pediu (ex: não jogue horários se ele perguntou preço).
 - Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
 - NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.
-- NUNCA peça dados pessoais para cadastro (nome completo, email, CPF, endereço). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.""")
+- NUNCA peça NENHUM dado pessoal ao cliente (nome completo, email, CPF, endereço, telefone, RG, data de nascimento). Você é um vendedor, NÃO um formulário. Não pergunte nome, não peça documento, não solicite nenhuma informação pessoal em nenhum momento da conversa.""")
 
             # 7. Dados da Unidade e Rede
             blocos_prompt.append(f"""[INFORMAÇÕES DA UNIDADE ATUAL]
@@ -1563,7 +1563,7 @@ REGRAS:
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
-REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente já informou no histórico da conversa. Se ainda não sabe o nome, pergunte de forma natural (ex: "E qual seu nome?" ou "Com quem eu falo?"). Depois que souber, use o primeiro nome do cliente nas mensagens seguintes.
+REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente já informou espontaneamente no histórico da conversa. NÃO pergunte o nome do cliente. Se o cliente se apresentar voluntariamente, use o primeiro nome nas mensagens seguintes.
 {contexto_precarregado_bloco}{ctx_saudacao}
 
 [MENSAGENS DO CLIENTE]
