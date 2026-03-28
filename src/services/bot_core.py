@@ -864,6 +864,7 @@ async def despachar_resposta(
 
         # ── TTS: envia áudio PTT se cliente enviou áudio ──────────────
         if enviar_audio:
+            logger.info(f"🔊 [TTS] Iniciando geração de áudio para {chat_id} (voz={tts_voz})")
             try:
                 from src.services.tts_service import gerar_audio_resposta
                 from src.utils.imagekit import upload_to_imagekit
@@ -871,16 +872,24 @@ async def despachar_resposta(
 
                 audio_bytes = await gerar_audio_resposta(content, voz=tts_voz)
                 if audio_bytes:
+                    logger.info(f"🔊 [TTS] Áudio gerado: {len(audio_bytes)} bytes, enviando para ImageKit...")
                     audio_url = await upload_to_imagekit(
                         audio_bytes,
                         f"tts_{uuid.uuid4().hex[:8]}.wav",
                         folder="/tts"
                     )
                     if audio_url:
-                        await uaz.send_ptt(chat_id, audio_url, delay=500)
-                        logger.info(f"🔊 PTT enviado: {audio_url}")
+                        ptt_ok = await uaz.send_ptt(chat_id, audio_url, delay=500)
+                        if ptt_ok:
+                            logger.info(f"🔊 [TTS] PTT enviado com sucesso: {audio_url}")
+                        else:
+                            logger.warning(f"⚠️ [TTS] send_ptt retornou False para {chat_id}")
+                    else:
+                        logger.warning(f"⚠️ [TTS] Upload ImageKit falhou — áudio não enviado")
+                else:
+                    logger.warning(f"⚠️ [TTS] gerar_audio_resposta retornou None (voz={tts_voz}, texto={len(content)} chars)")
             except Exception as e:
-                logger.error(f"❌ Erro TTS/PTT: {e}")
+                logger.error(f"❌ [TTS] Erro TTS/PTT: {e}", exc_info=True)
                 # Continua com envio de texto normalmente
 
         # Randomiza o conteúdo da mensagem de texto
@@ -2018,6 +2027,7 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             _tts_voz = pers.get("tts_voz", None) if pers else None
             _cliente_enviou_audio = len(transcricoes) > 0 if transcricoes else False
             _enviar_audio = _cliente_enviou_audio and _tts_ativo and source == "uazapi"
+            logger.info(f"🔊 [TTS Check] conv={conversation_id} | audio_cliente={_cliente_enviou_audio} | tts_ativo={_tts_ativo} | voz={_tts_voz} | source={source} | enviar_audio={_enviar_audio}")
 
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────

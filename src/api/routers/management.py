@@ -382,8 +382,9 @@ async def create_personality(
                 exemplos, palavras_proibidas, despedida_personalizada,
                 regras_formatacao, regras_seguranca,
                 emoji_tipo, emoji_cor,
+                tts_ativo, tts_voz,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -394,7 +395,8 @@ async def create_personality(
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
             data.regras_formatacao, data.regras_seguranca,
-            data.emoji_tipo, data.emoji_cor
+            data.emoji_tipo, data.emoji_cor,
+            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore"
         )
         new_id = row["id"]
         
@@ -443,8 +445,9 @@ async def update_personality_by_id(
                    exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
                    regras_formatacao=$30, regras_seguranca=$31,
                    emoji_tipo=$32, emoji_cor=$33,
+                   tts_ativo=$34, tts_voz=$35,
                    updated_at=NOW()
-               WHERE id=$34 AND empresa_id=$35""",
+               WHERE id=$36 AND empresa_id=$37""",
             data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
             data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
             horario_json, horario_comercial_json, menu_json,
@@ -453,7 +456,9 @@ async def update_personality_by_id(
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor, pid, empresa_id
+            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
+            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+            pid, empresa_id
         )
     except Exception as e:
         logger.error(f"Erro ao atualizar personalidade {pid}: {e}")
