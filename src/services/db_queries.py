@@ -872,17 +872,10 @@ async def carregar_menu_triagem(empresa_id: int, unidade_id: int = None) -> Opti
         return cached if cached else None
 
     try:
-        row = None
-        if unidade_id:
-            row = await _database.db_pool.fetchrow(
-                "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id = $2 AND ativo = true LIMIT 1",
-                empresa_id, unidade_id
-            )
-        if not row:
-            row = await _database.db_pool.fetchrow(
-                "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id IS NULL AND ativo = true LIMIT 1",
-                empresa_id
-            )
+        row = await _database.db_pool.fetchrow(
+            "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true LIMIT 1",
+            empresa_id
+        )
         if not row:
             row = await _database.db_pool.fetchrow(
                 "SELECT menu_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
@@ -918,17 +911,10 @@ async def carregar_fluxo_triagem(empresa_id: int, unidade_id: int = None) -> Opt
         return cached if cached else None
 
     try:
-        row = None
-        if unidade_id:
-            row = await _database.db_pool.fetchrow(
-                "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id = $2 AND ativo = true LIMIT 1",
-                empresa_id, unidade_id
-            )
-        if not row:
-            row = await _database.db_pool.fetchrow(
-                "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 AND unidade_id IS NULL AND ativo = true LIMIT 1",
-                empresa_id
-            )
+        row = await _database.db_pool.fetchrow(
+            "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 AND ativo = true LIMIT 1",
+            empresa_id
+        )
         if not row:
             row = await _database.db_pool.fetchrow(
                 "SELECT fluxo_triagem FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
