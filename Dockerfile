@@ -4,8 +4,8 @@ FROM python:3.11-slim
 # Evita que o Python gere arquivos .pyc e permite logs em tempo real
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-# Cache bust: 20260328-0425
-LABEL build_version="20260328-0425"
+# Cache bust: 20260328-0435
+LABEL build_version="20260328-0435"
 
 # Define o diretório de trabalho
 WORKDIR /app

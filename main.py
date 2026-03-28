@@ -4321,10 +4321,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         _enviar_audio = _cliente_enviou_audio and _tts_ativo and _has_whatsapp
         logger.info(f"🔊 [TTS Check] conv={conversation_id} | audio_cliente={_cliente_enviou_audio} | tts_ativo={_tts_ativo} | voz={_tts_voz} | has_whatsapp={_has_whatsapp} | enviar_audio={_enviar_audio}")
 
-        async def _enviar_tts_ptt(texto_para_tts: str):
-            """Envia áudio PTT via UazAPI se TTS estiver ativo."""
+        async def _enviar_tts_ptt(texto_para_tts: str) -> bool:
+            """Envia áudio PTT via UazAPI se TTS estiver ativo. Retorna True se enviou."""
             if not _enviar_audio or not texto_para_tts:
-                return
+                return False
             try:
                 from src.services.tts_service import gerar_audio_resposta
                 from src.utils.imagekit import upload_to_imagekit
@@ -4339,13 +4339,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     )
                 if not _fone:
                     logger.warning(f"⚠️ [TTS] Telefone não encontrado para conv={conversation_id}")
-                    return
+                    return False
 
                 logger.info(f"🔊 [TTS] Gerando áudio para conv={conversation_id} (voz={_tts_voz})")
                 audio_bytes = await gerar_audio_resposta(texto_para_tts, voz=_tts_voz)
                 if not audio_bytes:
                     logger.warning(f"⚠️ [TTS] gerar_audio_resposta retornou None")
-                    return
+                    return False
 
                 logger.info(f"🔊 [TTS] Áudio gerado: {len(audio_bytes)} bytes, uploading...")
                 audio_url = await upload_to_imagekit(
@@ -4355,7 +4355,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 )
                 if not audio_url:
                     logger.warning(f"⚠️ [TTS] Upload ImageKit falhou")
-                    return
+                    return False
 
                 _uaz = UazAPIClient(
                     _uaz_integ.get('url') or _uaz_integ.get('api_url'),
@@ -4364,8 +4364,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 )
                 ptt_ok = await _uaz.send_ptt(str(_fone), audio_url, delay=500)
                 logger.info(f"🔊 [TTS] PTT enviado: ok={ptt_ok} url={audio_url}")
+                return bool(ptt_ok)
             except Exception as e:
                 logger.error(f"❌ [TTS] Erro: {e}", exc_info=True)
+                return False
 
         if is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
             pass  # IA pausada, não envia
@@ -4383,12 +4385,14 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
                 typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
-                # TTS PTT apenas no último bloco
+                # TTS PTT apenas no último bloco — se enviou áudio, pula texto
+                _ptt_enviado = False
                 if _plano_idx == _total_planos:
-                    await _enviar_tts_ptt(bloco_plano.strip())
-                await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot, empresa_id
-                )
+                    _ptt_enviado = await _enviar_tts_ptt(bloco_plano.strip())
+                if not _ptt_enviado:
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot, empresa_id
+                    )
                 await bd_atualizar_msg_ia(conversation_id)
                 if i == 0:
                     await bd_registrar_primeira_resposta(conversation_id)
@@ -4399,10 +4403,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 resposta_texto = fast_reply if isinstance(fast_reply, str) else ""
             typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
             await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
-            await _enviar_tts_ptt(resposta_texto)
-            await enviar_mensagem_chatwoot(
-                account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot, empresa_id
-            )
+            _ptt_enviado = await _enviar_tts_ptt(resposta_texto)
+            if not _ptt_enviado:
+                await enviar_mensagem_chatwoot(
+                    account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot, empresa_id
+                )
             await bd_atualizar_msg_ia(conversation_id)
             await bd_registrar_primeira_resposta(conversation_id)
 
@@ -4413,10 +4418,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
-                await _enviar_tts_ptt(_texto_final)
-                await enviar_mensagem_chatwoot(
-                    account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
-                )
+                _ptt_enviado = await _enviar_tts_ptt(_texto_final)
+                if not _ptt_enviado:
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
+                    )
                 await bd_atualizar_msg_ia(conversation_id)
                 await bd_registrar_primeira_resposta(conversation_id)
 
