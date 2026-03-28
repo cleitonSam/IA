@@ -1036,26 +1036,33 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
-        # Validação de nome: se o nome do contato é inválido (profissão, saudação, etc.),
-        # tenta extrair o nome real das mensagens ou do Redis
-        if not nome_eh_valido(nome_cliente):
-            _nome_redis = await redis_client.get(f"nome_cliente:{empresa_id}:{conversation_id}")
-            if _nome_redis and nome_eh_valido(_nome_redis):
-                nome_cliente = _nome_redis
+        # ── RESOLUÇÃO DE NOME DO CLIENTE ──────────────────────────────
+        # Prioridade: 1) Redis (nome informado pelo cliente) > 2) Extração das mensagens atuais > 3) pushName > 4) "Cliente"
+        _nome_redis = await redis_client.get(f"nome_cliente:{empresa_id}:{conversation_id}")
+
+        # 1) Nome já informado pelo cliente em mensagem anterior — prioridade máxima
+        if _nome_redis and nome_eh_valido(_nome_redis):
+            nome_cliente = _nome_redis
+        else:
+            # 2) Tenta extrair do texto das mensagens atuais ("me chamo X")
+            _nome_extraido = None
+            for _txt in (textos + transcricoes):
+                _nome_ext = extrair_nome_do_texto(_txt)
+                if _nome_ext:
+                    _nome_extraido = _nome_ext
+                    break
+
+            if _nome_extraido:
+                nome_cliente = _nome_extraido
+                await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, _nome_extraido)
+                logger.info(f"📝 Nome extraído das mensagens: '{_nome_extraido}' (conv {conversation_id})")
+            elif nome_eh_valido(nome_cliente):
+                # 3) pushName é válido — usa como fallback (mas NÃO sobrescreve Redis)
+                pass
             else:
-                # Tenta extrair do texto das mensagens atuais
-                for _txt in (textos + transcricoes):
-                    _nome_ext = extrair_nome_do_texto(_txt)
-                    if _nome_ext:
-                        nome_cliente = _nome_ext
-                        await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, _nome_ext)
-                        logger.info(f"📝 Nome extraído das mensagens: '{_nome_ext}' (conv {conversation_id})")
-                        break
-                else:
-                    nome_cliente = "Cliente"
-        elif nome_cliente and nome_cliente != "Cliente":
-            # Nome válido — salva no Redis para futuras consultas
-            await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, nome_cliente)
+                # 4) Nenhum nome válido encontrado
+                nome_cliente = "Cliente"
+        # ─────────────────────────────────────────────────────────────
 
         estado_raw = await get_tenant_cache(empresa_id, f"estado:{conversation_id}")
         estado_atual = (descomprimir_texto(estado_raw) if estado_raw else None) or "neutro"
@@ -1492,6 +1499,7 @@ REGRAS:
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Cliente: {nome_cliente}
+IMPORTANTE: Use SOMENTE o nome "{nome_cliente}" para se referir ao cliente. Ignore qualquer outro nome que apareça no histórico.
 Estado emocional: {estado_atual}
 {contexto_precarregado_bloco}{ctx_saudacao}
 
