@@ -40,6 +40,25 @@ async def uazapi_webhook(
         body = await request.json()
         event = body.get("event")
 
+        # --- Read Receipts Tracking ---
+        if event == "messages.update":
+            _updates = body.get("data", {}).get("messages", [])
+            for _upd in _updates:
+                _upd_status = _upd.get("status")
+                _upd_key = _upd.get("key", {})
+                _upd_phone = (_upd_key.get("remoteJid") or "").split("@")[0]
+                if _upd_status in (3, 4, "READ", "PLAYED") and _upd_phone:
+                    # Status 3=DELIVERED, 4=READ/PLAYED
+                    _conv = await buscar_conversa_por_fone(_upd_phone, empresa_id)
+                    if _conv:
+                        from src.services.db_queries import bd_registrar_evento_funil
+                        _tipo = "mensagem_lida" if _upd_status in (4, "READ", "PLAYED") else "mensagem_entregue"
+                        await bd_registrar_evento_funil(
+                            _conv.get("conversation_id"), empresa_id,
+                            _tipo, f"phone={_upd_phone}", score_incremento=0
+                        )
+            return {"status": "receipts_tracked", "count": len(_updates)}
+
         # Só processamos novas mensagens recebidas
         if event != "messages.upsert":
             return {"status": "ignored", "event": event}
