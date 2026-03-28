@@ -752,7 +752,7 @@ async def atualizar_unidade(
         # Limpa cache individual da unidade (usado pelo carregar_unidade do bot)
         _slug_updated = body.nome.lower().replace(" ", "-") if body.nome else None
         # Busca slug real do banco para garantir
-        _row_slug = await db_pool.fetchval("SELECT slug FROM unidades WHERE id = $1", unidade_id)
+        _row_slug = await _database.db_pool.fetchval("SELECT slug FROM unidades WHERE id = $1", unidade_id)
         if _row_slug:
             await redis_client.delete(f"cfg:unidade:{empresa_id}:{_row_slug}:v2")
         return {"status": "success", "message": "Unidade atualizada"}
