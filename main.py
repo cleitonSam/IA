@@ -3951,21 +3951,21 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 [TOUR VIRTUAL — MODO PROATIVO]
 Esta unidade possui um vídeo de Tour Virtual disponível.
 
-VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
+REGRA OBRIGATÓRIA DE ENVIO:
+- Se o cliente PEDIR para ver o tour, vídeo, conhecer por dentro, ou qualquer pedido de mídia da unidade → ENVIE IMEDIATAMENTE adicionando <SEND_VIDEO> no final da resposta. NÃO pergunte de novo, NÃO diga "vou enviar" sem incluir a tag.
+- Se o cliente demonstrar interesse em conhecer/visitar a unidade mas NÃO pediu explicitamente → ofereça primeiro ("Quer ver nosso tour virtual?"). Quando aceitar, aí use <SEND_VIDEO>.
 
-ESTRATÉGIA DE OFERECIMENTO:
-1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
-2. Após responder 2-3 mensagens de rapport com o lead, se ainda não ofereceu, OFEREÇA o tour naturalmente.
-3. Se o lead perguntou sobre preços/planos, após responder, complemente oferecendo o tour.
-4. NÃO ofereça o tour mais de uma vez na conversa. Se já ofereceu ou se o cliente recusou, não insista.
+OFERECIMENTO PROATIVO (este cliente é um LEAD):
+1. Se o cliente demonstrar QUALQUER sinal de interesse, ofereça o tour.
+2. Após 2-3 mensagens de rapport, ofereça naturalmente se ainda não ofereceu.
+3. NÃO ofereça mais de uma vez. Se recusou, não insista.
 
-IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.
-Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead aceitar, aí sim use <SEND_VIDEO>.
+COMO ENVIAR: adicione a tag <SEND_VIDEO> no final da sua resposta (o sistema envia o vídeo automaticamente).
 """
                 else:
                     prompt_sistema += "\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível.\n"
-                    prompt_sistema += "Se o cliente demonstrar interesse em conhecer a academia, ver por dentro ou perguntar por tour virtual, ofereça e envie o vídeo.\n"
-                    prompt_sistema += "IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.\n"
+                    prompt_sistema += "Se o cliente pedir para ver o tour, vídeo ou conhecer a academia por dentro, adicione <SEND_VIDEO> no final da sua resposta IMEDIATAMENTE.\n"
+                    prompt_sistema += "Se demonstrar interesse sem pedir explicitamente, ofereça primeiro e quando aceitar use <SEND_VIDEO>.\n"
 
             prompt_sistema += f"""
 PERSONALIDADE
