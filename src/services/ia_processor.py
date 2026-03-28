@@ -68,40 +68,19 @@ async def resolver_contexto_unidade(
     slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}")
     slug_salvo = slug_redis or slug_atual
 
-    # Só tenta trocar unidade com evidência geográfica para evitar trocas acidentais.
-    # Aqui consideramos:
-    # 1) match direto de nome/cidade/bairro
-    # 2) interseção de tokens significativos com nome da unidade (ex.: "ricardo jafet")
-    texto_norm = normalizar(texto or "")
-    tokens_texto_sig = {t for t in texto_norm.split() if len(t) >= 4}
-    tem_geo = False
-    try:
-        unidades = await listar_unidades_ativas(empresa_id)
-        for u in unidades:
-            nome_u = normalizar(u.get("nome", "") or "")
-            cidade_u = normalizar(u.get("cidade", "") or "")
-            bairro_u = normalizar(u.get("bairro", "") or "")
-
-            # Match direto
-            if any(ind and len(ind) >= 4 and ind in texto_norm for ind in (nome_u, cidade_u, bairro_u)):
-                tem_geo = True
-                break
-
-            # Match por tokens do nome da unidade (suporta "ricardo jafet" sem nome completo)
-            tokens_nome_sig = {t for t in nome_u.split() if len(t) >= 4 and t not in {"red", "fitness", "academia", "unidade"}}
-            if len(tokens_texto_sig & tokens_nome_sig) >= 1:
-                tem_geo = True
-                break
-    except Exception:
-        tem_geo = False
-
-    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if tem_geo else None
+    # Sempre tenta detectar unidade na mensagem — buscar_unidade_na_pergunta
+    # já tem 4 camadas de detecção (SQL, exato, tokens, fuzzy) e retorna None se não achar.
+    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if texto else None
 
     if slug_detectado:
-        # Se a conversa já tem uma unidade escolhida, mantê-la.
-        # O bot responde sobre outras unidades via resumo_todas_unidades sem trocar o contexto.
-        if slug_salvo:
+        if slug_salvo and slug_detectado == slug_salvo:
+            # Mesma unidade — mantém sem alteração
             return {"slug": slug_salvo, "origem": "contexto", "mudou": "false"}
+        if slug_salvo and slug_detectado != slug_salvo:
+            # Cliente mencionou OUTRA unidade explicitamente — troca o contexto
+            await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
+            logger.info(f"🔄 Unidade trocada: {slug_salvo} → {slug_detectado} (conv {conversation_id})")
+            return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true"}
         # Primeira detecção de unidade — salva no Redis
         await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
         return {"slug": slug_detectado, "origem": "mensagem", "mudou": "false"}
@@ -442,6 +421,331 @@ REGEX_LISTAR_UNIDADES = re.compile(
     r"unidades?.{0,15}(sp|sao paulo|rio|rj|mg|bh|campinas|curitiba|belo horizonte|brasilia))",
     re.IGNORECASE,
 )
+
+# ── Análise de Sentimento + Auto-Escalação ───────────────────────────────────
+# Palavras-chave para detecção rápida de sentimento (sem custo de LLM)
+_SENTIMENTO_NEGATIVO = {
+    "irritado", "raiva", "puto", "puta", "bravo", "indignado", "absurdo",
+    "ridiculo", "lixo", "pessimo", "horrivel", "terrivel", "vergonha",
+    "nojo", "odio", "odeio", "merda", "bosta", "droga", "porcaria",
+    "reclamo", "reclamacao", "reclamar", "insatisfeito", "insatisfeita",
+    "processo", "processar", "procon", "advogado", "justica", "tribunal",
+    "denuncia", "denunciar", "cancelar tudo", "quero cancelar", "cancelamento",
+    "nunca mais", "desisto", "pior atendimento", "enganacao", "enganado",
+    "golpe", "fraude", "mentira", "mentiroso", "safado", "palhaçada", "piada"
+}
+_SENTIMENTO_URGENTE = {
+    "urgente", "emergencia", "socorro", "ajuda", "preciso agora",
+    "nao consigo", "travou", "erro", "bug", "problema grave"
+}
+_SENTIMENTO_POSITIVO = {
+    "obrigado", "obrigada", "excelente", "perfeito", "otimo", "maravilhoso",
+    "adorei", "amei", "top", "sensacional", "incrivel", "parabens",
+    "muito bom", "show", "demais", "melhor"
+}
+
+
+async def analisar_sentimento(
+    textos: list,
+    empresa_id: int,
+    conversation_id: int
+) -> dict:
+    """
+    Analisa sentimento do cliente com detecção por palavras-chave (custo zero).
+    Retorna: {"sentimento": str, "score": float, "escalar": bool, "motivo": str}
+
+    Sentimentos: positivo, neutro, frustrado, irritado, urgente
+    """
+    if not textos:
+        return {"sentimento": "neutro", "score": 0.0, "escalar": False, "motivo": ""}
+
+    texto_completo = normalizar(" ".join(textos))
+    palavras = set(texto_completo.split())
+
+    # Contagem de matches
+    neg_matches = palavras & _SENTIMENTO_NEGATIVO
+    urg_matches = palavras & _SENTIMENTO_URGENTE
+    pos_matches = palavras & _SENTIMENTO_POSITIVO
+
+    # Score negativo (-1.0 a +1.0)
+    neg_count = len(neg_matches)
+    urg_count = len(urg_matches)
+    pos_count = len(pos_matches)
+
+    if neg_count >= 3 or (neg_count >= 2 and urg_count >= 1):
+        sentimento = "irritado"
+        score = -1.0
+    elif neg_count >= 2:
+        sentimento = "frustrado"
+        score = -0.7
+    elif urg_count >= 1:
+        sentimento = "urgente"
+        score = -0.5
+    elif neg_count >= 1:
+        sentimento = "frustrado"
+        score = -0.4
+    elif pos_count >= 2:
+        sentimento = "positivo"
+        score = 0.8
+    elif pos_count >= 1:
+        sentimento = "positivo"
+        score = 0.5
+    else:
+        sentimento = "neutro"
+        score = 0.0
+
+    # Verificar histórico: se frustrado por 2+ mensagens consecutivas → escalar
+    escalar = False
+    motivo = ""
+
+    if sentimento in ("irritado", "frustrado"):
+        _hist_key = f"{empresa_id}:sentimento_hist:{conversation_id}"
+        _hist_count = await redis_client.incr(_hist_key)
+        await redis_client.expire(_hist_key, 600)  # Reset após 10min de calma
+
+        if sentimento == "irritado" or _hist_count >= 2:
+            escalar = True
+            motivo = f"Cliente {sentimento} ({neg_count} palavras negativas detectadas: {', '.join(list(neg_matches)[:3])})"
+            logger.warning(f"🚨 [E:{empresa_id}] Sentimento {sentimento} na conv {conversation_id} — escalação recomendada")
+    else:
+        # Reset do histórico se sentimento melhorar
+        await redis_client.delete(f"{empresa_id}:sentimento_hist:{conversation_id}")
+
+    # Salva sentimento atual no Redis para dashboard
+    await redis_client.setex(
+        f"{empresa_id}:sentimento:{conversation_id}",
+        3600,
+        json.dumps({"sentimento": sentimento, "score": score, "escalar": escalar})
+    )
+
+    return {"sentimento": sentimento, "score": score, "escalar": escalar, "motivo": motivo}
+
+# ── Memória de Longo Prazo do Cliente ────────────────────────────────────────
+
+async def carregar_memoria_cliente(contato_fone: str, empresa_id: int) -> list:
+    """
+    Carrega memórias de longo prazo do cliente pelo telefone.
+    Retorna lista de dicts: [{"tipo": "preferencia", "conteudo": "..."}]
+    """
+    if not contato_fone or not empresa_id:
+        return []
+
+    # Cache Redis de 5min para evitar queries repetidas na mesma conversa
+    _cache_key = f"{empresa_id}:memoria_lp:{contato_fone}"
+    _cached = await redis_client.get(_cache_key)
+    if _cached:
+        try:
+            return json.loads(_cached)
+        except Exception:
+            pass
+
+    try:
+        rows = await _database.db_pool.fetch(
+            """SELECT tipo, conteudo FROM memoria_cliente
+               WHERE contato_fone = $1 AND empresa_id = $2
+               ORDER BY relevancia DESC, updated_at DESC
+               LIMIT 10""",
+            contato_fone, empresa_id
+        )
+        memorias = [{"tipo": r["tipo"], "conteudo": r["conteudo"]} for r in rows]
+        if memorias:
+            await redis_client.setex(_cache_key, 300, json.dumps(memorias))
+        return memorias
+    except Exception as e:
+        logger.warning(f"Erro ao carregar memória do cliente {contato_fone}: {e}")
+        return []
+
+
+async def salvar_memoria_cliente(
+    contato_fone: str,
+    empresa_id: int,
+    tipo: str,
+    conteudo: str,
+    relevancia: float = 1.0
+):
+    """
+    Salva uma memória de longo prazo do cliente.
+    Tipos: preferencia, objetivo, restricao, historico
+    Evita duplicatas verificando se já existe memória similar.
+    """
+    if not contato_fone or not conteudo:
+        return
+
+    try:
+        # Verifica duplicata
+        _existing = await _database.db_pool.fetchval(
+            """SELECT id FROM memoria_cliente
+               WHERE contato_fone = $1 AND empresa_id = $2 AND tipo = $3 AND conteudo = $4
+               LIMIT 1""",
+            contato_fone, empresa_id, tipo, conteudo
+        )
+        if _existing:
+            # Atualiza relevância e timestamp
+            await _database.db_pool.execute(
+                "UPDATE memoria_cliente SET relevancia = relevancia + 0.1, updated_at = NOW() WHERE id = $1",
+                _existing
+            )
+        else:
+            await _database.db_pool.execute(
+                """INSERT INTO memoria_cliente (empresa_id, contato_fone, tipo, conteudo, relevancia)
+                   VALUES ($1, $2, $3, $4, $5)""",
+                empresa_id, contato_fone, tipo, conteudo, relevancia
+            )
+        # Invalida cache
+        await redis_client.delete(f"{empresa_id}:memoria_lp:{contato_fone}")
+        logger.info(f"💾 Memória salva: [{tipo}] {conteudo[:60]}... (fone: {contato_fone})")
+    except Exception as e:
+        logger.warning(f"Erro ao salvar memória do cliente: {e}")
+
+
+def formatar_memoria_para_prompt(memorias: list) -> str:
+    """Formata memórias do cliente para injetar no prompt da IA."""
+    if not memorias:
+        return ""
+
+    linhas = []
+    for m in memorias:
+        tipo = m.get("tipo", "info")
+        conteudo = m.get("conteudo", "")
+        emoji = {"preferencia": "⭐", "objetivo": "🎯", "restricao": "⚠️", "historico": "📋"}.get(tipo, "📌")
+        linhas.append(f"{emoji} {conteudo}")
+
+    return "[MEMÓRIA DO CLIENTE — informações de conversas anteriores]\n" + "\n".join(linhas)
+
+
+def truncar_contexto(blocos_prompt: list, max_tokens: int = 12000) -> str:
+    """
+    Monta o prompt final a partir dos blocos, truncando por prioridade
+    se exceder o limite de tokens (estimativa: ~4 chars/token em PT-BR).
+
+    Prioridade (alta→baixa, trunca os últimos primeiro):
+    1. REGRAS GERAIS, IDENTIDADE (nunca trunca)
+    2. HISTÓRICO, MEMÓRIA (trunca por último)
+    3. FAQ, UNIDADES DA REDE (trunca primeiro)
+    4. EXEMPLOS (trunca primeiro)
+    """
+    if not blocos_prompt:
+        return ""
+
+    max_chars = max_tokens * 4  # ~4 chars/token em PT-BR
+
+    # Classificar blocos por prioridade
+    def _prioridade(bloco: str) -> int:
+        b_upper = bloco[:50].upper()
+        if "[REGRAS GERAIS]" in b_upper or "[IDENTIDADE]" in b_upper:
+            return 0  # Nunca trunca
+        if "[HISTÓRICO" in b_upper or "[DADOS DO ATENDIMENTO" in b_upper:
+            return 1
+        if "[MEMÓRIA" in b_upper or "[REGRAS CRÍTICAS" in b_upper:
+            return 2
+        if "[FLUXO" in b_upper or "[TOM DE VOZ" in b_upper or "[PERSONALIDADE" in b_upper:
+            return 3
+        if "[FORMATAÇÃO" in b_upper or "[DESPEDIDA" in b_upper:
+            return 4
+        if "FAQ" in b_upper or "UNIDADES" in b_upper:
+            return 5
+        return 3  # Default: prioridade média
+
+    prompt_total = "\n\n".join(blocos_prompt)
+    total_chars = len(prompt_total)
+
+    if total_chars <= max_chars:
+        return prompt_total  # Cabe, sem truncamento
+
+    # Precisa truncar — remove blocos de menor prioridade primeiro
+    blocos_com_prio = [(b, _prioridade(b)) for b in blocos_prompt]
+    # Ordena por prioridade (maior número = corta primeiro)
+    blocos_com_prio.sort(key=lambda x: x[1], reverse=True)
+
+    chars_acumulados = total_chars
+    blocos_removidos = set()
+
+    for i, (bloco, prio) in enumerate(blocos_com_prio):
+        if chars_acumulados <= max_chars:
+            break
+        if prio <= 1:
+            break  # Não trunca blocos essenciais
+        chars_acumulados -= len(bloco)
+        blocos_removidos.add(id(bloco))
+        logger.info(f"✂️ Contexto truncado: removido bloco de prioridade {prio} ({len(bloco)} chars)")
+
+    # Reconstroi na ordem original, sem os removidos
+    blocos_finais = [b for b in blocos_prompt if id(b) not in blocos_removidos]
+
+    # Se ainda excede, trunca o histórico (mantém últimas mensagens)
+    resultado = "\n\n".join(blocos_finais)
+    if len(resultado) > max_chars:
+        resultado = resultado[-max_chars:]
+        # Encontra o primeiro bloco completo
+        idx = resultado.find("[")
+        if idx > 0:
+            resultado = resultado[idx:]
+
+    return resultado
+
+
+async def extrair_memorias_da_conversa(
+    textos_cliente: list,
+    resposta_ia: str,
+    empresa_id: int,
+    contato_fone: str
+):
+    """
+    Extrai preferências e objetivos das mensagens do cliente e salva como memória.
+    Detecção por palavras-chave (custo zero, sem LLM).
+    """
+    if not contato_fone or not textos_cliente:
+        return
+
+    texto_completo = normalizar(" ".join(textos_cliente))
+
+    # Detectar preferências de unidade
+    unidade_patterns = re.findall(r"(prefiro|gosto|perto|moro em|moro no|fico em|fico no|mais perto)\s+(.{3,30})", texto_completo)
+    for _, local in unidade_patterns:
+        await salvar_memoria_cliente(contato_fone, empresa_id, "preferencia", f"Preferência de localização: {local.strip()}")
+
+    # Detectar objetivos de treino
+    objetivo_keywords = {
+        "emagrecer": "Objetivo: emagrecimento",
+        "perder peso": "Objetivo: perda de peso",
+        "ganhar massa": "Objetivo: ganho de massa muscular",
+        "musculacao": "Interesse em musculação",
+        "hipertrofia": "Objetivo: hipertrofia",
+        "saude": "Objetivo: saúde e bem-estar",
+        "condicionamento": "Objetivo: condicionamento físico",
+        "crossfit": "Interesse em CrossFit",
+        "spinning": "Interesse em spinning",
+        "natacao": "Interesse em natação",
+        "pilates": "Interesse em pilates",
+        "yoga": "Interesse em yoga",
+        "luta": "Interesse em artes marciais",
+        "funcional": "Interesse em treino funcional",
+    }
+    for keyword, memoria in objetivo_keywords.items():
+        if keyword in texto_completo:
+            await salvar_memoria_cliente(contato_fone, empresa_id, "objetivo", memoria)
+
+    # Detectar restrições
+    restricao_keywords = {
+        "lesao": "Restrição: possui lesão",
+        "problema no joelho": "Restrição: problema no joelho",
+        "cirurgia": "Restrição: passou por cirurgia",
+        "gravidez": "Restrição: gestante",
+        "gravida": "Restrição: gestante",
+        "idoso": "Faixa etária: idoso",
+        "terceira idade": "Faixa etária: terceira idade",
+        "crianca": "Interesse para criança",
+        "filho": "Interesse para filho(a)",
+    }
+    for keyword, memoria in restricao_keywords.items():
+        if keyword in texto_completo:
+            await salvar_memoria_cliente(contato_fone, empresa_id, "restricao", memoria)
+
+    # Detectar orçamento
+    orcamento = re.search(r"(orcamento|orçamento|gastar|pagar|ate|até)\s*(r\$?\s*\d+|\d+\s*reais|\d+\s*conto)", texto_completo)
+    if orcamento:
+        await salvar_memoria_cliente(contato_fone, empresa_id, "preferencia", f"Orçamento mencionado: {orcamento.group(0).strip()}")
+
 
 # ==================== MENSAGENS PRÉ-FORMATADAS ====================
 # Removido ** (markdown duplo) — WhatsApp usa *asterisco simples* para negrito
@@ -970,34 +1274,29 @@ def corrigir_json(texto: str) -> str:
 
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
+# NOTA: As funções principais de transcrição estão em bot_core.py.
+# Esta versão é mantida como fallback caso algum módulo importe daqui.
 
 async def transcrever_audio(url: str):
-    if not cliente_whisper:
-        return "[Áudio recebido, mas Whisper não configurado]"
-    async with whisper_semaphore:
-        try:
-            resp = await baixar_midia_com_retry(url, timeout=15.0)
-            audio_file = io.BytesIO(resp.content)
-            audio_file.name = "audio.ogg"
-            transcription = await cliente_whisper.audio.transcriptions.create(
-                model="whisper-1", file=audio_file
-            )
-            return transcription.text
-        except httpx.TimeoutException as e:
-            logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_timeout").inc()
-            return "[Erro ao baixar áudio: timeout]"
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_http").inc()
-            return "[Erro ao baixar áudio]"
-        except Exception as e:
-            logger.error(f"Erro Whisper: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
-            return "[Erro ao transcrever áudio]"
+    """Delega para bot_core.transcrever_audio (versão com fallback Gemini)."""
+    try:
+        from src.services.bot_core import transcrever_audio as _transcrever
+        return await _transcrever(url)
+    except ImportError:
+        if not cliente_whisper:
+            return "[Áudio recebido, mas transcrição indisponível]"
+        async with whisper_semaphore:
+            try:
+                resp = await baixar_midia_com_retry(url, timeout=15.0)
+                audio_file = io.BytesIO(resp.content)
+                audio_file.name = "audio.ogg"
+                transcription = await cliente_whisper.audio.transcriptions.create(
+                    model="whisper-1", file=audio_file
+                )
+                return transcription.text
+            except Exception as e:
+                logger.error(f"Erro Whisper: {e}")
+                return "[Erro ao transcrever áudio]"
 
 
 @retry(

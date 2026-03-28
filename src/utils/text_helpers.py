@@ -36,16 +36,75 @@ def limpar_nome(nome):
 
 def primeiro_nome_cliente(nome: Optional[str]) -> str:
     nome_limpo = limpar_nome(nome) if nome else ""
-    if not nome_limpo or nome_limpo.lower() in {"cliente", "contato", "visitante"}:
+    if not nome_limpo or not nome_eh_valido(nome_limpo):
         return ""
     return nome_limpo.split()[0].capitalize()
 
+
+_NOMES_INVALIDOS = {
+    # Genéricos de sistema
+    "cliente", "contato", "visitante", "unknown", "na", "n a", "lead", "user",
+    "usuario", "teste", "test", "admin", "suporte", "support", "bot",
+    # Saudações / palavras comuns salvas como nome
+    "boa", "bom", "oi", "ola", "hello", "hi", "hey", "obrigado", "obrigada",
+    "sim", "nao", "ok", "tudo", "bem", "blz", "beleza",
+    # Profissões / ocupações comuns
+    "costureira", "costureiro", "pedreiro", "padeiro", "padeira", "motorista",
+    "porteiro", "porteira", "zelador", "zeladora", "cabeleireiro", "cabeleireira",
+    "barbeiro", "eletricista", "encanador", "pintor", "pintora", "faxineira",
+    "faxineiro", "diarista", "mecanico", "mecanica", "garcom", "garconete",
+    "cozinheiro", "cozinheira", "vendedor", "vendedora", "professor", "professora",
+    "doutor", "doutora", "enfermeiro", "enfermeira", "dentista", "advogado",
+    "advogada", "personal", "personol", "nutricionista", "recepcionista",
+    # Adjetivos / apelidos genéricos
+    "amor", "amiga", "amigo", "querido", "querida", "lindo", "linda", "fofo",
+    "fofa", "mano", "mana", "brother", "parceiro", "parceira", "chefe", "boss",
+    "gato", "gata", "principe", "princesa", "prince", "princess", "rei", "rainha", "anjo",
+    # Parentesco
+    "mae", "pai", "filho", "filha", "esposo", "esposa", "marido", "mulher",
+    "tio", "tia", "primo", "prima", "sogro", "sogra", "cunhado", "cunhada",
+    "vovo", "vovo", "neto", "neta", "irmao", "irma",
+    # Substantivos comuns / locais / objetos
+    "whatsapp", "wpp", "zap", "instagram", "face", "facebook", "empresa",
+    "academia", "loja", "casa", "trabalho", "escritorio", "consultorio",
+    "encantos", "encanto", "sorrisos", "sorriso", "brilho", "estrela",
+    "flor", "flores", "beleza", "saude", "vida", "forca", "foco",
+    "treino", "fitness", "gym", "crossfit", "pilates", "musculacao",
+    "dieta", "projeto", "resultado", "objetivo", "meta", "corpo",
+    "praia", "sol", "lua", "ceu", "terra", "mar", "rio", "moda",
+    "negocio", "negocios", "servico", "servicos", "produto", "produtos",
+    # Nomes comuns de WhatsApp / redes sociais
+    "baby", "babe", "honey", "dear", "queen", "king", "lion", "tiger",
+    "wolf", "angel", "star", "sunshine", "rainbow", "diamond", "gold",
+    "silver", "dark", "light", "magic", "power", "super", "top",
+    "best", "real", "oficial", "original", "novo", "nova",
+    # Números / abreviações viram "nome"
+    "msg", "info", "contato", "atendimento", "sac", "central",
+    "equipe", "time", "grupo", "turma", "galera", "pessoal",
+    # Emojis e variações que sobram após limpar_nome
+    "coracao", "estrelas", "anjinho", "anjinha", "gatinha", "gatinho",
+    "mozao", "mozinho", "mozinha", "docinho", "docinha", "benzinho", "benzinha",
+}
 
 def nome_eh_valido(nome: Optional[str]) -> bool:
     nome_limpo = limpar_nome(nome) if nome else ""
     if not nome_limpo or len(nome_limpo) < 2:
         return False
-    return nome_limpo.lower() not in {"cliente", "contato", "visitante", "unknown", "na", "n a"}
+    nome_lower = normalizar(nome_limpo)
+    palavras = nome_lower.split()
+    # Palavra única na blocklist
+    if len(palavras) == 1 and palavras[0] in _NOMES_INVALIDOS:
+        return False
+    # Todas as palavras são inválidas
+    if all(p in _NOMES_INVALIDOS for p in palavras):
+        return False
+    # Nome sem letras
+    if not any(c.isalpha() for c in nome_limpo):
+        return False
+    # Palavra única muito longa (>15 chars) = username/nome grudado (ex: "Tatianaribeirosampaio")
+    if len(palavras) == 1 and len(palavras[0]) > 15:
+        return False
+    return True
 
 
 def extrair_nome_do_texto(texto: str) -> Optional[str]:
@@ -53,7 +112,7 @@ def extrair_nome_do_texto(texto: str) -> Optional[str]:
         return None
     t = str(texto).strip()
     padroes = [
-        r"(?:meu nome e|meu nome é|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
+        r"(?:meu nome e|meu nome é|me chamo|me chamam de|me chamam|pode me chamar de|chamo|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
         r"^([A-Za-zÀ-ÿ]{2,20})(?:\s+[A-Za-zÀ-ÿ]{2,20})?$",
     ]
     for ptn in padroes:

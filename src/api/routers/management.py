@@ -52,6 +52,9 @@ class PersonalityUpdate(BaseModel):
     estilo_comunicacao: Optional[str] = None
     saudacao_personalizada: Optional[str] = None
     regras_atendimento: Optional[str] = None
+    tts_ativo: Optional[bool] = None
+    tts_voz: Optional[str] = None
+    oferecer_tour: Optional[bool] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -64,6 +67,7 @@ _PERSONALITY_STR_FIELDS = [
     "despedida_personalizada", "regras_formatacao", "regras_seguranca",
     "emoji_tipo", "emoji_cor",
     "estilo_comunicacao", "saudacao_personalizada", "regras_atendimento",
+    "tts_voz",
 ]
 
 
@@ -105,6 +109,9 @@ class PersonalityCreate(BaseModel):
     estilo_comunicacao: Optional[str] = ""
     saudacao_personalizada: Optional[str] = ""
     regras_atendimento: Optional[str] = ""
+    tts_ativo: Optional[bool] = True
+    tts_voz: Optional[str] = "Kore"
+    oferecer_tour: Optional[bool] = True
 
     model_config = {"extra": "allow"}
 
@@ -198,9 +205,10 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
                   contexto_empresa, contexto_extra, abordagem_proativa,
                   exemplos, palavras_proibidas, despedida_personalizada,
                   regras_formatacao, regras_seguranca,
-                  emoji_tipo, emoji_cor
-           FROM personalidade_ia 
-           WHERE empresa_id = $1 
+                  emoji_tipo, emoji_cor,
+                  tts_ativo, tts_voz
+           FROM personalidade_ia
+           WHERE empresa_id = $1
            LIMIT 1""",
         empresa_id
     )
@@ -218,7 +226,9 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
             "usar_emoji": True,
             "horario_atendimento_ia": None,
             "horario_comercial": None,
-            "menu_triagem": None
+            "menu_triagem": None,
+            "tts_ativo": True,
+            "tts_voz": "Kore"
         }
     result = dict(row)
     # Deserializar campos JSONB que asyncpg pode retornar como string
@@ -318,7 +328,8 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       contexto_empresa, contexto_extra, abordagem_proativa,
                       exemplos, palavras_proibidas, despedida_personalizada,
                       regras_formatacao, regras_seguranca,
-                      emoji_tipo, emoji_cor
+                      emoji_tipo, emoji_cor,
+                      tts_ativo, tts_voz
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -373,8 +384,10 @@ async def create_personality(
                 exemplos, palavras_proibidas, despedida_personalizada,
                 regras_formatacao, regras_seguranca,
                 emoji_tipo, emoji_cor,
+                tts_ativo, tts_voz,
+                oferecer_tour,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -385,7 +398,9 @@ async def create_personality(
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
             data.regras_formatacao, data.regras_seguranca,
-            data.emoji_tipo, data.emoji_cor
+            data.emoji_tipo, data.emoji_cor,
+            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+            data.oferecer_tour if data.oferecer_tour is not None else True
         )
         new_id = row["id"]
         
@@ -434,8 +449,10 @@ async def update_personality_by_id(
                    exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
                    regras_formatacao=$30, regras_seguranca=$31,
                    emoji_tipo=$32, emoji_cor=$33,
+                   tts_ativo=$34, tts_voz=$35,
+                   oferecer_tour=$36,
                    updated_at=NOW()
-               WHERE id=$34 AND empresa_id=$35""",
+               WHERE id=$37 AND empresa_id=$38""",
             data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
             data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
             horario_json, horario_comercial_json, menu_json,
@@ -444,7 +461,10 @@ async def update_personality_by_id(
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor, pid, empresa_id
+            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
+            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+            data.oferecer_tour if data.oferecer_tour is not None else True,
+            pid, empresa_id
         )
     except Exception as e:
         logger.error(f"Erro ao atualizar personalidade {pid}: {e}")
@@ -766,6 +786,26 @@ def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None,
     regras_atend = p.get("regras_atendimento") or ""
     if regras_atend.strip():
         blocos.append(f"[REGRAS DE ATENDIMENTO]\n{regras_atend}")
+
+    # 9.5 Fluxo de Vendedor Real (proatividade)
+    blocos.append("""[FLUXO DE VENDEDOR — OBRIGATÓRIO]
+Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo SEMPRE:
+1. Responda a pergunta do cliente de forma direta e curta.
+2. Depois da resposta, faça UMA pergunta de descoberta que avance a conversa.
+
+Exemplos:
+• Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
+• Cliente: "Qual o horário?" → "Nosso horário é seg-sex 06h às 23h 😊 Você já treina ou está começando agora?"
+• Cliente: "Quanto custa?" → "Temos planos a partir de R$X! Qual seu objetivo principal — musculação, cardio, ou os dois?"
+• Cliente: "Quero começar" → "Que demais, parabéns pela decisão! 💪 Qual unidade fica mais perto de você? Posso te mostrar os planos e horários!"
+
+REGRAS:
+- Resposta + pergunta na MESMA mensagem, SEMPRE.
+- A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
+- NUNCA adicione dados que o cliente NÃO pediu.
+- Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
+- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.
+- NUNCA peça dados pessoais para cadastro (nome completo, email, CPF, endereço). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.""")
 
     # 10. Unidades da rede
     if unidades:
@@ -1089,6 +1129,63 @@ async def personality_playground_summarize(
     except Exception as e:
         logger.error(f"Playground summarize error: {e}")
         return {"summary": ""}
+
+
+# --- TTS (Vozes) Endpoints ---
+
+@router.get("/tts/voices")
+async def list_tts_voices(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as vozes TTS disponíveis (Gemini)."""
+    from src.services.tts_service import listar_vozes
+    return {"voices": listar_vozes()}
+
+
+@router.post("/tts/preview")
+async def preview_tts_voice(
+    body: dict,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Gera preview de áudio para uma voz TTS.
+    Body: {"voz": "Kore", "texto": "opcional"}
+    Retorna URL do áudio gerado (via ImageKit).
+    """
+    from src.services.tts_service import gerar_audio_resposta, gerar_preview_voz, VOZES
+    from src.utils.imagekit import upload_to_imagekit
+    import uuid
+
+    voz = body.get("voz", "Kore")
+    texto = body.get("texto")
+
+    if voz not in VOZES:
+        raise HTTPException(status_code=400, detail=f"Voz '{voz}' não encontrada")
+
+    try:
+        if texto:
+            audio_bytes = await gerar_audio_resposta(texto, voz=voz)
+        else:
+            audio_bytes = await gerar_preview_voz(voz)
+
+        if not audio_bytes:
+            raise HTTPException(status_code=503, detail="Falha ao gerar áudio TTS")
+
+        # Upload para ImageKit
+        audio_url = await upload_to_imagekit(
+            audio_bytes,
+            f"preview_{voz}_{uuid.uuid4().hex[:6]}.wav",
+            folder="/tts/previews"
+        )
+
+        if not audio_url:
+            raise HTTPException(status_code=503, detail="Falha no upload do áudio")
+
+        return {"url": audio_url, "voz": voz}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro preview TTS: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao gerar preview")
 
 
 # --- FAQ Endpoints ---
@@ -1677,3 +1774,177 @@ async def get_followup_stats(token_payload: dict = Depends(get_current_user_toke
         WHERE empresa_id = $1
     """, empresa_id)
     return dict(row)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FASE 5 — KNOWLEDGE BASE (RAG) + A/B TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Knowledge Base (RAG) ────────────────────────────────────────────
+
+class KBDocumentCreate(BaseModel):
+    titulo: str
+    conteudo: str
+    categoria: str = "geral"
+
+@router.get("/knowledge-base")
+async def listar_knowledge_base(
+    categoria: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista documentos da base de conhecimento."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import listar_conhecimento
+    return await listar_conhecimento(empresa_id, categoria)
+
+
+@router.post("/knowledge-base", status_code=201)
+async def criar_knowledge_base(
+    body: KBDocumentCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Indexa um novo documento na base de conhecimento.
+    O conteúdo é dividido em chunks e embeddings são gerados automaticamente.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    if not body.conteudo or len(body.conteudo.strip()) < 20:
+        raise HTTPException(status_code=400, detail="Conteúdo muito curto (mín. 20 caracteres)")
+    from src.services.rag_service import indexar_documento
+    chunks = await indexar_documento(
+        empresa_id=empresa_id,
+        titulo=body.titulo,
+        conteudo=body.conteudo,
+        categoria=body.categoria
+    )
+    return {"status": "success", "chunks_indexados": chunks, "titulo": body.titulo}
+
+
+@router.delete("/knowledge-base/{kb_id}")
+async def deletar_knowledge_base(
+    kb_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Desativa um item da base de conhecimento."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import deletar_conhecimento
+    ok = await deletar_conhecimento(empresa_id, kb_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Erro ao desativar documento")
+    return {"status": "success"}
+
+
+@router.post("/knowledge-base/reindex")
+async def reindexar_knowledge_base(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Regenera embeddings de documentos sem embedding."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import reindexar_embeddings
+    updated = await reindexar_embeddings(empresa_id)
+    return {"status": "success", "embeddings_atualizados": updated}
+
+
+@router.post("/knowledge-base/search")
+async def buscar_knowledge_base(
+    query: str = Query(..., min_length=5),
+    top_k: int = Query(3, le=10),
+    categoria: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Busca semântica na base de conhecimento (para teste/debug)."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import buscar_conhecimento
+    resultados = await buscar_conhecimento(query, empresa_id, top_k=top_k, categoria=categoria)
+    return {"query": query, "resultados": resultados, "total": len(resultados)}
+
+
+# ── A/B Testing ─────────────────────────────────────────────────────
+
+class ABTesteCreate(BaseModel):
+    nome: str
+    campo_teste: str = "prompt_sistema"  # prompt_sistema, tom_de_voz, instrucoes_extra
+    variante_a: str
+    variante_b: str
+    percentual_b: float = 50.0
+    descricao: Optional[str] = None
+
+
+@router.get("/ab-tests")
+async def listar_ab_tests(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista todos os testes A/B da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import listar_testes
+    return await listar_testes(empresa_id)
+
+
+@router.post("/ab-tests", status_code=201)
+async def criar_ab_test(
+    body: ABTesteCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Cria um novo teste A/B. Desativa qualquer teste ativo anterior.
+    campo_teste: prompt_sistema, tom_de_voz, instrucoes_extra
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    if body.campo_teste not in ("prompt_sistema", "tom_de_voz", "instrucoes_extra"):
+        raise HTTPException(status_code=400, detail="campo_teste deve ser: prompt_sistema, tom_de_voz ou instrucoes_extra")
+    from src.services.ab_testing import criar_teste
+    teste_id = await criar_teste(
+        empresa_id=empresa_id,
+        nome=body.nome,
+        campo_teste=body.campo_teste,
+        variante_a=body.variante_a,
+        variante_b=body.variante_b,
+        percentual_b=body.percentual_b,
+        descricao=body.descricao
+    )
+    if not teste_id:
+        raise HTTPException(status_code=500, detail="Erro ao criar teste A/B")
+    return {"status": "success", "teste_id": teste_id}
+
+
+@router.get("/ab-tests/{teste_id}/results")
+async def resultados_ab_test(
+    teste_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Retorna resultados comparativos do teste A/B."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import obter_resultados_ab
+    return await obter_resultados_ab(teste_id)
+
+
+@router.post("/ab-tests/{teste_id}/finalize")
+async def finalizar_ab_test(
+    teste_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Finaliza um teste A/B ativo."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import finalizar_teste
+    ok = await finalizar_teste(empresa_id, teste_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Erro ao finalizar teste")
+    return {"status": "success", "message": "Teste A/B finalizado"}

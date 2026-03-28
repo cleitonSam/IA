@@ -102,6 +102,9 @@ MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Antigravity IA <ti@fluxo
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both
 
+# --- GOOGLE (Gemini TTS) ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
 # --- IMAGEKIT ---
 IMAGEKIT_ID = os.getenv("IMAGEKIT_ID", "0jwoagmre")
 IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY", "public_FbnUvM0qv3WeLi0dJ51f+ZhEL9M=")

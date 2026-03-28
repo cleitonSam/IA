@@ -5,7 +5,7 @@ import axios from "axios";
 import {
   Network, Loader2, Save, CheckCircle2, MessageSquare, Zap, Hash,
   Globe, ShieldCheck, Building2, X, Eye, EyeOff,
-  CheckCircle, XCircle, Settings2, Wifi, WifiOff, Clock,
+  CheckCircle, XCircle, Settings2, Wifi, WifiOff, Clock, KeyRound,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -92,14 +92,14 @@ export default function IntegrationsPage() {
   const currentConfig = integrations[activeTab] || {
     tipo: activeTab,
     config: activeTab === "chatwoot" ? { url: "", access_token: "", account_id: "" }
-      : { api_url: "", token: "" },
+      : { url: "", token: "" },
     ativo: false,
   };
 
   // Check if integration has filled config
   const isConfigured = activeTab === "chatwoot"
     ? !!(currentConfig.config.url && currentConfig.config.access_token && currentConfig.config.account_id)
-    : !!(currentConfig.config.api_url && currentConfig.config.token);
+    : !!(currentConfig.config.url && currentConfig.config.token);
 
   const updateField = (field: string, value: any) => setIntegrations({
     ...integrations,
@@ -190,7 +190,7 @@ export default function IntegrationsPage() {
   const tabs = [
     { id: "chatwoot", label: "Chatwoot", icon: MessageSquare },
     { id: "evo", label: "EVO W12", icon: Zap },
-    { id: "uzap", label: "UazAPI", icon: Hash },
+    { id: "uazapi", label: "UazAPI", icon: Hash },
   ];
 
   return (
@@ -516,6 +516,24 @@ export default function IntegrationsPage() {
                               </button>
                             </div>
                           </div>
+                          <div className="md:col-span-2 space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                              <KeyRound className="w-3 h-3 text-[#00d2ff]" />Segredo do Webhook
+                              {currentConfig.config.webhook_secret && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showTokens["chatwoot_webhook_secret"] ? "text" : "password"}
+                                value={currentConfig.config.webhook_secret || ""}
+                                onChange={e => updateField("webhook_secret", e.target.value)}
+                                className={`${inputClass} font-mono pr-14 ${currentConfig.config.webhook_secret && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                                placeholder="Segredo gerado pelo Chatwoot" />
+                              <button type="button" onClick={() => toggleTokenVisibility("chatwoot_webhook_secret")}
+                                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
+                                {showTokens["chatwoot_webhook_secret"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
                         </div>
 
                         <div className="md:col-span-2 flex items-center justify-between bg-slate-900/60 px-5 py-4 rounded-2xl border border-white/5">
@@ -533,15 +551,15 @@ export default function IntegrationsPage() {
                         </>
                       )}
 
-                      {activeTab === "uzap" && (
+                      {activeTab === "uazapi" && (
                         <div className="grid grid-cols-1 gap-8">
                           <div className="space-y-3">
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
                               <Globe className="w-3 h-3 text-[#00d2ff]" />Endpoint API
-                              {currentConfig.config.api_url && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                              {currentConfig.config.url && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
                             </label>
-                            <input type="text" value={currentConfig.config.api_url || ""} onChange={e => updateField("api_url", e.target.value)}
-                              className={`${inputClass} ${currentConfig.config.api_url && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                            <input type="text" value={currentConfig.config.url || ""} onChange={e => updateField("url", e.target.value)}
+                              className={`${inputClass} ${currentConfig.config.url && currentConfig.id ? "border-emerald-500/15" : ""}`}
                               placeholder="https://api.uazapi.com/v1" />
                           </div>
                           <div className="space-y-3">

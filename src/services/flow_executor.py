@@ -976,9 +976,11 @@ async def _execute_from(
         if url:
             m_type = data.get("type", "image")
             caption = _render_vars(data.get("caption", ""), session_vars)
+            await _bot_sent_marker(empresa_id, phone)
             await uaz_client.send_media(phone, url, m_type, delay=1000)
             # Legenda se houver e for imagem/video
             if caption and m_type in ["image", "video"]:
+                 await _bot_sent_marker(empresa_id, phone)
                  await uaz_client.send_text(phone, caption)
         
         next_id = _get_next_node_id(fluxo, node_id)
@@ -1191,8 +1193,12 @@ async def _execute_webhook(data: Dict, session_vars: Dict, empresa_id: int, phon
 # ─────────────────────────────────────────────────────────────
 
 async def _bot_sent_marker(empresa_id: int, phone: str, unidade_id: int = 0):
-    """Marca que o próximo fromMe é do bot (não do atendente humano)."""
-    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 30, "1")
+    """Marca que o próximo fromMe é do bot (não do atendente humano).
+    TTL 120s: mídia gera múltiplos webhooks (sent + thumbnail + delivered).
+    Seta chave multi-tenant E legada para compatibilidade.
+    """
+    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 120, "1")
+    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 120, "1")
 
 
 # ─────────────────────────────────────────────────────────────

@@ -354,13 +354,20 @@ async def chatwoot_webhook(
     # Se chegamos aqui sem slug, a IA responderá como Consultor Global
 
     if message_type == "outgoing" and sender_type == "user":
-        if is_ai_message:
+        # Verifica se é mensagem da IA ou echo do UazAPI
+        _is_uaz_echo_wh = await exists_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{id_conv}")
+        if not _is_uaz_echo_wh:
+            _fone_echo_wh = await get_tenant_cache(empresa_id, f"fone_cliente:{id_conv}")
+            if _fone_echo_wh:
+                _is_uaz_echo_wh = bool(await redis_client.exists(f"uaz_bot_sent:{empresa_id}:{_fone_echo_wh}"))
+            if not _is_uaz_echo_wh:
+                _is_uaz_echo_wh = bool(await redis_client.exists(f"uaz_bot_sent:{id_conv}"))
+
+        if is_ai_message or _is_uaz_echo_wh:
+            logger.info(f"🦾 Mensagem reconhecida como IA/bot — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
-            
-        if message_type == "outgoing" and await exists_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{id_conv}"):
-            logger.info(f"⏭️ Ignorando bloqueio: mensagem reconhecida como eco do UazAPI (conv: {id_conv})")
-            return {"status": "ignorado_uazapi_echo"}
-                
+
+        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Outgoing sem marcador")
         await set_tenant_cache(empresa_id, f"pause_ia:{id_conv}", "1", 43200)
         if _database.db_pool:
             await _database.db_pool.execute(

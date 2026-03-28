@@ -80,14 +80,13 @@ class UazAPIClient:
         return res is not None
 
     async def send_ptt(self, number: str, file_url: str, delay: int = 0) -> bool:
-        """Envia áudio como PTT (gravado na hora)."""
+        """Envia áudio como PTT (Push-to-Talk / mensagem de voz)."""
         clean_number = "".join(filter(str.isdigit, number))
         payload = {
             "number": clean_number,
-            "type": "audio",
+            "type": "ptt",
             "file": file_url,
-            "ptt": True,
-            "delay": str(delay)
+            "delay": delay
         }
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None
@@ -142,4 +141,71 @@ class UazAPIClient:
             return False
 
         res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_buttons(self, number: str, text: str, buttons: list, footer: str = "") -> bool:
+        """
+        Envia mensagem com botões de resposta rápida (máx 3 no WhatsApp).
+        buttons: [{"id": "btn1", "text": "Opção 1"}, ...]
+        """
+        clean_number = "".join(filter(str.isdigit, number))
+        choices = [btn.get("text", btn.get("titulo", "")) for btn in buttons[:3]]
+        payload = {
+            "number": clean_number,
+            "type": "button",
+            "text": text,
+            "footerText": footer,
+            "choices": choices,
+            "readchat": True,
+            "readmessages": True,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_list(self, number: str, text: str, sections: list,
+                        button_text: str = "Ver opções", footer: str = "") -> bool:
+        """
+        Envia lista interativa com seções e itens (máx 10 opções no WhatsApp).
+        sections: [{"title": "Seção", "rows": [{"id": "1", "title": "Item", "description": "Desc"}]}]
+        """
+        clean_number = "".join(filter(str.isdigit, number))
+        choices = []
+        for section in sections:
+            section_title = section.get("title", "Opções")
+            choices.append(f"[{section_title}]")
+            for row in section.get("rows", []):
+                titulo = row.get("title", "")
+                row_id = row.get("id", titulo)
+                desc = row.get("description", "")
+                choices.append(f"{titulo}|{row_id}|{desc}")
+
+        payload = {
+            "number": clean_number,
+            "type": "list",
+            "text": text,
+            "footerText": footer,
+            "listButton": button_text,
+            "selectableCount": 1,
+            "choices": choices,
+            "readchat": True,
+            "readmessages": True,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_location(self, number: str, latitude: float, longitude: float,
+                            name: str = "", address: str = "") -> bool:
+        """Envia localização (pin no mapa) via WhatsApp."""
+        clean_number = "".join(filter(str.isdigit, number))
+        payload = {
+            "number": clean_number,
+            "latitude": latitude,
+            "longitude": longitude,
+            "name": name,
+            "address": address,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/location", json=payload)
         return res is not None

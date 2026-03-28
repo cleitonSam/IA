@@ -6,7 +6,7 @@ import {
   Building2, Plus, Pencil, Trash2, Save, X, Loader2,
   CheckCircle2, MapPin, Phone, Globe, Instagram, Clock,
   Dumbbell, CreditCard, Shield, Sparkles, Layers,
-  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload, Video
+  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload, Video, Wand2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -59,6 +59,9 @@ export default function UnitsPage() {
   const [success, setSuccess] = useState(false);
   const [loadingUnit, setLoadingUnit] = useState(false);
   const [formData, setFormData] = useState<any>(emptyForm);
+  const [extractingGrade, setExtractingGrade] = useState(false);
+  const [uploadingField, setUploadingField] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const getConfig = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
@@ -158,6 +161,28 @@ export default function UnitsPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Validação client-side
+    const isVideo = file.type.startsWith("video/");
+    const isImage = file.type.startsWith("image/");
+    const maxSize = 50 * 1024 * 1024; // 50MB
+
+    if (!isImage && !isVideo) {
+      alert(`Formato não suportado: ${file.type || "desconhecido"}.\n\nFormatos aceitos:\n• Imagens: JPG, PNG, WebP\n• Vídeos: MP4, MOV`);
+      return;
+    }
+    if (fieldName === "foto_grade" && isVideo) {
+      alert("A foto da grade deve ser uma imagem (JPG, PNG).");
+      return;
+    }
+    if (file.size > maxSize) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      alert(`Arquivo muito grande (${sizeMB}MB).\nO limite é 50MB.`);
+      return;
+    }
+
+    setUploadingField(fieldName);
+    setUploadProgress(0);
+
     const formDataUpload = new FormData();
     formDataUpload.append("file", file);
 
@@ -166,12 +191,50 @@ export default function UnitsPage() {
         headers: {
           ...getConfig().headers,
           "Content-Type": "multipart/form-data"
+        },
+        timeout: 300000, // 5 min para vídeos grandes
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(pct);
+          }
         }
       });
       setFormData({ ...formData, [fieldName]: res.data.url });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Erro no upload:", err);
-      alert("Falha ao subir arquivo. Verifique o tamanho/formato.");
+      const detail = err?.response?.data?.detail;
+      alert(detail || "Falha ao subir arquivo. Verifique o tamanho/formato e tente novamente.");
+    } finally {
+      setUploadingField(null);
+      setUploadProgress(0);
+    }
+  };
+
+  const handleExtrairGrade = async () => {
+    if (!formData.foto_grade) return;
+    setExtractingGrade(true);
+    try {
+      const res = await axios.post("/api-backend/dashboard/unidades/extrair-grade", {
+        image_url: formData.foto_grade
+      }, getConfig());
+
+      if (res.data.success && res.data.modalidades) {
+        setFormData((prev: any) => ({ ...prev, modalidades: res.data.modalidades }));
+        // Scroll para o campo modalidades para o admin visualizar
+        setTimeout(() => {
+          const el = document.getElementById("modalidades-textarea");
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 300);
+      } else {
+        alert("Não foi possível extrair modalidades da imagem.");
+      }
+    } catch (err: any) {
+      console.error("Erro na extração:", err);
+      const msg = err?.response?.data?.detail || "Erro ao extrair modalidades da imagem.";
+      alert(msg);
+    } finally {
+      setExtractingGrade(false);
     }
   };
 
@@ -325,6 +388,20 @@ export default function UnitsPage() {
                           <div className="flex items-center gap-3 text-xs text-slate-400">
                             <Instagram className="w-3.5 h-3.5 text-[#00d2ff]/40 shrink-0" />
                             <span>@{unit.instagram}</span>
+                          </div>
+                        )}
+                        {unit.convenios && typeof unit.convenios === "object" && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {unit.convenios.gympass_wellhub && unit.convenios.gympass_wellhub !== "Não aceita" && (
+                              <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                                GP {unit.convenios.gympass_wellhub}
+                              </span>
+                            )}
+                            {unit.convenios.totalpass && unit.convenios.totalpass !== "Não aceita" && (
+                              <span className="px-2.5 py-1 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-bold uppercase tracking-wider">
+                                TP {unit.convenios.totalpass}
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -507,7 +584,7 @@ export default function UnitsPage() {
                             placeholder={"Seg-Sex: 06h às 23h\nSáb: 09h às 17h\nDom: 09h às 13h"} />
                         </Field>
                         <Field label="Modalidades & Especialidades" icon={Dumbbell}>
-                          <textarea rows={7} value={formData.modalidades}
+                          <textarea id="modalidades-textarea" rows={7} value={formData.modalidades}
                             onChange={e => setFormData({ ...formData, modalidades: e.target.value })}
                             className={textareaClass}
                             placeholder="Musculação, CrossFit, Pilates, Lutas..." />
@@ -517,35 +594,67 @@ export default function UnitsPage() {
                           <Field label="Grade de Aulas / Horários (Imagem)" icon={ImagePlus}>
                             <div className="flex flex-col md:flex-row gap-6 items-start">
                               <div className="flex-1 w-full">
-                                <label className="flex flex-col items-center justify-center w-full h-44 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[2rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
-                                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                                    <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                                      <Upload className="w-6 h-6 text-[#00d2ff]" />
+                                <label className={`flex flex-col items-center justify-center w-full h-44 bg-slate-900/40 border-2 border-dashed ${uploadingField === "foto_grade" ? "border-[#00d2ff]/50 animate-pulse" : "border-white/5 hover:border-[#00d2ff]/30"} rounded-[2rem] ${uploadingField === "foto_grade" ? "cursor-wait pointer-events-none" : "cursor-pointer"} transition-all hover:bg-slate-900/60 overflow-hidden group`}>
+                                  {uploadingField === "foto_grade" ? (
+                                    <div className="flex flex-col items-center justify-center pt-5 pb-6 w-full px-6">
+                                      <Loader2 className="w-10 h-10 text-[#00d2ff] animate-spin mb-3" />
+                                      <p className="text-xs font-bold text-[#00d2ff] uppercase tracking-widest mb-2">Enviando imagem...</p>
+                                      <div className="w-full max-w-[180px] bg-slate-800 rounded-full h-2 overflow-hidden">
+                                        <div className="h-full bg-gradient-to-r from-[#00d2ff] to-[#a855f7] rounded-full transition-all duration-300 ease-out" style={{ width: `${uploadProgress}%` }} />
+                                      </div>
+                                      <p className="text-[10px] text-[#00d2ff]/70 mt-1.5 font-mono">{uploadProgress}%</p>
                                     </div>
-                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
-                                    <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
-                                  </div>
-                                  <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} />
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                      <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                        <Upload className="w-6 h-6 text-[#00d2ff]" />
+                                      </div>
+                                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
+                                      <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
+                                    </div>
+                                  )}
+                                  <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} disabled={!!uploadingField} />
                                 </label>
                               </div>
                               
                               {formData.foto_grade && (
-                                <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
-                                  <img 
-                                    src={formData.foto_grade} 
-                                    alt="Preview Grade" 
-                                    className="w-full h-full object-cover transition-transform duration-500 group-hover/preview:scale-110" 
-                                  />
+                                <div className="flex flex-col items-center gap-3">
+                                  <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
+                                    <img
+                                      src={formData.foto_grade}
+                                      alt="Preview Grade"
+                                      className="w-full h-full object-cover transition-transform duration-500 group-hover/preview:scale-110"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setFormData({ ...formData, foto_grade: "" })}
+                                      className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                    <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
+                                      <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
+                                    </div>
+                                  </div>
                                   <button
                                     type="button"
-                                    onClick={() => setFormData({ ...formData, foto_grade: "" })}
-                                    className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                    onClick={handleExtrairGrade}
+                                    disabled={extractingGrade}
+                                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-wider transition-all bg-gradient-to-r from-[#00d2ff]/20 to-[#a855f7]/20 hover:from-[#00d2ff]/30 hover:to-[#a855f7]/30 text-white border border-[#00d2ff]/30 hover:border-[#a855f7]/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="Usa IA para ler a imagem da grade e preencher automaticamente o campo Modalidades & Especialidades"
                                   >
-                                    <Trash2 className="w-4 h-4" />
+                                    {extractingGrade ? (
+                                      <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Extraindo...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Wand2 className="w-4 h-4" />
+                                        Extrair Modalidades com IA
+                                      </>
+                                    )}
                                   </button>
-                                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
-                                    <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
-                                  </div>
                                 </div>
                               )}
                             </div>
@@ -562,15 +671,26 @@ export default function UnitsPage() {
                                     onChange={e => setFormData({ ...formData, link_tour_virtual: e.target.value })}
                                     className={`${inputClass} pl-12`} placeholder="Cole o link do vídeo (YouTube, Vimeo ou upload direto)" />
                                 </div>
-                                <label className="flex flex-col items-center justify-center w-full h-24 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[1.5rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
-                                  <div className="flex flex-col items-center justify-center py-2">
-                                    <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
-                                      <Upload className="w-4 h-4 text-[#00d2ff]" />
+                                <label className={`flex flex-col items-center justify-center w-full ${uploadingField === "link_tour_virtual" ? "h-28" : "h-24"} bg-slate-900/40 border-2 border-dashed ${uploadingField === "link_tour_virtual" ? "border-[#00d2ff]/50 animate-pulse" : "border-white/5 hover:border-[#00d2ff]/30"} rounded-[1.5rem] ${uploadingField === "link_tour_virtual" ? "cursor-wait pointer-events-none" : "cursor-pointer"} transition-all hover:bg-slate-900/60 overflow-hidden group`}>
+                                  {uploadingField === "link_tour_virtual" ? (
+                                    <div className="flex flex-col items-center justify-center py-2 w-full px-6">
+                                      <Loader2 className="w-7 h-7 text-[#00d2ff] animate-spin mb-2" />
+                                      <p className="text-[10px] font-bold text-[#00d2ff] uppercase tracking-widest mb-1.5">Enviando vídeo...</p>
+                                      <div className="w-full max-w-[240px] bg-slate-800 rounded-full h-2 overflow-hidden">
+                                        <div className="h-full bg-gradient-to-r from-[#00d2ff] to-[#a855f7] rounded-full transition-all duration-300 ease-out" style={{ width: `${uploadProgress}%` }} />
+                                      </div>
+                                      <p className="text-[10px] text-[#00d2ff]/70 mt-1 font-mono">{uploadProgress}%</p>
                                     </div>
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
-                                    <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 20MB)</p>
-                                  </div>
-                                  <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} />
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center py-2">
+                                      <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
+                                        <Upload className="w-4 h-4 text-[#00d2ff]" />
+                                      </div>
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
+                                      <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 50MB)</p>
+                                    </div>
+                                  )}
+                                  <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} disabled={!!uploadingField} />
                                 </label>
                               </div>
                               
@@ -623,10 +743,53 @@ export default function UnitsPage() {
                           />
                         </Field>
                         <Field label="Convênios Parceiros" icon={HeartHandshake}>
-                          <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
-                            value={typeof formData.convenios === "object" ? JSON.stringify(formData.convenios, null, 2) : formData.convenios}
-                            onChange={e => { try { setFormData({ ...formData, convenios: JSON.parse(e.target.value) }); } catch { setFormData({ ...formData, convenios: e.target.value }); } }}
-                          />
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Gympass / Wellhub</label>
+                                <select
+                                  value={typeof formData.convenios === "object" ? (formData.convenios?.gympass_wellhub || "Não aceita") : "Não aceita"}
+                                  onChange={e => {
+                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                    setFormData({ ...formData, convenios: { ...prev, gympass_wellhub: e.target.value } });
+                                  }}
+                                  className={inputClass}
+                                >
+                                  {["Não aceita","Basic","Basic+","Silver","Gold","Gold+","Platinum","Diamond","Black"].map(o => (
+                                    <option key={o} value={o}>{o}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Totalpass</label>
+                                <select
+                                  value={typeof formData.convenios === "object" ? (formData.convenios?.totalpass || "Não aceita") : "Não aceita"}
+                                  onChange={e => {
+                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                    setFormData({ ...formData, convenios: { ...prev, totalpass: e.target.value } });
+                                  }}
+                                  className={inputClass}
+                                >
+                                  {["Não aceita","TP1","TP1+","TP2","TP2+","TP3","TP3+"].map(o => (
+                                    <option key={o} value={o}>{o}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Outros convênios (Sesc, Sesi…)</label>
+                              <input
+                                type="text"
+                                placeholder="Ex: Sesc, Sesi, Convênio Empresa XYZ"
+                                value={typeof formData.convenios === "object" ? (formData.convenios?.outros || "") : ""}
+                                onChange={e => {
+                                  const prev = typeof formData.convenios === "object" ? formData.convenios : {};
+                                  setFormData({ ...formData, convenios: { ...prev, outros: e.target.value } });
+                                }}
+                                className={inputClass}
+                              />
+                            </div>
+                          </div>
                         </Field>
                       </div>
                     )}

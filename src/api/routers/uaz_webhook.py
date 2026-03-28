@@ -1,4 +1,6 @@
 import uuid
+import json
+import asyncio
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
@@ -18,6 +20,8 @@ async def uazapi_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(None),       # webhook secret opcional
+    x_webhook_token: str = Header(None),
+    authorization: str = Header(None)
 ):
     """
     Recebe webhooks da UazAPI.
@@ -50,15 +54,35 @@ async def uazapi_webhook(
         )
         return {"status": "ignored", "reason": "integration_not_active"}
 
-    # Validação opcional de webhook secret
-    webhook_secret = integracao.get("webhook_secret")
-    if webhook_secret:
-        if not x_api_key or x_api_key != webhook_secret:
+    # Validação opcional de webhook secret (suporta X-Api-Key, X-Webhook-Token e Authorization)
+    _expected_secret = integracao.get("webhook_secret") or integracao.get("webhook_token")
+    if _expected_secret:
+        _received = x_api_key or x_webhook_token or (authorization.replace("Bearer ", "") if authorization else None)
+        if not _received or _received != _expected_secret:
             logger.warning(f"🔐 Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id})")
             raise HTTPException(status_code=401, detail="Webhook secret inválido")
 
     try:
         event = body.get("event")
+
+        # --- Read Receipts Tracking ---
+        if event == "messages.update":
+            _updates = body.get("data", {}).get("messages", [])
+            for _upd in _updates:
+                _upd_status = _upd.get("status")
+                _upd_key = _upd.get("key", {})
+                _upd_phone = (_upd_key.get("remoteJid") or "").split("@")[0]
+                if _upd_status in (3, 4, "READ", "PLAYED") and _upd_phone:
+                    # Status 3=DELIVERED, 4=READ/PLAYED
+                    _conv = await buscar_conversa_por_fone(_upd_phone, empresa_id)
+                    if _conv:
+                        from src.services.db_queries import bd_registrar_evento_funil
+                        _tipo = "mensagem_lida" if _upd_status in (4, "READ", "PLAYED") else "mensagem_entregue"
+                        await bd_registrar_evento_funil(
+                            _conv.get("conversation_id"), empresa_id,
+                            _tipo, f"phone={_upd_phone}", score_incremento=0
+                        )
+            return {"status": "receipts_tracked", "count": len(_updates)}
 
         # Só processamos novas mensagens recebidas
         if event != "messages.upsert":
@@ -76,20 +100,28 @@ async def uazapi_webhook(
 
         # fromMe=true pode ser o BOT (via API) ou um ATENDENTE HUMANO (via WhatsApp)
         if key.get("fromMe"):
-            # Verifica chave com unidade_id (padrão novo) e sem (padrão legado) para compatibilidade
+            # Verifica chaves multi-tenant (novo) + empresa:phone (legado) + conv_id (main.py)
             bot_sent_key = f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}"
             bot_sent_key_legacy = f"uaz_bot_sent:{empresa_id}:{phone}"
-            is_bot = await redis_client.exists(bot_sent_key) or await redis_client.exists(bot_sent_key_legacy)
-            if is_bot:
+            _conv_check = await buscar_conversa_por_fone(phone, empresa_id)
+            _conv_id_check = _conv_check.get("conversation_id") if _conv_check else None
+            bot_sent_conv_key = f"uaz_bot_sent:{_conv_id_check}" if _conv_id_check else None
+
+            _is_bot = (
+                await redis_client.exists(bot_sent_key) or
+                await redis_client.exists(bot_sent_key_legacy) or
+                (bool(bot_sent_conv_key) and await redis_client.exists(bot_sent_conv_key))
+            )
+
+            if _is_bot:
                 # É o próprio bot — ignora sem pausar
-                await redis_client.delete(bot_sent_key)
-                await redis_client.delete(bot_sent_key_legacy)
+                # NÃO deleta a key: mídia gera múltiplos webhooks (sent + thumbnail + delivered)
+                # A key expira naturalmente pelo TTL
                 return {"status": "ignored", "reason": "from_me_bot"}
             else:
                 # É um atendente humano enviando manualmente — pausa a IA
-                conversa_humana = await buscar_conversa_por_fone(phone, empresa_id)
-                if conversa_humana:
-                    conv_id_humano = conversa_humana.get("conversation_id")
+                if _conv_check:
+                    conv_id_humano = _conv_check.get("conversation_id")
                     await redis_client.setex(f"pause_ia:{empresa_id}:{conv_id_humano}", 43200, "1")
                     logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
                 return {"status": "ignored", "reason": "from_me_human"}
@@ -101,6 +133,16 @@ async def uazapi_webhook(
         extended      = msg_payload.get("extendedTextMessage", {}).get("text")
         image_caption = msg_payload.get("imageMessage", {}).get("caption")
         video_caption = msg_payload.get("videoMessage", {}).get("caption")
+
+        # Áudio (PTT ou arquivo de áudio)
+        audio_msg = msg_payload.get("audioMessage") or msg_payload.get("pttMessage")
+        has_audio = bool(audio_msg)
+
+        # Imagem e Vídeo (multimodal — IA "vê" a imagem)
+        image_msg = msg_payload.get("imageMessage")
+        video_msg = msg_payload.get("videoMessage")
+        has_image = bool(image_msg)
+        has_video = bool(video_msg)
 
         # Seleção de lista interativa (type=list)
         list_reply    = msg_payload.get("listResponseMessage", {})
@@ -119,8 +161,17 @@ async def uazapi_webhook(
         else:
             content = conversation or extended or image_caption or video_caption or ""
 
-        if not content:
+        has_media = has_audio or has_image or has_video
+        if not content and not has_media:
             return {"status": "ignored", "reason": "empty_content"}
+
+        # Placeholder para mídia sem texto — será complementado pelo pipeline
+        if not content and has_audio:
+            content = "[Áudio recebido]"
+        elif not content and has_image:
+            content = "[Imagem recebida]"
+        elif not content and has_video:
+            content = "[Vídeo recebido]"
 
         # Buscar se já existe uma conversa interna para este telefone
         conversa_existente = await buscar_conversa_por_fone(phone, empresa_id)
@@ -149,7 +200,7 @@ async def uazapi_webhook(
 
             if not _ia_pausada_fluxo and not _phone_paused:
                 _uaz_fluxo = UazAPIClient(
-                    base_url=integracao.get("url", ""),
+                    base_url=integracao.get("url") or integracao.get("api_url") or "",
                     token=integracao.get("token", ""),
                     instance_name=integracao.get("instance", "default")
                 )
@@ -201,7 +252,7 @@ async def uazapi_webhook(
                 if menu_config and menu_config.get("ativo"):
                     try:
                         uaz_menu = UazAPIClient(
-                            base_url=integracao.get("url", ""),
+                            base_url=integracao.get("url") or integracao.get("api_url") or "",
                             token=integracao.get("token", ""),
                             instance_name=integracao.get("instance", "default")
                         )
@@ -222,6 +273,39 @@ async def uazapi_webhook(
 
         # --- Fim do Menu de Triagem ---
 
+        # --- Detecção de URLs de Mídia (Áudio, Imagem, Vídeo) ---
+        media_url = (
+            data.get("mediaUrl") or
+            body.get("mediaUrl") or
+            message.get("mediaUrl") or
+            ""
+        )
+
+        audio_url = ""
+        image_url = ""
+
+        if has_audio:
+            audio_url = media_url
+            if audio_url:
+                logger.info(f"🎙️ UazAPI: Áudio com mediaUrl para {phone} | {audio_url[:80]}...")
+            else:
+                logger.info(f"🎙️ UazAPI: Áudio detectado para {phone} (sem mediaUrl no payload, worker resolverá via Chatwoot)")
+
+        if has_image or has_video:
+            image_url = media_url
+            if image_url:
+                logger.info(f"🖼️ UazAPI: {'Imagem' if has_image else 'Vídeo'} com mediaUrl para {phone} | {image_url[:80]}...")
+            else:
+                logger.info(f"🖼️ UazAPI: {'Imagem' if has_image else 'Vídeo'} detectado para {phone} (sem mediaUrl, worker resolverá via Chatwoot)")
+
+        # --- Dedup cross-webhook: evita processar a mesma mensagem 2x ---
+        _uaz_msg_id = key.get("id", "")
+        if _uaz_msg_id:
+            _dedup_key = f"dedup:msg:{empresa_id}:{phone}:{_uaz_msg_id}"
+            if not await redis_client.set(_dedup_key, "1", nx=True, ex=120):
+                logger.info(f"🔁 Mensagem duplicada ignorada (dedup): {phone} msg_id={_uaz_msg_id}")
+                return {"status": "ignored", "reason": "duplicate"}
+
         job_data = {
             "source": "uazapi",
             "empresa_id": str(empresa_id),
@@ -229,8 +313,12 @@ async def uazapi_webhook(
             "phone": phone,
             "content": content,
             "nome_cliente": data.get("pushName") or "Cliente WhatsApp",
-            "msg_id": key.get("id"),
+            "msg_id": _uaz_msg_id,
             "instance": instance_name,
+            "has_audio": "1" if has_audio else "",
+            "audio_url": audio_url,
+            "has_image": "1" if (has_image or has_video) else "",
+            "image_url": image_url,
         }
 
         # Publicar no Redis Streams

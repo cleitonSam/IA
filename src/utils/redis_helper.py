@@ -7,13 +7,25 @@ def get_tenant_key(empresa_id: int, key: str) -> str:
     """Gera uma chave Redis prefixada com o empresa_id."""
     return f"{empresa_id}:{key}"
 
-async def set_tenant_cache(empresa_id: int, key: str, value: Any, ttl: int = 3600):
-    """Salva um valor no cache do Redis prefixado pelo empresa_id."""
+async def set_tenant_cache(empresa_id: int, key: str, value: Any, ttl: int = 3600, nx: bool = False) -> bool:
+    """Salva um valor no cache do Redis prefixado pelo empresa_id.
+
+    Se nx=True, só salva se a chave não existir (SET NX). Retorna True se salvou, False se já existia.
+    """
     t_key = get_tenant_key(empresa_id, key)
     if isinstance(value, (dict, list)):
+        if nx:
+            # Para JSON com NX, verifica se existe antes
+            if await redis_client.exists(t_key):
+                return False
         await redis_set_json(t_key, value, ttl)
+        return True
     else:
+        if nx:
+            result = await redis_client.set(t_key, value, nx=True, ex=ttl)
+            return bool(result)
         await redis_client.setex(t_key, ttl, value)
+        return True
 
 async def get_tenant_cache(empresa_id: int, key: str, is_json: bool = False) -> Any:
     """Recupera um valor do cache do Redis prefixado pelo empresa_id."""
