@@ -546,23 +546,41 @@ async def upload_unidade_foto(
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Realiza o upload de uma imagem para o ImageKit.
-    Retorna a URL da imagem.
+    Realiza o upload de imagem ou vídeo para o ImageKit.
+    Aceita: imagens (JPG, PNG, WebP) e vídeos (MP4, MOV, AVI).
+    Limite: 50MB.
     """
-    # Validação simples de tipo
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="O arquivo deve ser uma imagem")
-    
+    content_type = (file.content_type or "").lower()
+    is_image = content_type.startswith("image/")
+    is_video = content_type.startswith("video/")
+
+    if not is_image and not is_video:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato não suportado: {content_type}. Envie imagem (JPG, PNG) ou vídeo (MP4, MOV)."
+        )
+
+    # Limite de tamanho: 50MB
+    max_size = 50 * 1024 * 1024
+    content = await file.read()
+    if len(content) > max_size:
+        size_mb = len(content) / (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Arquivo muito grande ({size_mb:.1f}MB). O limite é 50MB."
+        )
+
     try:
-        content = await file.read()
-        url = await upload_to_imagekit(content, file.filename)
+        # Pasta separada para vídeos
+        folder = "/unidades/videos" if is_video else "/unidades"
+        url = await upload_to_imagekit(content, file.filename, folder=folder)
         if not url:
-            raise HTTPException(status_code=500, detail="Erro ao fazer upload para o ImageKit")
-        
-        return {"url": url}
+            raise HTTPException(status_code=500, detail="Erro ao fazer upload. Tente novamente.")
+
+        return {"url": url, "type": "video" if is_video else "image"}
     except Exception as e:
         logger.error(f"Erro no endpoint de upload: {e}")
-        raise HTTPException(status_code=500, detail="Erro interno no upload")
+        raise HTTPException(status_code=500, detail="Erro interno no upload. Tente novamente.")
 
 
 class ExtrairGradeRequest(BaseModel):

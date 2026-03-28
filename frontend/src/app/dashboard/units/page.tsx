@@ -60,6 +60,8 @@ export default function UnitsPage() {
   const [loadingUnit, setLoadingUnit] = useState(false);
   const [formData, setFormData] = useState<any>(emptyForm);
   const [extractingGrade, setExtractingGrade] = useState(false);
+  const [uploadingField, setUploadingField] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const getConfig = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
@@ -159,6 +161,28 @@ export default function UnitsPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Validação client-side
+    const isVideo = file.type.startsWith("video/");
+    const isImage = file.type.startsWith("image/");
+    const maxSize = 50 * 1024 * 1024; // 50MB
+
+    if (!isImage && !isVideo) {
+      alert(`Formato não suportado: ${file.type || "desconhecido"}.\n\nFormatos aceitos:\n• Imagens: JPG, PNG, WebP\n• Vídeos: MP4, MOV`);
+      return;
+    }
+    if (fieldName === "foto_grade" && isVideo) {
+      alert("A foto da grade deve ser uma imagem (JPG, PNG).");
+      return;
+    }
+    if (file.size > maxSize) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      alert(`Arquivo muito grande (${sizeMB}MB).\nO limite é 50MB.`);
+      return;
+    }
+
+    setUploadingField(fieldName);
+    setUploadProgress(0);
+
     const formDataUpload = new FormData();
     formDataUpload.append("file", file);
 
@@ -167,12 +191,23 @@ export default function UnitsPage() {
         headers: {
           ...getConfig().headers,
           "Content-Type": "multipart/form-data"
+        },
+        timeout: 300000, // 5 min para vídeos grandes
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(pct);
+          }
         }
       });
       setFormData({ ...formData, [fieldName]: res.data.url });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Erro no upload:", err);
-      alert("Falha ao subir arquivo. Verifique o tamanho/formato.");
+      const detail = err?.response?.data?.detail;
+      alert(detail || "Falha ao subir arquivo. Verifique o tamanho/formato e tente novamente.");
+    } finally {
+      setUploadingField(null);
+      setUploadProgress(0);
     }
   };
 
@@ -559,15 +594,26 @@ export default function UnitsPage() {
                           <Field label="Grade de Aulas / Horários (Imagem)" icon={ImagePlus}>
                             <div className="flex flex-col md:flex-row gap-6 items-start">
                               <div className="flex-1 w-full">
-                                <label className="flex flex-col items-center justify-center w-full h-44 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[2rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
-                                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                                    <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                                      <Upload className="w-6 h-6 text-[#00d2ff]" />
+                                <label className={`flex flex-col items-center justify-center w-full h-44 bg-slate-900/40 border-2 border-dashed ${uploadingField === "foto_grade" ? "border-[#00d2ff]/50 animate-pulse" : "border-white/5 hover:border-[#00d2ff]/30"} rounded-[2rem] ${uploadingField === "foto_grade" ? "cursor-wait pointer-events-none" : "cursor-pointer"} transition-all hover:bg-slate-900/60 overflow-hidden group`}>
+                                  {uploadingField === "foto_grade" ? (
+                                    <div className="flex flex-col items-center justify-center pt-5 pb-6 w-full px-6">
+                                      <Loader2 className="w-10 h-10 text-[#00d2ff] animate-spin mb-3" />
+                                      <p className="text-xs font-bold text-[#00d2ff] uppercase tracking-widest mb-2">Enviando imagem...</p>
+                                      <div className="w-full max-w-[180px] bg-slate-800 rounded-full h-2 overflow-hidden">
+                                        <div className="h-full bg-gradient-to-r from-[#00d2ff] to-[#a855f7] rounded-full transition-all duration-300 ease-out" style={{ width: `${uploadProgress}%` }} />
+                                      </div>
+                                      <p className="text-[10px] text-[#00d2ff]/70 mt-1.5 font-mono">{uploadProgress}%</p>
                                     </div>
-                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
-                                    <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
-                                  </div>
-                                  <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} />
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                      <div className="w-12 h-12 rounded-2xl bg-[#00d2ff]/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                        <Upload className="w-6 h-6 text-[#00d2ff]" />
+                                      </div>
+                                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clique para subir imagem</p>
+                                      <p className="text-[10px] text-slate-600 mt-1 uppercase tracking-wider">PNG, JPG ou WEBP (Max 5MB)</p>
+                                    </div>
+                                  )}
+                                  <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} disabled={!!uploadingField} />
                                 </label>
                               </div>
                               
@@ -625,15 +671,26 @@ export default function UnitsPage() {
                                     onChange={e => setFormData({ ...formData, link_tour_virtual: e.target.value })}
                                     className={`${inputClass} pl-12`} placeholder="Cole o link do vídeo (YouTube, Vimeo ou upload direto)" />
                                 </div>
-                                <label className="flex flex-col items-center justify-center w-full h-24 bg-slate-900/40 border-2 border-dashed border-white/5 hover:border-[#00d2ff]/30 rounded-[1.5rem] cursor-pointer transition-all hover:bg-slate-900/60 overflow-hidden group">
-                                  <div className="flex flex-col items-center justify-center py-2">
-                                    <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
-                                      <Upload className="w-4 h-4 text-[#00d2ff]" />
+                                <label className={`flex flex-col items-center justify-center w-full ${uploadingField === "link_tour_virtual" ? "h-28" : "h-24"} bg-slate-900/40 border-2 border-dashed ${uploadingField === "link_tour_virtual" ? "border-[#00d2ff]/50 animate-pulse" : "border-white/5 hover:border-[#00d2ff]/30"} rounded-[1.5rem] ${uploadingField === "link_tour_virtual" ? "cursor-wait pointer-events-none" : "cursor-pointer"} transition-all hover:bg-slate-900/60 overflow-hidden group`}>
+                                  {uploadingField === "link_tour_virtual" ? (
+                                    <div className="flex flex-col items-center justify-center py-2 w-full px-6">
+                                      <Loader2 className="w-7 h-7 text-[#00d2ff] animate-spin mb-2" />
+                                      <p className="text-[10px] font-bold text-[#00d2ff] uppercase tracking-widest mb-1.5">Enviando vídeo...</p>
+                                      <div className="w-full max-w-[240px] bg-slate-800 rounded-full h-2 overflow-hidden">
+                                        <div className="h-full bg-gradient-to-r from-[#00d2ff] to-[#a855f7] rounded-full transition-all duration-300 ease-out" style={{ width: `${uploadProgress}%` }} />
+                                      </div>
+                                      <p className="text-[10px] text-[#00d2ff]/70 mt-1 font-mono">{uploadProgress}%</p>
                                     </div>
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
-                                    <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 20MB)</p>
-                                  </div>
-                                  <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} />
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center py-2">
+                                      <div className="w-8 h-8 rounded-xl bg-[#00d2ff]/10 flex items-center justify-center mb-1 group-hover:scale-110 transition-transform">
+                                        <Upload className="w-4 h-4 text-[#00d2ff]" />
+                                      </div>
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
+                                      <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 50MB)</p>
+                                    </div>
+                                  )}
+                                  <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} disabled={!!uploadingField} />
                                 </label>
                               </div>
                               
