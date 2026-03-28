@@ -143,6 +143,10 @@ async def chatwoot_webhook(
     # Recupera o slug (unidade) do Redis se já estiver em atendimento
     slug = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
 
+    # Resolve unidade_id para operações multi-unidade (integrações, menu triagem, etc.)
+    _unidade_obj = (await carregar_unidade(slug, empresa_id) or {}) if slug else {}
+    unidade_id: int = _unidade_obj.get('id') or 0
+
     contato = payload.get("sender", {})
     nome_contato_raw = contato.get("name")
     nome_contato_limpo = limpar_nome(nome_contato_raw)
@@ -408,13 +412,13 @@ async def chatwoot_webhook(
             # Renova TTL a cada mensagem do contato
             await redis_client.expire(menu_triagem_key, MENU_INACTIVITY_TTL)
         else:
-            menu_config = await carregar_menu_triagem(empresa_id)
+            menu_config = await carregar_menu_triagem(empresa_id, unidade_id=unidade_id or None)
             logger.info(
-                f"📋 Menu triagem (webhook) — empresa {empresa_id} | fone {contato_fone} "
+                f"📋 Menu triagem (webhook) — empresa={empresa_id} unidade={unidade_id} | fone={contato_fone} "
                 f"| config={bool(menu_config)} | ativo={menu_config.get('ativo') if menu_config else None}"
             )
             if menu_config and menu_config.get("ativo"):
-                integracao_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                integracao_uaz = await carregar_integracao(empresa_id, 'uazapi', unidade_id=unidade_id or None)
                 if integracao_uaz:
                     try:
                         uaz_menu = UazAPIClient(
@@ -423,15 +427,16 @@ async def chatwoot_webhook(
                             instance_name=integracao_uaz.get("instance", "default")
                         )
                         # Marca como enviado pelo bot antes de enviar
-                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{contato_fone}", 30, "1")
+                        _bot_key = f"uaz_bot_sent:{empresa_id}:{unidade_id}:{contato_fone}"
+                        await redis_client.setex(_bot_key, 30, "1")
                         sent = await uaz_menu.send_menu(contato_fone, menu_config)
                         if sent:
                             await redis_client.setex(menu_triagem_key, MENU_INACTIVITY_TTL, "1")
-                            logger.info(f"✅ Menu de triagem enviado para {contato_fone} (empresa {empresa_id})")
+                            logger.info(f"✅ Menu de triagem enviado para {contato_fone} (empresa={empresa_id} unidade={unidade_id})")
                             return {"status": "menu_sent", "phone": contato_fone}
                         else:
                             logger.warning(f"⚠️ Falha ao enviar menu para {contato_fone} — seguindo fluxo normal")
-                            await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{contato_fone}")
+                            await redis_client.delete(_bot_key)
                     except Exception as menu_err:
                         logger.error(f"❌ Erro ao enviar menu de triagem para {contato_fone}: {menu_err}")
                 else:

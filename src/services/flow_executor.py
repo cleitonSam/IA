@@ -98,31 +98,31 @@ def _render_vars(text: str, vars_dict: Dict) -> str:
 # Redis helpers de estado
 # ─────────────────────────────────────────────────────────────
 
-async def _get_state(empresa_id: int, phone: str) -> Optional[Dict]:
-    return await redis_get_json(f"fluxo_state:{empresa_id}:{phone}")
+async def _get_state(empresa_id: int, phone: str, unidade_id: int = 0) -> Optional[Dict]:
+    return await redis_get_json(f"fluxo_state:{empresa_id}:{unidade_id}:{phone}")
 
 
-async def _set_state(empresa_id: int, phone: str, state: Dict):
-    await redis_set_json(f"fluxo_state:{empresa_id}:{phone}", state, FLOW_STATE_TTL)
+async def _set_state(empresa_id: int, phone: str, state: Dict, unidade_id: int = 0):
+    await redis_set_json(f"fluxo_state:{empresa_id}:{unidade_id}:{phone}", state, FLOW_STATE_TTL)
 
 
-async def _clear_state(empresa_id: int, phone: str):
-    await redis_client.delete(f"fluxo_state:{empresa_id}:{phone}")
+async def _clear_state(empresa_id: int, phone: str, unidade_id: int = 0):
+    await redis_client.delete(f"fluxo_state:{empresa_id}:{unidade_id}:{phone}")
 
 
-async def _get_vars(empresa_id: int, phone: str) -> Dict:
-    v = await redis_get_json(f"fluxo_vars:{empresa_id}:{phone}")
+async def _get_vars(empresa_id: int, phone: str, unidade_id: int = 0) -> Dict:
+    v = await redis_get_json(f"fluxo_vars:{empresa_id}:{unidade_id}:{phone}")
     return v if isinstance(v, dict) else {}
 
 
-async def _set_vars(empresa_id: int, phone: str, vars_dict: Dict):
-    await redis_set_json(f"fluxo_vars:{empresa_id}:{phone}", vars_dict, FLOW_VARS_TTL)
+async def _set_vars(empresa_id: int, phone: str, vars_dict: Dict, unidade_id: int = 0):
+    await redis_set_json(f"fluxo_vars:{empresa_id}:{unidade_id}:{phone}", vars_dict, FLOW_VARS_TTL)
 
 
-async def _update_var(empresa_id: int, phone: str, key: str, value: Any):
-    v = await _get_vars(empresa_id, phone)
+async def _update_var(empresa_id: int, phone: str, key: str, value: Any, unidade_id: int = 0):
+    v = await _get_vars(empresa_id, phone, unidade_id)
     v[key] = value
-    await _set_vars(empresa_id, phone, v)
+    await _set_vars(empresa_id, phone, v, unidade_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -169,6 +169,7 @@ async def executar_fluxo(
     mensagem: str,
     fluxo: Dict,
     uaz_client,
+    unidade_id: int = 0,
 ) -> bool:
     """
     Ponto de entrada do executor de fluxo.
@@ -179,27 +180,28 @@ async def executar_fluxo(
     if not fluxo or not fluxo.get("ativo"):
         return False
 
-    state = await _get_state(empresa_id, phone)
-    session_vars = await _get_vars(empresa_id, phone)
+    state = await _get_state(empresa_id, phone, unidade_id)
+    session_vars = await _get_vars(empresa_id, phone, unidade_id)
 
     # Injeta variáveis de contexto automáticas
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
     session_vars.setdefault("phone", phone)
     session_vars.setdefault("hora", agora.strftime("%H:%M"))
     session_vars.setdefault("data", agora.strftime("%d/%m/%Y"))
+    session_vars["_unidade_id"] = unidade_id
 
     if state:
         # Fluxo em andamento — processar resposta do usuário
         logger.info(f"🔄 [FlowExecutor] Continuando fluxo para {phone} no nó {state.get('node_id')}")
         next_node_id = await _process_state(
-            state, mensagem, fluxo, empresa_id, phone, session_vars
+            state, mensagem, fluxo, empresa_id, phone, session_vars, unidade_id
         )
         if next_node_id is None:
             logger.info(f"⏹️ [FlowExecutor] Nenhuma ramificação para '{mensagem}', encerrando fluxo.")
-            await _clear_state(empresa_id, phone)
+            await _clear_state(empresa_id, phone, unidade_id)
             return True
         await _execute_from(
-            empresa_id, phone, mensagem, fluxo, next_node_id, uaz_client, session_vars
+            empresa_id, phone, mensagem, fluxo, next_node_id, uaz_client, session_vars, unidade_id=unidade_id
         )
     else:
         # Início do fluxo
@@ -211,14 +213,14 @@ async def executar_fluxo(
         if not first_next:
             logger.warning(f"[FlowExecutor] Nó 'start' ({start_node['id']}) não está conectado a nada.")
             return False
-            
+
         logger.info(f"🚀 [FlowExecutor] Iniciando novo fluxo para {phone}")
         await _execute_from(
-            empresa_id, phone, mensagem, fluxo, first_next, uaz_client, session_vars
+            empresa_id, phone, mensagem, fluxo, first_next, uaz_client, session_vars, unidade_id=unidade_id
         )
 
     # Persiste todas as variáveis alteradas durante o processamento/execução
-    await _set_vars(empresa_id, phone, session_vars)
+    await _set_vars(empresa_id, phone, session_vars, unidade_id)
     return True
 
 
@@ -229,6 +231,7 @@ async def _process_state(
     empresa_id: int,
     phone: str,
     session_vars: Dict,
+    unidade_id: int = 0,
 ) -> Optional[str]:
     """
     Processa a resposta do usuário dado o estado atual do fluxo.
@@ -236,7 +239,7 @@ async def _process_state(
     """
     node_id = state.get("node_id")
     step = state.get("step", "")
-    await _clear_state(empresa_id, phone)
+    await _clear_state(empresa_id, phone, unidade_id)
 
     node = _find_node(fluxo, node_id)
     if not node:
@@ -247,7 +250,7 @@ async def _process_state(
     # ── WaitInput: salva resposta em variável e avança ──
     if node_type == "waitInput":
         var_name = node.get("data", {}).get("variavel", "input")
-        await _update_var(empresa_id, phone, var_name, mensagem)
+        await _update_var(empresa_id, phone, var_name, mensagem, unidade_id=unidade_id)
         session_vars[var_name] = mensagem
         return _get_next_node_id(fluxo, node_id)
 
@@ -420,7 +423,7 @@ async def _process_state(
         variaveis = data.get("variaveis", [])
         step_idx = state.get("qualify_step", 0)
         if step_idx < len(variaveis):
-            await _update_var(empresa_id, phone, variaveis[step_idx], mensagem)
+            await _update_var(empresa_id, phone, variaveis[step_idx], mensagem, unidade_id=unidade_id)
             session_vars[variaveis[step_idx]] = mensagem
         next_step = step_idx + 1
         if next_step < len(perguntas):
@@ -472,6 +475,7 @@ async def _execute_from(
     uaz_client,
     session_vars: Dict,
     _depth: int = 0,
+    unidade_id: int = 0,
 ):
     """Executa o nó node_id e avança recursivamente pelo grafo."""
     if _depth > 20:
@@ -491,12 +495,12 @@ async def _execute_from(
     if node_type == "start":
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── End ──
     if node_type == "end":
-        await _clear_state(empresa_id, phone)
+        await _clear_state(empresa_id, phone, unidade_id)
         logger.info(f"[FlowExecutor] Fluxo encerrado para {phone} empresa {empresa_id}")
         return
 
@@ -504,11 +508,11 @@ async def _execute_from(
     if node_type == "sendText":
         texto = _render_vars(data.get("texto", ""), session_vars)
         if texto:
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             await uaz_client.send_text(phone, texto)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── SendMenu ──
@@ -517,7 +521,7 @@ async def _execute_from(
         # Renderiza variáveis no texto e título
         menu_data["texto"] = _render_vars(menu_data.get("texto", ""), session_vars)
         menu_data["titulo"] = _render_vars(menu_data.get("titulo", ""), session_vars)
-        await _bot_sent_marker(empresa_id, phone)
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
         sent = await uaz_client.send_menu(phone, menu_data)
         if sent:
             # Pausa o fluxo: aguarda resposta
@@ -529,7 +533,7 @@ async def _execute_from(
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
                     "_menu_opcoes": _opcoes_titulos,
-                })
+                }, unidade_id=unidade_id)
         return
 
     # ── SendImage ──
@@ -537,22 +541,22 @@ async def _execute_from(
         url = _render_vars(data.get("url", ""), session_vars)
         caption = _render_vars(data.get("caption", ""), session_vars)
         if url:
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             await uaz_client.send_media(phone, url, media_type="image", caption=caption)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── SendAudio ──
     if node_type == "sendAudio":
         url = _render_vars(data.get("url", ""), session_vars)
         if url:
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             await uaz_client.send_ptt(phone, url)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Delay ──
@@ -562,19 +566,19 @@ async def _execute_from(
         await asyncio.sleep(seconds)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── WaitInput ──
     if node_type == "waitInput":
         prompt_msg = _render_vars(data.get("prompt", ""), session_vars)
         if prompt_msg:
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             await uaz_client.send_text(phone, prompt_msg)
         await _set_state(empresa_id, phone, {
             "node_id": node_id,
             "step": "awaiting_input",
-        })
+        }, unidade_id=unidade_id)
         return
 
     # ── Switch ──
@@ -642,7 +646,7 @@ async def _execute_from(
             handles = _get_all_next_handles(fluxo, node_id)
             next_id = handles[0][1] if handles else None
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Condition ──
@@ -655,7 +659,7 @@ async def _execute_from(
         handles = _get_all_next_handles(fluxo, node_id)
         next_id = handles[0][1] if matched and handles else (handles[1][1] if len(handles) > 1 else None)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── AIRespond ──
@@ -686,12 +690,12 @@ async def _execute_from(
         resposta_ia = await _call_ia(empresa_id, full_prompt, mensagem)
         
         if resposta_ia:
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             await uaz_client.send_text(phone, resposta_ia)
             
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── AIClassify ──
@@ -711,16 +715,16 @@ async def _execute_from(
                     matched_handle = cond.get("handle")
                     break
             var_name = data.get("variavel", "intencao")
-            await _update_var(empresa_id, phone, var_name, classification)
+            await _update_var(empresa_id, phone, var_name, classification, unidade_id=unidade_id)
             session_vars[var_name] = classification
             if matched_handle:
                 next_id = _get_next_node_id(fluxo, node_id, matched_handle)
                 if next_id:
-                    await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+                    await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
                 return
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── AISentiment ──
@@ -732,7 +736,7 @@ async def _execute_from(
         sentiment = await _call_ia(empresa_id, prompt, mensagem, max_tokens=10)
         sentiment_lower = sentiment.lower().strip()
         var_name = data.get("variavel", "sentimento")
-        await _update_var(empresa_id, phone, var_name, sentiment_lower)
+        await _update_var(empresa_id, phone, var_name, sentiment_lower, unidade_id=unidade_id)
         session_vars[var_name] = sentiment_lower
 
         # Encontra a handle correspondente
@@ -748,12 +752,12 @@ async def _execute_from(
         if not next_id and handles:
             next_id = handles[0][1]
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── AIQualify ──
     if node_type == "aiQualify":
-        await _execute_aiqualify(empresa_id, phone, mensagem, fluxo, node, uaz_client, session_vars, _depth)
+        await _execute_aiqualify(empresa_id, phone, mensagem, fluxo, node, uaz_client, session_vars, _depth, unidade_id=unidade_id)
         return
 
     # ── AIExtract ──
@@ -775,13 +779,13 @@ async def _execute_from(
                     label = campo.get("label", "")
                     val = extracted.get(label) or extracted.get(var)
                     if val:
-                        await _update_var(empresa_id, phone, var, str(val))
+                        await _update_var(empresa_id, phone, var, str(val), unidade_id=unidade_id)
                         session_vars[var] = str(val)
             except (json.JSONDecodeError, TypeError):
                 logger.warning(f"[FlowExecutor] AIExtract: resposta inválida da IA: {result_raw}")
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── HumanTransfer ──
@@ -791,16 +795,16 @@ async def _execute_from(
             session_vars
         )
         team_id = data.get("team_id")
-        await _bot_sent_marker(empresa_id, phone)
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
         # Se team_id for informado, podemos passar para o uaz_client (exemplo hipotético de suporte no client)
         if team_id and hasattr(uaz_client, "transfer_to_team"):
             await uaz_client.transfer_to_team(phone, team_id, mensagem_transfer)
         else:
             await uaz_client.send_text(phone, mensagem_transfer)
             
-        # Pausa a IA para este contato (usando chave genérica de fone)
-        await redis_client.setex(f"pause_ia_phone:{empresa_id}:{phone}", 86400, "1")
-        await _clear_state(empresa_id, phone)
+        # Pausa a IA para este contato (usando chave genérica de fone + unidade)
+        await redis_client.setex(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone}", 86400, "1")
+        await _clear_state(empresa_id, phone, unidade_id)
         logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
         return
 
@@ -833,7 +837,7 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] BusinessHours empresa={empresa_id} modo={modo} → {handle}")
         next_id = _get_next_node_id(fluxo, node_id, source_handle=handle)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── code (Python Snippet) ──
@@ -852,7 +856,7 @@ async def _execute_from(
         
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── setVariable ──
@@ -860,11 +864,11 @@ async def _execute_from(
         key = data.get("chave", "")
         value = _render_vars(data.get("valor", ""), session_vars)
         if key:
-            await _update_var(empresa_id, phone, key, value)
+            await _update_var(empresa_id, phone, key, value, unidade_id=unidade_id)
             session_vars[key] = value
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── getVariable ──
@@ -874,7 +878,7 @@ async def _execute_from(
         # mas aqui podemos forçar um 'rename' ou apenas garantir que o fluxo continue
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── generateProtocol ──
@@ -882,16 +886,16 @@ async def _execute_from(
         import random
         protocolo = str(random.randint(100000, 999999))
         var_name = data.get("variavel", "protocolo")
-        await _update_var(empresa_id, phone, var_name, protocolo)
+        await _update_var(empresa_id, phone, var_name, protocolo, unidade_id=unidade_id)
         session_vars[var_name] = protocolo
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── aiMenu (Inovador) ──
     if node_type == "aiMenu":
-        await _execute_aimenu(empresa_id, phone, mensagem, fluxo, node, uaz_client, session_vars, _depth)
+        await _execute_aimenu(empresa_id, phone, mensagem, fluxo, node, uaz_client, session_vars, _depth, unidade_id=unidade_id)
         return
 
     # ── Webhook ──
@@ -899,7 +903,7 @@ async def _execute_from(
         await _execute_webhook(data, session_vars, empresa_id, phone)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Search (Busca IA) ──
@@ -923,13 +927,13 @@ async def _execute_from(
         var_name = data.get("variavel", "v_busca")
         matched_handle = "not_found"
         if resultado:
-            await _update_var(empresa_id, phone, var_name, resultado)
+            await _update_var(empresa_id, phone, var_name, resultado, unidade_id=unidade_id)
             session_vars[var_name] = resultado
             matched_handle = "found"
         
         next_id = _get_next_node_id(fluxo, node_id, matched_handle)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Redis (DB) ──
@@ -944,14 +948,14 @@ async def _execute_from(
                 valor = await redis_client.get(chave)
                 var_dest = data.get("variavel_destino", "v_redis")
                 if valor:
-                    await _update_var(empresa_id, phone, var_dest, valor)
+                    await _update_var(empresa_id, phone, var_dest, valor, unidade_id=unidade_id)
                     session_vars[var_dest] = valor
             elif operacao == "del":
                 await redis_client.delete(chave)
         
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── SourceFilter (Privado vs Grupo) ──
@@ -963,7 +967,7 @@ async def _execute_from(
         handle = "group" if is_group else "private"
         next_id = _get_next_node_id(fluxo, node_id, handle)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Send Media (Imagem, Vídeo, Documento) ──
@@ -981,7 +985,7 @@ async def _execute_from(
         
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── Loop ──
@@ -989,7 +993,7 @@ async def _execute_from(
         target_id = data.get("target_node_id")
         if not target_id:
             return
-        loop_key = f"fluxo_loop:{empresa_id}:{phone}:{node_id}"
+        loop_key = f"fluxo_loop:{empresa_id}:{unidade_id}:{phone}:{node_id}"
         count_raw = await redis_client.get(loop_key)
         count = int(count_raw) if count_raw else 0
         if count >= MAX_LOOP_COUNT:
@@ -997,10 +1001,10 @@ async def _execute_from(
             await redis_client.delete(loop_key)
             next_id = _get_next_node_id(fluxo, node_id)
             if next_id:
-                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         else:
             await redis_client.setex(loop_key, FLOW_STATE_TTL, str(count + 1))
-            await _execute_from(empresa_id, phone, mensagem, fluxo, target_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, target_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── MenuFixoIA (Menu Fixo + IA Responde) ──
@@ -1011,17 +1015,17 @@ async def _execute_from(
             instrucaoIA = _render_vars(data.get("instrucaoIA", "Responda de forma personalizada sobre a opção escolhida."), session_vars)
             ia_response = await _call_ia(empresa_id, instrucaoIA, mensagem, max_tokens=300)
             if ia_response:
-                await _bot_sent_marker(empresa_id, phone)
+                await _bot_sent_marker(empresa_id, phone, unidade_id)
                 await uaz_client.send_text(phone, ia_response)
             # Limpa flag temporária
             session_vars.pop("_menuFixoIA_handle", None)
-            await _set_vars(empresa_id, phone, session_vars)
+            await _set_vars(empresa_id, phone, session_vars, unidade_id)
             next_id = _get_next_node_id(fluxo, node_id, selected_handle) if selected_handle else None
             if not next_id:
                 handles = _get_all_next_handles(fluxo, node_id)
                 next_id = handles[0][1] if handles else None
             if next_id:
-                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         else:
             # Primeira fase: envia o menu fixo
             opcoes = [{"id": op.get("id", ""), "titulo": op.get("titulo", "")} for op in data.get("opcoes", [])]
@@ -1033,13 +1037,13 @@ async def _execute_from(
                 "botao": data.get("botao", "Ver opções"),
                 "opcoes": opcoes,
             }
-            await _bot_sent_marker(empresa_id, phone)
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
             sent = await uaz_client.send_menu(phone, menu_data)
             if sent:
                 await _set_state(empresa_id, phone, {
                     "node_id": node_id,
                     "step": "awaiting_menufixoia",
-                })
+                }, unidade_id=unidade_id)
         return
 
     # ── AIMenuDinamicoIA (IA gera menu + IA responde à seleção) ──
@@ -1050,17 +1054,17 @@ async def _execute_from(
             instrucaoResposta = _render_vars(data.get("instrucaoResposta", "Responda sobre a escolha do usuário: {{last_choice_label}}."), session_vars)
             ia_response = await _call_ia(empresa_id, instrucaoResposta, mensagem, max_tokens=300)
             if ia_response:
-                await _bot_sent_marker(empresa_id, phone)
+                await _bot_sent_marker(empresa_id, phone, unidade_id)
                 await uaz_client.send_text(phone, ia_response)
             handle = f"h{int(matched_pos) + 1}"
             session_vars.pop("_aimenudionamicoIA_pos", None)
-            await _set_vars(empresa_id, phone, session_vars)
+            await _set_vars(empresa_id, phone, session_vars, unidade_id)
             next_id = _get_next_node_id(fluxo, node_id, handle)
             if not next_id:
                 handles = _get_all_next_handles(fluxo, node_id)
                 next_id = handles[0][1] if handles else None
             if next_id:
-                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+                await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         else:
             # Primeira fase: gera menu dinamicamente com IA
             instrucaoMenu = _render_vars(data.get("instrucaoMenu", "Gere um menu de opções relevante para o usuário."), session_vars)
@@ -1097,19 +1101,19 @@ async def _execute_from(
                     "botao": data.get("botao", "Ver opções"),
                     "opcoes": opcoes,
                 }
-                await _bot_sent_marker(empresa_id, phone)
+                await _bot_sent_marker(empresa_id, phone, unidade_id)
                 sent = await uaz_client.send_menu(phone, final_menu)
                 if sent:
                     await _set_state(empresa_id, phone, {
                         "node_id": node_id,
                         "step": "awaiting_aimenudionamicoIA",
                         "generated_options": opcoes,
-                    })
+                    }, unidade_id=unidade_id)
             except Exception as e:
                 logger.error(f"[FlowExecutor] aiMenuDinamicoIA erro ao gerar menu empresa {empresa_id}: {e}")
                 next_id = _get_next_node_id(fluxo, node_id)
                 if next_id:
-                    await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+                    await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     logger.warning(f"[FlowExecutor] Tipo de nó desconhecido: {node_type}")
@@ -1128,6 +1132,7 @@ async def _execute_aiqualify(
     uaz_client,
     session_vars: Dict,
     _depth: int,
+    unidade_id: int = 0,
 ):
     """Gerencia o fluxo de perguntas sequenciais do AIQualify."""
     node_id = node["id"]
@@ -1135,23 +1140,23 @@ async def _execute_aiqualify(
     perguntas = data.get("perguntas", [])
     variaveis = data.get("variaveis", [])
 
-    state = await _get_state(empresa_id, phone)
+    state = await _get_state(empresa_id, phone, unidade_id)
     step_idx = state.get("qualify_step", 0) if state else 0
 
     if step_idx < len(perguntas):
         pergunta = _render_vars(perguntas[step_idx], session_vars)
-        await _bot_sent_marker(empresa_id, phone)
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
         await uaz_client.send_text(phone, pergunta)
         await _set_state(empresa_id, phone, {
             "node_id": node_id,
             "step": "awaiting_qualify",
             "qualify_step": step_idx + 1,
-        })
+        }, unidade_id=unidade_id)
     else:
         # Todas as perguntas foram respondidas
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1187,10 +1192,12 @@ async def _execute_webhook(data: Dict, session_vars: Dict, empresa_id: int, phon
 # Marker de bot (evita fromMe echo no UazAPI)
 # ─────────────────────────────────────────────────────────────
 
-async def _bot_sent_marker(empresa_id: int, phone: str):
+async def _bot_sent_marker(empresa_id: int, phone: str, unidade_id: int = 0):
     """Marca que o próximo fromMe é do bot (não do atendente humano).
     TTL 120s: mídia gera múltiplos webhooks (sent + thumbnail + delivered).
+    Seta chave multi-tenant E legada para compatibilidade.
     """
+    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 120, "1")
     await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 120, "1")
 
 
@@ -1207,6 +1214,7 @@ async def _execute_aimenu(
     uaz_client,
     session_vars: Dict,
     _depth: int,
+    unidade_id: int = 0,
 ):
     """Usa IA para gerar um menu contextual e enviar ao usuário."""
     node_id = node["id"]
@@ -1266,7 +1274,7 @@ async def _execute_aimenu(
             "opcoes": opcoes
         }
 
-        await _bot_sent_marker(empresa_id, phone)
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
         sent = await uaz_client.send_menu(phone, final_menu)
         if sent:
             next_id = _get_next_node_id(fluxo, node_id)
@@ -1274,10 +1282,10 @@ async def _execute_aimenu(
                 await _set_state(empresa_id, phone, {
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
-                })
+                }, unidade_id=unidade_id)
     except Exception as e:
         logger.error(f"[FlowExecutor] Erro ao gerar AI Menu: {e} | Resposta: {result_raw}")
         # Se falhar, tenta apenas responder via IA normal ou end
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
-            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)

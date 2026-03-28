@@ -4,40 +4,65 @@ import asyncio
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
 from src.core.redis_client import redis_client
-from src.services.db_queries import buscar_empresa_por_account_id, buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem, carregar_fluxo_triagem
+from src.services.db_queries import (
+    buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem,
+    carregar_fluxo_triagem, buscar_unidade_por_instancia_uaz,
+)
 from src.services.flow_executor import executar_fluxo
 from src.services.uaz_client import UazAPIClient
 
 router = APIRouter()
+
 
 @router.post("/uazapi/{empresa_id}")
 async def uazapi_webhook(
     empresa_id: int,
     request: Request,
     background_tasks: BackgroundTasks,
+    x_api_key: str = Header(None),       # webhook secret opcional
     x_webhook_token: str = Header(None),
     authorization: str = Header(None)
 ):
     """
     Recebe webhooks da UazAPI.
     Estrutura esperada: messages.upsert
+
+    Suporte multi-unidade: resolve unidade_id pela instância UazAPI configurada.
+    Autenticação: valida X-Api-Key contra webhook_secret salvo na integração (se configurado).
     """
-    # Carrega integração UazAPI da empresa para validar se está ativa
-    integracao = await carregar_integracao(empresa_id, 'uazapi')
-    if not integracao:
-        logger.warning(f"⚠️ Webhook UazAPI recebido para empresa {empresa_id}, mas integração não está ativa no DB.")
-        return {"status": "ignored", "reason": "integration_not_active"}
-
-    # --- Autenticação: valida token do webhook ---
-    _expected_token = integracao.get("webhook_token") or integracao.get("webhook_secret")
-    if _expected_token:
-        _received_token = x_webhook_token or (authorization.replace("Bearer ", "") if authorization else None)
-        if not _received_token or _received_token != _expected_token:
-            logger.warning(f"🔒 Webhook UazAPI rejeitado para empresa {empresa_id}: token inválido")
-            raise HTTPException(status_code=401, detail="Token de webhook inválido")
-
     try:
         body = await request.json()
+    except Exception:
+        return {"status": "ignored", "reason": "invalid_json"}
+
+    # Resolve instância do payload para determinar qual unidade é responsável
+    instance_name = body.get("instance") or ""
+    unidade_id: int = 0  # 0 = nível de empresa (sem unidade específica)
+
+    if instance_name:
+        found_uid = await buscar_unidade_por_instancia_uaz(empresa_id, instance_name)
+        if found_uid:
+            unidade_id = found_uid
+            logger.debug(f"[UazWebhook] Instância '{instance_name}' → unidade_id={unidade_id}")
+
+    # Carrega integração UazAPI (preferindo a da unidade, fallback global)
+    integracao = await carregar_integracao(empresa_id, 'uazapi', unidade_id=unidade_id or None)
+    if not integracao:
+        logger.warning(
+            f"⚠️ Webhook UazAPI recebido para empresa {empresa_id} / unidade {unidade_id}, "
+            f"mas integração não está ativa no DB."
+        )
+        return {"status": "ignored", "reason": "integration_not_active"}
+
+    # Validação opcional de webhook secret (suporta X-Api-Key, X-Webhook-Token e Authorization)
+    _expected_secret = integracao.get("webhook_secret") or integracao.get("webhook_token")
+    if _expected_secret:
+        _received = x_api_key or x_webhook_token or (authorization.replace("Bearer ", "") if authorization else None)
+        if not _received or _received != _expected_secret:
+            logger.warning(f"🔐 Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id})")
+            raise HTTPException(status_code=401, detail="Webhook secret inválido")
+
+    try:
         event = body.get("event")
 
         # --- Read Receipts Tracking ---
@@ -75,16 +100,18 @@ async def uazapi_webhook(
 
         # fromMe=true pode ser o BOT (via API) ou um ATENDENTE HUMANO (via WhatsApp)
         if key.get("fromMe"):
-            # Verifica DUAS chaves: formato com empresa_id:phone E formato com conversation_id
-            bot_sent_key = f"uaz_bot_sent:{empresa_id}:{phone}"
-            # Também checa chave alternativa usada pelo main.py (formato antigo por conv_id)
+            # Verifica chaves multi-tenant (novo) + empresa:phone (legado) + conv_id (main.py)
+            bot_sent_key = f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}"
+            bot_sent_key_legacy = f"uaz_bot_sent:{empresa_id}:{phone}"
             _conv_check = await buscar_conversa_por_fone(phone, empresa_id)
             _conv_id_check = _conv_check.get("conversation_id") if _conv_check else None
             bot_sent_conv_key = f"uaz_bot_sent:{_conv_id_check}" if _conv_id_check else None
 
-            _is_bot = await redis_client.exists(bot_sent_key)
-            if not _is_bot and bot_sent_conv_key:
-                _is_bot = await redis_client.exists(bot_sent_conv_key)
+            _is_bot = (
+                await redis_client.exists(bot_sent_key) or
+                await redis_client.exists(bot_sent_key_legacy) or
+                (bool(bot_sent_conv_key) and await redis_client.exists(bot_sent_conv_key))
+            )
 
             if _is_bot:
                 # É o próprio bot — ignora sem pausar
@@ -152,19 +179,25 @@ async def uazapi_webhook(
         # --- Fluxo Visual de Triagem (n8n-style) ---
         # Verificar se há fluxo ativo ANTES do menu simples legado.
         # Se o fluxo tratar a mensagem, retorna imediatamente.
-        _fluxo_config = await carregar_fluxo_triagem(empresa_id)
-        logger.debug(f"[FluxoTriagem] Config para empresa {empresa_id}: ativo={_fluxo_config.get('ativo') if _fluxo_config else 'None'}")
-        
+        _fluxo_config = await carregar_fluxo_triagem(empresa_id, unidade_id=unidade_id or None)
+        logger.debug(
+            f"[FluxoTriagem] Config empresa={empresa_id} unidade={unidade_id}: "
+            f"ativo={_fluxo_config.get('ativo') if _fluxo_config else 'None'}"
+        )
+
         if _fluxo_config and _fluxo_config.get("ativo"):
             _ia_pausada_fluxo = False
             if conversa_existente:
                 _conv_id_f = conversa_existente.get("conversation_id")
                 if _conv_id_f:
                     _ia_pausada_fluxo = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{_conv_id_f}"))
-            _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{phone}"))
-            
+            _phone_paused = bool(
+                await redis_client.exists(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone}")
+                or await redis_client.exists(f"pause_ia_phone:{empresa_id}:{phone}")  # legado
+            )
+
             logger.debug(f"[FluxoTriagem] IA Pausada: {_ia_pausada_fluxo}, Phone Paused: {_phone_paused}")
-            
+
             if not _ia_pausada_fluxo and not _phone_paused:
                 _uaz_fluxo = UazAPIClient(
                     base_url=integracao.get("url") or integracao.get("api_url") or "",
@@ -172,27 +205,35 @@ async def uazapi_webhook(
                     instance_name=integracao.get("instance", "default")
                 )
                 try:
-                    _fluxo_tratou = await executar_fluxo(empresa_id, phone, content, _fluxo_config, _uaz_fluxo)
+                    _fluxo_tratou = await executar_fluxo(
+                        empresa_id, phone, content, _fluxo_config, _uaz_fluxo,
+                        unidade_id=unidade_id,
+                    )
                     if _fluxo_tratou:
-                        logger.info(f"✅ [FluxoTriagem] Mensagem de {phone} tratada pelo fluxo visual (empresa {empresa_id})")
+                        logger.info(
+                            f"✅ [FluxoTriagem] Mensagem de {phone} tratada pelo fluxo "
+                            f"(empresa={empresa_id} unidade={unidade_id})"
+                        )
                         return {"status": "flow_handled", "phone": phone}
                 except Exception as _fe:
                     logger.error(f"❌ [FluxoTriagem] Erro ao executar fluxo para {phone}: {_fe}")
 
         # --- Menu de Triagem (legado) ---
-        # Lógica de inatividade: a chave Redis expira após 1h sem mensagens do contato.
-        # A cada mensagem recebida, o TTL é renovado. Se o contato ficar 1h sem mandar
-        # mensagem, a chave expira e o menu será reenviado na próxima mensagem.
         MENU_INACTIVITY_TTL = 3600  # 1 hora
-        menu_triagem_key = f"menu_triagem:sent:{empresa_id}:{phone}"
+        menu_triagem_key = f"menu_triagem:sent:{empresa_id}:{unidade_id}:{phone}"
         menu_already_sent = await redis_client.exists(menu_triagem_key)
 
+        # Compatibilidade legado (chave sem unidade_id)
+        if not menu_already_sent and unidade_id:
+            legacy_key = f"menu_triagem:sent:{empresa_id}:{phone}"
+            menu_already_sent = await redis_client.exists(legacy_key)
+            if menu_already_sent:
+                menu_triagem_key = legacy_key
+
         if menu_already_sent:
-            # Renova o TTL a cada mensagem — só envia de novo após 1h de inatividade
             await redis_client.expire(menu_triagem_key, MENU_INACTIVITY_TTL)
 
         if not menu_already_sent:
-            # Verifica se a IA está pausada para esta conversa
             ia_pausada = False
             if conversa_existente:
                 conv_id_existente = conversa_existente.get("conversation_id")
@@ -202,8 +243,12 @@ async def uazapi_webhook(
             if ia_pausada:
                 logger.info(f"⏸️ Menu de triagem: IA pausada por atendente para {phone}, menu não enviado")
             else:
-                menu_config = await carregar_menu_triagem(empresa_id)
-                logger.info(f"📋 Menu triagem — empresa {empresa_id} | fone {phone} | config={bool(menu_config)} | ativo={menu_config.get('ativo') if menu_config else None}")
+                menu_config = await carregar_menu_triagem(empresa_id, unidade_id=unidade_id or None)
+                logger.info(
+                    f"📋 Menu triagem — empresa={empresa_id} unidade={unidade_id} | "
+                    f"fone={phone} | config={bool(menu_config)} | "
+                    f"ativo={menu_config.get('ativo') if menu_config else None}"
+                )
                 if menu_config and menu_config.get("ativo"):
                     try:
                         uaz_menu = UazAPIClient(
@@ -212,26 +257,23 @@ async def uazapi_webhook(
                             instance_name=integracao.get("instance", "default")
                         )
                         # Marca como enviado pelo bot antes de enviar (para fromMe handler ignorar)
-                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 30, "1")
+                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 30, "1")
                         sent = await uaz_menu.send_menu(phone, menu_config)
                         if sent:
-                            # TTL de 1h: não envia o menu novamente neste período
                             await redis_client.setex(menu_triagem_key, MENU_INACTIVITY_TTL, "1")
-                            logger.info(f"✅ Menu de triagem enviado para {phone} (empresa {empresa_id})")
+                            logger.info(f"✅ Menu de triagem enviado para {phone} (empresa={empresa_id} unidade={unidade_id})")
                             return {"status": "menu_sent", "phone": phone}
                         else:
-                            logger.warning(f"⚠️ Falha ao enviar menu para {phone} — UazAPI retornou erro, seguindo fluxo normal")
-                            await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{phone}")
+                            logger.warning(f"⚠️ Falha ao enviar menu para {phone} — seguindo fluxo normal")
+                            await redis_client.delete(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}")
                     except Exception as menu_err:
                         logger.error(f"❌ Erro ao enviar menu de triagem para {phone}: {menu_err}")
                 else:
-                    logger.info(f"📋 Menu triagem: config ausente ou inativo para empresa {empresa_id} — seguindo fluxo normal")
+                    logger.info(f"📋 Menu triagem: config ausente ou inativo — seguindo fluxo normal")
 
         # --- Fim do Menu de Triagem ---
 
         # --- Detecção de URLs de Mídia (Áudio, Imagem, Vídeo) ---
-        # Busca mediaUrl no payload UazAPI (vários locais possíveis).
-        # O stream_worker cuida de popular o buffet usando o conversation_id correto.
         media_url = (
             data.get("mediaUrl") or
             body.get("mediaUrl") or
@@ -267,11 +309,12 @@ async def uazapi_webhook(
         job_data = {
             "source": "uazapi",
             "empresa_id": str(empresa_id),
+            "unidade_id": str(unidade_id),
             "phone": phone,
             "content": content,
             "nome_cliente": data.get("pushName") or "Cliente WhatsApp",
             "msg_id": _uaz_msg_id,
-            "instance": body.get("instance"),
+            "instance": instance_name,
             "has_audio": "1" if has_audio else "",
             "audio_url": audio_url,
             "has_image": "1" if (has_image or has_video) else "",
@@ -281,7 +324,7 @@ async def uazapi_webhook(
         # Publicar no Redis Streams
         await redis_client.xadd("ia:webhook:stream", job_data)
 
-        logger.info(f"📥 UazAPI Webhook: Mensagem de {phone} enfileirada.")
+        logger.info(f"📥 UazAPI Webhook: Mensagem de {phone} enfileirada (empresa={empresa_id} unidade={unidade_id}).")
         return {"status": "queued", "phone": phone}
 
     except Exception as e:
