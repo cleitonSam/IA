@@ -83,10 +83,12 @@ from src.api.routers.auth import router as auth_router
 from src.api.routers.dashboard import router as dashboard_router
 from src.api.routers.management import router as management_router
 from src.api.routers.uaz_webhook import router as uaz_webhook_router
+from src.api.routers.ws import router as ws_router
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(management_router)
 app.include_router(uaz_webhook_router)
+app.include_router(ws_router)
 
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook

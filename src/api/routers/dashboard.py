@@ -1,7 +1,8 @@
 import uuid as _uuid
 import re
+import json
 from typing import List, Dict, Any, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -10,7 +11,6 @@ from pydantic import BaseModel
 from src.core.config import logger
 from src.core.security import get_current_user_token
 from src.core.redis_client import redis_client
-import json
 from src.services.db_queries import _coletar_metricas_unidade, _database, listar_unidades_ativas
 from src.utils.imagekit import upload_to_imagekit
 
@@ -679,3 +679,319 @@ async def excluir_unidade(
     except Exception as e:
         logger.error(f"Erro ao excluir unidade: {e}")
         raise HTTPException(status_code=500, detail="Erro ao excluir unidade")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FASE 4 — MÉTRICAS AVANÇADAS (Timeseries, Funil, Performance IA)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/metrics/timeseries")
+async def get_metrics_timeseries(
+    days: int = Query(30, le=90, description="Dias retroativos (máx 90)"),
+    granularity: str = Query("day", description="Granularidade: hour ou day"),
+    unidade_id: Optional[int] = Query(None, description="Filtrar por unidade"),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna métricas agregadas por hora ou dia para gráficos de linha/área.
+    Dados: conversas, leads, intenção de compra, tempo de resposta, custo IA.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    if perfil == "admin_master" and not empresa_id and unidade_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+    if not empresa_id and perfil != "admin_master":
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+
+    # Monta date truncation baseado na granularidade
+    if granularity == "hour" and days <= 3:
+        trunc = "DATE_TRUNC('hour', c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')"
+    else:
+        trunc = "DATE_TRUNC('day', c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')"
+
+    try:
+        # Filtros dinâmicos
+        conditions = []
+        params: list = []
+
+        if empresa_id:
+            params.append(empresa_id)
+            conditions.append(f"c.empresa_id = ${len(params)}")
+
+        if unidade_id:
+            params.append(unidade_id)
+            conditions.append(f"c.unidade_id = ${len(params)}")
+
+        params.append(hoje)
+        params.append(days)
+        conditions.append(
+            f"DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') "
+            f"BETWEEN (${len(params)-1}::date - (${len(params)} * interval '1 day')) AND ${len(params)-1}"
+        )
+
+        where = " AND ".join(conditions)
+
+        # Query de séries temporais
+        rows = await _database.db_pool.fetch(f"""
+            SELECT
+                {trunc} AS periodo,
+                COUNT(DISTINCT c.id) AS conversas,
+                COUNT(DISTINCT CASE WHEN c.lead_qualificado THEN c.id END) AS leads,
+                COUNT(DISTINCT CASE WHEN c.intencao_de_compra THEN c.id END) AS intencao,
+                COALESCE(AVG(
+                    EXTRACT(EPOCH FROM (c.primeira_resposta_em - c.primeira_mensagem))
+                ) FILTER (WHERE c.primeira_resposta_em IS NOT NULL AND c.primeira_mensagem IS NOT NULL), 0) AS tempo_resp
+            FROM conversas c
+            WHERE {where}
+            GROUP BY periodo
+            ORDER BY periodo ASC
+        """, *params)
+
+        # Query de custo IA por período (separada para não complicar o JOIN)
+        ia_conditions = [c.replace("c.", "ui.") for c in conditions]
+        ia_where = " AND ".join(ia_conditions)
+        ia_trunc = trunc.replace("c.", "ui.")
+
+        rows_ia = await _database.db_pool.fetch(f"""
+            SELECT
+                {ia_trunc} AS periodo,
+                COALESCE(SUM(ui.custo_usd), 0) AS custo_usd,
+                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS tokens
+            FROM uso_ia ui
+            WHERE {ia_where}
+            GROUP BY periodo
+            ORDER BY periodo ASC
+        """, *params)
+
+        # Merge os dados por período
+        ia_by_period = {}
+        for r in rows_ia:
+            key = r["periodo"].isoformat() if r["periodo"] else ""
+            ia_by_period[key] = {"custo_usd": round(float(r["custo_usd"]), 4), "tokens": r["tokens"]}
+
+        series = []
+        for r in rows:
+            period_key = r["periodo"].isoformat() if r["periodo"] else ""
+            ia_data = ia_by_period.get(period_key, {"custo_usd": 0, "tokens": 0})
+            series.append({
+                "periodo": period_key,
+                "conversas": r["conversas"],
+                "leads": r["leads"],
+                "intencao": r["intencao"],
+                "tempo_resp": round(float(r["tempo_resp"]), 1),
+                "custo_usd": ia_data["custo_usd"],
+                "tokens": ia_data["tokens"],
+            })
+
+        return {
+            "granularity": granularity if granularity == "hour" and days <= 3 else "day",
+            "days": days,
+            "series": series
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar timeseries: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar dados de séries temporais")
+
+
+@router.get("/metrics/funnel")
+async def get_metrics_funnel(
+    days: int = Query(30, le=90),
+    unidade_id: Optional[int] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna funil de conversão em 5 estágios:
+    Contatos → Engajados → Interessados → Link Enviado → Matriculados
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    if perfil == "admin_master" and not empresa_id and unidade_id:
+        empresa_id = await _get_empresa_id_da_unidade(unidade_id)
+    if not empresa_id and perfil != "admin_master":
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+
+    try:
+        conditions = []
+        params: list = []
+
+        if empresa_id:
+            params.append(empresa_id)
+            conditions.append(f"c.empresa_id = ${len(params)}")
+
+        if unidade_id:
+            params.append(unidade_id)
+            conditions.append(f"c.unidade_id = ${len(params)}")
+
+        params.append(hoje)
+        params.append(days)
+        conditions.append(
+            f"DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') "
+            f"BETWEEN (${len(params)-1}::date - (${len(params)} * interval '1 day')) AND ${len(params)-1}"
+        )
+
+        where = " AND ".join(conditions)
+
+        row = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(DISTINCT c.id) AS contatos,
+                COUNT(DISTINCT CASE WHEN c.total_mensagens_cliente >= 2 THEN c.id END) AS engajados,
+                COUNT(DISTINCT CASE WHEN c.lead_qualificado OR c.intencao_de_compra THEN c.id END) AS interessados,
+                COUNT(DISTINCT CASE WHEN ef_link.conversa_id IS NOT NULL THEN c.id END) AS link_enviado,
+                COUNT(DISTINCT CASE WHEN ef_mat.conversa_id IS NOT NULL THEN c.id END) AS matriculados
+            FROM conversas c
+            LEFT JOIN eventos_funil ef_link ON ef_link.conversa_id = c.id AND ef_link.tipo_evento = 'link_matricula_enviado'
+            LEFT JOIN eventos_funil ef_mat ON ef_mat.conversa_id = c.id AND ef_mat.tipo_evento IN ('matricula_realizada','checkout_concluido')
+            WHERE {where}
+        """, *params)
+
+        data = dict(row) if row else {}
+        stages = [
+            {"id": "contatos", "label": "Contatos", "value": data.get("contatos", 0), "color": "#6366f1"},
+            {"id": "engajados", "label": "Engajados", "value": data.get("engajados", 0), "color": "#3b82f6"},
+            {"id": "interessados", "label": "Interessados", "value": data.get("interessados", 0), "color": "#00d2ff"},
+            {"id": "link_enviado", "label": "Link Enviado", "value": data.get("link_enviado", 0), "color": "#10b981"},
+            {"id": "matriculados", "label": "Matriculados", "value": data.get("matriculados", 0), "color": "#22c55e"},
+        ]
+
+        # Calcular taxas de conversão entre estágios
+        for i in range(1, len(stages)):
+            prev_val = stages[i - 1]["value"]
+            curr_val = stages[i]["value"]
+            stages[i]["taxa"] = round((curr_val / max(prev_val, 1)) * 100, 1)
+        stages[0]["taxa"] = 100.0
+
+        return {"days": days, "stages": stages}
+    except Exception as e:
+        logger.error(f"Erro ao buscar funil: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar funil de conversão")
+
+
+@router.get("/metrics/ai-performance")
+async def get_metrics_ai_performance(
+    days: int = Query(7, le=30),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Métricas de performance da IA:
+    - Cache hit rate, latência média, chamadas por hora
+    - Taxa de fallback, taxa de escalação
+    - Mensagens por conversa, distribuição de sentimento
+    - Custo médio por conversa
+    """
+    empresa_id = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    if not empresa_id and perfil != "admin_master":
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+
+    try:
+        conditions_c = []
+        conditions_ia = []
+        params: list = []
+
+        if empresa_id:
+            params.append(empresa_id)
+            conditions_c.append(f"c.empresa_id = ${len(params)}")
+            conditions_ia.append(f"ui.empresa_id = ${len(params)}")
+
+        params.append(hoje)
+        params.append(days)
+        date_filter_c = (
+            f"DATE(c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') "
+            f"BETWEEN (${len(params)-1}::date - (${len(params)} * interval '1 day')) AND ${len(params)-1}"
+        )
+        date_filter_ia = date_filter_c.replace("c.", "ui.")
+        conditions_c.append(date_filter_c)
+        conditions_ia.append(date_filter_ia)
+
+        where_c = " AND ".join(conditions_c) if conditions_c else "TRUE"
+        where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
+
+        # 1. Métricas de uso da IA
+        row_ia = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(*) AS total_chamadas,
+                COALESCE(AVG(ui.latencia_ms), 0) AS latencia_media_ms,
+                COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
+                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens,
+                COUNT(DISTINCT CASE WHEN ui.cache_hit THEN ui.id END) AS cache_hits,
+                COUNT(DISTINCT CASE WHEN ui.fallback THEN ui.id END) AS fallbacks
+            FROM uso_ia ui
+            WHERE {where_ia}
+        """, *params)
+
+        # 2. Métricas de conversas
+        row_conv = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(DISTINCT c.id) AS total_conversas,
+                COALESCE(AVG(c.total_mensagens_cliente), 0) AS msgs_cliente_media,
+                COALESCE(AVG(c.total_mensagens_ia), 0) AS msgs_ia_media,
+                COALESCE(AVG(
+                    EXTRACT(EPOCH FROM (c.primeira_resposta_em - c.primeira_mensagem))
+                ) FILTER (WHERE c.primeira_resposta_em IS NOT NULL AND c.primeira_mensagem IS NOT NULL), 0) AS tempo_resp_medio
+            FROM conversas c
+            WHERE {where_c}
+        """, *params)
+
+        # 3. Eventos de escalação e sentimento
+        ef_conditions = [c.replace("c.", "c2.") for c in conditions_c]
+        ef_where = " AND ".join(ef_conditions) if ef_conditions else "TRUE"
+        row_esc = await _database.db_pool.fetchrow(f"""
+            SELECT
+                COUNT(DISTINCT CASE WHEN ef.tipo_evento = 'escalacao_sentimento' THEN ef.conversa_id END) AS escalacoes,
+                COUNT(DISTINCT CASE WHEN ef.tipo_evento = 'mensagem_lida' THEN ef.conversa_id END) AS mensagens_lidas
+            FROM eventos_funil ef
+            JOIN conversas c2 ON c2.id = ef.conversa_id
+            WHERE {ef_where}
+        """, *params)
+
+        # 4. Distribuição por hora (para gráfico de atividade)
+        rows_hora = await _database.db_pool.fetch(f"""
+            SELECT
+                EXTRACT(HOUR FROM ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
+                COUNT(*) AS chamadas
+            FROM uso_ia ui
+            WHERE {where_ia}
+            GROUP BY hora
+            ORDER BY hora
+        """, *params)
+
+        ia = dict(row_ia) if row_ia else {}
+        conv = dict(row_conv) if row_conv else {}
+        esc = dict(row_esc) if row_esc else {}
+
+        total_chamadas = ia.get("total_chamadas", 0) or 1
+        total_conversas = conv.get("total_conversas", 0) or 1
+
+        return {
+            "days": days,
+            "ia": {
+                "total_chamadas": ia.get("total_chamadas", 0),
+                "latencia_media_ms": round(float(ia.get("latencia_media_ms", 0)), 0),
+                "cache_hit_rate": round((ia.get("cache_hits", 0) / total_chamadas) * 100, 1),
+                "fallback_rate": round((ia.get("fallbacks", 0) / total_chamadas) * 100, 1),
+                "custo_total_usd": round(float(ia.get("custo_total", 0)), 4),
+                "custo_por_conversa": round(float(ia.get("custo_total", 0)) / total_conversas, 4),
+                "total_tokens": ia.get("total_tokens", 0),
+            },
+            "conversas": {
+                "total": conv.get("total_conversas", 0),
+                "msgs_cliente_media": round(float(conv.get("msgs_cliente_media", 0)), 1),
+                "msgs_ia_media": round(float(conv.get("msgs_ia_media", 0)), 1),
+                "tempo_resposta_medio": round(float(conv.get("tempo_resp_medio", 0)), 1),
+            },
+            "escalacoes": esc.get("escalacoes", 0),
+            "mensagens_lidas": esc.get("mensagens_lidas", 0),
+            "taxa_escalacao": round((esc.get("escalacoes", 0) / total_conversas) * 100, 1),
+            "atividade_por_hora": [
+                {"hora": r["hora"], "chamadas": r["chamadas"]} for r in rows_hora
+            ],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar métricas AI performance: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar métricas de performance da IA")
