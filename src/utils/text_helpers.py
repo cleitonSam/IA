@@ -74,15 +74,18 @@ def nome_eh_valido(nome: Optional[str]) -> bool:
     if not nome_limpo or len(nome_limpo) < 2:
         return False
     nome_lower = normalizar(nome_limpo)
-    # Verifica cada palavra do nome contra a blocklist
     palavras = nome_lower.split()
+    # Palavra única na blocklist
     if len(palavras) == 1 and palavras[0] in _NOMES_INVALIDOS:
         return False
-    # Se todas as palavras são inválidas, nome é inválido
+    # Todas as palavras são inválidas
     if all(p in _NOMES_INVALIDOS for p in palavras):
         return False
-    # Nome com apenas números/símbolos após limpeza
+    # Nome sem letras
     if not any(c.isalpha() for c in nome_limpo):
+        return False
+    # Palavra única muito longa (>15 chars) = username/nome grudado (ex: "Tatianaribeirosampaio")
+    if len(palavras) == 1 and len(palavras[0]) > 15:
         return False
     return True
 

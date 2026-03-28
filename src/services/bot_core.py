@@ -2310,7 +2310,7 @@ async def chatwoot_webhook(
                 ))
                 _msg_curta_geo = len([t for t in texto_cliente.split() if t]) <= 5
 
-                if not slug_detectado and _tem_geo_multi and (_pedido_unidade_explicito or _msg_curta_geo):
+                if not slug_detectado and (_pedido_unidade_explicito or (_tem_geo_multi and _msg_curta_geo)):
                     slug_detectado = await buscar_unidade_na_pergunta(conteudo_texto, empresa_id)
 
                 # Tenta por número digitado (ex: "1", "2")
@@ -2344,7 +2344,7 @@ async def chatwoot_webhook(
                     _nome_ia_temp = _pers_temp.get('nome_ia') or 'Assistente Virtual'
 
                     _cumpr = saudacao_por_horario()
-                    _primeiro_nome = _nome_contato.split()[0].capitalize() if _nome_contato and _nome_contato.lower() not in ("cliente", "contato", "") else ""
+                    _primeiro_nome = primeiro_nome_cliente(_nome_contato)
                     _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
                     _horario_hoje = horario_hoje_formatado(_hor_unid)
