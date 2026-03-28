@@ -14,7 +14,9 @@ router = APIRouter()
 async def uazapi_webhook(
     empresa_id: int,
     request: Request,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    x_webhook_token: str = Header(None),
+    authorization: str = Header(None)
 ):
     """
     Recebe webhooks da UazAPI.
@@ -25,6 +27,14 @@ async def uazapi_webhook(
     if not integracao:
         logger.warning(f"⚠️ Webhook UazAPI recebido para empresa {empresa_id}, mas integração não está ativa no DB.")
         return {"status": "ignored", "reason": "integration_not_active"}
+
+    # --- Autenticação: valida token do webhook ---
+    _expected_token = integracao.get("webhook_token") or integracao.get("webhook_secret")
+    if _expected_token:
+        _received_token = x_webhook_token or (authorization.replace("Bearer ", "") if authorization else None)
+        if not _received_token or _received_token != _expected_token:
+            logger.warning(f"🔒 Webhook UazAPI rejeitado para empresa {empresa_id}: token inválido")
+            raise HTTPException(status_code=401, detail="Token de webhook inválido")
 
     try:
         body = await request.json()
@@ -195,13 +205,21 @@ async def uazapi_webhook(
             else:
                 logger.info(f"🎙️ UazAPI: Áudio detectado para {phone} (sem mediaUrl no payload, worker resolverá via Chatwoot)")
 
+        # --- Dedup cross-webhook: evita processar a mesma mensagem 2x ---
+        _uaz_msg_id = key.get("id", "")
+        if _uaz_msg_id:
+            _dedup_key = f"dedup:msg:{empresa_id}:{phone}:{_uaz_msg_id}"
+            if not await redis_client.set(_dedup_key, "1", nx=True, ex=120):
+                logger.info(f"🔁 Mensagem duplicada ignorada (dedup): {phone} msg_id={_uaz_msg_id}")
+                return {"status": "ignored", "reason": "duplicate"}
+
         job_data = {
             "source": "uazapi",
             "empresa_id": str(empresa_id),
             "phone": phone,
             "content": content,
             "nome_cliente": data.get("pushName") or "Cliente WhatsApp",
-            "msg_id": key.get("id"),
+            "msg_id": _uaz_msg_id,
             "instance": body.get("instance"),
             "has_audio": "1" if has_audio else "",
             "audio_url": audio_url,

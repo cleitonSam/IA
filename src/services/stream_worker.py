@@ -175,18 +175,29 @@ async def _process_job(msg_id: str, payload: dict):
             lock_key = f"lock:{empresa_id}:{conversation_id}"
             if await redis_client.set(lock_key, lock_val, nx=True, ex=60):
                 try:
-                    while True:
-                        await processar_ia_e_responder(
-                            account_id, conversation_id, contact_id, slug,
-                            nome_cliente, lock_val, empresa_id, integracao,
-                            source=source,
-                            contato_fone=contato_fone
-                        )
-                        if await redis_client.llen(f"{empresa_id}:buffet:{conversation_id}") == 0:
-                            break
-                        logger.info(f"🔄 Novas mensagens no buffet para conv {conversation_id}, continuando loop.")
+                    async with asyncio.timeout(120):  # Timeout global de 120s por job
+                        while True:
+                            await processar_ia_e_responder(
+                                account_id, conversation_id, contact_id, slug,
+                                nome_cliente, lock_val, empresa_id, integracao,
+                                source=source,
+                                contato_fone=contato_fone
+                            )
+                            if await redis_client.llen(f"{empresa_id}:buffet:{conversation_id}") == 0:
+                                break
+                            logger.info(f"🔄 Novas mensagens no buffet para conv {conversation_id}, continuando loop.")
+                except asyncio.TimeoutError:
+                    logger.error(f"⏰ Timeout de 120s atingido para conv {conversation_id} (empresa {empresa_id}). Liberando lock.")
                 finally:
-                    pass
+                    # Libera lock atomicamente via Lua (só deleta se o valor ainda é nosso)
+                    try:
+                        await redis_client.eval(
+                            "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end",
+                            1, lock_key, lock_val
+                        )
+                        logger.debug(f"🔓 Lock liberado para conv {conversation_id}")
+                    except Exception as _lock_err:
+                        logger.warning(f"⚠️ Erro ao liberar lock para conv {conversation_id}: {_lock_err}")
 
             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
             await redis_client.xdel(STREAM_NAME, msg_id)

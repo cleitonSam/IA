@@ -482,131 +482,10 @@ async def renovar_lock(chave: str, valor: str, intervalo: int = 40):
         pass
 
 
-# ── Cache Semântico por Embedding via API ────────────────────────────────────
-# Usa text-embedding-3-small via OpenRouter/OpenAI (async, sem CPU local).
-# 90% mais leve que SentenceTransformer — não bloqueia event loop.
-# Fallback automático para cache por hash md5 se API falhar.
-
-def _cosine_sim(a: list, b: list) -> float:
-    """Similaridade de cosseno entre dois vetores (pura Python, sem numpy)."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    return dot / (norm_a * norm_b) if norm_a > 0 and norm_b > 0 else 0.0
-
-
-async def _get_embedding(texto: str) -> Optional[List[float]]:
-    """
-    Obtém embedding via API (text-embedding-3-small).
-    Retorna None se a API falhar — o sistema cai no hash cache.
-    """
-    if not cliente_ia:
-        return None
-    # Textos muito curtos (saudações, "oi", "ok") não geram cache semântico útil
-    # e evitam custo de API desnecessário em escala
-    if len(texto.strip()) <= 15:
-        return None
-    try:
-        resp = await cliente_ia.embeddings.create(
-            model="text-embedding-3-small",
-            input=texto[:512],  # Trunca para economizar tokens
-        )
-        return resp.data[0].embedding
-    except Exception as e:
-        logger.debug(f"Embedding API indisponível: {e}")
-        return None
-
-
-async def buscar_cache_semantico(
-    texto: str,
-    slug: str,
-    empresa_id: int,
-    threshold: float = 0.88
-) -> Optional[Dict]:
-    """
-    Busca no Redis por uma resposta cacheada semanticamente similar à pergunta.
-    Usa embedding via API (async) + SCAN (não bloqueia Redis) + cosine similarity.
-    Retorna dict {"resposta": ..., "estado": ...} ou None.
-    """
-    emb_query = await _get_embedding(texto)
-    if not emb_query:
-        return None  # API indisponível — usa hash cache
-
-    try:
-        pattern = f"semcache:{empresa_id}:{slug}:*"
-        melhor_score = 0.0
-        melhor_key   = None
-        total_scan   = 0
-
-        # ✅ SCAN em vez de KEYS — não trava o Redis
-        cursor = 0
-        while True:
-            cursor, keys = await redis_client.scan(cursor, match=pattern, count=50)
-            for k in keys:
-                total_scan += 1
-                if total_scan > 300:   # limita a 300 entradas por slug
-                    break
-                emb_str = await redis_client.hget(k, "embedding")
-                if not emb_str:
-                    continue
-                emb_cached = json.loads(emb_str)
-                score = _cosine_sim(emb_query, emb_cached)
-                if score > melhor_score:
-                    melhor_score = score
-                    melhor_key   = k
-            if cursor == 0 or total_scan > 300:
-                break
-
-        if melhor_score >= threshold and melhor_key:
-            resposta_str = await redis_client.hget(melhor_key, "resposta")
-            if resposta_str:
-                logger.info(f"🧠 [E:{empresa_id}] Cache semântico HIT (sim={melhor_score:.3f}) para '{texto[:40]}'")
-                return json.loads(resposta_str)
-    except Exception as e:
-        logger.warning(f"Cache semântico erro: {e}")
-    return None
-
-
-async def salvar_cache_semantico(
-    texto: str,
-    slug: str,
-    empresa_id: int,
-    dados: Dict,
-    ttl: int = 3600
-):
-    """
-    Salva embedding (via API) + resposta no Redis para uso futuro.
-    Chave: semcache:{empresa_id}:{slug}:{md5(texto)}
-    """
-    emb = await _get_embedding(texto)
-    if not emb:
-        return  # API indisponível — não salva embedding (hash cache ainda funciona)
-    try:
-        # ── Limite por slug: máx 500 entradas para evitar crescimento ilimitado ──
-        _total_slug = 0
-        _cur_lim = 0
-        while True:
-            _cur_lim, _kk_lim = await redis_client.scan(
-                _cur_lim, match=f"semcache:{empresa_id}:{slug}:*", count=100
-            )
-            _total_slug += len(_kk_lim)
-            if _cur_lim == 0 or _total_slug >= 500:
-                break
-        if _total_slug >= 500:
-            logger.debug(f"semcache: limite 500 atingido para slug={slug}, entrada descartada")
-            return
-
-        chave = f"semcache:{empresa_id}:{slug}:{hashlib.md5(texto.encode()).hexdigest()}"
-        await redis_client.hset(chave, mapping={
-            "embedding": json.dumps(emb),
-            "resposta":  json.dumps(dados),
-            "texto":     texto[:200],
-        })
-        await redis_client.expire(chave, ttl)
-    except Exception as e:
-        logger.warning(f"Erro ao salvar cache semântico: {e}")
+# ── Cache Semântico ──────────────────────────────────────────────────────────
+# Funções canônicas em ia_processor.py (importadas acima):
+#   _cosine_sim, _get_embedding, buscar_cache_semantico, salvar_cache_semantico
+# Chave padronizada: {empresa_id}:semcache:{slug}:{md5(texto)}
 
 
 def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
@@ -649,25 +528,7 @@ def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
     return final if final else [texto.strip()]
 
 
-def detectar_intencao(texto: str) -> Optional[str]:
-    """Detecta a intenção principal da pergunta do usuário usando palavras-chave e fuzzy matching"""
-    if not texto:
-        return None
-
-    texto_norm = normalizar(texto)
-    melhor_intencao = None
-    melhor_score = 0
-
-    for intent, palavras in INTENCOES.items():
-        for palavra in palavras:
-            if palavra in texto_norm:
-                return intent
-            score = fuzz.partial_ratio(palavra, texto_norm)
-            if score > melhor_score and score > 80:
-                melhor_score = score
-                melhor_intencao = intent
-
-    return melhor_intencao
+# detectar_intencao — função canônica importada de ia_processor.py
 
 
 async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
@@ -956,7 +817,7 @@ async def processar_ia_e_responder(
 ):
     logger.info(f"🧠 BotCore: processar_ia_e_responder conv={conversation_id} source={source} fone={contato_fone}")
     chave_lock = f"lock:{empresa_id}:{conversation_id}"
-    chave_buffet = f"buffet:{empresa_id}:{conversation_id}"
+    chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:

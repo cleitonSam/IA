@@ -316,21 +316,21 @@ async def limpar_memoria_conversa(
     if not ok:
         raise HTTPException(status_code=404, detail="Conversa não encontrada ou sem permissão")
 
-    # Deleta em todos os formatos de chave usados no sistema
+    # Deleta todas as chaves Redis da conversa (formato padronizado: {empresa_id}:{chave}:{conversation_id})
     await redis_client.delete(
-        # formato direto
+        f"{empresa_id}:estado:{conversation_id}",
+        f"{empresa_id}:unidade_escolhida:{conversation_id}",
+        f"{empresa_id}:esperando_unidade:{conversation_id}",
+        f"{empresa_id}:buffet:{conversation_id}",
+        f"{empresa_id}:buffet_drain:{conversation_id}",
+        f"{empresa_id}:prompt_unidade_enviado:{conversation_id}",
+        # formatos legados (cleanup)
         f"estado:{empresa_id}:{conversation_id}",
         f"unidade_escolhida:{conversation_id}",
         f"esperando_unidade:{empresa_id}:{conversation_id}",
         f"buffet:{empresa_id}:{conversation_id}",
         f"buffet_drain:{empresa_id}:{conversation_id}",
         f"prompt_unidade_enviado:{empresa_id}:{conversation_id}",
-        # formato tenant (prefixo empresa_id:)
-        f"{empresa_id}:esperando_unidade:{conversation_id}",
-        f"{empresa_id}:unidade_escolhida:{conversation_id}",
-        f"{empresa_id}:prompt_unidade_enviado:{empresa_id}:{conversation_id}",
-        f"{empresa_id}:estado:{empresa_id}:{conversation_id}",
-        f"{empresa_id}:buffet:{empresa_id}:{conversation_id}",
     )
 
     return {"status": "ok", "mensagem": "Memória da IA limpa com sucesso"}
