@@ -560,14 +560,15 @@ async def upload_unidade_foto(
             detail=f"Formato não suportado: {content_type}. Envie imagem (JPG, PNG) ou vídeo (MP4, MOV)."
         )
 
-    # Limite de tamanho: 50MB
-    max_size = 50 * 1024 * 1024
+    # Limite de tamanho: 100MB para vídeos, 10MB para imagens
+    max_size = (100 if is_video else 10) * 1024 * 1024
     content = await file.read()
     if len(content) > max_size:
         size_mb = len(content) / (1024 * 1024)
+        limit_mb = 100 if is_video else 10
         raise HTTPException(
             status_code=400,
-            detail=f"Arquivo muito grande ({size_mb:.1f}MB). O limite é 50MB."
+            detail=f"Arquivo muito grande ({size_mb:.1f}MB). O limite é {limit_mb}MB."
         )
 
     try:
