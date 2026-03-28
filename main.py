@@ -3768,6 +3768,8 @@ async def processar_ia_e_responder(
         if _pede_tour and _tem_tour:
             resposta_cacheada = None
 
+        prompt_sistema = None  # Inicializa para o drain (definido no fluxo IA)
+
         if fast_reply:
             logger.info("⚡ Fast-Path Ativado! Respondendo sem IA.")
             resposta_texto = fast_reply
@@ -4605,7 +4607,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     textos_drain.append(txt)
                     await bd_salvar_mensagem_local(conversation_id, "user", txt)
 
-            if textos_drain and cliente_ia:
+            if textos_drain and cliente_ia and prompt_sistema:
                 drain_text = "\n".join(textos_drain)
                 logger.info(f"🔄 Drain inline LLM: '{drain_text[:80]}...' (conv={conversation_id})")
 
@@ -4626,7 +4628,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
                             ),
-                            timeout=20
+                            timeout=35
                         )
                     _drain_bruta = _drain_resp.choices[0].message.content or ""
 
@@ -4653,7 +4655,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         logger.info(f"✅ Drain inline respondido (conv={conversation_id})")
 
                 except Exception as e_drain_llm:
-                    logger.warning(f"⚠️ Erro no drain inline LLM: {e_drain_llm}")
+                    logger.warning(f"⚠️ Erro no drain inline LLM ({type(e_drain_llm).__name__}): {e_drain_llm}", exc_info=True)
 
     except Exception:
         logger.exception("🔥 Erro Crítico no processamento")
