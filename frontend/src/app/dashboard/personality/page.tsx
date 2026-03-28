@@ -166,7 +166,7 @@ export default function PersonalityPage() {
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
-    axios.get(`${process.env.NEXT_PUBLIC_API_URL}/management/tts/voices`, {
+    axios.get("/api-backend/management/tts/voices", {
       headers: { Authorization: `Bearer ${token}` }
     }).then(res => setTtsVoices(res.data.voices || []))
       .catch(() => {/* vozes indisponíveis */});
@@ -183,7 +183,7 @@ export default function PersonalityPage() {
     setTtsPreviewLoading(vozNome);
     setTtsPreviewUrl(null);
     try {
-      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/management/tts/preview`,
+      const res = await axios.post("/api-backend/management/tts/preview",
         { voz: vozNome },
         { headers: { Authorization: `Bearer ${token}` } }
       );
