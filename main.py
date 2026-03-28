@@ -4397,6 +4397,10 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     _uaz_integ.get('token'),
                     _uaz_integ.get('instance', 'default')
                 )
+                # Marca echo ANTES de enviar para evitar que Chatwoot pause a IA
+                await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
+                if empresa_id and _fone:
+                    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone}", 120, "1")
                 ptt_ok = await _uaz.send_ptt(str(_fone), audio_url, delay=500)
                 logger.info(f"🔊 [TTS] PTT enviado: ok={ptt_ok} url={audio_url}")
                 return bool(ptt_ok)

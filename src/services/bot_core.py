@@ -941,6 +941,10 @@ async def despachar_resposta(
                                     _uaz_integ.get('token'),
                                     _uaz_integ.get('instance', 'default')
                                 )
+                                # Marca echo ANTES de enviar para evitar que Chatwoot pause a IA
+                                await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
+                                if _fone:
+                                    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone}", 120, "1")
                                 ptt_ok = await _uaz.send_ptt(str(_fone), audio_url, delay=500)
                                 logger.info(f"🔊 [TTS-CW] PTT enviado: ok={ptt_ok} url={audio_url}")
                             else:
