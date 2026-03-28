@@ -36,6 +36,12 @@ from rapidfuzz import fuzz
 from src.services.db_queries import carregar_fluxo_triagem, carregar_integracao
 from src.services.flow_executor import executar_fluxo
 from src.services.uaz_client import UazAPIClient
+from src.utils.text_helpers import (
+    nome_eh_valido as _nome_eh_valido_completo,
+    primeiro_nome_cliente as _primeiro_nome_completo,
+    extrair_nome_do_texto as _extrair_nome_completo,
+    limpar_nome as _limpar_nome_th,
+)
 
 # --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
 try:
@@ -1032,41 +1038,25 @@ def descomprimir_texto(texto_comprimido: str) -> str:
 
 
 def limpar_nome(nome):
-    if not nome:
-        return "Cliente"
-    return re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", str(nome)).strip()
+    """Wrapper — usa versão completa do text_helpers."""
+    return _limpar_nome_th(nome)
 
 
 def primeiro_nome_cliente(nome: Optional[str]) -> str:
-    nome_limpo = limpar_nome(nome) if nome else ""
-    if not nome_limpo or nome_limpo.lower() in {"cliente", "contato", "visitante"}:
-        return ""
-    return nome_limpo.split()[0].capitalize()
+    """Wrapper — usa versão completa do text_helpers com blocklist de 100+ nomes."""
+    return _primeiro_nome_completo(nome)
 
 
 def nome_eh_valido(nome: Optional[str]) -> bool:
-    nome_limpo = limpar_nome(nome) if nome else ""
-    if not nome_limpo or len(nome_limpo) < 2:
-        return False
-    return nome_limpo.lower() not in {"cliente", "contato", "visitante", "unknown", "na", "n a"}
+    """Wrapper — usa versão completa do text_helpers com blocklist de 100+ nomes.
+    Detecta nomes falsos de WhatsApp: 'Boa', 'estrela', 'costureira', etc.
+    """
+    return _nome_eh_valido_completo(nome)
 
 
 def extrair_nome_do_texto(texto: str) -> Optional[str]:
-    if not texto:
-        return None
-    t = str(texto).strip()
-    padroes = [
-        r"(?:meu nome e|meu nome é|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
-        r"^([A-Za-zÀ-ÿ]{2,20})(?:\s+[A-Za-zÀ-ÿ]{2,20})?$",
-    ]
-    for ptn in padroes:
-        m = re.search(ptn, t, flags=re.IGNORECASE)
-        if not m:
-            continue
-        nome = limpar_nome(m.group(1))
-        if nome_eh_valido(nome):
-            return nome.title()
-    return None
+    """Wrapper — usa versão completa do text_helpers com padrões expandidos."""
+    return _extrair_nome_completo(texto)
 
 
 def _is_provider_unavailable_error(err: Exception) -> bool:
@@ -4714,7 +4704,22 @@ async def chatwoot_webhook(
                 await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
                 await redis_client.delete(f"aguardando_nome:{id_conv}")
                 await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
-            # Não bloqueia a conversa — a IA responde normalmente mesmo sem nome
+                logger.info(f"✅ Nome '{_nome_informado}' extraído da mensagem e atualizado no Chatwoot (conv={id_conv})")
+            else:
+                # Nome do contato é inválido e mensagem não contém nome — pedir
+                _aguardando = await redis_client.get(f"aguardando_nome:{id_conv}")
+                if not _aguardando:
+                    msg_nome = (
+                        "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
+                        "Pode me responder só com seu primeiro nome."
+                    )
+                    await enviar_mensagem_chatwoot(
+                        account_id, id_conv, msg_nome,
+                        "Assistente Virtual", integracao, empresa_id
+                    )
+                    await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
+                    logger.info(f"🏷️ Nome inválido '{nome_contato_raw}' detectado — pedindo nome real (conv={id_conv})")
+                    return {"status": "aguardando_nome"}
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
