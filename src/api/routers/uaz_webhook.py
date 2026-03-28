@@ -101,6 +101,12 @@ async def uazapi_webhook(
         audio_msg = msg_payload.get("audioMessage") or msg_payload.get("pttMessage")
         has_audio = bool(audio_msg)
 
+        # Imagem e Vídeo (multimodal — IA "vê" a imagem)
+        image_msg = msg_payload.get("imageMessage")
+        video_msg = msg_payload.get("videoMessage")
+        has_image = bool(image_msg)
+        has_video = bool(video_msg)
+
         # Seleção de lista interativa (type=list)
         list_reply    = msg_payload.get("listResponseMessage", {})
         list_title    = list_reply.get("title", "") or list_reply.get("singleSelectReply", {}).get("selectedRowId", "")
@@ -118,12 +124,17 @@ async def uazapi_webhook(
         else:
             content = conversation or extended or image_caption or video_caption or ""
 
-        if not content and not has_audio:
+        has_media = has_audio or has_image or has_video
+        if not content and not has_media:
             return {"status": "ignored", "reason": "empty_content"}
 
-        # Placeholder para áudio sem texto — será substituído pela transcrição
+        # Placeholder para mídia sem texto — será complementado pelo pipeline
         if not content and has_audio:
             content = "[Áudio recebido]"
+        elif not content and has_image:
+            content = "[Imagem recebida]"
+        elif not content and has_video:
+            content = "[Vídeo recebido]"
 
         # Buscar se já existe uma conversa interna para este telefone
         conversa_existente = await buscar_conversa_por_fone(phone, empresa_id)
@@ -208,21 +219,32 @@ async def uazapi_webhook(
 
         # --- Fim do Menu de Triagem ---
 
-        # --- Detecção de URL de Áudio ---
+        # --- Detecção de URLs de Mídia (Áudio, Imagem, Vídeo) ---
         # Busca mediaUrl no payload UazAPI (vários locais possíveis).
         # O stream_worker cuida de popular o buffet usando o conversation_id correto.
+        media_url = (
+            data.get("mediaUrl") or
+            body.get("mediaUrl") or
+            message.get("mediaUrl") or
+            ""
+        )
+
         audio_url = ""
+        image_url = ""
+
         if has_audio:
-            audio_url = (
-                data.get("mediaUrl") or
-                body.get("mediaUrl") or
-                message.get("mediaUrl") or
-                ""
-            )
+            audio_url = media_url
             if audio_url:
                 logger.info(f"🎙️ UazAPI: Áudio com mediaUrl para {phone} | {audio_url[:80]}...")
             else:
                 logger.info(f"🎙️ UazAPI: Áudio detectado para {phone} (sem mediaUrl no payload, worker resolverá via Chatwoot)")
+
+        if has_image or has_video:
+            image_url = media_url
+            if image_url:
+                logger.info(f"🖼️ UazAPI: {'Imagem' if has_image else 'Vídeo'} com mediaUrl para {phone} | {image_url[:80]}...")
+            else:
+                logger.info(f"🖼️ UazAPI: {'Imagem' if has_image else 'Vídeo'} detectado para {phone} (sem mediaUrl, worker resolverá via Chatwoot)")
 
         # --- Dedup cross-webhook: evita processar a mesma mensagem 2x ---
         _uaz_msg_id = key.get("id", "")
@@ -242,6 +264,8 @@ async def uazapi_webhook(
             "instance": body.get("instance"),
             "has_audio": "1" if has_audio else "",
             "audio_url": audio_url,
+            "has_image": "1" if (has_image or has_video) else "",
+            "image_url": image_url,
         }
 
         # Publicar no Redis Streams

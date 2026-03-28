@@ -708,33 +708,108 @@ def corrigir_json(texto: str) -> str:
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
 
+async def _transcrever_via_gemini(audio_bytes: bytes, mime_type: str = "audio/ogg") -> Optional[str]:
+    """
+    Fallback: transcreve áudio via Gemini (OpenRouter) quando Whisper não está disponível.
+    Usa input_audio (formato OpenRouter) com base64.
+    Custo: ~$0.001 por transcrição (gemini-2.0-flash-lite).
+    """
+    try:
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        # Mapeia MIME → formato OpenRouter
+        fmt_map = {
+            "audio/ogg": "ogg", "audio/opus": "ogg", "audio/mpeg": "mp3",
+            "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav",
+            "audio/mp4": "m4a", "audio/m4a": "m4a", "audio/aac": "aac",
+            "audio/flac": "flac", "audio/webm": "ogg",
+        }
+        fmt = fmt_map.get(mime_type, "ogg")
+
+        result = await cliente_ia.chat.completions.create(
+            model="google/gemini-2.0-flash-lite",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": audio_b64, "format": fmt}
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Transcreva o áudio acima literalmente em português brasileiro. "
+                            "Retorne APENAS o texto falado, sem comentários, descrições ou formatação."
+                        )
+                    }
+                ]
+            }],
+            max_tokens=500,
+            temperature=0.1,
+        )
+
+        text = (result.choices[0].message.content or "").strip()
+        if text:
+            logger.info(f"🎙️ Áudio transcrito via Gemini ({len(text)} chars)")
+            return text
+        return None
+    except Exception as e:
+        logger.error(f"❌ Erro transcrição Gemini: {e}")
+        return None
+
+
 async def transcrever_audio(url: str):
-    if not cliente_whisper:
-        return "[Áudio recebido, mas Whisper não configurado]"
-    async with whisper_semaphore:
-        try:
-            resp = await baixar_midia_com_retry(url, timeout=15.0)
-            audio_file = io.BytesIO(resp.content)
-            audio_file.name = "audio.ogg"
-            transcription = await cliente_whisper.audio.transcriptions.create(
-                model="whisper-1", file=audio_file
-            )
-            return transcription.text
-        except httpx.TimeoutException as e:
-            logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_timeout").inc()
-            return "[Erro ao baixar áudio: timeout]"
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_http").inc()
-            return "[Erro ao baixar áudio]"
-        except Exception as e:
-            logger.error(f"Erro Whisper: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
-            return "[Erro ao transcrever áudio]"
+    """
+    Transcreve áudio com duplo fallback:
+    1. OpenAI Whisper (melhor qualidade, requer OPENAI_API_KEY)
+    2. Gemini via OpenRouter (funciona sem chave extra)
+    """
+    # --- Passo 1: Baixa o áudio (compartilhado entre Whisper e Gemini) ---
+    try:
+        resp = await baixar_midia_com_retry(url, timeout=15.0)
+        audio_bytes = resp.content
+        content_type = resp.headers.get("content-type", "audio/ogg").split(";")[0].strip()
+    except httpx.TimeoutException as e:
+        logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="audio_download_timeout").inc()
+        return "[Erro ao baixar áudio: timeout]"
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="audio_download_http").inc()
+        return "[Erro ao baixar áudio]"
+    except Exception as e:
+        logger.error(f"❌ Erro ao baixar áudio: {e}")
+        return "[Erro ao baixar áudio]"
+
+    # --- Passo 2: Tenta Whisper (prioridade — melhor qualidade) ---
+    if cliente_whisper:
+        async with whisper_semaphore:
+            try:
+                audio_file = io.BytesIO(audio_bytes)
+                audio_file.name = "audio.ogg"
+                transcription = await cliente_whisper.audio.transcriptions.create(
+                    model="whisper-1", file=audio_file
+                )
+                if transcription.text:
+                    logger.info(f"🎙️ Áudio transcrito via Whisper ({len(transcription.text)} chars)")
+                    return transcription.text
+            except Exception as e:
+                logger.warning(f"⚠️ Whisper falhou, tentando Gemini: {e}")
+                if PROMETHEUS_OK:
+                    METRIC_ERROS_TOTAL.labels(tipo="whisper_error").inc()
+
+    # --- Passo 3: Fallback Gemini (funciona sem OPENAI_API_KEY) ---
+    gemini_text = await _transcrever_via_gemini(audio_bytes, content_type)
+    if gemini_text:
+        return gemini_text
+
+    # --- Nenhum método funcionou ---
+    logger.error("❌ Transcrição falhou em todos os métodos (Whisper + Gemini)")
+    if PROMETHEUS_OK:
+        METRIC_ERROS_TOTAL.labels(tipo="transcricao_total_fail").inc()
+    return "[Não foi possível transcrever o áudio]"
 
 
 @retry(
@@ -1422,18 +1497,32 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             conteudo_usuario = []
             for img_url in imagens_urls:
                 try:
+                    # Headers de auth variam por fonte: Chatwoot usa api_access_token, UazAPI sem auth
+                    _img_headers = {}
+                    if source == "chatwoot":
+                        _cw_token = integracao.get("token") or integracao.get("access_token") or ""
+                        if _cw_token:
+                            _img_headers = {"api_access_token": _cw_token}
+
                     resp = await baixar_midia_com_retry(
                         img_url,
                         timeout=12.0,
-                        headers={"api_access_token": integracao_chatwoot['token']},
+                        headers=_img_headers if _img_headers else None,
                     )
+
+                    # Detecta content-type real da imagem
+                    _ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                    if _ct not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                        _ct = "image/jpeg"
+
                     img_b64 = base64.b64encode(resp.content).decode("utf-8")
                     conteudo_usuario.append({
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                        "image_url": {"url": f"data:{_ct};base64,{img_b64}"}
                     })
+                    logger.info(f"🖼️ Imagem carregada para LLM: {img_url[:60]}... ({_ct})")
                 except Exception as e:
-                    logger.error(f"Erro ao baixar imagem: {e}")
+                    logger.error(f"Erro ao baixar imagem para LLM: {e}")
 
             # Multi-Model Routing — escolhe modelo por intenção/complexidade
             _modelo_pers = pers.get("model_name") or pers.get("modelo_preferido") or None

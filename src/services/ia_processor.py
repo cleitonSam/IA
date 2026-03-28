@@ -1274,34 +1274,29 @@ def corrigir_json(texto: str) -> str:
 
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
+# NOTA: As funções principais de transcrição estão em bot_core.py.
+# Esta versão é mantida como fallback caso algum módulo importe daqui.
 
 async def transcrever_audio(url: str):
-    if not cliente_whisper:
-        return "[Áudio recebido, mas Whisper não configurado]"
-    async with whisper_semaphore:
-        try:
-            resp = await baixar_midia_com_retry(url, timeout=15.0)
-            audio_file = io.BytesIO(resp.content)
-            audio_file.name = "audio.ogg"
-            transcription = await cliente_whisper.audio.transcriptions.create(
-                model="whisper-1", file=audio_file
-            )
-            return transcription.text
-        except httpx.TimeoutException as e:
-            logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_timeout").inc()
-            return "[Erro ao baixar áudio: timeout]"
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_http").inc()
-            return "[Erro ao baixar áudio]"
-        except Exception as e:
-            logger.error(f"Erro Whisper: {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
-            return "[Erro ao transcrever áudio]"
+    """Delega para bot_core.transcrever_audio (versão com fallback Gemini)."""
+    try:
+        from src.services.bot_core import transcrever_audio as _transcrever
+        return await _transcrever(url)
+    except ImportError:
+        if not cliente_whisper:
+            return "[Áudio recebido, mas transcrição indisponível]"
+        async with whisper_semaphore:
+            try:
+                resp = await baixar_midia_com_retry(url, timeout=15.0)
+                audio_file = io.BytesIO(resp.content)
+                audio_file.name = "audio.ogg"
+                transcription = await cliente_whisper.audio.transcriptions.create(
+                    model="whisper-1", file=audio_file
+                )
+                return transcription.text
+            except Exception as e:
+                logger.error(f"Erro Whisper: {e}")
+                return "[Erro ao transcrever áudio]"
 
 
 @retry(

@@ -164,6 +164,85 @@ async def _process_job(msg_id: str, payload: dict):
                     else:
                         logger.warning(f"⚠️ Integração Chatwoot não encontrada para buscar áudio (empresa {empresa_id})")
 
+            # --- Imagem/Vídeo UazAPI: popular buffet com URL da mídia ---
+            if source == "uazapi" and payload.get("has_image") == "1":
+                _image_url = payload.get("image_url", "")
+                _buffet_key = f"{empresa_id}:buffet:{conversation_id}"
+                if _image_url:
+                    await redis_client.rpush(_buffet_key, json.dumps({
+                        "text": payload.get("content", "") if payload.get("content", "") not in ("[Imagem recebida]", "[Vídeo recebido]") else "",
+                        "files": [{"url": _image_url, "type": "image"}]
+                    }))
+                    await redis_client.expire(_buffet_key, 60)
+                    logger.info(f"🖼️ Imagem UazAPI → buffet: {contato_fone} conv={conversation_id}")
+                else:
+                    # Sem mediaUrl do UazAPI → busca no Chatwoot
+                    _integracao_cw_img = await carregar_integracao(empresa_id, 'chatwoot')
+                    if _integracao_cw_img:
+                        _cw_url_img = _integracao_cw_img.get("url") or _integracao_cw_img.get("base_url") or ""
+                        _cw_token_img = _integracao_cw_img.get("access_token") or _integracao_cw_img.get("token") or ""
+                        _cw_account_img = _integracao_cw_img.get("account_id") or account_id
+                        _cw_conv_img = conversation_id if conversation_id > 0 else None
+                        if not _cw_conv_img:
+                            try:
+                                _row_img = await _database.db_pool.fetchval(
+                                    "SELECT conversation_id FROM conversas WHERE contato_fone = $1 AND empresa_id = $2 AND conversation_id > 0 ORDER BY updated_at DESC LIMIT 1",
+                                    contato_fone, empresa_id
+                                )
+                                if _row_img:
+                                    _cw_conv_img = _row_img
+                            except Exception:
+                                pass
+
+                        if _cw_url_img and _cw_token_img and _cw_account_img and _cw_conv_img:
+                            logger.info(f"🖼️ Buscando imagem no Chatwoot para {contato_fone}...")
+                            await asyncio.sleep(5)
+                            try:
+                                async with httpx.AsyncClient(timeout=10.0) as _cw_client_img:
+                                    _cw_resp_img = await _cw_client_img.get(
+                                        f"{_cw_url_img.rstrip('/')}/api/v1/accounts/{_cw_account_img}/conversations/{_cw_conv_img}/messages",
+                                        headers={"api_access_token": str(_cw_token_img)},
+                                    )
+                                    if _cw_resp_img.status_code == 200:
+                                        _found_img_url = ""
+                                        _cw_msgs_img = _cw_resp_img.json().get("payload", [])
+                                        for _m_img in _cw_msgs_img:
+                                            for _att_img in (_m_img.get("attachments") or []):
+                                                _ft = str(_att_img.get("file_type", "")).lower()
+                                                if _ft.startswith("image") or _ft.startswith("video"):
+                                                    _found_img_url = _att_img.get("data_url")
+                                                    break
+                                            if _found_img_url:
+                                                break
+                                        if _found_img_url:
+                                            await redis_client.rpush(_buffet_key, json.dumps({
+                                                "text": "",
+                                                "files": [{"url": _found_img_url, "type": "image"}]
+                                            }))
+                                            await redis_client.expire(_buffet_key, 60)
+                                            logger.info(f"🖼️ Imagem Chatwoot → buffet: {contato_fone} conv={conversation_id}")
+                                        else:
+                                            logger.warning(f"⚠️ Imagem não encontrada no Chatwoot para {contato_fone}")
+                            except Exception as _cw_img_err:
+                                logger.error(f"❌ Erro ao buscar imagem no Chatwoot: {_cw_img_err}")
+                    else:
+                        logger.warning(f"⚠️ Integração Chatwoot não encontrada para buscar imagem (empresa {empresa_id})")
+
+            # --- Texto UazAPI: garante que o conteúdo de texto entra no buffet ---
+            # O Chatwoot normalmente também push o texto, mas esse safety net
+            # garante funcionamento mesmo se Chatwoot estiver indisponível.
+            if source == "uazapi":
+                _text_content = payload.get("content", "")
+                _placeholders = {"[Áudio recebido]", "[Imagem recebida]", "[Vídeo recebido]", ""}
+                _buffet_key_txt = f"{empresa_id}:buffet:{conversation_id}"
+                if _text_content not in _placeholders:
+                    # Só empurra texto se NÃO veio junto com imagem (evita duplicação)
+                    if payload.get("has_image") != "1":
+                        await redis_client.rpush(_buffet_key_txt, json.dumps({
+                            "text": _text_content, "files": []
+                        }))
+                        await redis_client.expire(_buffet_key_txt, 60)
+
             integracao = await carregar_integracao(empresa_id, 'chatwoot' if source == "chatwoot" else 'uazapi')
             if not integracao:
                 logger.error(f"❌ Falha ao carregar integração {source} para empresa {empresa_id}. Job abortado.")
