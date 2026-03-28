@@ -4283,8 +4283,18 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     except (json.JSONDecodeError, ValueError):
                         pass  # Não é JSON, usa como texto mesmo
 
+                # Extrai tags de mídia ANTES de cortar frases (senão _garantir_frase_completa remove)
+                _TAG_MIDIA_RE = re.compile(r'<SEND_(?:VIDEO|IMAGE)(?::[^>]*)?>')
+                _tags_midia = _TAG_MIDIA_RE.findall(resposta_texto or '')
+                if _tags_midia:
+                    resposta_texto = _TAG_MIDIA_RE.sub('', resposta_texto).strip()
+
                 # Aplica a garantia de frase completa para evitar truncamento feio (ativas no main tbm)
                 resposta_texto = _garantir_frase_completa(resposta_texto)
+
+                # Reanexa as tags de mídia ao final para processamento posterior
+                if _tags_midia:
+                    resposta_texto = resposta_texto + ' ' + ' '.join(_tags_midia)
 
                 # Inferir estado emocional a partir das palavras-chave da resposta
                 _resp_norm = normalizar(resposta_texto)
