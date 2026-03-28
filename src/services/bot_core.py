@@ -609,14 +609,44 @@ async def salvar_cache_semantico(
         logger.warning(f"Erro ao salvar cache semântico: {e}")
 
 
-def dividir_em_blocos(texto: str) -> list:
-    """Divide resposta em blocos separados por parágrafo (\\n\\n).
-    Cada parágrafo vira uma mensagem independente no WhatsApp.
+def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
+    """Divide resposta em blocos curtos para enviar como mensagens separadas no WhatsApp.
+    1) Separa por parágrafo (\\n\\n)
+    2) Blocos longos: quebra por sentença respeitando max_chars
+    3) Blocos muito curtos (<40 chars): junta com o anterior
     """
     if not texto:
         return []
+
+    # 1) Separar por parágrafo
     blocos = [p.strip() for p in texto.split('\n\n') if p.strip()]
-    return blocos if blocos else [texto.strip()]
+
+    # 2) Blocos muito longos: quebrar por sentença
+    resultado = []
+    for bloco in blocos:
+        if len(bloco) <= max_chars:
+            resultado.append(bloco)
+        else:
+            sentencas = re.split(r'(?<=[.!?])\s+', bloco)
+            chunk = ""
+            for s in sentencas:
+                if chunk and len(chunk) + len(s) + 1 > max_chars:
+                    resultado.append(chunk.strip())
+                    chunk = s
+                else:
+                    chunk = f"{chunk} {s}".strip() if chunk else s
+            if chunk:
+                resultado.append(chunk.strip())
+
+    # 3) Juntar blocos muito curtos com o anterior
+    final = []
+    for b in resultado:
+        if final and len(b) < 40 and len(final[-1]) < 200:
+            final[-1] = f"{final[-1]}\n\n{b}"
+        else:
+            final.append(b)
+
+    return final if final else [texto.strip()]
 
 
 def detectar_intencao(texto: str) -> Optional[str]:
@@ -1376,7 +1406,8 @@ REGRAS:
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
 - NUNCA adicione dados que o cliente NÃO pediu (ex: não jogue horários se ele perguntou preço).
 - Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
-- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.""")
+- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.
+- NUNCA peça dados pessoais para cadastro (nome completo, email, CPF, endereço). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.""")
 
             # 7. Dados da Unidade e Rede
             blocos_prompt.append(f"""[INFORMAÇÕES DA UNIDADE ATUAL]
@@ -1964,7 +1995,16 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             typing_time = min(len(_bloco) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                             await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                         elif _i > 0:
-                            await asyncio.sleep(0.6)
+                            # UazAPI: simula "digitando..." antes de cada mensagem
+                            _chat_id = contato_fone or str(conversation_id)
+                            _uaz_typing = UazAPIClient(
+                                integracao.get('url') or integracao.get('api_url'),
+                                integracao.get('token'),
+                                integracao.get('instance', 'default')
+                            )
+                            _typing_ms = min(len(_bloco) * 15, 3000) + random.randint(300, 800)
+                            await _uaz_typing.set_presence(_chat_id, "composing", delay=_typing_ms)
+                            await asyncio.sleep(_typing_ms / 1000)
 
                         await despachar_resposta(
                             account_id, conversation_id, _bloco, nome_ia, integracao,

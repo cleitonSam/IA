@@ -784,7 +784,8 @@ REGRAS:
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
 - NUNCA adicione dados que o cliente NÃO pediu.
 - Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
-- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.""")
+- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.
+- NUNCA peça dados pessoais para cadastro (nome completo, email, CPF, endereço). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.""")
 
     # 10. Unidades da rede
     if unidades:

@@ -36,16 +36,55 @@ def limpar_nome(nome):
 
 def primeiro_nome_cliente(nome: Optional[str]) -> str:
     nome_limpo = limpar_nome(nome) if nome else ""
-    if not nome_limpo or nome_limpo.lower() in {"cliente", "contato", "visitante"}:
+    if not nome_limpo or not nome_eh_valido(nome_limpo):
         return ""
     return nome_limpo.split()[0].capitalize()
 
+
+_NOMES_INVALIDOS = {
+    # Genéricos de sistema
+    "cliente", "contato", "visitante", "unknown", "na", "n a", "lead", "user",
+    "usuario", "teste", "test", "admin", "suporte", "support", "bot",
+    # Saudações / palavras comuns salvas como nome
+    "boa", "bom", "oi", "ola", "hello", "hi", "hey", "obrigado", "obrigada",
+    "sim", "nao", "ok", "tudo", "bem", "blz", "beleza",
+    # Profissões / ocupações comuns
+    "costureira", "costureiro", "pedreiro", "padeiro", "padeira", "motorista",
+    "porteiro", "porteira", "zelador", "zeladora", "cabeleireiro", "cabeleireira",
+    "barbeiro", "eletricista", "encanador", "pintor", "pintora", "faxineira",
+    "faxineiro", "diarista", "mecanico", "mecanica", "garcom", "garconete",
+    "cozinheiro", "cozinheira", "vendedor", "vendedora", "professor", "professora",
+    "doutor", "doutora", "enfermeiro", "enfermeira", "dentista", "advogado",
+    "advogada", "personal", "personol", "nutricionista", "recepcionista",
+    # Adjetivos / apelidos genéricos
+    "amor", "amiga", "amigo", "querido", "querida", "lindo", "linda", "fofo",
+    "fofa", "mano", "mana", "brother", "parceiro", "parceira", "chefe", "boss",
+    "gato", "gata", "principe", "princesa", "rei", "rainha", "anjo",
+    # Parentesco
+    "mae", "pai", "filho", "filha", "esposo", "esposa", "marido", "mulher",
+    "tio", "tia", "primo", "prima", "sogro", "sogra", "cunhado", "cunhada",
+    "vovo", "vovo", "neto", "neta", "irmao", "irma",
+    # Outros
+    "whatsapp", "wpp", "zap", "instagram", "face", "facebook", "empresa",
+    "academia", "loja", "casa", "trabalho", "escritorio", "consultorio",
+}
 
 def nome_eh_valido(nome: Optional[str]) -> bool:
     nome_limpo = limpar_nome(nome) if nome else ""
     if not nome_limpo or len(nome_limpo) < 2:
         return False
-    return nome_limpo.lower() not in {"cliente", "contato", "visitante", "unknown", "na", "n a"}
+    nome_lower = normalizar(nome_limpo)
+    # Verifica cada palavra do nome contra a blocklist
+    palavras = nome_lower.split()
+    if len(palavras) == 1 and palavras[0] in _NOMES_INVALIDOS:
+        return False
+    # Se todas as palavras são inválidas, nome é inválido
+    if all(p in _NOMES_INVALIDOS for p in palavras):
+        return False
+    # Nome com apenas números/símbolos após limpeza
+    if not any(c.isalpha() for c in nome_limpo):
+        return False
+    return True
 
 
 def extrair_nome_do_texto(texto: str) -> Optional[str]:
