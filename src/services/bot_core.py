@@ -1659,10 +1659,19 @@ RESPONDA com a mensagem diretamente — texto puro.""")
 
                 # Injeta informação sobre imagem de grade se existir
                 _foto_grade = unidade.get("foto_grade")
-                if _foto_grade:
-                    prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM uma imagem da grade de aulas/horários disponível em: {_foto_grade}\n"
-                    prompt_sistema += "Se o cliente quiser ver a grade ou horários, você pode dizer que está enviando a imagem agora.\n"
-                    prompt_sistema += "IMPORTANTE: Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
+                _modalidades_texto = unidade.get("modalidades") or ""
+                if _foto_grade or _modalidades_texto:
+                    prompt_sistema += "\n[GRADE DE AULAS & MODALIDADES — REGRAS]\n"
+                    if _modalidades_texto:
+                        prompt_sistema += f"Você TEM acesso ao conteúdo textual completo das modalidades e grade de aulas desta unidade. Os dados estão no campo 'Modalidades' acima nos DADOS DA UNIDADE.\n"
+                        prompt_sistema += "REGRA PRIORITÁRIA: Sempre responda sobre aulas, modalidades, horários de aulas e grade usando o TEXTO que você já possui. Explique verbalmente.\n"
+                        prompt_sistema += "Se o cliente perguntar sobre uma modalidade específica (ex: fit dance, pilates, yoga), busque nos dados textuais e responda com as informações que tem.\n"
+                        prompt_sistema += "Se o cliente não consegue ler, tem dificuldade visual, ou pediu por áudio — NUNCA ofereça imagem. Use o texto para explicar verbalmente.\n"
+                    if _foto_grade:
+                        prompt_sistema += f"Esta unidade também TEM uma imagem da grade de aulas disponível.\n"
+                        prompt_sistema += "A imagem é um COMPLEMENTO — ofereça APÓS já ter respondido com o texto. Exemplo: 'E se quiser ver a grade completa com os horários certinhos, posso te enviar a imagem também!'\n"
+                        prompt_sistema += "Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
+                        prompt_sistema += "NUNCA envie a imagem como primeira/única resposta. Sempre responda com texto primeiro.\n"
 
                 # Injeta informação sobre Tour Virtual se existir
                 _link_tour = unidade.get("link_tour_virtual")

@@ -56,7 +56,7 @@ def classificar_intencao(texto: str) -> str:
         return "unidades"
     if re.search(r"(preco|preço|valor|mensalidade|quanto custa|plano|planos|promo|promocao|promoção)", t):
         return "planos"
-    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross)", t):
+    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross|pilates|yoga|zumba|fit\s?dance|fit\s?combat|muay|thai|jiu|jitsu|boxe|luta|lutas|jump|step|body\s?pump|body\s?balance|bike|hidroginastica|hidroginástica|natacao|natação|danca|dança|ballet|alongamento|rpg|circuito|hiit|treino)", t):
         return "modalidades"
     if re.search(r"(convenio|convênio|gympass|wellhub|totalpass)", t):
         return "convenio"

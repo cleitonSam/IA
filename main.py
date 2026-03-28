@@ -440,7 +440,7 @@ def classificar_intencao(texto: str) -> str:
         return "unidades"
     if re.search(r"(preco|preço|valor|mensalidade|quanto custa|plano|planos|promo|promocao|promoção)", t):
         return "planos"
-    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross)", t):
+    if re.search(r"(grade de aulas?|grade|modalidade|modalidades|aulas?|musculacao|musculação|funcional|spinning|cross|pilates|yoga|zumba|fit\s?dance|fit\s?combat|muay|thai|jiu|jitsu|boxe|luta|lutas|jump|step|body\s?pump|body\s?balance|bike|hidroginastica|hidroginástica|natacao|natação|danca|dança|ballet|alongamento|rpg|circuito|hiit|treino)", t):
         return "modalidades"
     if re.search(r"(convenio|convênio|gympass|wellhub|totalpass)", t):
         return "convenio"
@@ -622,6 +622,30 @@ def responder_telefone(unidade: dict) -> str:
     )
 
 
+def responder_modalidades(unidade: dict) -> str:
+    """Responde sobre modalidades/aulas da unidade usando dados textuais."""
+    nome = unidade.get("nome") or "da unidade"
+    modalidades = normalizar_lista_campo(unidade.get("modalidades"))
+
+    if not modalidades:
+        return (
+            f"💪 Na unidade *{nome}* temos diversas atividades incríveis!\n\n"
+            "Geralmente temos musculação, cardio e aulas coletivas. "
+            "Qual modalidade você mais gosta? 😊"
+        )
+
+    lista = "\n".join([f"• {m}" for m in modalidades])
+    resposta = f"💪 Na unidade *{nome}* temos:\n\n{lista}"
+
+    foto_grade = unidade.get("foto_grade")
+    if foto_grade:
+        resposta += "\n\n🖼️ *Também tenho a grade completa com os horários das aulas!* Quer que eu te envie? 😊"
+    else:
+        resposta += "\n\nQual dessas você mais tem interesse? 😊"
+
+    return resposta
+
+
 async def responder_lista_unidades(empresa_id: int, texto: str) -> str:
     unidades = await listar_unidades_ativas(empresa_id)
     if not unidades:
@@ -675,6 +699,8 @@ async def gerar_resposta_inteligente(
         return {"tipo": "texto", "resposta": responder_horario(unidade), "slug": slug, "intencao": intencao}
     if intencao == "endereco":
         return {"tipo": "texto", "resposta": responder_endereco(unidade), "slug": slug, "intencao": intencao}
+    if intencao == "modalidades":
+        return {"tipo": "texto", "resposta": responder_modalidades(unidade), "slug": slug, "intencao": intencao}
 
     return {"tipo": "llm", "resposta": None, "slug": slug, "intencao": "llm"}
 
@@ -3893,9 +3919,19 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                 prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
 
             _foto_grade = unidade.get("foto_grade")
-            if _foto_grade:
-                prompt_sistema += f"\n[SISTEMA - IMPORTANTE]: Você TEM a imagem da grade desta unidade aqui: {_foto_grade}\n"
-                prompt_sistema += "Se o cliente pedir 'grade', 'horários' ou 'quadro de aulas', você DEVE dizer algo como 'Vou te enviar a imagem da grade agora mesmo' e deixar que o sistema envie. NUNCA diga que não tem a grade.\n"
+            _modalidades_texto = unidade.get("modalidades") or ""
+            if _foto_grade or _modalidades_texto:
+                prompt_sistema += "\n[GRADE DE AULAS & MODALIDADES — REGRAS]\n"
+                if _modalidades_texto:
+                    prompt_sistema += "Você TEM acesso ao conteúdo textual completo das modalidades e grade de aulas desta unidade. Os dados estão no campo 'Modalidades' nos DADOS DA UNIDADE.\n"
+                    prompt_sistema += "REGRA PRIORITÁRIA: Sempre responda sobre aulas, modalidades, horários de aulas e grade usando o TEXTO que você já possui. Explique verbalmente.\n"
+                    prompt_sistema += "Se o cliente perguntar sobre uma modalidade específica (ex: fit dance, pilates, yoga), busque nos dados textuais e responda com as informações que tem.\n"
+                    prompt_sistema += "Se o cliente não consegue ler, tem dificuldade visual, ou pediu por áudio — NUNCA ofereça imagem. Use o texto para explicar verbalmente.\n"
+                if _foto_grade:
+                    prompt_sistema += "Esta unidade também TEM uma imagem da grade de aulas disponível.\n"
+                    prompt_sistema += "A imagem é um COMPLEMENTO — ofereça APÓS já ter respondido com o texto. Exemplo: 'E se quiser ver a grade completa com os horários, posso te enviar a imagem também!'\n"
+                    prompt_sistema += "NUNCA envie a imagem como primeira/única resposta. Sempre responda com texto primeiro.\n"
+                    prompt_sistema += "NUNCA diga que não tem a grade. Se pedirem, ofereça o texto E a imagem.\n"
 
             prompt_sistema += f"""
 PERSONALIDADE
