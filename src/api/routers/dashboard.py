@@ -912,15 +912,12 @@ async def get_metrics_ai_performance(
         where_c = " AND ".join(conditions_c) if conditions_c else "TRUE"
         where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
 
-        # 1. Métricas de uso da IA
+        # 1. Métricas de uso da IA (apenas colunas que existem na tabela)
         row_ia = await _database.db_pool.fetchrow(f"""
             SELECT
                 COUNT(*) AS total_chamadas,
-                COALESCE(AVG(ui.latencia_ms), 0) AS latencia_media_ms,
                 COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
-                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens,
-                COUNT(DISTINCT CASE WHEN ui.cache_hit THEN ui.id END) AS cache_hits,
-                COUNT(DISTINCT CASE WHEN ui.fallback THEN ui.id END) AS fallbacks
+                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens
             FROM uso_ia ui
             WHERE {where_ia}
         """, *params)
@@ -968,13 +965,17 @@ async def get_metrics_ai_performance(
         total_chamadas = ia.get("total_chamadas", 0) or 1
         total_conversas = conv.get("total_conversas", 0) or 1
 
+        # Calcula tempo médio de resposta como proxy de latência
+        tempo_resp = float(conv.get("tempo_resp_medio", 0))
+        latencia_estimada = round(tempo_resp * 1000, 0) if tempo_resp > 0 and tempo_resp < 60 else 0
+
         return {
             "days": days,
             "ia": {
                 "total_chamadas": ia.get("total_chamadas", 0),
-                "latencia_media_ms": round(float(ia.get("latencia_media_ms", 0)), 0),
-                "cache_hit_rate": round((ia.get("cache_hits", 0) / total_chamadas) * 100, 1),
-                "fallback_rate": round((ia.get("fallbacks", 0) / total_chamadas) * 100, 1),
+                "latencia_media_ms": latencia_estimada,
+                "cache_hit_rate": 0.0,  # Requer coluna cache_hit na tabela uso_ia
+                "fallback_rate": 0.0,   # Requer coluna fallback na tabela uso_ia
                 "custo_total_usd": round(float(ia.get("custo_total", 0)), 4),
                 "custo_por_conversa": round(float(ia.get("custo_total", 0)) / total_conversas, 4),
                 "total_tokens": ia.get("total_tokens", 0),
