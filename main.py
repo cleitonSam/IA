@@ -4630,12 +4630,21 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         _fone_clean = "".join(filter(str.isdigit, str(_fone_tour)))
                         await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
                         await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", 120, "1")
-                        await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="video")
-                        # Marca tour como enviado (7 dias TTL) — por conversa e por telefone+unidade
-                        await redis_client.setex(_tour_dedup_key, 604800, "1")
-                        if _fone_clean and slug:
-                            await redis_client.setex(f"tour_enviado:{empresa_id}:{_fone_clean}:{slug}", 604800, "1")
-                        logger.info(f"🎥 Tour virtual enviado com sucesso para conv {conversation_id}")
+                        _tour_ok = await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="video")
+                        if not _tour_ok:
+                            # Retry como document (vídeos grandes podem falhar como "video")
+                            logger.warning(f"⚠️ Tour falhou como video, tentando como document...")
+                            await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
+                            await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", 120, "1")
+                            _tour_ok = await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="document")
+                        if _tour_ok:
+                            # Marca tour como enviado (7 dias TTL) — por conversa e por telefone+unidade
+                            await redis_client.setex(_tour_dedup_key, 604800, "1")
+                            if _fone_clean and slug:
+                                await redis_client.setex(f"tour_enviado:{empresa_id}:{_fone_clean}:{slug}", 604800, "1")
+                            logger.info(f"🎥 Tour virtual enviado com sucesso para conv {conversation_id}")
+                        else:
+                            logger.error(f"❌ Tour virtual falhou (video + document) para conv {conversation_id}")
                     else:
                         # Fallback: envia via Chatwoot com attachment_url
                         await enviar_mensagem_chatwoot(
