@@ -1,6 +1,8 @@
 import uuid as _uuid
 import re
 import json
+import base64
+import httpx
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -561,6 +563,90 @@ async def upload_unidade_foto(
     except Exception as e:
         logger.error(f"Erro no endpoint de upload: {e}")
         raise HTTPException(status_code=500, detail="Erro interno no upload")
+
+
+class ExtrairGradeRequest(BaseModel):
+    image_url: str
+
+@router.post("/unidades/extrair-grade")
+async def extrair_grade_ia(
+    body: ExtrairGradeRequest,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Usa IA Vision (Gemini 2.0 Flash via OpenRouter) para extrair modalidades,
+    horários e detalhes de uma imagem de grade de aulas.
+    """
+    from src.services.llm_service import cliente_ia
+
+    if not cliente_ia:
+        raise HTTPException(status_code=500, detail="Cliente IA não configurado (OPENROUTER_API_KEY ausente)")
+
+    image_url = body.image_url.strip()
+    if not image_url:
+        raise HTTPException(status_code=400, detail="URL da imagem é obrigatória")
+
+    # 1. Baixar a imagem
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(image_url, timeout=20.0)
+            resp.raise_for_status()
+            image_bytes = resp.content
+            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if content_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                content_type = "image/jpeg"
+    except Exception as e:
+        logger.error(f"❌ Erro ao baixar imagem da grade: {e}")
+        raise HTTPException(status_code=400, detail=f"Não foi possível baixar a imagem: {e}")
+
+    # 2. Base64 encode
+    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    # 3. Chamar IA Vision
+    prompt_extracao = """Você é um especialista em academias fitness no Brasil.
+Analise esta imagem de grade de aulas/horários e extraia TODAS as informações visíveis.
+
+FORMATO DE RESPOSTA:
+
+MODALIDADES: (lista separada por vírgula de todas as modalidades/aulas encontradas)
+
+GRADE DE HORÁRIOS:
+- Modalidade: Dias e horários
+
+OBSERVAÇÕES: (qualquer informação extra visível na imagem, como professores, regras, avisos)
+
+REGRAS IMPORTANTES:
+- Transcreva EXATAMENTE o que está na imagem, sem inventar informações
+- Se não conseguir ler algo com certeza, use [?] para indicar
+- Se a imagem NÃO for uma grade de aulas, responda apenas: "ERRO: A imagem não parece ser uma grade de aulas/horários."
+- Inclua TODOS os dias da semana e horários visíveis
+- Mantenha os nomes das modalidades como aparecem na imagem"""
+
+    try:
+        result = await cliente_ia.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_extracao},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{content_type};base64,{img_b64}"}
+                    }
+                ]
+            }],
+            temperature=0.1,
+            max_tokens=4000,
+        )
+
+        texto_extraido = result.choices[0].message.content.strip()
+        logger.info(f"✅ Extração de grade via IA: {len(texto_extraido)} chars extraídos")
+
+        return {"success": True, "modalidades": texto_extraido}
+
+    except Exception as e:
+        logger.error(f"❌ Erro na extração de grade via IA: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro na extração via IA: {e}")
 
 
 @router.get("/unidades/{unidade_id}")

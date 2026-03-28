@@ -6,7 +6,7 @@ import {
   Building2, Plus, Pencil, Trash2, Save, X, Loader2,
   CheckCircle2, MapPin, Phone, Globe, Instagram, Clock,
   Dumbbell, CreditCard, Shield, Sparkles, Layers,
-  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload, Video
+  ListChecks, HeartHandshake, Eye, Settings2, Info, ImagePlus, Upload, Video, Wand2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -59,6 +59,7 @@ export default function UnitsPage() {
   const [success, setSuccess] = useState(false);
   const [loadingUnit, setLoadingUnit] = useState(false);
   const [formData, setFormData] = useState<any>(emptyForm);
+  const [extractingGrade, setExtractingGrade] = useState(false);
 
   const getConfig = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
@@ -172,6 +173,33 @@ export default function UnitsPage() {
     } catch (err) {
       console.error("Erro no upload:", err);
       alert("Falha ao subir arquivo. Verifique o tamanho/formato.");
+    }
+  };
+
+  const handleExtrairGrade = async () => {
+    if (!formData.foto_grade) return;
+    setExtractingGrade(true);
+    try {
+      const res = await axios.post("/api-backend/dashboard/unidades/extrair-grade", {
+        image_url: formData.foto_grade
+      }, getConfig());
+
+      if (res.data.success && res.data.modalidades) {
+        setFormData((prev: any) => ({ ...prev, modalidades: res.data.modalidades }));
+        // Scroll para o campo modalidades para o admin visualizar
+        setTimeout(() => {
+          const el = document.getElementById("modalidades-textarea");
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 300);
+      } else {
+        alert("Não foi possível extrair modalidades da imagem.");
+      }
+    } catch (err: any) {
+      console.error("Erro na extração:", err);
+      const msg = err?.response?.data?.detail || "Erro ao extrair modalidades da imagem.";
+      alert(msg);
+    } finally {
+      setExtractingGrade(false);
     }
   };
 
@@ -521,7 +549,7 @@ export default function UnitsPage() {
                             placeholder={"Seg-Sex: 06h às 23h\nSáb: 09h às 17h\nDom: 09h às 13h"} />
                         </Field>
                         <Field label="Modalidades & Especialidades" icon={Dumbbell}>
-                          <textarea rows={7} value={formData.modalidades}
+                          <textarea id="modalidades-textarea" rows={7} value={formData.modalidades}
                             onChange={e => setFormData({ ...formData, modalidades: e.target.value })}
                             className={textareaClass}
                             placeholder="Musculação, CrossFit, Pilates, Lutas..." />
@@ -544,22 +572,43 @@ export default function UnitsPage() {
                               </div>
                               
                               {formData.foto_grade && (
-                                <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
-                                  <img 
-                                    src={formData.foto_grade} 
-                                    alt="Preview Grade" 
-                                    className="w-full h-full object-cover transition-transform duration-500 group-hover/preview:scale-110" 
-                                  />
+                                <div className="flex flex-col items-center gap-3">
+                                  <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
+                                    <img
+                                      src={formData.foto_grade}
+                                      alt="Preview Grade"
+                                      className="w-full h-full object-cover transition-transform duration-500 group-hover/preview:scale-110"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setFormData({ ...formData, foto_grade: "" })}
+                                      className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                    <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
+                                      <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
+                                    </div>
+                                  </div>
                                   <button
                                     type="button"
-                                    onClick={() => setFormData({ ...formData, foto_grade: "" })}
-                                    className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
+                                    onClick={handleExtrairGrade}
+                                    disabled={extractingGrade}
+                                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-wider transition-all bg-gradient-to-r from-[#00d2ff]/20 to-[#a855f7]/20 hover:from-[#00d2ff]/30 hover:to-[#a855f7]/30 text-white border border-[#00d2ff]/30 hover:border-[#a855f7]/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="Usa IA para ler a imagem da grade e preencher automaticamente o campo Modalidades & Especialidades"
                                   >
-                                    <Trash2 className="w-4 h-4" />
+                                    {extractingGrade ? (
+                                      <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Extraindo...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Wand2 className="w-4 h-4" />
+                                        Extrair Modalidades com IA
+                                      </>
+                                    )}
                                   </button>
-                                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
-                                    <p className="text-[9px] text-center font-black text-white/70 uppercase tracking-tighter">Preview Ativo</p>
-                                  </div>
                                 </div>
                               )}
                             </div>
