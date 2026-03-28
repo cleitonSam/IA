@@ -62,6 +62,7 @@ from src.services.db_queries import (
 from src.services.chatwoot_client import (
     simular_digitacao, formatar_mensagem_saida, suavizar_personalizacao_nome,
     atualizar_nome_contato_chatwoot, enviar_mensagem_chatwoot, validar_assinatura,
+    escalar_para_humano,
 )
 from src.services.evo_client import verificar_status_membro_evo, criar_prospect_evo
 import src.services.chatwoot_client as _chatwoot_module
@@ -86,7 +87,9 @@ from src.services.ia_processor import (
     montar_saudacao_humanizada, detectar_tipo_cliente,
     formatar_planos_bonito, filtrar_planos_por_contexto,
     _cosine_sim, _get_embedding, buscar_cache_semantico, salvar_cache_semantico,
-    detectar_intencao, coletar_mensagens_buffer,
+    detectar_intencao, coletar_mensagens_buffer, analisar_sentimento,
+    carregar_memoria_cliente, formatar_memoria_para_prompt, extrair_memorias_da_conversa,
+    truncar_contexto,
     aguardar_escolha_unidade_ou_reencaminhar, processar_anexos_mensagens,
     resolver_contexto_atendimento, persistir_mensagens_usuario,
     extrair_json, corrigir_json, transcrever_audio, baixar_midia_com_retry
@@ -871,6 +874,26 @@ async def processar_ia_e_responder(
         await persistir_mensagens_usuario(conversation_id, empresa_id, textos, transcricoes)
         # ──────────────────────────────────────────────────────────────────────
 
+        # ── ANÁLISE DE SENTIMENTO + AUTO-ESCALAÇÃO ───────────────────────────
+        _todas_msgs_texto = textos + list(transcricoes)
+        if _todas_msgs_texto:
+            _sentimento = await analisar_sentimento(_todas_msgs_texto, empresa_id, conversation_id)
+            if _sentimento.get("escalar"):
+                logger.warning(f"🚨 Escalação automática: conv {conversation_id} ({_sentimento['motivo']})")
+                _integ_cw = await carregar_integracao(empresa_id, 'chatwoot')
+                if _integ_cw:
+                    _nome_ia = (await carregar_personalidade(empresa_id) or {}).get("nome_ia", "Assistente")
+                    await escalar_para_humano(
+                        account_id, conversation_id, empresa_id,
+                        _integ_cw, motivo=_sentimento["motivo"], nome_ia=_nome_ia
+                    )
+                    await bd_registrar_evento_funil(
+                        conversation_id, empresa_id,
+                        "escalacao_sentimento", _sentimento["motivo"], score_incremento=0
+                    )
+                    return  # IA para de responder, atendente humano assume
+        # ──────────────────────────────────────────────────────────────────────
+
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
         # O drain loop pode recolocar mensagens no buffer após o processamento.
         # Se o hash das mensagens atuais é igual ao que foi respondido nos últimos
@@ -1319,10 +1342,17 @@ REGRAS:
 - Use <SEND_IMAGE:slug> para grades e <SEND_VIDEO:slug> para tours virtuais quando solicitado.
 {regras_seg}""")
 
+            # 9.5. Memória de longo prazo do cliente
+            if contato_fone:
+                _memorias = await carregar_memoria_cliente(contato_fone, empresa_id)
+                _bloco_memoria = formatar_memoria_para_prompt(_memorias)
+                if _bloco_memoria:
+                    blocos_prompt.append(_bloco_memoria)
+
             # 10. Histórico e Regras Anti-Alucinação
             restricoes = pers.get('restricoes') or ""
             palavras_proibidas = pers.get('palavras_proibidas') or ""
-            
+
             blocos_prompt.append(f"""[HISTÓRICO DA CONVERSA]
 {historico}
 
@@ -1364,7 +1394,7 @@ REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio 
 
 RESPONDA com a mensagem diretamente — texto puro.""")
 
-            prompt_sistema = "\n\n".join(blocos_prompt)
+            prompt_sistema = truncar_contexto(blocos_prompt, max_tokens=12000)
 
             conteudo_usuario = []
             for img_url in imagens_urls:
@@ -1899,6 +1929,12 @@ RESPONDA com a mensagem diretamente — texto puro.""")
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
+
+        # 💾 Extrai memórias de longo prazo das mensagens (async, sem bloquear)
+        if contato_fone and textos:
+            asyncio.create_task(
+                extrair_memorias_da_conversa(textos, resposta_texto, empresa_id, contato_fone)
+            )
 
         # 🔄 DRAIN LOOP — processa mensagens que chegaram DURANTE o processamento da IA
         # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
