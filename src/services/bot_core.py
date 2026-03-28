@@ -1383,8 +1383,9 @@ Convênios: {convenios_prompt}
             # 2. Identidade
             blocos_prompt.append(f"""[IDENTIDADE]
 - Seu nome: {nome_ia}.
-{f"- Sua função: Atendente da rede {nome_empresa}, unidade {nome_unidade}." if slug else f"- Sua função: Consultor da rede {nome_empresa}."}
-- Você representa TODA a rede e pode ajudar clientes de qualquer unidade.""")
+- Sua função: Consultor da rede {nome_empresa}.
+- Você atende TODAS as unidades da rede. NUNCA diga que é focado ou especializado em uma unidade específica.
+{f"- O cliente está sendo atendido pela unidade *{nome_unidade}*. Use os dados DESTA unidade para responder." if slug else "- A unidade do cliente ainda não foi definida."}""")
 
             if ctx_aluno:
                 blocos_prompt.append(f"[CONTEXTO DO ALUNO]\n{ctx_aluno}")

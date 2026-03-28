@@ -95,7 +95,9 @@ async def resolver_contexto_unidade(
     except Exception:
         tem_geo = False
 
-    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if tem_geo else None
+    # Busca se tem evidência geográfica OU se menciona "unidade" explicitamente
+    _pedido_explicito = any(k in texto_norm for k in ("unidade", "bairro", "cidade", "endereco"))
+    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if (tem_geo or _pedido_explicito) else None
 
     if slug_detectado:
         if slug_salvo and slug_detectado == slug_salvo:
