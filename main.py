@@ -3941,6 +3941,7 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 
             # Injeta informação sobre Tour Virtual se existir
             _link_tour = unidade.get("link_tour_virtual")
+            logger.info(f"🎥 [Tour] conv={conversation_id} slug={slug} link_tour={'SIM: '+_link_tour[:60] if _link_tour else 'NÃO'}")
             if _link_tour:
                 _oferecer_tour_ativo = pers.get("oferecer_tour", True)
                 _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
@@ -4348,10 +4349,14 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
         # --- Tour Virtual: detecta e limpa tag <SEND_VIDEO> ---
         _enviar_tour = False
         _link_tour_unidade = unidade.get("link_tour_virtual")
-        if resposta_texto and "<SEND_VIDEO>" in resposta_texto:
+        _has_tag = bool(resposta_texto and "<SEND_VIDEO>" in resposta_texto)
+        logger.info(f"🎥 [Tour Handler] conv={conversation_id} tag_detectada={_has_tag} link_tour={'SIM' if _link_tour_unidade else 'NÃO'}")
+        if _has_tag:
             resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
             if _link_tour_unidade:
                 _enviar_tour = True
+            else:
+                logger.warning(f"⚠️ [Tour] IA usou <SEND_VIDEO> mas unidade não tem link_tour_virtual!")
 
         # --- Salvar estado ---
         async with redis_client.pipeline(transaction=True) as pipe:
