@@ -570,6 +570,7 @@ export default function PersonalityPage() {
     contexto:   !!(fd.contexto_empresa || fd.exemplos),
     seguranca:  !!(fd.restricoes || fd.palavras_proibidas),
     horarios:   !!(fd.horario_atendimento_ia),
+    voz:        !!(fd.tts_voz),
   };
 
   const iClass = "w-full bg-[#0d1f3a] border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:border-[#00d2ff]/60 focus:bg-[#0d1f3a] transition-all text-sm leading-relaxed";
