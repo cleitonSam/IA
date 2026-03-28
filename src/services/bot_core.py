@@ -2392,8 +2392,33 @@ async def chatwoot_webhook(
     message_type = payload.get("message_type")
     sender_type = payload.get("sender", {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
-    is_ai_message = content_attrs.get("origin") == "ai"
     conteudo_texto = payload.get("content", "")
+    is_private = payload.get("private") is True or (payload.get("message") or {}).get("private") is True
+
+    # Identificação robusta de mensagens da IA (Sync ou Direta)
+    msg_obj = payload.get("message") or {}
+    msg_attrs = msg_obj.get("content_attributes") or {}
+    msg_id = payload.get("id") or msg_obj.get("id")
+
+    # Verifica se o ID da mensagem está no Redis (marcado pela enviar_mensagem_chatwoot)
+    is_ai_in_redis = False
+    if msg_id:
+        is_ai_in_redis = await redis_client.exists(f"ai_msg_id:{msg_id}")
+
+    is_ai_message = (
+        content_attrs.get("origin") == "ai"
+        or msg_attrs.get("origin") == "ai"
+        or is_ai_in_redis
+        or is_private
+    )
+
+    # Echo UazAPI: verifica se o bot enviou recentemente via UazAPI
+    _fone_echo = await get_tenant_cache(empresa_id, f"fone_cliente:{id_conv}")
+    is_uaz_echo = False
+    if _fone_echo:
+        is_uaz_echo = bool(await redis_client.exists(f"uaz_bot_sent:{empresa_id}:{_fone_echo}"))
+    if not is_uaz_echo:
+        is_uaz_echo = bool(await redis_client.exists(f"uaz_bot_sent:{id_conv}"))
 
     contato = payload.get("sender", {})
     nome_contato_raw = contato.get("name")
@@ -2562,8 +2587,10 @@ async def chatwoot_webhook(
 
     # Pausa IA se for mensagem de atendente humano
     if message_type == "outgoing" and sender_type == "user":
-        if is_ai_message:
+        if is_ai_message or is_uaz_echo:
+            logger.info(f"🦾 Mensagem reconhecida como IA/bot (marker/echo) — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
+        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Outgoing sem marcador (origin={content_attrs.get('origin')}, ai_redis={is_ai_in_redis}, uaz_echo={is_uaz_echo})")
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if _database.db_pool:
             await _database.db_pool.execute(

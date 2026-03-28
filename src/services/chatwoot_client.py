@@ -183,6 +183,16 @@ async def enviar_mensagem_chatwoot(
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers, timeout=15.0)
         resp.raise_for_status()
+
+        # Salva ID da mensagem no Redis para identificação no webhook
+        # Evita que mensagens da IA sejam confundidas com mensagens humanas (pause_ia)
+        try:
+            msg_data = resp.json()
+            if msg_data and "id" in msg_data:
+                await redis_client.setex(f"ai_msg_id:{msg_data['id']}", 600, "1")
+        except Exception:
+            pass
+
         return resp
     except Exception as e:
         logger.error(f"❌ Erro Chatwoot: {e} | URL: {url_m}")

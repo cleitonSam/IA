@@ -75,16 +75,26 @@ async def uazapi_webhook(
 
         # fromMe=true pode ser o BOT (via API) ou um ATENDENTE HUMANO (via WhatsApp)
         if key.get("fromMe"):
+            # Verifica DUAS chaves: formato com empresa_id:phone E formato com conversation_id
             bot_sent_key = f"uaz_bot_sent:{empresa_id}:{phone}"
-            if await redis_client.exists(bot_sent_key):
+            # Também checa chave alternativa usada pelo main.py (formato antigo por conv_id)
+            _conv_check = await buscar_conversa_por_fone(phone, empresa_id)
+            _conv_id_check = _conv_check.get("conversation_id") if _conv_check else None
+            bot_sent_conv_key = f"uaz_bot_sent:{_conv_id_check}" if _conv_id_check else None
+
+            _is_bot = await redis_client.exists(bot_sent_key)
+            if not _is_bot and bot_sent_conv_key:
+                _is_bot = await redis_client.exists(bot_sent_conv_key)
+
+            if _is_bot:
                 # É o próprio bot — ignora sem pausar
-                await redis_client.delete(bot_sent_key)
+                # NÃO deleta a key: mídia gera múltiplos webhooks (sent + thumbnail + delivered)
+                # A key expira naturalmente pelo TTL
                 return {"status": "ignored", "reason": "from_me_bot"}
             else:
                 # É um atendente humano enviando manualmente — pausa a IA
-                conversa_humana = await buscar_conversa_por_fone(phone, empresa_id)
-                if conversa_humana:
-                    conv_id_humano = conversa_humana.get("conversation_id")
+                if _conv_check:
+                    conv_id_humano = _conv_check.get("conversation_id")
                     await redis_client.setex(f"pause_ia:{empresa_id}:{conv_id_humano}", 43200, "1")
                     logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
                 return {"status": "ignored", "reason": "from_me_human"}

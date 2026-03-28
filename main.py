@@ -2261,8 +2261,11 @@ async def enviar_mensagem_chatwoot(
                 uaz_resp.raise_for_status()
 
                 # Registra que enviamos direto para evitar eco no webhook.
-                _echo_ttl = 90 if attachment_url else 45
+                # Seta DUAS chaves: formato conv_id (Chatwoot webhook) + empresa:phone (UazAPI webhook)
+                _echo_ttl = 120 if attachment_url else 60
                 await redis_client.setex(f"uaz_bot_sent:{conversation_id}", _echo_ttl, "1")
+                if empresa_id and _fone_clean:
+                    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", _echo_ttl, "1")
 
                 # UazAPI enviou com sucesso — retorna sem sync Chatwoot para evitar duplicação
                 logger.info(f"✅ [UAZAPI-DIRETO] Enviado com sucesso para {_fone_clean}")
@@ -4914,13 +4917,13 @@ async def chatwoot_webhook(
 
     # Pausa IA se for mensagem de atendente humano
     if message_type == "outgoing" and sender_type == "user":
-        if is_ai_message:
-            logger.info(f"🦾 Mensagem reconhecida como IA (marker/private) — mantendo fluxo ativo para conv {id_conv}")
+        if is_ai_message or is_uaz_echo:
+            logger.info(f"🦾 Mensagem reconhecida como IA/bot (marker/echo) — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
-        
+
         # Log de segurança para debugar se for uma mensagem da IA que escapou da detecção
-        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing sem marcador detectada")
-        
+        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing sem marcador detectada (sender={sender_type}, origin={content_attrs.get('origin')}, msg_origin={msg_attrs.get('origin')}, ai_redis={is_ai_in_redis}, uaz_echo={is_uaz_echo})")
+
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if db_pool:
             await db_pool.execute(
