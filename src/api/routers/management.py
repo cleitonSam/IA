@@ -1697,3 +1697,177 @@ async def get_followup_stats(token_payload: dict = Depends(get_current_user_toke
         WHERE empresa_id = $1
     """, empresa_id)
     return dict(row)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FASE 5 — KNOWLEDGE BASE (RAG) + A/B TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Knowledge Base (RAG) ────────────────────────────────────────────
+
+class KBDocumentCreate(BaseModel):
+    titulo: str
+    conteudo: str
+    categoria: str = "geral"
+
+@router.get("/knowledge-base")
+async def listar_knowledge_base(
+    categoria: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista documentos da base de conhecimento."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import listar_conhecimento
+    return await listar_conhecimento(empresa_id, categoria)
+
+
+@router.post("/knowledge-base", status_code=201)
+async def criar_knowledge_base(
+    body: KBDocumentCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Indexa um novo documento na base de conhecimento.
+    O conteúdo é dividido em chunks e embeddings são gerados automaticamente.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    if not body.conteudo or len(body.conteudo.strip()) < 20:
+        raise HTTPException(status_code=400, detail="Conteúdo muito curto (mín. 20 caracteres)")
+    from src.services.rag_service import indexar_documento
+    chunks = await indexar_documento(
+        empresa_id=empresa_id,
+        titulo=body.titulo,
+        conteudo=body.conteudo,
+        categoria=body.categoria
+    )
+    return {"status": "success", "chunks_indexados": chunks, "titulo": body.titulo}
+
+
+@router.delete("/knowledge-base/{kb_id}")
+async def deletar_knowledge_base(
+    kb_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Desativa um item da base de conhecimento."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import deletar_conhecimento
+    ok = await deletar_conhecimento(empresa_id, kb_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Erro ao desativar documento")
+    return {"status": "success"}
+
+
+@router.post("/knowledge-base/reindex")
+async def reindexar_knowledge_base(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Regenera embeddings de documentos sem embedding."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import reindexar_embeddings
+    updated = await reindexar_embeddings(empresa_id)
+    return {"status": "success", "embeddings_atualizados": updated}
+
+
+@router.post("/knowledge-base/search")
+async def buscar_knowledge_base(
+    query: str = Query(..., min_length=5),
+    top_k: int = Query(3, le=10),
+    categoria: Optional[str] = Query(None),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Busca semântica na base de conhecimento (para teste/debug)."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.rag_service import buscar_conhecimento
+    resultados = await buscar_conhecimento(query, empresa_id, top_k=top_k, categoria=categoria)
+    return {"query": query, "resultados": resultados, "total": len(resultados)}
+
+
+# ── A/B Testing ─────────────────────────────────────────────────────
+
+class ABTesteCreate(BaseModel):
+    nome: str
+    campo_teste: str = "prompt_sistema"  # prompt_sistema, tom_de_voz, instrucoes_extra
+    variante_a: str
+    variante_b: str
+    percentual_b: float = 50.0
+    descricao: Optional[str] = None
+
+
+@router.get("/ab-tests")
+async def listar_ab_tests(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista todos os testes A/B da empresa."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import listar_testes
+    return await listar_testes(empresa_id)
+
+
+@router.post("/ab-tests", status_code=201)
+async def criar_ab_test(
+    body: ABTesteCreate,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Cria um novo teste A/B. Desativa qualquer teste ativo anterior.
+    campo_teste: prompt_sistema, tom_de_voz, instrucoes_extra
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    if body.campo_teste not in ("prompt_sistema", "tom_de_voz", "instrucoes_extra"):
+        raise HTTPException(status_code=400, detail="campo_teste deve ser: prompt_sistema, tom_de_voz ou instrucoes_extra")
+    from src.services.ab_testing import criar_teste
+    teste_id = await criar_teste(
+        empresa_id=empresa_id,
+        nome=body.nome,
+        campo_teste=body.campo_teste,
+        variante_a=body.variante_a,
+        variante_b=body.variante_b,
+        percentual_b=body.percentual_b,
+        descricao=body.descricao
+    )
+    if not teste_id:
+        raise HTTPException(status_code=500, detail="Erro ao criar teste A/B")
+    return {"status": "success", "teste_id": teste_id}
+
+
+@router.get("/ab-tests/{teste_id}/results")
+async def resultados_ab_test(
+    teste_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Retorna resultados comparativos do teste A/B."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import obter_resultados_ab
+    return await obter_resultados_ab(teste_id)
+
+
+@router.post("/ab-tests/{teste_id}/finalize")
+async def finalizar_ab_test(
+    teste_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """Finaliza um teste A/B ativo."""
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+    from src.services.ab_testing import finalizar_teste
+    ok = await finalizar_teste(empresa_id, teste_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Erro ao finalizar teste")
+    return {"status": "success", "message": "Teste A/B finalizado"}

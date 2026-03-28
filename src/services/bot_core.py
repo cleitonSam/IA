@@ -94,6 +94,9 @@ from src.services.ia_processor import (
     resolver_contexto_atendimento, persistir_mensagens_usuario,
     extrair_json, corrigir_json, transcrever_audio, baixar_midia_com_retry
 )
+from src.services.rag_service import buscar_conhecimento, formatar_rag_para_prompt
+from src.services.model_router import escolher_modelo
+from src.services.ab_testing import aplicar_teste_ab, registrar_resultado_ab
 
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
 from dotenv import load_dotenv
@@ -1334,6 +1337,17 @@ REGRAS:
             if pers.get('exemplos'):
                 blocos_prompt.append(f"[EXEMPLOS DE INTERAÇÕES]\n{pers.get('exemplos')}")
 
+            # 8.5. RAG — Base de Conhecimento
+            try:
+                _rag_query = primeira_mensagem or texto_cliente_unificado or ""
+                if len(_rag_query.strip()) >= 10:
+                    _rag_resultados = await buscar_conhecimento(_rag_query, empresa_id, top_k=3)
+                    _bloco_rag = formatar_rag_para_prompt(_rag_resultados)
+                    if _bloco_rag:
+                        blocos_prompt.append(_bloco_rag)
+            except Exception as _rag_err:
+                logger.debug(f"RAG lookup falhou (não crítico): {_rag_err}")
+
             # 9. Regras de Sistema (Músculo do Bot)
             regras_seg = pers.get('regras_seguranca') or ""
             blocos_prompt.append(f"""[REGRAS DE SISTEMA]
@@ -1394,6 +1408,15 @@ REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio 
 
 RESPONDA com a mensagem diretamente — texto puro.""")
 
+            # 13. A/B Testing — aplica variante ao prompt se teste ativo
+            _ab_info = None
+            try:
+                blocos_prompt, _ab_info = await aplicar_teste_ab(empresa_id, conversation_id, blocos_prompt)
+                if _ab_info:
+                    logger.info(f"🧪 A/B Test '{_ab_info['nome']}' variante={_ab_info['variante']} conv={conversation_id}")
+            except Exception as _ab_err:
+                logger.debug(f"A/B test lookup falhou (não crítico): {_ab_err}")
+
             prompt_sistema = truncar_contexto(blocos_prompt, max_tokens=12000)
 
             conteudo_usuario = []
@@ -1412,12 +1435,15 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                 except Exception as e:
                     logger.error(f"Erro ao baixar imagem: {e}")
 
-            modelo_escolhido = pers.get("model_name") or pers.get("modelo_preferido") or (
-                "google/gemini-2.0-flash" if imagens_urls else "google/gemini-2.0-flash-lite"
+            # Multi-Model Routing — escolhe modelo por intenção/complexidade
+            _modelo_pers = pers.get("model_name") or pers.get("modelo_preferido") or None
+            modelo_escolhido = escolher_modelo(
+                intencao=intencao,
+                texto_cliente=texto_cliente_unificado or primeira_mensagem or "",
+                modelo_personalidade=_modelo_pers,
+                tem_imagens=bool(imagens_urls),
+                total_mensagens=total_msgs_cliente,
             )
-            # Se tiver imagens, força gemini-2.0-flash para melhor suporte multimodal
-            if imagens_urls and not modelo_escolhido.startswith("google/"):
-                 modelo_escolhido = "google/gemini-2.0-flash"
 
             temperature = float(pers.get("temperature") or pers.get("temperatura") or 0.7)
             max_tokens = int(pers.get("max_tokens") or 800)
@@ -1844,6 +1870,21 @@ RESPONDA com a mensagem diretamente — texto puro.""")
         salvar_resposta_unica = bool(resposta_texto and resposta_texto.strip() and not fast_reply_lista)
         if salvar_resposta_unica:
             await bd_salvar_mensagem_local(conversation_id, empresa_id, "assistant", resposta_texto)
+
+        # Registra resultado do A/B testing (se ativo)
+        if _ab_info:
+            try:
+                asyncio.create_task(registrar_resultado_ab(
+                    teste_id=_ab_info["teste_id"],
+                    conversa_id=conversation_id,
+                    variante=_ab_info["variante"],
+                    lead_qualificado=bool(novo_estado in ("interessado", "conversao", "matricula")),
+                    intencao_compra=bool("matricula" in (novo_estado or "") or "conversao" in (novo_estado or "")),
+                    score_lead=0,
+                    msgs_total=total_msgs_cliente,
+                ))
+            except Exception:
+                pass
 
         is_manual = (await redis_client.get(f"atend_manual:{empresa_id}:{conversation_id}")) == "1"
 
