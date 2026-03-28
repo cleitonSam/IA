@@ -282,7 +282,6 @@ async def _process_state(
             if node.get("data", {}).get("variavel"):
                 session_vars[node["data"]["variavel"]] = session_vars["last_choice_label"]
             return h
-
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
@@ -597,7 +596,6 @@ async def _execute_from(
             if data.get("variavel"):
                 session_vars[data["variavel"]] = session_vars["last_choice_label"]
             return h
-
         for cond in conditions:
             val = str(cond.get("value", "")).lower().strip()
             label = str(cond.get("label", "")).lower().strip()
@@ -835,7 +833,6 @@ async def _execute_from(
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1)
         return
-
     # ── code (Python Snippet) ──
     if node_type == "code":
         code_str = data.get("code", "")

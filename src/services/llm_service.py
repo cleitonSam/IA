@@ -5,7 +5,14 @@ from src.core.config import OPENROUTER_API_KEY, OPENAI_API_KEY, logger
 
 # Inicialização global dos clientes LLM
 cliente_ia = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY) if OPENROUTER_API_KEY else None
-cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# Whisper: Prioriza OpenAI, mas aceita OpenRouter como fallback
+if OPENAI_API_KEY:
+    cliente_whisper = AsyncOpenAI(api_key=OPENAI_API_KEY)
+elif OPENROUTER_API_KEY:
+    cliente_whisper = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
+else:
+    cliente_whisper = None
 
 def is_provider_unavailable_error(err: Exception) -> bool:
     """Detecta indisponibilidade de provedor LLM para acionar modo degradado."""

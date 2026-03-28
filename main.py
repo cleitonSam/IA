@@ -3589,6 +3589,41 @@ async def processar_ia_e_responder(
 
         # --- FIM Fluxo Visual ---
 
+        # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
+        # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
+        _fluxo_config = await carregar_fluxo_triagem(empresa_id)
+        if _fluxo_config and _fluxo_config.get("ativo"):
+            # Recupera o telefone do Redis (armazenado pelo webhook)
+            _fone_redis = await redis_client.get(f"fone_cliente:{conversation_id}")
+            if _fone_redis:
+                # Verifica se a IA está pausada para esta conversa
+                _ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"))
+                _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis}"))
+                
+                if not _ia_pausada and not _phone_paused:
+                    # Carrega integração para envio
+                    _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                    if _integr_uaz:
+                        _uaz_fluxo_cli = UazAPIClient(
+                            base_url=_integr_uaz.get("url", ""),
+                            token=_integr_uaz.get("token", ""),
+                            instance_name=_integr_uaz.get("instance", "default")
+                        )
+                        # Pega a última mensagem do buffer para o fluxo
+                        _mensagens_pool = await coletar_mensagens_buffer(conversation_id)
+                        if _mensagens_pool:
+                            _ultima_msg = _mensagens_pool[-1]
+                            _tratou = await executar_fluxo(empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli)
+                            if _tratou:
+                                logger.info(f"✅ [FluxoTriagem Monolith] Mensagem tratada pelo fluxo visual para {_fone_redis}")
+                                # Se tratou, libera o lock e encerra para evitar que a IA responda
+                                try:
+                                    await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
+                                except Exception: pass
+                                return True
+
+        # --- FIM Fluxo Visual ---
+
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
         if not mensagens_acumuladas:
             return

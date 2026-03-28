@@ -861,7 +861,7 @@ async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa
     return True
 
 
-async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[str, Any]:
+async def processar_anexos_mensagens(mensagens_acumuladas: List[str], headers_audio: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Extrai textos, transcrições e imagens a partir das mensagens acumuladas."""
     textos, tasks_audio, imagens_urls = [], [], []
     for m_json in mensagens_acumuladas:
@@ -870,7 +870,7 @@ async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[st
             textos.append(m["text"])
         for f in m.get("files", []):
             if f["type"] == "audio":
-                tasks_audio.append(transcrever_audio(f["url"]))
+                tasks_audio.append(transcrever_audio(f["url"], headers=headers_audio))
             elif f["type"] == "image":
                 imagens_urls.append(f["url"])
 
@@ -950,12 +950,12 @@ def corrigir_json(texto: str) -> str:
 
 # --- PROCESSAMENTO IA E ÁUDIO ---
 
-async def transcrever_audio(url: str):
+async def transcrever_audio(url: str, headers: Optional[Dict[str, str]] = None):
     if not cliente_whisper:
         return "[Áudio recebido, mas Whisper não configurado]"
     async with whisper_semaphore:
         try:
-            resp = await baixar_midia_com_retry(url, timeout=15.0)
+            resp = await baixar_midia_com_retry(url, timeout=15.0, headers=headers)
             audio_file = io.BytesIO(resp.content)
             audio_file.name = "audio.ogg"
             transcription = await cliente_whisper.audio.transcriptions.create(
