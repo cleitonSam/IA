@@ -14,7 +14,7 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
-type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios";
+type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios" | "voz";
 type TabKey = "config" | "playground";
 
 interface PlaygroundMsg { role: string; content: string; timestamp: number; }
@@ -49,6 +49,7 @@ interface Personality {
   regras_formatacao: string; regras_seguranca: string;
   emoji_tipo: string; emoji_cor: string;
   estilo_comunicacao: string; saudacao_personalizada: string; regras_atendimento: string;
+  tts_ativo: boolean; tts_voz: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   regras_formatacao: "", regras_seguranca: "",
   emoji_tipo: "✨,💪,🔥", emoji_cor: "#00d2ff",
   estilo_comunicacao: "", saudacao_personalizada: "", regras_atendimento: "",
+  tts_ativo: true, tts_voz: "Kore",
 };
 
 const MODELS = [
@@ -123,6 +125,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: React.ReactNode; desc: s
   { key: "contexto",   label: "Contexto",    icon: <ListChecks className="w-4 h-4" />, desc: "Regras e exemplos" },
   { key: "seguranca",  label: "Segurança",   icon: <ShieldAlert className="w-4 h-4" />,desc: "Restrições" },
   { key: "horarios",   label: "Horários",    icon: <Clock className="w-4 h-4" />,      desc: "Atendimento" },
+  { key: "voz",        label: "Voz IA",      icon: <Mic2 className="w-4 h-4" />,       desc: "Áudio & TTS" },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -139,6 +142,12 @@ export default function PersonalityPage() {
   const [activeSection, setActiveSection] = useState<SectionKey>("identidade");
   const [emojiCatIdx, setEmojiCatIdx] = useState(0);
   const [search, setSearch] = useState("");
+  // ── TTS / Voz state ──
+  const [ttsVoices, setTtsVoices] = useState<{nome:string;genero:string;descricao:string;tag:string}[]>([]);
+  const [ttsPreviewLoading, setTtsPreviewLoading] = useState<string | null>(null);
+  const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
+  const [ttsGenderFilter, setTtsGenderFilter] = useState<"todas"|"feminina"|"masculina">("todas");
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   // ── Playground state ──
   const [pgSessions, setPgSessions] = useState<PlaygroundSession[]>([]);
   const [pgActiveId, setPgActiveId] = useState<string | null>(null);
@@ -152,6 +161,45 @@ export default function PersonalityPage() {
 
   const PG_STORAGE_KEY = "pg_sessions_v2";
   const PG_MAX_SESSIONS = 20;
+
+  // ── Load TTS voices ──
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    axios.get(`${process.env.NEXT_PUBLIC_API_URL}/management/tts/voices`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(res => setTtsVoices(res.data.voices || []))
+      .catch(() => {/* vozes indisponíveis */});
+  }, []);
+
+  const ttsPlayPreview = async (vozNome: string) => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    // Para áudio anterior se estiver tocando
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
+    setTtsPreviewLoading(vozNome);
+    setTtsPreviewUrl(null);
+    try {
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/management/tts/preview`,
+        { voz: vozNome },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const url = res.data.url;
+      if (url) {
+        setTtsPreviewUrl(url);
+        const audio = new Audio(url);
+        ttsAudioRef.current = audio;
+        audio.play().catch(() => {});
+      }
+    } catch {
+      /* preview falhou */
+    } finally {
+      setTtsPreviewLoading(null);
+    }
+  };
 
   // Load sessions from localStorage on mount
   useEffect(() => {
@@ -1305,6 +1353,124 @@ export default function PersonalityPage() {
                                 </div>
                               )}
                             </div>
+                          </>)}
+
+                          {/* ─ VOZ DA IA (TTS) ─ */}
+                          {activeSection === "voz" && (<>
+                            <div className="flex items-center gap-2 pb-1 border-b border-white/5 mb-5">
+                              <Mic2 className="w-4 h-4 text-[#00d2ff]" />
+                              <h3 className="font-black text-sm text-white uppercase tracking-wider">Voz da IA — Resposta por Áudio</h3>
+                            </div>
+
+                            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                              Quando ativado, se o cliente enviar um <span className="text-white font-bold">áudio</span> no WhatsApp,
+                              a IA responderá com um <span className="text-[#00d2ff] font-bold">áudio PTT</span> além do texto.
+                              A IA espelha o canal do cliente — texto → texto, áudio → áudio + texto.
+                            </p>
+
+                            {/* Toggle TTS Ativo */}
+                            <div className={`${card} !py-4 !space-y-0 flex items-center justify-between`}>
+                              <div>
+                                <p className="text-xs font-black text-white flex items-center gap-2">
+                                  <Mic2 className="w-3.5 h-3.5 text-[#00d2ff]" />
+                                  Resposta por Áudio
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-0.5">IA responde com áudio quando cliente envia áudio</p>
+                              </div>
+                              <button type="button" onClick={() => setFormData({ ...formData, tts_ativo: !fd.tts_ativo })}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all flex-shrink-0 ${fd.tts_ativo ? "bg-[#00d2ff]" : "bg-slate-700"}`}
+                              >
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${fd.tts_ativo ? "translate-x-6" : "translate-x-1"}`} />
+                              </button>
+                            </div>
+
+                            {fd.tts_ativo && (<>
+                              {/* Filtro por gênero */}
+                              <div className={card}>
+                                <label className={lClass}>Filtrar vozes</label>
+                                <div className="flex gap-2">
+                                  {([
+                                    { id: "todas" as const, label: "Todas", icon: "🎭" },
+                                    { id: "feminina" as const, label: "Femininas", icon: "👩" },
+                                    { id: "masculina" as const, label: "Masculinas", icon: "👨" },
+                                  ]).map(f => (
+                                    <button key={f.id} type="button" onClick={() => setTtsGenderFilter(f.id)}
+                                      className={`flex-1 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest border transition-all ${
+                                        ttsGenderFilter === f.id
+                                          ? "bg-[#00d2ff]/10 text-[#00d2ff] border-[#00d2ff]/30"
+                                          : "bg-black/20 text-slate-500 border-white/5 hover:text-white"
+                                      }`}
+                                    >
+                                      {f.icon} {f.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Grid de vozes */}
+                              <div className={card}>
+                                <label className={lClass}>Escolha a voz</label>
+                                <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto pr-1">
+                                  {ttsVoices
+                                    .filter(v => ttsGenderFilter === "todas" || v.genero === ttsGenderFilter)
+                                    .map(v => {
+                                      const isSelected = fd.tts_voz === v.nome;
+                                      const isPreviewing = ttsPreviewLoading === v.nome;
+                                      return (
+                                        <div key={v.nome}
+                                          className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                                            isSelected
+                                              ? "bg-[#00d2ff]/10 border-[#00d2ff]/40"
+                                              : "bg-black/20 border-white/5 hover:border-white/10"
+                                          }`}
+                                          onClick={() => setFormData({ ...formData, tts_voz: v.nome })}
+                                        >
+                                          <span className="text-lg">{v.genero === "feminina" ? "👩" : "👨"}</span>
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2">
+                                              <p className={`text-xs font-black ${isSelected ? "text-[#00d2ff]" : "text-slate-300"}`}>{v.nome}</p>
+                                              <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${
+                                                isSelected ? "bg-[#00d2ff]/20 text-[#00d2ff]" : "bg-white/5 text-slate-500"
+                                              }`}>{v.tag}</span>
+                                            </div>
+                                            <p className="text-[10px] text-slate-500 mt-0.5">{v.descricao}</p>
+                                          </div>
+                                          <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button type="button"
+                                              onClick={(e) => { e.stopPropagation(); ttsPlayPreview(v.nome); }}
+                                              disabled={!!ttsPreviewLoading}
+                                              className={`p-2 rounded-lg border transition-all ${
+                                                isPreviewing
+                                                  ? "bg-[#00d2ff]/20 border-[#00d2ff]/40 text-[#00d2ff] animate-pulse"
+                                                  : "bg-black/30 border-white/5 text-slate-400 hover:text-[#00d2ff] hover:border-[#00d2ff]/20"
+                                              }`}
+                                              title="Ouvir preview"
+                                            >
+                                              {isPreviewing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
+                                            </button>
+                                            {isSelected && <CheckCircle2 className="w-4 h-4 text-[#00d2ff]" />}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                </div>
+                                {ttsVoices.length === 0 && (
+                                  <div className="text-center py-6">
+                                    <Loader2 className="w-5 h-5 animate-spin text-slate-600 mx-auto mb-2" />
+                                    <p className="text-[10px] text-slate-600">Carregando vozes...</p>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Info box */}
+                              <div className="flex items-start gap-2.5 p-3.5 bg-[#00d2ff]/5 border border-[#00d2ff]/10 rounded-xl">
+                                <Zap className="w-4 h-4 text-[#00d2ff] flex-shrink-0 mt-0.5" />
+                                <div className="text-[10px] text-slate-400 leading-relaxed">
+                                  <p><span className="text-white font-bold">Gemini TTS</span> — 30 vozes neurais Google com qualidade profissional em PT-BR.</p>
+                                  <p className="mt-1">Tier grátis disponível. Clique em <PlayCircle className="w-3 h-3 inline" /> para ouvir cada voz antes de escolher.</p>
+                                </div>
+                              </div>
+                            </>)}
                           </>)}
 
                         </motion.div>

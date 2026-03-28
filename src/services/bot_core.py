@@ -838,17 +838,20 @@ async def despachar_resposta(
     integracao: dict,
     empresa_id: int,
     source: str = 'chatwoot',
-    contato_fone: str = None
+    contato_fone: str = None,
+    enviar_audio: bool = False,
+    tts_voz: str = None
 ):
     """
     Despacha a resposta para o canal correto (Chatwoot ou UazAPI).
+    Se enviar_audio=True e source=uazapi, também envia como áudio PTT.
     """
     if source == 'uazapi':
         # Para UazAPI, usamos o contato_fone (ou conversation_id como fallback)
         chat_id = contato_fone if contato_fone else str(conversation_id)
-            
+
         uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-        
+
         # Substitui proporção por um tempo de digitação rígido e "redondo" (solicitação do usuário)
         import random
         tempo_digitacao = random.choice([800, 1100, 1400, 1800])
@@ -858,7 +861,28 @@ async def despachar_resposta(
         await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
         if contato_fone:
             await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{contato_fone}", 120, "1")
-        
+
+        # ── TTS: envia áudio PTT se cliente enviou áudio ──────────────
+        if enviar_audio:
+            try:
+                from src.services.tts_service import gerar_audio_resposta
+                from src.utils.imagekit import upload_to_imagekit
+                import uuid
+
+                audio_bytes = await gerar_audio_resposta(content, voz=tts_voz)
+                if audio_bytes:
+                    audio_url = await upload_to_imagekit(
+                        audio_bytes,
+                        f"tts_{uuid.uuid4().hex[:8]}.wav",
+                        folder="/tts"
+                    )
+                    if audio_url:
+                        await uaz.send_ptt(chat_id, audio_url, delay=500)
+                        logger.info(f"🔊 PTT enviado: {audio_url}")
+            except Exception as e:
+                logger.error(f"❌ Erro TTS/PTT: {e}")
+                # Continua com envio de texto normalmente
+
         # Randomiza o conteúdo da mensagem de texto
         content_randomizado = randomizar_mensagem(content)
         res = await uaz.send_text(chat_id, content_randomizado, delay=tempo_digitacao)
@@ -1989,22 +2013,34 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                 row = await _database.db_pool.fetchrow("SELECT contato_fone FROM conversas WHERE conversation_id = $1", conversation_id)
                 contato_fone = row['contato_fone'] if row else None
 
+            # ── TTS: detecta se cliente enviou áudio → responde com áudio ──
+            _tts_ativo = pers.get("tts_ativo", True) if pers else True
+            _tts_voz = pers.get("tts_voz", None) if pers else None
+            _cliente_enviou_audio = len(transcricoes) > 0 if transcricoes else False
+            _enviar_audio = _cliente_enviou_audio and _tts_ativo and source == "uazapi"
+
             if fast_reply_lista:
                 # ── Planos: cada item da lista = 1 mensagem separada ──────────────
+                _total_planos = len([b for b in fast_reply_lista if b.strip()])
+                _plano_idx = 0
                 for i, bloco_plano in enumerate(fast_reply_lista):
                     if await exists_tenant_cache(empresa_id, f"pause_ia:{conversation_id}"):
                         break
                     if not bloco_plano.strip():
                         continue
+                    _plano_idx += 1
                     await bd_salvar_mensagem_local(conversation_id, empresa_id, "assistant", bloco_plano.strip())
-                    
+
                     if source == 'chatwoot':
                         typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                         await simular_digitacao(account_id, conversation_id, integracao, typing_time)
-                    
+
+                    # Áudio PTT apenas no último bloco (evita múltiplos áudios)
+                    _audio_neste_bloco = _enviar_audio and (_plano_idx == _total_planos)
                     await despachar_resposta(
                         account_id, conversation_id, randomizar_mensagem(bloco_plano.strip()), nome_ia, integracao,
-                        empresa_id, source=source, contato_fone=contato_fone
+                        empresa_id, source=source, contato_fone=contato_fone,
+                        enviar_audio=_audio_neste_bloco, tts_voz=_tts_voz
                     )
                     await bd_atualizar_msg_ia(conversation_id, empresa_id)
                     if i == 0:
@@ -2013,15 +2049,16 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             elif fast_reply:
                 if not resposta_texto:
                     resposta_texto = fast_reply if isinstance(fast_reply, str) else ""
-                
+
                 if source == 'chatwoot':
                     typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
                     await simular_digitacao(account_id, conversation_id, integracao, typing_time)
-                
+
                 await despachar_resposta(
                     account_id, conversation_id, randomizar_mensagem(resposta_texto),
                     nome_ia, integracao, empresa_id,
-                    source=source, contato_fone=contato_fone
+                    source=source, contato_fone=contato_fone,
+                    enviar_audio=_enviar_audio, tts_voz=_tts_voz
                 )
                 await bd_atualizar_msg_ia(conversation_id, empresa_id)
                 await bd_registrar_primeira_resposta(conversation_id, empresa_id)
@@ -2049,9 +2086,12 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                             await _uaz_typing.set_presence(_chat_id, "composing", delay=_typing_ms)
                             await asyncio.sleep(_typing_ms / 1000)
 
+                        # Áudio PTT apenas no último bloco
+                        _audio_neste_bloco = _enviar_audio and (_i == len(_blocos) - 1)
                         await despachar_resposta(
                             account_id, conversation_id, _bloco, nome_ia, integracao,
-                            empresa_id, source=source, contato_fone=contato_fone
+                            empresa_id, source=source, contato_fone=contato_fone,
+                            enviar_audio=_audio_neste_bloco, tts_voz=_tts_voz
                         )
                         await bd_atualizar_msg_ia(conversation_id, empresa_id)
                         if _i == 0:

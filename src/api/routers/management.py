@@ -52,6 +52,8 @@ class PersonalityUpdate(BaseModel):
     estilo_comunicacao: Optional[str] = None
     saudacao_personalizada: Optional[str] = None
     regras_atendimento: Optional[str] = None
+    tts_ativo: Optional[bool] = None
+    tts_voz: Optional[str] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -64,6 +66,7 @@ _PERSONALITY_STR_FIELDS = [
     "despedida_personalizada", "regras_formatacao", "regras_seguranca",
     "emoji_tipo", "emoji_cor",
     "estilo_comunicacao", "saudacao_personalizada", "regras_atendimento",
+    "tts_voz",
 ]
 
 
@@ -105,6 +108,8 @@ class PersonalityCreate(BaseModel):
     estilo_comunicacao: Optional[str] = ""
     saudacao_personalizada: Optional[str] = ""
     regras_atendimento: Optional[str] = ""
+    tts_ativo: Optional[bool] = True
+    tts_voz: Optional[str] = "Kore"
 
     model_config = {"extra": "allow"}
 
@@ -198,9 +203,10 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
                   contexto_empresa, contexto_extra, abordagem_proativa,
                   exemplos, palavras_proibidas, despedida_personalizada,
                   regras_formatacao, regras_seguranca,
-                  emoji_tipo, emoji_cor
-           FROM personalidade_ia 
-           WHERE empresa_id = $1 
+                  emoji_tipo, emoji_cor,
+                  tts_ativo, tts_voz
+           FROM personalidade_ia
+           WHERE empresa_id = $1
            LIMIT 1""",
         empresa_id
     )
@@ -218,7 +224,9 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
             "usar_emoji": True,
             "horario_atendimento_ia": None,
             "horario_comercial": None,
-            "menu_triagem": None
+            "menu_triagem": None,
+            "tts_ativo": True,
+            "tts_voz": "Kore"
         }
     result = dict(row)
     # Deserializar campos JSONB que asyncpg pode retornar como string
@@ -318,7 +326,8 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       contexto_empresa, contexto_extra, abordagem_proativa,
                       exemplos, palavras_proibidas, despedida_personalizada,
                       regras_formatacao, regras_seguranca,
-                      emoji_tipo, emoji_cor
+                      emoji_tipo, emoji_cor,
+                      tts_ativo, tts_voz
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -1109,6 +1118,63 @@ async def personality_playground_summarize(
     except Exception as e:
         logger.error(f"Playground summarize error: {e}")
         return {"summary": ""}
+
+
+# --- TTS (Vozes) Endpoints ---
+
+@router.get("/tts/voices")
+async def list_tts_voices(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as vozes TTS disponíveis (Gemini)."""
+    from src.services.tts_service import listar_vozes
+    return {"voices": listar_vozes()}
+
+
+@router.post("/tts/preview")
+async def preview_tts_voice(
+    body: dict,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Gera preview de áudio para uma voz TTS.
+    Body: {"voz": "Kore", "texto": "opcional"}
+    Retorna URL do áudio gerado (via ImageKit).
+    """
+    from src.services.tts_service import gerar_audio_resposta, gerar_preview_voz, VOZES
+    from src.utils.imagekit import upload_to_imagekit
+    import uuid
+
+    voz = body.get("voz", "Kore")
+    texto = body.get("texto")
+
+    if voz not in VOZES:
+        raise HTTPException(status_code=400, detail=f"Voz '{voz}' não encontrada")
+
+    try:
+        if texto:
+            audio_bytes = await gerar_audio_resposta(texto, voz=voz)
+        else:
+            audio_bytes = await gerar_preview_voz(voz)
+
+        if not audio_bytes:
+            raise HTTPException(status_code=503, detail="Falha ao gerar áudio TTS")
+
+        # Upload para ImageKit
+        audio_url = await upload_to_imagekit(
+            audio_bytes,
+            f"preview_{voz}_{uuid.uuid4().hex[:6]}.wav",
+            folder="/tts/previews"
+        )
+
+        if not audio_url:
+            raise HTTPException(status_code=503, detail="Falha no upload do áudio")
+
+        return {"url": audio_url, "voz": voz}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro preview TTS: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao gerar preview")
 
 
 # --- FAQ Endpoints ---
