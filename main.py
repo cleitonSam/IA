@@ -3762,6 +3762,12 @@ async def processar_ia_e_responder(
         if USAR_CACHE_SEMANTICO and intencao == "llm" and not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
             _cache_sem = await buscar_cache_semantico(primeira_mensagem, slug)
 
+        # Bypass cache se cliente pede tour/vídeo e a unidade tem tour disponível
+        _pede_tour = any(k in normalizar(primeira_mensagem or "") for k in ("tour", "video", "ver por dentro", "mostrar a academia", "conhecer a unidade"))
+        _tem_tour = bool(unidade.get("link_tour_virtual"))
+        if _pede_tour and _tem_tour:
+            resposta_cacheada = None
+
         if fast_reply:
             logger.info("⚡ Fast-Path Ativado! Respondendo sem IA.")
             resposta_texto = fast_reply
@@ -4332,7 +4338,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         )
                     novo_estado = "conversao"
 
-                if not imagens_urls and resposta_texto:
+                if not imagens_urls and resposta_texto and not _tags_midia:
                     _cache_payload = json.dumps({"resposta": resposta_texto, "estado": novo_estado})
                     # Não persiste cache para saudações curtas para evitar repetição
                     # em consultas futuras de conteúdo diferente.
