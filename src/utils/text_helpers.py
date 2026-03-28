@@ -64,9 +64,15 @@ _NOMES_INVALIDOS = {
     "mae", "pai", "filho", "filha", "esposo", "esposa", "marido", "mulher",
     "tio", "tia", "primo", "prima", "sogro", "sogra", "cunhado", "cunhada",
     "vovo", "vovo", "neto", "neta", "irmao", "irma",
-    # Outros
+    # Substantivos comuns / locais / objetos
     "whatsapp", "wpp", "zap", "instagram", "face", "facebook", "empresa",
     "academia", "loja", "casa", "trabalho", "escritorio", "consultorio",
+    "encantos", "encanto", "sorrisos", "sorriso", "brilho", "estrela",
+    "flor", "flores", "beleza", "saude", "vida", "forca", "foco",
+    "treino", "fitness", "gym", "crossfit", "pilates", "musculacao",
+    "dieta", "projeto", "resultado", "objetivo", "meta", "corpo",
+    "praia", "sol", "lua", "ceu", "terra", "mar", "rio", "moda",
+    "negocio", "negocios", "servico", "servicos", "produto", "produtos",
 }
 
 def nome_eh_valido(nome: Optional[str]) -> bool:

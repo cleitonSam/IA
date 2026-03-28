@@ -2187,27 +2187,13 @@ async def chatwoot_webhook(
     nome_contato_limpo = limpar_nome(nome_contato_raw)
     nome_contato_valido = nome_eh_valido(nome_contato_limpo)
 
-    if message_type == "incoming":
-        if nome_contato_valido:
-            await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, nome_contato_limpo)
-        else:
-            _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
-            if _nome_informado:
-                await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, _nome_informado)
-                await redis_client.delete(f"aguardando_nome:{empresa_id}:{id_conv}")
-                await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
-            else:
-                _aguardando_nome = await get_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}")
-                if not _aguardando_nome:
-                    msg_nome = (
-                        "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
-                        "Pode me responder só com seu primeiro nome."
-                    )
-                    _pers_nome = await carregar_personalidade(empresa_id) or {}
-                    _nome_ia_nome = _pers_nome.get('nome_ia') or 'Assistente'
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia=_nome_ia_nome)
-                    await set_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}", "1", 900)
-                    return {"status": "aguardando_nome"}
+    # Nome do cliente: NUNCA usa pushName/contato. Só salva quando o próprio cliente
+    # informa o nome na conversa (a IA pergunta via regra no prompt).
+    if message_type == "incoming" and conteudo_texto:
+        _nome_informado = extrair_nome_do_texto(conteudo_texto)
+        if _nome_informado:
+            await redis_client.setex(f"nome_cliente:{empresa_id}:{id_conv}", 86400, _nome_informado)
+            await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
