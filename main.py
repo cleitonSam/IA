@@ -4312,19 +4312,80 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
         is_manual = (await redis_client.get(f"atend_manual:{empresa_id}:{conversation_id}")) == "1"
 
+        # ── TTS: detecta se cliente enviou áudio → responde com áudio ──
+        _tts_ativo = pers.get("tts_ativo", True) if pers else True
+        _tts_voz = pers.get("tts_voz", None) if pers else None
+        _cliente_enviou_audio = len(transcricoes) > 0 if transcricoes else False
+        _uaz_integ = await carregar_integracao(empresa_id, 'uazapi') if empresa_id else None
+        _has_whatsapp = bool(_uaz_integ)
+        _enviar_audio = _cliente_enviou_audio and _tts_ativo and _has_whatsapp
+        logger.info(f"🔊 [TTS Check] conv={conversation_id} | audio_cliente={_cliente_enviou_audio} | tts_ativo={_tts_ativo} | voz={_tts_voz} | has_whatsapp={_has_whatsapp} | enviar_audio={_enviar_audio}")
+
+        async def _enviar_tts_ptt(texto_para_tts: str):
+            """Envia áudio PTT via UazAPI se TTS estiver ativo."""
+            if not _enviar_audio or not texto_para_tts:
+                return
+            try:
+                from src.services.tts_service import gerar_audio_resposta
+                from src.utils.imagekit import upload_to_imagekit
+                import uuid as _uuid
+
+                # Busca telefone do cliente
+                _fone = await redis_client.get(f"fone_cliente:{conversation_id}")
+                if not _fone and db_pool:
+                    _fone = await db_pool.fetchval(
+                        "SELECT COALESCE(contato_fone, contato_telefone) FROM conversas WHERE conversation_id = $1",
+                        conversation_id
+                    )
+                if not _fone:
+                    logger.warning(f"⚠️ [TTS] Telefone não encontrado para conv={conversation_id}")
+                    return
+
+                logger.info(f"🔊 [TTS] Gerando áudio para conv={conversation_id} (voz={_tts_voz})")
+                audio_bytes = await gerar_audio_resposta(texto_para_tts, voz=_tts_voz)
+                if not audio_bytes:
+                    logger.warning(f"⚠️ [TTS] gerar_audio_resposta retornou None")
+                    return
+
+                logger.info(f"🔊 [TTS] Áudio gerado: {len(audio_bytes)} bytes, uploading...")
+                audio_url = await upload_to_imagekit(
+                    audio_bytes,
+                    f"tts_{_uuid.uuid4().hex[:8]}.wav",
+                    folder="/tts"
+                )
+                if not audio_url:
+                    logger.warning(f"⚠️ [TTS] Upload ImageKit falhou")
+                    return
+
+                _uaz = UazAPIClient(
+                    _uaz_integ.get('url') or _uaz_integ.get('api_url'),
+                    _uaz_integ.get('token'),
+                    _uaz_integ.get('instance', 'default')
+                )
+                ptt_ok = await _uaz.send_ptt(str(_fone), audio_url, delay=500)
+                logger.info(f"🔊 [TTS] PTT enviado: ok={ptt_ok} url={audio_url}")
+            except Exception as e:
+                logger.error(f"❌ [TTS] Erro: {e}", exc_info=True)
+
         if is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
             pass  # IA pausada, não envia
 
         elif fast_reply_lista:
             # ── Planos: cada item da lista = 1 mensagem separada ──────────────
+            _total_planos = len([b for b in fast_reply_lista if b.strip()])
+            _plano_idx = 0
             for i, bloco_plano in enumerate(fast_reply_lista):
                 if await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
                     break
                 if not bloco_plano.strip():
                     continue
+                _plano_idx += 1
                 await bd_salvar_mensagem_local(conversation_id, "assistant", bloco_plano.strip())
                 typing_time = min(len(bloco_plano) * 0.012, 3.0) + random.uniform(0.2, 0.6)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
+                # TTS PTT apenas no último bloco
+                if _plano_idx == _total_planos:
+                    await _enviar_tts_ptt(bloco_plano.strip())
                 await enviar_mensagem_chatwoot(
                     account_id, conversation_id, bloco_plano.strip(), nome_ia, integracao_chatwoot, empresa_id
                 )
@@ -4338,6 +4399,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 resposta_texto = fast_reply if isinstance(fast_reply, str) else ""
             typing_time = min(len(resposta_texto) * 0.015, 3.5) + random.uniform(0.3, 0.8)
             await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
+            await _enviar_tts_ptt(resposta_texto)
             await enviar_mensagem_chatwoot(
                 account_id, conversation_id, resposta_texto, nome_ia, integracao_chatwoot, empresa_id
             )
@@ -4346,14 +4408,12 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
         else:
             # ── Resposta da IA: envia INTEIRA como UMA mensagem ──────────────
-            # Split por parágrafo causava frases cortadas no meio ("Uma ótima opção
-            # para conhecer..." em mensagem separada). O cliente recebe a resposta
-            # completa de uma vez, como um humano digitaria.
             if resposta_texto and resposta_texto.strip():
                 _texto_final = resposta_texto.strip()
-                
+
                 typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                 await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
+                await _enviar_tts_ptt(_texto_final)
                 await enviar_mensagem_chatwoot(
                     account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
                 )
