@@ -50,6 +50,7 @@ interface Personality {
   emoji_tipo: string; emoji_cor: string;
   estilo_comunicacao: string; saudacao_personalizada: string; regras_atendimento: string;
   tts_ativo: boolean; tts_voz: string;
+  oferecer_tour: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   emoji_tipo: "✨,💪,🔥", emoji_cor: "#00d2ff",
   estilo_comunicacao: "", saudacao_personalizada: "", regras_atendimento: "",
   tts_ativo: true, tts_voz: "Kore",
+  oferecer_tour: true,
 };
 
 const MODELS = [
@@ -342,6 +344,7 @@ export default function PersonalityPage() {
       regras_atendimento: p.regras_atendimento || "",
       tts_ativo: p.tts_ativo ?? true,
       tts_voz: p.tts_voz || "Kore",
+      oferecer_tour: p.oferecer_tour ?? true,
     });
   };
 
@@ -1051,6 +1054,41 @@ export default function PersonalityPage() {
                                 <label className={lClass}>Abordagem Proativa</label>
                                 <textarea rows={4} value={fd.abordagem_proativa} onChange={e => setFormData({...formData, abordagem_proativa: e.target.value})} className={taClass} placeholder="Ex: Sempre ofereça aula experimental se demonstrar interesse..." />
                               </div>
+                            </div>
+
+                            {/* Tour Virtual Proativo */}
+                            <div className={`${card} !py-4 border border-[#00d2ff]/20 bg-gradient-to-r from-[#00d2ff]/5 to-transparent`}>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-[#00d2ff]/10 flex items-center justify-center">
+                                    <PlayCircle className="w-4 h-4 text-[#00d2ff]" />
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-black text-white">Tour Virtual Proativo</p>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">
+                                      IA oferece o tour virtual automaticamente para leads interessados
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setFormData({ ...formData, oferecer_tour: !fd.oferecer_tour })}
+                                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all flex-shrink-0 ${
+                                    fd.oferecer_tour ? "bg-[#00d2ff]" : "bg-slate-700"
+                                  }`}
+                                >
+                                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${
+                                    fd.oferecer_tour ? "translate-x-6" : "translate-x-1"
+                                  }`} />
+                                </button>
+                              </div>
+                              {fd.oferecer_tour && (
+                                <p className="text-[10px] text-slate-400 mt-3 pl-11 leading-relaxed">
+                                  Quando ativo, a IA detecta sinais de interesse do lead (quero conhecer, como e por dentro, etc.)
+                                  e oferece o video do tour virtual da unidade automaticamente. Funciona apenas para <strong className="text-slate-300">leads</strong> (nao-alunos)
+                                  e unidades que tenham tour virtual cadastrado na aba Unidades.
+                                </p>
+                              )}
                             </div>
                           </>)}
 

@@ -1667,9 +1667,38 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                 # Injeta informação sobre Tour Virtual se existir
                 _link_tour = unidade.get("link_tour_virtual")
                 if _link_tour:
-                    prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível em: {_link_tour}\n"
-                    prompt_sistema += "Se o cliente demonstrar interesse em conhecer a academia, ver por dentro ou perguntar por tour virtual, ofereça e envie o vídeo.\n"
-                    prompt_sistema += "IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.\n"
+                    _oferecer_tour_ativo = pers.get("oferecer_tour", True)
+                    _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
+                    _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
+
+                    if _oferecer_tour_ativo and _eh_lead:
+                        # MODO PROATIVO: IA oferece tour ativamente para leads
+                        prompt_sistema += f"""
+[TOUR VIRTUAL — MODO PROATIVO]
+Esta unidade possui um vídeo de Tour Virtual disponível.
+
+VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
+
+ESTRATÉGIA DE OFERECIMENTO:
+1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
+   Sinais de interesse incluem: quero conhecer, como é a academia, posso ir lá, gostaria de ver, é bom?, tem estrutura?, como é por dentro, quero visitar, tem piscina, me fala mais, como funciona, quero começar, to pensando em treinar, quais aparelhos, qual a estrutura.
+2. Após responder 2-3 mensagens de rapport com o lead (mesmo sem pergunta direta sobre a unidade), se ainda não ofereceu, OFEREÇA o tour naturalmente. Exemplo: "A propósito, temos um vídeo mostrando nossa unidade por dentro! Quer dar uma olhada? Tenho certeza que vai gostar do que vai ver!"
+3. Se o lead perguntou sobre preços/planos, após responder, complemente: "E pra você ter uma ideia melhor do que vai encontrar aqui, posso te enviar um vídeo mostrando a unidade por dentro!"
+4. NÃO ofereça o tour mais de uma vez na conversa. Se já ofereceu ou se o cliente recusou, não insista.
+
+COMO OFERECER (exemplos de frases naturais):
+- "Temos um vídeo incrível mostrando nossa unidade por dentro! Quer ver?"
+- "Que tal dar uma espiadinha na nossa estrutura? Tenho um vídeo do tour virtual pra te mostrar!"
+- "Antes de você vir nos visitar, posso te enviar um tour virtual da unidade pra você já conhecer o espaço!"
+
+IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.
+Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead aceitar, aí sim use <SEND_VIDEO>.
+"""
+                    else:
+                        # MODO PASSIVO: oferecer apenas se o cliente pedir explicitamente
+                        prompt_sistema += f"\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível.\n"
+                        prompt_sistema += "Se o cliente demonstrar interesse em conhecer a academia, ver por dentro ou perguntar por tour virtual, ofereça e envie o vídeo.\n"
+                        prompt_sistema += "IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.\n"
 
                 # Monta conteúdo do role "user"
                 if conteudo_usuario:

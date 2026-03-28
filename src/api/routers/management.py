@@ -54,6 +54,7 @@ class PersonalityUpdate(BaseModel):
     regras_atendimento: Optional[str] = None
     tts_ativo: Optional[bool] = None
     tts_voz: Optional[str] = None
+    oferecer_tour: Optional[bool] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -110,6 +111,7 @@ class PersonalityCreate(BaseModel):
     regras_atendimento: Optional[str] = ""
     tts_ativo: Optional[bool] = True
     tts_voz: Optional[str] = "Kore"
+    oferecer_tour: Optional[bool] = True
 
     model_config = {"extra": "allow"}
 
@@ -383,8 +385,9 @@ async def create_personality(
                 regras_formatacao, regras_seguranca,
                 emoji_tipo, emoji_cor,
                 tts_ativo, tts_voz,
+                oferecer_tour,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -396,7 +399,8 @@ async def create_personality(
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
             data.regras_formatacao, data.regras_seguranca,
             data.emoji_tipo, data.emoji_cor,
-            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore"
+            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+            data.oferecer_tour if data.oferecer_tour is not None else True
         )
         new_id = row["id"]
         
@@ -446,8 +450,9 @@ async def update_personality_by_id(
                    regras_formatacao=$30, regras_seguranca=$31,
                    emoji_tipo=$32, emoji_cor=$33,
                    tts_ativo=$34, tts_voz=$35,
+                   oferecer_tour=$36,
                    updated_at=NOW()
-               WHERE id=$36 AND empresa_id=$37""",
+               WHERE id=$37 AND empresa_id=$38""",
             data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
             data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
             horario_json, horario_comercial_json, menu_json,
@@ -458,6 +463,7 @@ async def update_personality_by_id(
             data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
             data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
             data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+            data.oferecer_tour if data.oferecer_tour is not None else True,
             pid, empresa_id
         )
     except Exception as e:
