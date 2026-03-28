@@ -55,6 +55,9 @@ class PersonalityUpdate(BaseModel):
     tts_ativo: Optional[bool] = None
     tts_voz: Optional[str] = None
     oferecer_tour: Optional[bool] = None
+    estrategia_tour: Optional[str] = None
+    tour_perguntar_primeira_visita: Optional[bool] = None
+    tour_mensagem_custom: Optional[str] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -112,6 +115,9 @@ class PersonalityCreate(BaseModel):
     tts_ativo: Optional[bool] = True
     tts_voz: Optional[str] = "Kore"
     oferecer_tour: Optional[bool] = True
+    estrategia_tour: Optional[str] = "smart"
+    tour_perguntar_primeira_visita: Optional[bool] = True
+    tour_mensagem_custom: Optional[str] = None
 
     model_config = {"extra": "allow"}
 
@@ -329,7 +335,9 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       exemplos, palavras_proibidas, despedida_personalizada,
                       regras_formatacao, regras_seguranca,
                       emoji_tipo, emoji_cor,
-                      tts_ativo, tts_voz
+                      tts_ativo, tts_voz,
+                      oferecer_tour, estrategia_tour,
+                      tour_perguntar_primeira_visita, tour_mensagem_custom
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -451,8 +459,10 @@ async def update_personality_by_id(
                    emoji_tipo=$32, emoji_cor=$33,
                    tts_ativo=$34, tts_voz=$35,
                    oferecer_tour=$36,
+                   estrategia_tour=$37, tour_perguntar_primeira_visita=$38,
+                   tour_mensagem_custom=$39,
                    updated_at=NOW()
-               WHERE id=$37 AND empresa_id=$38""",
+               WHERE id=$40 AND empresa_id=$41""",
             data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
             data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
             horario_json, horario_comercial_json, menu_json,
@@ -464,6 +474,9 @@ async def update_personality_by_id(
             data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
             data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
             data.oferecer_tour if data.oferecer_tour is not None else True,
+            data.estrategia_tour or "smart",
+            data.tour_perguntar_primeira_visita if data.tour_perguntar_primeira_visita is not None else True,
+            data.tour_mensagem_custom,
             pid, empresa_id
         )
     except Exception as e:
