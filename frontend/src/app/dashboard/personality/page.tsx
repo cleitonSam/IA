@@ -51,6 +51,9 @@ interface Personality {
   estilo_comunicacao: string; saudacao_personalizada: string; regras_atendimento: string;
   tts_ativo: boolean; tts_voz: string;
   oferecer_tour: boolean;
+  estrategia_tour: string;
+  tour_perguntar_primeira_visita: boolean;
+  tour_mensagem_custom: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -93,6 +96,9 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   estilo_comunicacao: "", saudacao_personalizada: "", regras_atendimento: "",
   tts_ativo: true, tts_voz: "Kore",
   oferecer_tour: true,
+  estrategia_tour: "smart",
+  tour_perguntar_primeira_visita: true,
+  tour_mensagem_custom: "",
 };
 
 const MODELS = [
@@ -345,6 +351,9 @@ export default function PersonalityPage() {
       tts_ativo: p.tts_ativo ?? true,
       tts_voz: p.tts_voz || "Kore",
       oferecer_tour: p.oferecer_tour ?? true,
+      estrategia_tour: p.estrategia_tour || (p.oferecer_tour === false ? "off" : "smart"),
+      tour_perguntar_primeira_visita: p.tour_perguntar_primeira_visita ?? true,
+      tour_mensagem_custom: p.tour_mensagem_custom || "",
     });
   };
 
@@ -1056,39 +1065,85 @@ export default function PersonalityPage() {
                               </div>
                             </div>
 
-                            {/* Tour Virtual Proativo */}
+                            {/* Tour Virtual — Estratégia Inteligente */}
                             <div className={`${card} !py-4 border border-[#00d2ff]/20 bg-gradient-to-r from-[#00d2ff]/5 to-transparent`}>
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-lg bg-[#00d2ff]/10 flex items-center justify-center">
-                                    <PlayCircle className="w-4 h-4 text-[#00d2ff]" />
-                                  </div>
-                                  <div>
-                                    <p className="text-xs font-black text-white">Tour Virtual Proativo</p>
-                                    <p className="text-[10px] text-slate-500 mt-0.5">
-                                      IA oferece o tour virtual automaticamente para leads interessados
-                                    </p>
-                                  </div>
+                              <div className="flex items-center gap-3 mb-4">
+                                <div className="w-8 h-8 rounded-lg bg-[#00d2ff]/10 flex items-center justify-center">
+                                  <PlayCircle className="w-4 h-4 text-[#00d2ff]" />
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setFormData({ ...formData, oferecer_tour: !fd.oferecer_tour })}
-                                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all flex-shrink-0 ${
-                                    fd.oferecer_tour ? "bg-[#00d2ff]" : "bg-slate-700"
-                                  }`}
-                                >
-                                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${
-                                    fd.oferecer_tour ? "translate-x-6" : "translate-x-1"
-                                  }`} />
-                                </button>
+                                <div>
+                                  <p className="text-xs font-black text-white">Estrategia Tour Virtual</p>
+                                  <p className="text-[10px] text-slate-500 mt-0.5">
+                                    Como a IA deve oferecer o tour virtual para leads
+                                  </p>
+                                </div>
                               </div>
-                              {fd.oferecer_tour && (
-                                <p className="text-[10px] text-slate-400 mt-3 pl-11 leading-relaxed">
-                                  Quando ativo, a IA detecta sinais de interesse do lead (quero conhecer, como e por dentro, etc.)
-                                  e oferece o video do tour virtual da unidade automaticamente. Funciona apenas para <strong className="text-slate-300">leads</strong> (nao-alunos)
-                                  e unidades que tenham tour virtual cadastrado na aba Unidades.
-                                </p>
+
+                              {/* Strategy selector - 4 options as pills */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                                {[
+                                  { value: "off",      label: "Desligado", desc: "Nao oferece tour" },
+                                  { value: "reativo",  label: "Reativo",   desc: "So se pedir" },
+                                  { value: "proativo", label: "Proativo",  desc: "IA oferece" },
+                                  { value: "smart",    label: "Inteligente", desc: "Pergunta 1a vez" },
+                                ].map(opt => (
+                                  <button key={opt.value} type="button"
+                                    onClick={() => setFormData({...formData, estrategia_tour: opt.value})}
+                                    className={`p-2 rounded-lg border text-center transition-all ${
+                                      fd.estrategia_tour === opt.value
+                                        ? "border-[#00d2ff] bg-[#00d2ff]/10 text-white"
+                                        : "border-slate-700 bg-slate-800/50 text-slate-400 hover:border-slate-600"
+                                    }`}
+                                  >
+                                    <p className="text-[10px] font-bold">{opt.label}</p>
+                                    <p className="text-[8px] text-slate-500 mt-0.5">{opt.desc}</p>
+                                  </button>
+                                ))}
+                              </div>
+
+                              {/* Toggle: ask first visit (only in smart mode) */}
+                              {fd.estrategia_tour === "smart" && (
+                                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-700/50">
+                                  <div>
+                                    <p className="text-[10px] font-bold text-slate-300">Perguntar se e primeira visita</p>
+                                    <p className="text-[9px] text-slate-500">IA pergunta antes de enviar o tour</p>
+                                  </div>
+                                  <button type="button"
+                                    onClick={() => setFormData({...formData, tour_perguntar_primeira_visita: !fd.tour_perguntar_primeira_visita})}
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all flex-shrink-0 ${
+                                      fd.tour_perguntar_primeira_visita ? "bg-[#00d2ff]" : "bg-slate-700"
+                                    }`}
+                                  >
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-all shadow ${
+                                      fd.tour_perguntar_primeira_visita ? "translate-x-6" : "translate-x-1"
+                                    }`} />
+                                  </button>
+                                </div>
                               )}
+
+                              {/* Custom message (shown for all modes except off) */}
+                              {fd.estrategia_tour !== "off" && (
+                                <div className="mt-3 pt-3 border-t border-slate-700/50">
+                                  <label className={lClass}>Mensagem customizada (opcional)</label>
+                                  <textarea rows={2}
+                                    value={fd.tour_mensagem_custom}
+                                    onChange={e => setFormData({...formData, tour_mensagem_custom: e.target.value})}
+                                    className={taClass}
+                                    placeholder="Ex: Quer dar uma espiadinha na nossa estrutura? Tenho um video mostrando tudo!"
+                                  />
+                                </div>
+                              )}
+
+                              {/* Strategy description */}
+                              <div className="mt-3 p-2 rounded bg-slate-800/50">
+                                <p className="text-[9px] text-slate-500 leading-relaxed">
+                                  {fd.estrategia_tour === "off" && "O tour virtual nao sera oferecido pela IA."}
+                                  {fd.estrategia_tour === "reativo" && "A IA so envia o tour se o cliente pedir explicitamente (ex: 'quero ver a academia')."}
+                                  {fd.estrategia_tour === "proativo" && "A IA oferece o tour ativamente para leads que demonstram interesse na unidade."}
+                                  {fd.estrategia_tour === "smart" && "A IA pergunta se e a primeira vez do cliente na unidade. Se for, envia o tour automaticamente."}
+                                  {" "}Funciona apenas para leads e unidades com tour cadastrado.
+                                </p>
+                              </div>
                             </div>
                           </>)}
 

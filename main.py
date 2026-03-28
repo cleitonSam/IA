@@ -3863,6 +3863,8 @@ Tour Virtual: {'vídeo disponível' if unidade.get('link_tour_virtual') else 'n�
                 # Campos puramente visuais — não entram no prompt
                 'emoji_cor', 'model_name', 'temperature', 'max_tokens',
                 'usar_emoji', 'horario_atendimento_ia', 'menu_triagem',
+                # Tour — consumidos programaticamente, não injetados como texto
+                'estrategia_tour', 'oferecer_tour', 'tour_perguntar_primeira_visita',
             }
             _LABEL_MAP = {
                 'objetivos_venda':     'OBJETIVOS DE VENDA',
@@ -3883,6 +3885,7 @@ Tour Virtual: {'vídeo disponível' if unidade.get('link_tour_virtual') else 'n�
                 'horario_ativo_fim':   'HORÁRIO ATIVO FIM',
                 # Emojis rotativos — a IA deve alternar entre eles nas respostas
                 'emoji_tipo':          'EMOJIS ROTATIVOS (alterne entre eles nas respostas)',
+                'tour_mensagem_custom':'MENSAGEM CUSTOMIZADA PARA TOUR VIRTUAL (use como referência ao oferecer o tour)',
             }
 
             _extras_prompt = ""
@@ -3947,34 +3950,88 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                     prompt_sistema += "NUNCA envie a imagem como primeira/única resposta. Sempre responda com texto primeiro.\n"
                     prompt_sistema += "NUNCA diga que não tem a grade. Se pedirem, ofereça o texto E a imagem.\n"
 
-            # Injeta informação sobre Tour Virtual se existir
+            # ── Tour Virtual — Estratégia Inteligente (4 modos) ──
             _link_tour = unidade.get("link_tour_virtual")
             logger.info(f"🎥 [Tour] conv={conversation_id} slug={slug} link_tour={'SIM: '+_link_tour[:60] if _link_tour else 'NÃO'}")
             if _link_tour:
-                _oferecer_tour_ativo = pers.get("oferecer_tour", True)
+                _estrategia_tour = pers.get("estrategia_tour")
+                # Backward compat: se campo novo é NULL, usa legado
+                if not _estrategia_tour:
+                    _estrategia_tour = "proativo" if pers.get("oferecer_tour", True) else "off"
+
                 _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
                 _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
 
-                if _oferecer_tour_ativo and _eh_lead:
-                    prompt_sistema += """
+                # Redis dedup: por conversa + por telefone+unidade (7 dias)
+                _tour_sent_key = f"tour_enviado:{empresa_id}:{conversation_id}"
+                _fone_dedup = await redis_client.get(f"fone_cliente:{conversation_id}")
+                _phone_unit_key = f"tour_enviado:{empresa_id}:{_fone_dedup}:{slug}" if _fone_dedup else None
+                _ja_enviou_tour = (
+                    await redis_client.exists(_tour_sent_key) or
+                    (bool(_phone_unit_key) and await redis_client.exists(_phone_unit_key))
+                )
+
+                logger.info(f"🎥 [Tour Strategy] conv={conversation_id} estrategia={_estrategia_tour} lead={_eh_lead} ja_enviou={_ja_enviou_tour}")
+
+                if _estrategia_tour != "off":
+                    if _ja_enviou_tour:
+                        prompt_sistema += "\n[TOUR VIRTUAL — JÁ ENVIADO]\nO tour virtual desta unidade já foi enviado ao cliente. NÃO ofereça novamente.\n"
+                    elif _estrategia_tour == "reativo":
+                        prompt_sistema += """
+[TOUR VIRTUAL — MODO REATIVO]
+Esta unidade possui um vídeo de Tour Virtual disponível.
+- SOMENTE envie o tour se o cliente PEDIR explicitamente para ver a academia, tour, vídeo, ou conhecer por dentro.
+- NÃO ofereça espontaneamente.
+- Para enviar: adicione <SEND_VIDEO> no final da sua resposta.
+"""
+                    elif _estrategia_tour == "proativo" and _eh_lead:
+                        prompt_sistema += """
 [TOUR VIRTUAL — MODO PROATIVO]
 Esta unidade possui um vídeo de Tour Virtual disponível.
 
 REGRA OBRIGATÓRIA DE ENVIO:
-- Se o cliente PEDIR para ver o tour, vídeo, conhecer por dentro, ou qualquer pedido de mídia da unidade → ENVIE IMEDIATAMENTE adicionando <SEND_VIDEO> no final da resposta. NÃO pergunte de novo, NÃO diga "vou enviar" sem incluir a tag.
-- Se o cliente demonstrar interesse em conhecer/visitar a unidade mas NÃO pediu explicitamente → ofereça primeiro ("Quer ver nosso tour virtual?"). Quando aceitar, aí use <SEND_VIDEO>.
+- Se o cliente PEDIR para ver o tour, vídeo, conhecer por dentro → ENVIE IMEDIATAMENTE adicionando <SEND_VIDEO> no final da resposta.
+- Se demonstrar interesse mas NÃO pediu explicitamente → ofereça primeiro. Quando aceitar, use <SEND_VIDEO>.
 
 OFERECIMENTO PROATIVO (este cliente é um LEAD):
-1. Se o cliente demonstrar QUALQUER sinal de interesse, ofereça o tour.
+1. Se demonstrar interesse na unidade, ofereça o tour.
 2. Após 2-3 mensagens de rapport, ofereça naturalmente se ainda não ofereceu.
 3. NÃO ofereça mais de uma vez. Se recusou, não insista.
 
 COMO ENVIAR: adicione a tag <SEND_VIDEO> no final da sua resposta (o sistema envia o vídeo automaticamente).
 """
-                else:
-                    prompt_sistema += "\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível.\n"
-                    prompt_sistema += "Se o cliente pedir para ver o tour, vídeo ou conhecer a academia por dentro, adicione <SEND_VIDEO> no final da sua resposta IMEDIATAMENTE.\n"
-                    prompt_sistema += "Se demonstrar interesse sem pedir explicitamente, ofereça primeiro e quando aceitar use <SEND_VIDEO>.\n"
+                    elif _estrategia_tour == "smart" and _eh_lead:
+                        _perguntar_visita = pers.get("tour_perguntar_primeira_visita", True)
+                        if _perguntar_visita:
+                            prompt_sistema += f"""
+[TOUR VIRTUAL — ESTRATÉGIA INTELIGENTE]
+Esta unidade possui um vídeo de Tour Virtual disponível.
+
+FLUXO OBRIGATÓRIO (siga na ordem):
+1. Quando o cliente demonstrar interesse na unidade ou perguntar sobre ela, pergunte naturalmente: "Você já conhece nossa unidade {nome_unidade} pessoalmente, ou seria sua primeira vez?"
+2. Se o cliente disser que é PRIMEIRA VEZ, NUNCA VISITOU, ou NUNCA FOI:
+   → Responda algo como "Então deixa eu te mostrar como é por dentro!" e adicione <SEND_VIDEO> no final.
+3. Se o cliente disser que JÁ CONHECE ou JÁ VISITOU:
+   → NÃO envie o tour. Continue a conversa normalmente.
+4. Se o cliente PEDIR explicitamente para ver o tour/vídeo (independente de já conhecer):
+   → Envie com <SEND_VIDEO>.
+
+REGRAS:
+- NÃO faça a pergunta "já conhece?" mais de UMA VEZ na conversa.
+- Se o cliente pedir o tour ANTES de você perguntar → envie direto com <SEND_VIDEO>, sem perguntar.
+- COMO ENVIAR: adicione <SEND_VIDEO> no final da resposta (o sistema envia automaticamente).
+"""
+                        else:
+                            prompt_sistema += """
+[TOUR VIRTUAL — ENVIO AUTOMÁTICO PARA LEADS]
+Esta unidade possui um vídeo de Tour Virtual.
+Quando o lead demonstrar interesse na unidade, envie o tour automaticamente adicionando <SEND_VIDEO>.
+Se o cliente PEDIR para ver → envie imediatamente com <SEND_VIDEO>.
+NÃO ofereça mais de uma vez.
+"""
+                    elif not _eh_lead and _estrategia_tour != "off":
+                        # Aluno/Gympass: modo reativo independente da estratégia
+                        prompt_sistema += "\n[TOUR VIRTUAL]: Esta unidade tem tour virtual. Se o cliente pedir para ver, adicione <SEND_VIDEO> no final da resposta.\n"
 
             prompt_sistema += f"""
 PERSONALIDADE
@@ -4552,34 +4609,44 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             else:
                 logger.warning(f"⚠️ Cliente pediu grade, mas a unidade {nome_unidade} (slug: {slug}) NÃO possui foto_grade cadastrada.")
 
-        # ── PÓS-PROCESSAMENTO: Tour Virtual (vídeo) ──
+        # ── PÓS-PROCESSAMENTO: Tour Virtual (vídeo) com dedup Redis ──
         if _enviar_tour and _link_tour_unidade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
-            try:
-                logger.info(f"🎥 Enviando tour virtual para conv {conversation_id}")
-                await asyncio.sleep(2.0)
-                _fone_tour = await redis_client.get(f"fone_cliente:{conversation_id}")
-                _uaz_tour = await carregar_integracao(empresa_id, 'uazapi')
-                if _fone_tour and _uaz_tour:
-                    _uaz_cli = UazAPIClient(
-                        _uaz_tour.get('url') or _uaz_tour.get('api_url'),
-                        _uaz_tour.get('token'),
-                        _uaz_tour.get('instance', 'default')
-                    )
-                    _fone_clean = "".join(filter(str.isdigit, str(_fone_tour)))
-                    await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
-                    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", 120, "1")
-                    await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="video")
-                    logger.info(f"🎥 Tour virtual enviado com sucesso para conv {conversation_id}")
-                else:
-                    # Fallback: envia via Chatwoot com attachment_url
-                    await enviar_mensagem_chatwoot(
-                        account_id, conversation_id,
-                        f"🎥 Tour virtual da unidade *{nome_unidade}*",
-                        nome_ia, integracao_chatwoot, empresa_id,
-                        attachment_url=_link_tour_unidade
-                    )
-            except Exception as e:
-                logger.error(f"❌ Erro ao enviar tour virtual: {e}")
+            _tour_dedup_key = f"tour_enviado:{empresa_id}:{conversation_id}"
+            _tour_ja_enviou = await redis_client.exists(_tour_dedup_key)
+            if _tour_ja_enviou:
+                logger.info(f"⏭️ Tour já enviado para conv {conversation_id}, ignorando duplicata")
+            else:
+                try:
+                    logger.info(f"🎥 Enviando tour virtual para conv {conversation_id}")
+                    await asyncio.sleep(2.0)
+                    _fone_tour = await redis_client.get(f"fone_cliente:{conversation_id}")
+                    _uaz_tour = await carregar_integracao(empresa_id, 'uazapi')
+                    if _fone_tour and _uaz_tour:
+                        _uaz_cli = UazAPIClient(
+                            _uaz_tour.get('url') or _uaz_tour.get('api_url'),
+                            _uaz_tour.get('token'),
+                            _uaz_tour.get('instance', 'default')
+                        )
+                        _fone_clean = "".join(filter(str.isdigit, str(_fone_tour)))
+                        await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
+                        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", 120, "1")
+                        await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="video")
+                        # Marca tour como enviado (7 dias TTL) — por conversa e por telefone+unidade
+                        await redis_client.setex(_tour_dedup_key, 604800, "1")
+                        if _fone_clean and slug:
+                            await redis_client.setex(f"tour_enviado:{empresa_id}:{_fone_clean}:{slug}", 604800, "1")
+                        logger.info(f"🎥 Tour virtual enviado com sucesso para conv {conversation_id}")
+                    else:
+                        # Fallback: envia via Chatwoot com attachment_url
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id,
+                            f"Tour virtual da unidade *{nome_unidade}*",
+                            nome_ia, integracao_chatwoot, empresa_id,
+                            attachment_url=_link_tour_unidade
+                        )
+                        await redis_client.setex(_tour_dedup_key, 604800, "1")
+                except Exception as e:
+                    logger.error(f"❌ Erro ao enviar tour virtual: {e}")
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
