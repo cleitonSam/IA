@@ -1036,10 +1036,28 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
-        # Nome do cliente: não vai no prompt (IA pega do histórico).
-        # Mantém apenas para uso interno (CRM, BD, logs).
+        # ── DETECÇÃO DE NOME DO CLIENTE ──────────────────────────────
+        # IA pergunta o nome na conversa. Quando o cliente responde,
+        # detectamos aqui e salvamos no Redis + Chatwoot.
+        _nome_já_salvo = await redis_client.get(f"nome_cliente:{empresa_id}:{conversation_id}")
+        if not _nome_já_salvo:
+            for _txt in (textos + transcricoes):
+                _nome_det = extrair_nome_do_texto(_txt)
+                if _nome_det:
+                    await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, _nome_det)
+                    nome_cliente = _nome_det
+                    logger.info(f"📝 Nome detectado e salvo: '{_nome_det}' (conv {conversation_id})")
+                    # Atualiza nome no Chatwoot
+                    _integ_cw = await carregar_integracao(empresa_id, 'chatwoot')
+                    if _integ_cw and contact_id:
+                        await atualizar_nome_contato_chatwoot(account_id, contact_id, _nome_det, _integ_cw)
+                    break
+        else:
+            nome_cliente = _nome_já_salvo
+
         if not nome_eh_valido(nome_cliente):
             nome_cliente = "Cliente"
+        # ─────────────────────────────────────────────────────────────
 
         estado_raw = await get_tenant_cache(empresa_id, f"estado:{conversation_id}")
         estado_atual = (descomprimir_texto(estado_raw) if estado_raw else None) or "neutro"
@@ -1476,7 +1494,7 @@ REGRAS:
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
-REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente informou no histórico da conversa. Se não souber o nome, NÃO invente — trate sem nome.
+REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente já informou no histórico da conversa. Se ainda não sabe o nome, pergunte de forma natural (ex: "E qual seu nome?" ou "Com quem eu falo?"). Depois que souber, use o primeiro nome do cliente nas mensagens seguintes.
 {contexto_precarregado_bloco}{ctx_saudacao}
 
 [MENSAGENS DO CLIENTE]
