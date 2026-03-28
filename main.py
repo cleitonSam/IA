@@ -4827,13 +4827,15 @@ async def chatwoot_webhook(
                 # Nome do contato é inválido e mensagem não contém nome — pedir
                 _aguardando = await redis_client.get(f"aguardando_nome:{id_conv}")
                 if not _aguardando:
+                    _pers_nome = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia_nome = _pers_nome.get('nome_ia') or 'Atendente'
                     msg_nome = (
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
                     await enviar_mensagem_chatwoot(
                         account_id, id_conv, msg_nome,
-                        "Assistente Virtual", integracao, empresa_id
+                        _nome_ia_nome, integracao, empresa_id
                     )
                     await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
                     logger.info(f"🏷️ Nome inválido '{nome_contato_raw}' detectado — pedindo nome real (conv={id_conv})")
