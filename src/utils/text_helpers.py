@@ -92,7 +92,7 @@ def extrair_nome_do_texto(texto: str) -> Optional[str]:
         return None
     t = str(texto).strip()
     padroes = [
-        r"(?:meu nome e|meu nome é|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
+        r"(?:meu nome e|meu nome é|me chamo|me chamam de|me chamam|pode me chamar de|chamo|sou o|sou a|eu sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40})",
         r"^([A-Za-zÀ-ÿ]{2,20})(?:\s+[A-Za-zÀ-ÿ]{2,20})?$",
     ]
     for ptn in padroes:

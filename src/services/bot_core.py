@@ -1036,6 +1036,27 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
+        # Validação de nome: se o nome do contato é inválido (profissão, saudação, etc.),
+        # tenta extrair o nome real das mensagens ou do Redis
+        if not nome_eh_valido(nome_cliente):
+            _nome_redis = await redis_client.get(f"nome_cliente:{empresa_id}:{conversation_id}")
+            if _nome_redis and nome_eh_valido(_nome_redis):
+                nome_cliente = _nome_redis
+            else:
+                # Tenta extrair do texto das mensagens atuais
+                for _txt in (textos + transcricoes):
+                    _nome_ext = extrair_nome_do_texto(_txt)
+                    if _nome_ext:
+                        nome_cliente = _nome_ext
+                        await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, _nome_ext)
+                        logger.info(f"📝 Nome extraído das mensagens: '{_nome_ext}' (conv {conversation_id})")
+                        break
+                else:
+                    nome_cliente = "Cliente"
+        elif nome_cliente and nome_cliente != "Cliente":
+            # Nome válido — salva no Redis para futuras consultas
+            await redis_client.setex(f"nome_cliente:{empresa_id}:{conversation_id}", 86400, nome_cliente)
+
         estado_raw = await get_tenant_cache(empresa_id, f"estado:{conversation_id}")
         estado_atual = (descomprimir_texto(estado_raw) if estado_raw else None) or "neutro"
 
