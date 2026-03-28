@@ -1135,13 +1135,15 @@ async def processar_ia_e_responder(
         # Campos da unidade
         end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
-        link_mat = unidade.get('link_matricula') or unidade.get('site') or 'nosso site oficial'
+        _raw_link = unidade.get('link_matricula') or ''
+        link_mat = _raw_link if _raw_link.startswith('http') else (unidade.get('site') if (unidade.get('site') or '').startswith('http') else '')
         tel_banco = extrair_telefone_unidade(unidade)
 
         # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
-            link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
+            _link_venda = planos_ativos[0].get('link_venda') or ''
+            link_plano = _link_venda if _link_venda.startswith('http') else link_mat
         else:
             link_plano = link_mat
 
@@ -1531,6 +1533,10 @@ REGRAS:
 - Use EXCLUSIVAMENTE os dados fornecidos.
 - Se não souber, diga que não tem a informação.
 - Nunca invente endereços, telefones ou horários.
+- NUNCA diga "vou buscar", "estou validando" ou "vou enviar o link" — se o link existe nos dados, ENVIE IMEDIATAMENTE. Se não existe, diga que o cliente pode procurar a unidade diretamente.
+- NUNCA prometa enviar algo que você não tem nos dados. Se o campo mostra "não disponível" ou está vazio, NÃO prometa.
+- Se o link de matrícula está nos dados da unidade, inclua-o DIRETAMENTE na resposta. Não peça dados pessoais antes de enviar o link.
+- NUNCA confunda unidades. Responda SEMPRE sobre a unidade que está nos DADOS DA UNIDADE ATUAL acima. Se o cliente mencionar outra unidade, informe que vai direcionar.
 {f"- RESTRIÇÕES: {restricoes}" if restricoes else ""}
 {f"- NUNCA USE ESTAS PALAVRAS/TERMOS: {palavras_proibidas}" if palavras_proibidas else ""}""")
 
@@ -1978,7 +1984,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                     else:
                         resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
 
-                if _intencao_compra and link_plano:
+                if _intencao_compra and link_plano and link_plano.startswith('http'):
                     _resp_norm_compra = normalizar(resposta_texto or "")
                     _tem_link = ("http://" in (resposta_texto or "")) or ("https://" in (resposta_texto or ""))
                     if not _tem_link:

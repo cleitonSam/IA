@@ -3699,13 +3699,15 @@ async def processar_ia_e_responder(
         # Campos da unidade
         end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
-        link_mat = unidade.get('link_matricula') or unidade.get('site') or ''
+        _raw_link = unidade.get('link_matricula') or ''
+        link_mat = _raw_link if _raw_link.startswith('http') else (unidade.get('site') if (unidade.get('site') or '').startswith('http') else '')
         tel_banco = extrair_telefone_unidade(unidade)
 
         # Planos ativos
         planos_ativos = await buscar_planos_ativos(empresa_id, unidade.get('id'), force_sync=True)
         if planos_ativos:
-            link_plano = planos_ativos[0].get('link_venda') if planos_ativos else link_mat
+            _link_venda = planos_ativos[0].get('link_venda') or ''
+            link_plano = _link_venda if _link_venda.startswith('http') else link_mat
         else:
             link_plano = link_mat
 
@@ -3970,8 +3972,11 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - NUNCA ofereça ou prometa algo que NÃO esteja nos dados acima (promoções, descontos, benefícios, diárias, aulas experimentais, etc).
 - NUNCA diga que a empresa tem "apenas uma unidade" — você não tem essa informação completa.
 - Se a pergunta do cliente bater com algum item do FAQ acima, USE aquela resposta como base.
-- Se "Link de Matrícula / LP" estiver disponível, SEMPRE direcione o cliente para esse link quando perguntar sobre planos, preços ou matrícula. Exemplo: "Dá uma olhada nos nossos planos aqui: [link]"
-- Se "Link de Matrícula / LP" estiver como "não disponível", NÃO invente link — diga que vai verificar com a equipe os planos disponíveis.
+- Se "Link de Matrícula / LP" estiver disponível com URL (http), ENVIE O LINK IMEDIATAMENTE na resposta. NÃO peça dados pessoais antes. NÃO diga "vou buscar" ou "estou validando". Exemplo: "Dá uma olhada nos nossos planos aqui: [link]"
+- Se "Link de Matrícula / LP" estiver como "não disponível", NÃO invente link — diga que o cliente pode entrar em contato diretamente com a unidade.
+- NUNCA diga "vou buscar o link", "estou validando", "vou enviar em instantes" — se tem o link, ENVIE. Se não tem, diga que não tem.
+- NUNCA confunda unidades. Você está atendendo a unidade indicada em "INFORMAÇÕES DA UNIDADE". Se o cliente pedir outra, informe qual você atende e ajude a direcionar.
+- NUNCA peça dados pessoais (nome completo, CPF, email) para enviar um link. O link é público, envie direto.
 - NUNCA diga "vou pedir para um consultor te chamar" ou "vou encaminhar para um consultor" — responda com as informações que você tem ou direcione para o link.
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):

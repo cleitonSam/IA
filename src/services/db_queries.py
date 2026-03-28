@@ -594,20 +594,26 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
     if candidatos:
         # Retorna o slug com maior pontuação
         candidatos.sort(key=lambda x: x[1], reverse=True)
+        logger.info(f"🔍 [UnitMatch] Candidatos: {[(s, p) for s, p in candidatos[:3]]} | texto='{texto_norm[:60]}'")
         return candidatos[0][0]
 
-    # 3. Fuzzy matching conservador
+    # 3. Fuzzy matching conservador — apenas nome de cidade/bairro com score muito alto
     melhor_slug = None
     maior_score = 0
+    melhor_campo = ""
     for u in unidades:
-        nome_norm = normalizar(u.get('nome', ''))
-        for campo in filter(None, [nome_norm, normalizar(u.get('cidade', '')), normalizar(u.get('bairro', ''))]):
-            score = fuzz.partial_ratio(campo, texto_norm)
+        # Fuzzy match SOMENTE em cidade e bairro (não nome completo da unidade, que causa falsos positivos)
+        for campo in filter(None, [normalizar(u.get('cidade', '')), normalizar(u.get('bairro', ''))]):
+            if len(campo) < 4:
+                continue
+            score = fuzz.ratio(campo, texto_norm)  # ratio (não partial_ratio) é mais rigoroso
             if score > maior_score:
                 maior_score = score
                 melhor_slug = u['slug']
+                melhor_campo = campo
 
     if maior_score >= fuzzy_threshold:
+        logger.info(f"🔍 [UnitMatch] Fuzzy match: '{melhor_campo}' → {melhor_slug} (score={maior_score})")
         return melhor_slug
     return None
 
