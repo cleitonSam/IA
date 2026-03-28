@@ -2241,9 +2241,17 @@ async def enviar_mensagem_chatwoot(
 
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
+                    # Detecta tipo de mídia pela extensão da URL
+                    _url_lower = attachment_url.lower().split('?')[0]
+                    if any(_url_lower.endswith(ext) for ext in ('.mp4', '.mov', '.avi', '.mkv', '.webm')):
+                        _media_type = "video"
+                    elif any(_url_lower.endswith(ext) for ext in ('.mp3', '.wav', '.ogg', '.aac')):
+                        _media_type = "audio"
+                    else:
+                        _media_type = "image"
                     uaz_payload = {
                         "number": _fone_clean,
-                        "type": "image",
+                        "type": _media_type,
                         "file": attachment_url,
                         "caption": f"{_header}{content}" if (content or _header) else ""
                     }
@@ -3826,6 +3834,7 @@ Modalidades: {modalidades_prompt}
 Infraestrutura: {json.dumps(unidade.get('infraestrutura', {}), ensure_ascii=False) if unidade.get('infraestrutura') else 'não informado'}
 Pagamentos: {pagamentos_prompt}
 Convênios: {convenios_prompt}
+Tour Virtual: {'vídeo disponível' if unidade.get('link_tour_virtual') else 'não disponível'}
 """
 
             # ── Campos conhecidos da personalidade_ia ──────────────────────────
@@ -3910,7 +3919,8 @@ Você é um atendente — apenas responda o cliente diretamente.
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
             if slug:
-                prompt_sistema += f"Você é consultor da Red Fitness, focado agora no atendimento da unidade: {nome_unidade}.\n"
+                prompt_sistema += f"Você está atendendo agora pela unidade: {nome_unidade}.\n"
+                prompt_sistema += "Se o cliente perguntar sobre OUTRA unidade da rede, responda normalmente usando as informações que você tem. Não diga que 'não pode' falar de outra unidade.\n"
             else:
                 prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
 
@@ -3928,6 +3938,34 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                     prompt_sistema += "A imagem é um COMPLEMENTO — ofereça APÓS já ter respondido com o texto. Exemplo: 'E se quiser ver a grade completa com os horários, posso te enviar a imagem também!'\n"
                     prompt_sistema += "NUNCA envie a imagem como primeira/única resposta. Sempre responda com texto primeiro.\n"
                     prompt_sistema += "NUNCA diga que não tem a grade. Se pedirem, ofereça o texto E a imagem.\n"
+
+            # Injeta informação sobre Tour Virtual se existir
+            _link_tour = unidade.get("link_tour_virtual")
+            if _link_tour:
+                _oferecer_tour_ativo = pers.get("oferecer_tour", True)
+                _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
+                _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
+
+                if _oferecer_tour_ativo and _eh_lead:
+                    prompt_sistema += """
+[TOUR VIRTUAL — MODO PROATIVO]
+Esta unidade possui um vídeo de Tour Virtual disponível.
+
+VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
+
+ESTRATÉGIA DE OFERECIMENTO:
+1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
+2. Após responder 2-3 mensagens de rapport com o lead, se ainda não ofereceu, OFEREÇA o tour naturalmente.
+3. Se o lead perguntou sobre preços/planos, após responder, complemente oferecendo o tour.
+4. NÃO ofereça o tour mais de uma vez na conversa. Se já ofereceu ou se o cliente recusou, não insista.
+
+IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.
+Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead aceitar, aí sim use <SEND_VIDEO>.
+"""
+                else:
+                    prompt_sistema += "\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível.\n"
+                    prompt_sistema += "Se o cliente demonstrar interesse em conhecer a academia, ver por dentro ou perguntar por tour virtual, ofereça e envie o vídeo.\n"
+                    prompt_sistema += "IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.\n"
 
             prompt_sistema += f"""
 PERSONALIDADE
@@ -3969,7 +4007,7 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 - Se "Link de Matrícula / LP" estiver disponível com URL (http), ENVIE O LINK IMEDIATAMENTE na resposta. NÃO peça dados pessoais antes. NÃO diga "vou buscar" ou "estou validando". Exemplo: "Dá uma olhada nos nossos planos aqui: [link]"
 - Se "Link de Matrícula / LP" estiver como "não disponível", NÃO invente link — diga que o cliente pode entrar em contato diretamente com a unidade.
 - NUNCA diga "vou buscar o link", "estou validando", "vou enviar em instantes" — se tem o link, ENVIE. Se não tem, diga que não tem.
-- NUNCA confunda unidades. Você está atendendo a unidade indicada em "INFORMAÇÕES DA UNIDADE". Se o cliente pedir outra, informe qual você atende e ajude a direcionar.
+- Você está atendendo a unidade indicada em "INFORMAÇÕES DA UNIDADE". Se o cliente perguntar sobre outra unidade, use os dados que tiver sobre ela (na lista de unidades) ou ofereça buscar.
 - Você PODE perguntar o primeiro nome do cliente de forma natural (ex: "E qual seu nome?" ou "Com quem eu falo?"). Mas NUNCA peça outros dados pessoais (CPF, email, endereço, telefone, RG, data de nascimento). Você é um vendedor, NÃO um formulário.
 - NUNCA diga "vou pedir para um consultor te chamar" ou "vou encaminhar para um consultor" — responda com as informações que você tem ou direcione para o link.
 
@@ -4307,6 +4345,14 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
                     )
 
+        # --- Tour Virtual: detecta e limpa tag <SEND_VIDEO> ---
+        _enviar_tour = False
+        _link_tour_unidade = unidade.get("link_tour_virtual")
+        if resposta_texto and "<SEND_VIDEO>" in resposta_texto:
+            resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
+            if _link_tour_unidade:
+                _enviar_tour = True
+
         # --- Salvar estado ---
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.setex(f"estado:{conversation_id}", 86400, comprimir_texto(novo_estado))
@@ -4482,6 +4528,35 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     logger.error(f"Erro ao enviar foto_grade: {e}")
             else:
                 logger.warning(f"⚠️ Cliente pediu grade, mas a unidade {nome_unidade} (slug: {slug}) NÃO possui foto_grade cadastrada.")
+
+        # ── PÓS-PROCESSAMENTO: Tour Virtual (vídeo) ──
+        if _enviar_tour and _link_tour_unidade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
+            try:
+                logger.info(f"🎥 Enviando tour virtual para conv {conversation_id}")
+                await asyncio.sleep(2.0)
+                _fone_tour = await redis_client.get(f"fone_cliente:{conversation_id}")
+                _uaz_tour = await carregar_integracao(empresa_id, 'uazapi')
+                if _fone_tour and _uaz_tour:
+                    _uaz_cli = UazAPIClient(
+                        _uaz_tour.get('url') or _uaz_tour.get('api_url'),
+                        _uaz_tour.get('token'),
+                        _uaz_tour.get('instance', 'default')
+                    )
+                    _fone_clean = "".join(filter(str.isdigit, str(_fone_tour)))
+                    await redis_client.setex(f"uaz_bot_sent:{conversation_id}", 120, "1")
+                    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", 120, "1")
+                    await _uaz_cli.send_media(_fone_clean, _link_tour_unidade, media_type="video")
+                    logger.info(f"🎥 Tour virtual enviado com sucesso para conv {conversation_id}")
+                else:
+                    # Fallback: envia via Chatwoot com attachment_url
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id,
+                        f"🎥 Tour virtual da unidade *{nome_unidade}*",
+                        nome_ia, integracao_chatwoot, empresa_id,
+                        attachment_url=_link_tour_unidade
+                    )
+            except Exception as e:
+                logger.error(f"❌ Erro ao enviar tour virtual: {e}")
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
@@ -4800,8 +4875,9 @@ async def chatwoot_webhook(
         except Exception:
             pass
 
-        # Só troca unidade fora do fluxo de escolha quando houver pedido explícito do cliente.
-        if esperando_unidade or (_tem_geo_wh and _pedido_troca_unidade):
+        # Troca unidade se: (a) está esperando escolha, (b) mencionou outra unidade por nome,
+        # ou (c) pedido explícito com geo. Não exige mais keywords "trocar"/"mudar".
+        if esperando_unidade or _tem_geo_wh:
             slug_detectado = await buscar_unidade_na_pergunta(
                 conteudo_texto, empresa_id, fuzzy_threshold=82 if esperando_unidade else 90
             )
