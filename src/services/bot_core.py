@@ -546,7 +546,8 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
     chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
-    deadline = time.time() + 1.6  # janela curta para juntar burst sem aumentar muito latência
+    deadline = time.time() + 3.0  # janela de 3s para juntar rajada WhatsApp
+    _checks_vazios = 0
 
     while True:
         async with redis_client.pipeline(transaction=True) as pipe:
@@ -556,13 +557,19 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
         lote = resultado[0] or []
         if lote:
             mensagens_acumuladas.extend(lote)
+            _checks_vazios = 0
             if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
                 break
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.5)
             continue
-        if mensagens_acumuladas or time.time() >= deadline:
+        # Buffer vazio
+        _checks_vazios += 1
+        if time.time() >= deadline:
             break
-        await asyncio.sleep(0.15)
+        if mensagens_acumuladas and _checks_vazios >= 4:
+            # Já tem msgs e buffer ficou vazio 4x seguidas — rajada acabou
+            break
+        await asyncio.sleep(0.5)
 
     logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
@@ -984,8 +991,9 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda curto período para acumular mensagens sem sacrificar latência
-        await asyncio.sleep(0.8)
+        # ⏱️ Aguarda período para acumular rajada de mensagens (WhatsApp = msgs curtas em sequência)
+        # Janela de 4s: captura rajadas típicas de WhatsApp (2-4 msgs em sequência)
+        await asyncio.sleep(4.0)
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id, empresa_id)
         if not mensagens_acumuladas:
@@ -2214,36 +2222,78 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                 extrair_memorias_da_conversa(textos, resposta_texto, empresa_id, contato_fone)
             )
 
-        # 🔄 DRAIN LOOP — processa mensagens que chegaram DURANTE o processamento da IA
-        # Isso resolve o problema de mensagens perdidas quando o cliente digita rápido
-        _drain_tentativas = 0
-        while _drain_tentativas < 2:
-            await asyncio.sleep(1.0)
-            mensagens_pendentes = await redis_client.lrange(chave_buffet, 0, -1)
-            if not mensagens_pendentes:
-                break
-            # Há mensagens novas — consome e repassa para o mesmo fluxo
-            async with redis_client.pipeline(transaction=True) as pipe:
-                pipe.lrange(chave_buffet, 0, -1)
-                pipe.delete(chave_buffet)
-                res_drain = await pipe.execute()
-            msgs_drain = res_drain[0]
-            if not msgs_drain:
-                break
-            logger.info(f"🔄 Drain: {len(msgs_drain)} mensagens extras para conv {conversation_id}")
-            textos_drain = [json.loads(m).get("text", "") for m in msgs_drain if json.loads(m).get("text")]
-            for txt in textos_drain:
-                await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
-            # Passa essas mensagens para outro ciclo de processamento reutilizando o mesmo lock
+        # 🔄 DRAIN — processa mensagens que chegaram DURANTE o processamento da IA
+        # Espera janela generosa para rajada WhatsApp, depois processa INLINE
+        # (antes: re-agendava novo ciclo, gerando resposta duplicada e desperdiçando tokens)
+        await asyncio.sleep(3.0)
+
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.lrange(chave_buffet, 0, -1)
+            pipe.delete(chave_buffet)
+            res_drain = await pipe.execute()
+        msgs_drain = res_drain[0] or []
+
+        if msgs_drain:
+            logger.info(f"🔄 Drain: {len(msgs_drain)} msgs extras para conv {conversation_id}")
+
+            # Extrai textos e salva no BD
+            textos_drain = []
             for m_json in msgs_drain:
-                # Usa formato consistente com o resto do sistema
-                await redis_client.rpush(f"{empresa_id}:buffet_drain:{conversation_id}", m_json)
-            await redis_client.expire(f"{empresa_id}:buffet_drain:{conversation_id}", 120)
-            # Coloca de volta no buffet para ser pego pelo próximo ciclo (lock será liberado logo)
-            for m_json in msgs_drain:
-                await redis_client.rpush(chave_buffet, m_json)
-            await redis_client.expire(chave_buffet, 60)
-            _drain_tentativas += 1
+                m = json.loads(m_json)
+                txt = m.get("text", "")
+                if txt:
+                    textos_drain.append(txt)
+                    await bd_salvar_mensagem_local(conversation_id, empresa_id, "user", txt)
+
+            if textos_drain and cliente_ia:
+                drain_text = "\n".join(textos_drain)
+                logger.info(f"🔄 Drain inline LLM: '{drain_text[:80]}...' (conv={conversation_id})")
+
+                try:
+                    # Chama LLM com contexto: system + resposta anterior + nova mensagem
+                    _drain_msgs = [
+                        {"role": "system", "content": prompt_sistema},
+                    ]
+                    if resposta_texto:
+                        _drain_msgs.append({"role": "assistant", "content": resposta_texto})
+                    _drain_msgs.append({"role": "user", "content": drain_text})
+
+                    async with llm_semaphore:
+                        _drain_resp = await asyncio.wait_for(
+                            cliente_ia.chat.completions.create(
+                                model=modelo_escolhido,
+                                messages=_drain_msgs,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            ),
+                            timeout=20
+                        )
+                    _drain_bruta = _drain_resp.choices[0].message.content or ""
+
+                    # Parse resposta (texto puro ou JSON legado)
+                    _drain_texto = limpar_markdown(_drain_bruta.strip())
+                    if _drain_texto.startswith('{'):
+                        try:
+                            _d = json.loads(corrigir_json(_drain_texto))
+                            _drain_texto = limpar_markdown(_d.get("resposta", _drain_texto))
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+
+                    _drain_texto = _garantir_frase_completa(_drain_texto)
+
+                    if _drain_texto and _drain_texto.strip():
+                        typing_time = min(len(_drain_texto) * 0.015, 3.0) + random.uniform(0.3, 0.6)
+                        await simular_digitacao(account_id, conversation_id, integracao, typing_time, empresa_id)
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, _drain_texto.strip(),
+                            integracao, empresa_id, nome_ia=nome_ia
+                        )
+                        await bd_salvar_mensagem_local(conversation_id, empresa_id, "assistant", _drain_texto.strip())
+                        await bd_atualizar_msg_ia(conversation_id, empresa_id)
+                        logger.info(f"✅ Drain inline respondido (conv={conversation_id})")
+
+                except Exception as e_drain_llm:
+                    logger.warning(f"⚠️ Erro no drain inline LLM: {e_drain_llm}")
 
     except Exception:
         logger.exception("🔥 Erro Crítico no processamento")
@@ -2253,19 +2303,6 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
             await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
         except Exception:
             pass
-        # Após liberar o lock, se ainda há mensagens no buffet, agenda novo processamento
-        try:
-            restantes = await redis_client.lrange(chave_buffet, 0, -1)
-            if restantes:
-                logger.info(f"📬 {len(restantes)} mensagens no buffet após processamento — reagendando conv {conversation_id}")
-                novo_lock_val = str(uuid.uuid4())
-                if await redis_client.set(chave_lock, novo_lock_val, nx=True, ex=180):
-                    asyncio.create_task(processar_ia_e_responder(
-                        account_id, conversation_id, contact_id, slug,
-                        nome_cliente, novo_lock_val, empresa_id, integracao
-                    ))
-        except Exception as e_drain:
-            logger.error(f"Erro no drain pós-processamento: {e_drain}")
 
 
 # --- WEBHOOK ENDPOINT ---
