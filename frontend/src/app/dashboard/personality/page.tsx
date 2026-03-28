@@ -331,6 +331,8 @@ export default function PersonalityPage() {
       estilo_comunicacao: p.estilo_comunicacao || "",
       saudacao_personalizada: p.saudacao_personalizada || "",
       regras_atendimento: p.regras_atendimento || "",
+      tts_ativo: p.tts_ativo ?? true,
+      tts_voz: p.tts_voz || "Kore",
     });
   };
 
