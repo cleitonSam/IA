@@ -175,8 +175,8 @@ async def get_metrics(
 @router.get("/conversations")
 async def get_conversations(
     unidade_id: Optional[int] = Query(None, description="Filtrar por unidade (omitir = todas da empresa)"),
-    limit: int = Query(20, le=100),
-    offset: int = Query(0),
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None, description="Filtro de status: open, resolved, closed"),
     busca: Optional[str] = Query(None, description="Busca por nome ou telefone"),
     token_payload: dict = Depends(get_current_user_token)
@@ -226,12 +226,17 @@ async def get_conversations(
         total_query = f"SELECT COUNT(*) FROM conversas c WHERE {where}"
         total = await _database.db_pool.fetchval(total_query, *params[:-2])
 
-        result_data = []
-        for r in rows:
-            d = dict(r)
-            # Verifica se a IA está pausada no Redis
-            d["pausada"] = await redis_client.exists(f"pause_ia:{empresa_id}:{d['conversation_id']}")
-            result_data.append(d)
+        # Batch Redis lookup para evitar N+1 (1 pipeline ao invés de N calls)
+        result_data = [dict(r) for r in rows]
+        if result_data:
+            pause_keys = [f"pause_ia:{empresa_id}:{d['conversation_id']}" for d in result_data]
+            try:
+                pause_values = await redis_client.mget(*pause_keys)
+                for d, pv in zip(result_data, pause_values):
+                    d["pausada"] = pv is not None
+            except Exception:
+                for d in result_data:
+                    d["pausada"] = False
 
         return {
             "total": total,
