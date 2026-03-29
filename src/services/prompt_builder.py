@@ -9,6 +9,8 @@ Handles:
 - A/B testing prompt modification
 """
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 
 from src.core.config import logger
@@ -313,6 +315,21 @@ async def montar_prompt_sistema(
     if ctx_aluno:
         blocos_prompt.append(f"[CONTEXTO DO ALUNO]\n{ctx_aluno}")
 
+    # 2.5. Data e Hora atual (contexto temporal)
+    _DIAS_PT = {0: "Segunda-feira", 1: "Terça-feira", 2: "Quarta-feira", 3: "Quinta-feira", 4: "Sexta-feira", 5: "Sábado", 6: "Domingo"}
+    _MESES_PT = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
+    _agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    _dia_semana = _DIAS_PT.get(_agora.weekday(), "")
+    _mes_nome = _MESES_PT.get(_agora.month, "")
+    blocos_prompt.append(f"""[DATA E HORA ATUAL]
+Hoje: {_dia_semana}, {_agora.day} de {_mes_nome} de {_agora.year}.
+Horário atual: {_agora.strftime('%H:%M')} (Brasília).
+REGRAS TEMPORAIS:
+- Se o cliente perguntar "tem aula hoje?", verifique as aulas de {_dia_semana} na grade.
+- Se perguntar "amanhã?", verifique o dia seguinte ({_DIAS_PT.get((_agora.weekday() + 1) % 7, "")}).
+- Se perguntar horário de funcionamento, use o horário de {_dia_semana} nos dados da unidade.
+- NUNCA invente horários de aulas ou funcionamento. Use SOMENTE os dados fornecidos.""")
+
     # 3. Personalidade e Tom
     p_desc = pers.get('personalidade') or 'Atendente prestativo e simpático.'
     blocos_prompt.append(f"[PERSONALIDADE]\n{p_desc}")
@@ -422,14 +439,21 @@ REGRAS:
     e_tipo = pers.get('emoji_tipo') or "✨"
     e_cor = pers.get('emoji_cor') or "#00d2ff"
 
-    blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP]
-- Use *bold* para destaque. Listas com •.
-- Separe blocos com linha em branco.
-- NUNCA use markdown (**, ##, ```).
-- Tamanho ideal: 2-4 parágrafos curtos.
-- TERMINAR sempre frases completas.
+    blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP — OBRIGATÓRIO]
+REGRAS DE FORMATAÇÃO:
+- Use *bold* para destaque (nomes de planos, preços, horários, nomes de unidade).
+- Listas com • (bullet point). NUNCA use 1. 2. 3. ou - para listas.
+- Separe blocos de informação com linha em branco para facilitar leitura.
+- NUNCA use markdown (**, ##, ```, [ ], etc). WhatsApp só suporta *bold*, _itálico_ e ~riscado~.
+- Tamanho ideal: 2-4 parágrafos curtos. Máximo 5 parágrafos.
+- TERMINAR sempre com frases completas. NUNCA cortar no meio.
+- Quando listar horários de aulas, use formato organizado:
+  • *Modalidade*: Dia às HHhMM
+- Quando listar preços, destaque o valor: *R$ XX,XX*/mês
 - EMOJI PRINCIPAL DA IA: {e_tipo}. Use-o com frequência.
 - PALETA DE CORES/VIBE: {e_cor}. Priorize emojis e tons que combinem com esta cor.
+- Use emojis para separar seções visualmente (ex: 🏋️ para treino, 📍 para endereço, 🕒 para horário).
+- NÃO repita emojis em sequência. Varie entre os emojis relevantes.
 {r_format}""")
 
     # 12. Despedida e dados do atendimento
@@ -482,27 +506,35 @@ RESPONDA com a mensagem diretamente — texto puro.""")
     _link_tour = unidade.get("link_tour_virtual")
     if _link_tour:
         _oferecer_tour_ativo = pers.get("oferecer_tour", True)
+        _estrategia_tour = pers.get("estrategia_tour") or ""
+        _tour_perguntar_visita = pers.get("tour_perguntar_primeira_visita", False)
+        _tour_msg_custom = pers.get("tour_mensagem_custom") or ""
         _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
         _eh_lead = _tipo_cli is None
 
         if _oferecer_tour_ativo and _eh_lead:
+            _frases_tour = _tour_msg_custom if _tour_msg_custom else (
+                '- "Temos um vídeo incrível mostrando nossa unidade por dentro! Quer ver?"\n'
+                '- "Que tal dar uma espiadinha na nossa estrutura? Tenho um vídeo do tour virtual pra te mostrar!"\n'
+                '- "Antes de você vir nos visitar, posso te enviar um tour virtual da unidade pra você já conhecer o espaço!"'
+            )
+            _bloco_estrategia = f"\nESTRATÉGIA CUSTOMIZADA:\n{_estrategia_tour}" if _estrategia_tour else ""
+            _bloco_visita = "\n- Se o cliente demonstrar interesse, pergunte se seria a primeira visita dele na unidade." if _tour_perguntar_visita else ""
             prompt_sistema += f"""
 [TOUR VIRTUAL — MODO PROATIVO]
 Esta unidade possui um vídeo de Tour Virtual disponível.
 
 VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
-
+{_bloco_estrategia}
 ESTRATÉGIA DE OFERECIMENTO:
 1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
    Sinais de interesse incluem: quero conhecer, como é a academia, posso ir lá, gostaria de ver, é bom?, tem estrutura?, como é por dentro, quero visitar, tem piscina, me fala mais, como funciona, quero começar, to pensando em treinar, quais aparelhos, qual a estrutura.
-2. Após responder 2-3 mensagens de rapport com o lead (mesmo sem pergunta direta sobre a unidade), se ainda não ofereceu, OFEREÇA o tour naturalmente. Exemplo: "A propósito, temos um vídeo mostrando nossa unidade por dentro! Quer dar uma olhada? Tenho certeza que vai gostar do que vai ver!"
-3. Se o lead perguntou sobre preços/planos, após responder, complemente: "E pra você ter uma ideia melhor do que vai encontrar aqui, posso te enviar um vídeo mostrando a unidade por dentro!"
-4. NÃO ofereça o tour mais de uma vez na conversa. Se já ofereceu ou se o cliente recusou, não insista.
+2. Após responder 2-3 mensagens de rapport com o lead (mesmo sem pergunta direta sobre a unidade), se ainda não ofereceu, OFEREÇA o tour naturalmente.
+3. Se o lead perguntou sobre preços/planos, após responder, complemente oferecendo o tour.
+4. NÃO ofereça o tour mais de uma vez na conversa. Se já ofereceu ou se o cliente recusou, não insista.{_bloco_visita}
 
-COMO OFERECER (exemplos de frases naturais):
-- "Temos um vídeo incrível mostrando nossa unidade por dentro! Quer ver?"
-- "Que tal dar uma espiadinha na nossa estrutura? Tenho um vídeo do tour virtual pra te mostrar!"
-- "Antes de você vir nos visitar, posso te enviar um tour virtual da unidade pra você já conhecer o espaço!"
+COMO OFERECER:
+{_frases_tour}
 
 IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.
 Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead aceitar, aí sim use <SEND_VIDEO>.

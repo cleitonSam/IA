@@ -961,18 +961,13 @@ async def processar_ia_e_responder(
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id,
                                 f"Enviando a grade da unidade *{_target_unit.get('nome')}*... 🖼️",
-                                integracao, nome_ia=nome_ia,
+                                integracao, empresa_id, nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(1.5, 3.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
-                                except Exception: pass
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id, _cross_foto, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                empresa_id, nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
                                 is_direct_url=True
                             )
                         except Exception as e:
@@ -990,18 +985,13 @@ async def processar_ia_e_responder(
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id,
                                 f"Vou te enviar um vídeo da unidade *{_target_unit_v.get('nome')}* por dentro! 🎥",
-                                integracao, nome_ia=nome_ia,
+                                integracao, empresa_id, nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(2.0, 4.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
-                                except Exception: pass
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id, _cross_tour, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                empresa_id, nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
                                 is_direct_url=True
                             )
                         except Exception as e:
@@ -1014,26 +1004,20 @@ async def processar_ia_e_responder(
                         resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
                         try:
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 f"Enviando a grade da unidade *{unidade.get('nome')}*... 🖼️",
-                                integracao, 
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(1.5, 3.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
-                                except Exception: pass
-                            
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 _foto_grade,
-                                integracao,
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
+                                is_direct_url=True
                             )
                         except Exception as e:
                             logger.error(f"Erro ao enviar imagem da grade: {e}")
@@ -1047,26 +1031,20 @@ async def processar_ia_e_responder(
                         resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
                         try:
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 f"Vou te enviar um vídeo mostrando nossa unidade por dentro! 🎥",
-                                integracao, 
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(2.0, 4.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
-                                except Exception: pass
-
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 _link_tour,
-                                integracao,
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
+                                is_direct_url=True
                             )
                         except Exception as e:
                             logger.error(f"Erro ao enviar vídeo do tour: {e}")

@@ -9,6 +9,7 @@ from src.core.config import (
 )
 import src.core.database as _database
 from src.core.redis_client import redis_client
+from src.utils.redis_helper import get_tenant_cache
 from src.services.db_queries import carregar_integracao, buscar_conversa_por_fone, bd_iniciar_conversa
 from src.services.bot_core import processar_ia_e_responder
 
@@ -67,7 +68,10 @@ async def _process_job(msg_id: str, payload: dict):
                 account_id = conversa.get("account_id", 0)
                 conversation_id = conversa.get("conversation_id")
                 contact_id = conversa.get("contato_id")
-                slug = conversa.get("unidade_slug") or "uazapi"
+                _slug_db = conversa.get("unidade_slug") or "uazapi"
+                # Redis tem prioridade sobre DB (DB pode estar stale após troca de unidade)
+                _slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}")
+                slug = _slug_redis or _slug_db
                 nome_cliente = conversa.get("contato_nome")
             else:
                 # Fluxo Chatwoot clássico
