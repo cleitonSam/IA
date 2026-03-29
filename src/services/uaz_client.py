@@ -334,6 +334,25 @@ class UazAPIClient:
             )
             media_type = "document"
 
+        # Auto-detecta mimetype quando não fornecido explicitamente
+        # Evita erro "invalid MP4 file format" na UazAPI ao processar vídeos
+        if not mimetype:
+            url_lower = file_url.lower()
+            if media_type == "video" or ".mp4" in url_lower:
+                mimetype = "video/mp4"
+            elif media_type == "audio" or ".ogg" in url_lower:
+                mimetype = "audio/ogg"
+            elif media_type == "ptt":
+                mimetype = "audio/ogg; codecs=opus"
+            elif ".jpg" in url_lower or ".jpeg" in url_lower:
+                mimetype = "image/jpeg"
+            elif ".png" in url_lower:
+                mimetype = "image/png"
+            elif ".pdf" in url_lower:
+                mimetype = "application/pdf"
+                if not doc_name:
+                    doc_name = file_url.split("/")[-1].split("?")[0] or "documento.pdf"
+
         payload: Dict[str, Any] = {
             "number": clean_number,
             "type": media_type,

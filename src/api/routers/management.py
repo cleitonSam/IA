@@ -1761,8 +1761,8 @@ async def test_integration_connection(
                     return {"ok": True, "message": "Conexão com Chatwoot OK"}
                 return {"ok": False, "message": f"Chatwoot retornou status {resp.status_code}"}
 
-            elif tipo == "uzap":
-                api_url = (config.get("api_url") or "").rstrip("/")
+            elif tipo == "uazapi":
+                api_url = (config.get("url") or config.get("api_url") or "").rstrip("/")
                 token = config.get("token") or ""
                 if not api_url or not token:
                     return {"ok": False, "message": "URL ou token não configurados"}

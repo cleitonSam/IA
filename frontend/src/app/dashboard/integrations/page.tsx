@@ -36,6 +36,8 @@ export default function IntegrationsPage() {
   const [isAdminMaster, setIsAdminMaster] = useState(false);
   const [chatwootAiActive, setChatwootAiActive] = useState(true);
   const [togglingAi, setTogglingAi] = useState(false);
+  const [empresaId, setEmpresaId] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Connection test
   const [testing, setTesting] = useState(false);
@@ -58,6 +60,7 @@ export default function IntegrationsPage() {
   // 1. Verifica perfil e carrega integrações
   useEffect(() => {
     axios.get("/api-backend/auth/me", getToken()).then(r => {
+      if (r.data.empresa_id) setEmpresaId(r.data.empresa_id);
       if (r.data.perfil === "admin_master") {
         setIsAdminMaster(true);
         setLoading(false);
@@ -229,8 +232,8 @@ export default function IntegrationsPage() {
               const tabIntegration = integrations[tab.id];
               const tabConfigured = tab.id === "chatwoot"
                 ? !!(tabIntegration?.config?.url && tabIntegration?.config?.access_token)
-                : tab.id === "uzap"
-                ? !!(tabIntegration?.config?.api_url && tabIntegration?.config?.token)
+                : tab.id === "uazapi"
+                ? !!(tabIntegration?.config?.url && tabIntegration?.config?.token)
                 : false;
               const tabActive = tabConfigured && tabIntegration?.ativo;
 
@@ -553,6 +556,34 @@ export default function IntegrationsPage() {
 
                       {activeTab === "uazapi" && (
                         <div className="grid grid-cols-1 gap-8">
+                          {/* ── Webhook URL (somente leitura, para configurar na UazAPI) ── */}
+                          {empresaId && (
+                            <div className="space-y-3">
+                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                <Zap className="w-3 h-3 text-amber-400" />URL do Webhook — Cole na UazAPI
+                              </label>
+                              <div className="relative">
+                                <input
+                                  type="text"
+                                  readOnly
+                                  value={`${typeof window !== "undefined" ? window.location.origin.replace(/:\d+$/, "") : ""}/uazapi/${empresaId}`}
+                                  className="w-full bg-amber-500/5 border border-amber-500/20 rounded-2xl px-5 py-4 text-amber-300 font-mono text-xs pr-28 cursor-default select-all"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const url = `${window.location.origin.replace(/:\d+$/, "")}/uazapi/${empresaId}`;
+                                    navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+                                  }}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/20 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest text-amber-400 transition-all"
+                                >
+                                  {copied ? "Copiado!" : "Copiar"}
+                                </button>
+                              </div>
+                              <p className="text-[9px] text-slate-600 pl-1 uppercase tracking-tight">Configure este URL como webhook na plataforma UazAPI para o bot responder.</p>
+                            </div>
+                          )}
+
                           <div className="space-y-3">
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
                               <Globe className="w-3 h-3 text-[#00d2ff]" />Endpoint API
@@ -560,7 +591,7 @@ export default function IntegrationsPage() {
                             </label>
                             <input type="text" value={currentConfig.config.url || ""} onChange={e => updateField("url", e.target.value)}
                               className={`${inputClass} ${currentConfig.config.url && currentConfig.id ? "border-emerald-500/15" : ""}`}
-                              placeholder="https://api.uazapi.com/v1" />
+                              placeholder="https://fluxodigitaltech.uazapi.com" />
                           </div>
                           <div className="space-y-3">
                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
