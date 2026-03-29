@@ -53,7 +53,13 @@ class UazAPIClient:
                     logger.warning(f"⚠️ UazAPI rate limited ({endpoint}), retry em {delay}s")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e}")
+                    _body = ""
+                    try:
+                        _body = e.response.text[:200]
+                    except Exception:
+                        pass
+                    _payload_log = str(kwargs.get("json", {}))[:150]
+                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e} | payload={_payload_log} | resp={_body}")
                     if PROMETHEUS_OK:
                         METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
                     return None
