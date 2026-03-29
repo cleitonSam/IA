@@ -21,9 +21,10 @@ from src.services.chatwoot_client import (
 )
 from src.services.workers import agendar_followups
 from src.services.bot_core import (
-    processar_ia_e_responder, monitorar_escolha_unidade, rate_limit_middleware,
+    processar_ia_e_responder, rate_limit_middleware,
     startup_event, shutdown_event,
 )
+from src.services.conversation_handler import monitorar_escolha_unidade
 from src.services.ia_processor import montar_saudacao_humanizada, extrair_endereco_unidade
 from src.utils.redis_helper import (
     get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache,
@@ -76,9 +77,11 @@ async def chatwoot_webhook(
     # Mas vamos usar o get_tenant_key se quisermos ser puristas.
     # Por simplicidade, vamos manter o incr no redis_client mas prefixado manualmente ou via helper
     t_rate_key = f"{empresa_id}:{rate_key}"
-    contador = await redis_client.incr(t_rate_key)
-    if contador == 1:
-        await redis_client.expire(t_rate_key, 10)
+    async with redis_client.pipeline(transaction=False) as pipe:
+        pipe.incr(t_rate_key)
+        pipe.expire(t_rate_key, 10)
+        _rl_results = await pipe.execute()
+    contador = _rl_results[0]
     if contador > 10:
         from fastapi.responses import JSONResponse
         return JSONResponse({"status": "rate_limit"}, status_code=429)
@@ -484,8 +487,11 @@ async def chatwoot_webhook(
 
     # Adiciona ao buffet (fila de rajada)
     buffet_key = f"buffet:{id_conv}"
-    await redis_client.rpush(get_tenant_key(empresa_id, buffet_key), json.dumps({"text": conteudo_texto, "files": arquivos}))
-    await redis_client.expire(get_tenant_key(empresa_id, buffet_key), 60)
+    _buffet_full_key = get_tenant_key(empresa_id, buffet_key)
+    async with redis_client.pipeline(transaction=False) as pipe:
+        pipe.rpush(_buffet_full_key, json.dumps({"text": conteudo_texto, "files": arquivos}))
+        pipe.expire(_buffet_full_key, 60)
+        await pipe.execute()
 
     # Publicar job no Redis Streams para processamento assíncrono (Arquitetura guiada por eventos)
     try:

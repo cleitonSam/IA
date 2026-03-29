@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
+import { useApiConfig } from "@/hooks/useApiConfig";
 
 interface Integration { id?: number; tipo: string; config: any; ativo: boolean; updated_at?: string; }
 interface EvoUnit {
@@ -53,24 +54,24 @@ export default function IntegrationsPage() {
   const [evoSaving, setEvoSaving] = useState(false);
   const [evoSuccess, setEvoSuccess] = useState(false);
 
-  const getToken = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+  const { config } = useApiConfig();
 
   // 1. Verifica perfil e carrega integrações
   useEffect(() => {
-    axios.get("/api-backend/auth/me", getToken()).then(r => {
+    axios.get("/api-backend/auth/me", config).then(r => {
       if (r.data.perfil === "admin_master") {
         setIsAdminMaster(true);
         setLoading(false);
         return;
       }
-      axios.get("/api-backend/management/integrations", getToken())
+      axios.get("/api-backend/management/integrations", config)
         .then(res => {
           const mapped = res.data.reduce((acc: any, item: any) => {
             acc[item.tipo] = { ...item, config: typeof item.config === "string" ? JSON.parse(item.config) : item.config };
             return acc;
           }, {});
           setIntegrations(mapped);
-          return axios.get("/api-backend/management/integrations/chatwoot/ai-status", getToken())
+          return axios.get("/api-backend/management/integrations/chatwoot/ai-status", config)
             .then((statusRes) => setChatwootAiActive(Boolean(statusRes.data?.ai_active)))
             .catch(() => setChatwootAiActive(true));
         }).catch(console.error).finally(() => setLoading(false));
@@ -80,7 +81,7 @@ export default function IntegrationsPage() {
   useEffect(() => {
     if (activeTab !== "evo" || isAdminMaster) return;
     setEvoLoading(true);
-    axios.get("/api-backend/management/integrations/evo/units", getToken())
+    axios.get("/api-backend/management/integrations/evo/units", config)
       .then(r => setEvoUnits(r.data))
       .catch(console.error)
       .finally(() => setEvoLoading(false));
@@ -112,7 +113,7 @@ export default function IntegrationsPage() {
     const next = !chatwootAiActive;
     setTogglingAi(true);
     try {
-      await axios.put("/api-backend/management/integrations/chatwoot/ai-status", { ai_active: next }, getToken());
+      await axios.put("/api-backend/management/integrations/chatwoot/ai-status", { ai_active: next }, config);
       setChatwootAiActive(next);
     } catch { alert("Erro ao alterar status da IA no Chatwoot."); }
     finally { setTogglingAi(false); }
@@ -122,7 +123,7 @@ export default function IntegrationsPage() {
     e.preventDefault();
     setSaving(true);
     try {
-      await axios.put(`/api-backend/management/integrations/${activeTab}`, currentConfig, getToken());
+      await axios.put(`/api-backend/management/integrations/${activeTab}`, currentConfig, config);
       setSuccess(true);
       // Update updated_at locally
       setIntegrations(prev => ({
@@ -138,7 +139,7 @@ export default function IntegrationsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await axios.post(`/api-backend/management/integrations/${activeTab}/test`, {}, getToken());
+      const res = await axios.post(`/api-backend/management/integrations/${activeTab}/test`, {}, config);
       setTestResult(res.data);
     } catch { setTestResult({ ok: false, message: "Erro na requisição" }); }
     finally { setTesting(false); }
@@ -162,7 +163,7 @@ export default function IntegrationsPage() {
       await axios.put(
         `/api-backend/management/integrations/evo/unit/${evoModal.unit.unidade_id}`,
         { config: { dns: evoForm.dns, secret_key: evoForm.secret_key, idBranch: evoForm.idBranch }, ativo: evoForm.ativo },
-        getToken()
+        config
       );
       setEvoSuccess(true);
       setEvoUnits(prev => prev.map(u =>
@@ -180,7 +181,7 @@ export default function IntegrationsPage() {
   const handleEvoSync = async (unidadeId: number) => {
     setSyncingId(unidadeId);
     try {
-      const res = await axios.post(`/api-backend/management/integrations/evo/sync/${unidadeId}`, {}, getToken());
+      const res = await axios.post(`/api-backend/management/integrations/evo/sync/${unidadeId}`, {}, config);
       alert(`Sincronização concluída! ${res.data.count} planos atualizados.`);
     } catch { alert("Erro ao sincronizar planos. Verifique a configuração."); }
     finally { setSyncingId(null); }

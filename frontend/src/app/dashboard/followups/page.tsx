@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
+import { getApiConfig } from "@/hooks/useApiConfig";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -54,9 +55,7 @@ interface Unidade {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const getToken = () => ({
-  headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-});
+const getToken = () => getApiConfig().config;
 
 function formatDelay(minutos: number): string {
   if (minutos < 60) return `${minutos}min`;
