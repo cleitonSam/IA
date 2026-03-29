@@ -314,7 +314,7 @@ export default function FollowupsPage() {
 
   // ── Load on mount ──
   useEffect(() => {
-    axios.get("/api-backend/dashboard/unidades", getToken()).then(r => setUnidades(r.data)).catch(() => {});
+    axios.get("/api-backend/dashboard/unidades", getToken()).then(r => setUnidades(Array.isArray(r.data) ? r.data : r.data?.data || [])).catch(() => {});
     loadTemplates();
   }, []);
 

@@ -81,7 +81,7 @@ export default function IntegrationsPage() {
     if (activeTab !== "evo" || isAdminMaster) return;
     setEvoLoading(true);
     axios.get("/api-backend/management/integrations/evo/units", getToken())
-      .then(r => setEvoUnits(r.data))
+      .then(r => setEvoUnits(Array.isArray(r.data) ? r.data : r.data?.data || []))
       .catch(console.error)
       .finally(() => setEvoLoading(false));
   }, [activeTab, isAdminMaster]);

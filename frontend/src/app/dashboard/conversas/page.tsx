@@ -95,7 +95,7 @@ export default function ConversasPage() {
   }, [offset, filterUnidade, filterStatus, busca]);
 
   useEffect(() => {
-    axios.get("/api-backend/dashboard/unidades", config).then(r => setUnidades(r.data)).catch(() => {});
+    axios.get("/api-backend/dashboard/unidades", config).then(r => setUnidades(Array.isArray(r.data) ? r.data : r.data?.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
