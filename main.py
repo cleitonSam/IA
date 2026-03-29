@@ -941,25 +941,37 @@ async def startup_event():
             try:
                 from alembic.config import Config as AlembicConfig
                 from alembic import command as alembic_command
-                import concurrent.futures
+                from alembic.script import ScriptDirectory
                 alembic_cfg = AlembicConfig("alembic.ini")
                 loop = asyncio.get_event_loop()
+
+                # Descobre a head única dos arquivos de migration
+                _script_dir = ScriptDirectory.from_config(alembic_cfg)
+                _file_heads = _script_dir.get_heads()
+                _target_head = _file_heads[0] if _file_heads else "head"
+
+                # Limpa versões órfãs: se alembic_version tem múltiplas linhas, força para a head atual
+                _temp_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=1, timeout=5)
+                try:
+                    _ver_rows = await _temp_pool.fetch("SELECT version_num FROM alembic_version")
+                    _db_versions = [r["version_num"] for r in _ver_rows]
+                    if len(_db_versions) > 1 or (len(_db_versions) == 1 and _db_versions[0] not in {r.revision for r in _script_dir.walk_revisions()}):
+                        logger.warning(f"⚠️ alembic_version com {len(_db_versions)} entradas órfãs: {_db_versions} — limpando para {_target_head}")
+                        await _temp_pool.execute("DELETE FROM alembic_version")
+                        await _temp_pool.execute("INSERT INTO alembic_version (version_num) VALUES ($1)", _target_head)
+                        logger.info(f"🔧 alembic_version limpa e fixada em {_target_head}")
+                except Exception as _ver_err:
+                    logger.debug(f"Verificação alembic_version: {_ver_err}")
+                finally:
+                    await _temp_pool.close()
+
                 await loop.run_in_executor(
                     None,
-                    lambda: alembic_command.upgrade(alembic_cfg, "head")
+                    lambda: alembic_command.upgrade(alembic_cfg, _target_head)
                 )
                 logger.info("✅ Migrations aplicadas com sucesso (alembic upgrade head)")
             except Exception as migration_err:
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
-                # Se falhou por revisão órfã, força stamp da head atual
-                try:
-                    await loop.run_in_executor(
-                        None,
-                        lambda: alembic_command.stamp(alembic_cfg, "head")
-                    )
-                    logger.info("🔧 alembic stamp head aplicado — versão do banco sincronizada")
-                except Exception as stamp_err:
-                    logger.warning(f"⚠️ Falha ao aplicar stamp: {stamp_err}")
 
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
