@@ -1280,7 +1280,7 @@ def corrigir_json(texto: str) -> str:
 async def transcrever_audio(url: str):
     """Delega para bot_core.transcrever_audio (versão com fallback Gemini)."""
     try:
-        from src.services.message_formatter import transcrever_audio as _transcrever
+        from src.services.bot_core import transcrever_audio as _transcrever
         return await _transcrever(url)
     except ImportError:
         if not cliente_whisper:

@@ -5,7 +5,6 @@ import axios from "axios";
 import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, Globe, Building2, Brain } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
-import { useApiConfig } from "@/hooks/useApiConfig";
 
 interface FAQItem {
   id?: number;
@@ -31,18 +30,18 @@ export default function FAQPage() {
   const [success, setSuccess] = useState(false);
   const [formData, setFormData] = useState<FAQItem>(emptyFaq);
 
-  const { config } = useApiConfig();
+  const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
   useEffect(() => {
     Promise.all([
-      axios.get("/api-backend/management/faq", config),
-      axios.get("/api-backend/dashboard/unidades", config)
+      axios.get("/api-backend/management/faq", getConfig()),
+      axios.get("/api-backend/dashboard/unidades", getConfig())
     ]).then(([faqRes, unitRes]) => { setFaqs(faqRes.data); setUnidades(unitRes.data); })
       .catch(console.error).finally(() => setLoading(false));
   }, []);
 
   const fetchData = async () => {
-    const [faqRes] = await Promise.all([axios.get("/api-backend/management/faq", config)]);
+    const [faqRes] = await Promise.all([axios.get("/api-backend/management/faq", getConfig())]);
     setFaqs(faqRes.data);
   };
 
@@ -57,9 +56,9 @@ export default function FAQPage() {
     setSaving(true);
     try {
       if (editingFaq?.id) {
-        await axios.put(`/api-backend/management/faq/${editingFaq.id}`, formData, config);
+        await axios.put(`/api-backend/management/faq/${editingFaq.id}`, formData, getConfig());
       } else {
-        await axios.post("/api-backend/management/faq", formData, config);
+        await axios.post("/api-backend/management/faq", formData, getConfig());
       }
       setSuccess(true);
       setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchData(); }, 1000);
@@ -69,7 +68,7 @@ export default function FAQPage() {
 
   const handleDelete = async (id: number) => {
     if (!confirm("Excluir esta pergunta?")) return;
-    await axios.delete(`/api-backend/management/faq/${id}`, config).catch(() => alert("Erro ao excluir."));
+    await axios.delete(`/api-backend/management/faq/${id}`, getConfig()).catch(() => alert("Erro ao excluir."));
     fetchData();
   };
 

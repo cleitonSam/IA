@@ -106,25 +106,16 @@ async def _process_job(msg_id: str, payload: dict):
                 await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
                 return
 
-            # Idempotência: evita reprocessamento de jobs duplicados
-            _dedup_job_key = f"dedup:job:{empresa_id}:{conversation_id}:{msg_id}"
-            if not await redis_client.set(_dedup_job_key, "1", nx=True, ex=300):
-                logger.info(f"🔁 Job duplicado ignorado (dedup): conv={conversation_id} msg_id={msg_id}")
-                await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
-                return
-
             # --- Áudio UazAPI: popular buffet com URL do áudio ---
             if source == "uazapi" and payload.get("has_audio") == "1":
                 _audio_url = payload.get("audio_url", "")
                 _buffet_key = f"{empresa_id}:buffet:{conversation_id}"
                 if _audio_url:
-                    async with redis_client.pipeline(transaction=False) as pipe:
-                        pipe.rpush(_buffet_key, json.dumps({
-                            "text": "",
-                            "files": [{"url": _audio_url, "type": "audio"}]
-                        }))
-                        pipe.expire(_buffet_key, 60)
-                        await pipe.execute()
+                    await redis_client.rpush(_buffet_key, json.dumps({
+                        "text": "",
+                        "files": [{"url": _audio_url, "type": "audio"}]
+                    }))
+                    await redis_client.expire(_buffet_key, 60)
                     logger.info(f"🎙️ Áudio UazAPI → buffet: {contato_fone} conv={conversation_id}")
                 else:
                     # Sem mediaUrl do UazAPI → busca no Chatwoot
@@ -164,13 +155,11 @@ async def _process_job(msg_id: str, payload: dict):
                                             if _audio_url:
                                                 break
                                         if _audio_url:
-                                            async with redis_client.pipeline(transaction=False) as pipe:
-                                                pipe.rpush(_buffet_key, json.dumps({
-                                                    "text": "",
-                                                    "files": [{"url": _audio_url, "type": "audio"}]
-                                                }))
-                                                pipe.expire(_buffet_key, 60)
-                                                await pipe.execute()
+                                            await redis_client.rpush(_buffet_key, json.dumps({
+                                                "text": "",
+                                                "files": [{"url": _audio_url, "type": "audio"}]
+                                            }))
+                                            await redis_client.expire(_buffet_key, 60)
                                             logger.info(f"🎙️ Áudio Chatwoot → buffet: {contato_fone} conv={conversation_id} | {_audio_url[:80]}...")
                                         else:
                                             logger.warning(f"⚠️ Áudio não encontrado no Chatwoot para {contato_fone}")
@@ -188,13 +177,11 @@ async def _process_job(msg_id: str, payload: dict):
                 _image_url = payload.get("image_url", "")
                 _buffet_key = f"{empresa_id}:buffet:{conversation_id}"
                 if _image_url:
-                    async with redis_client.pipeline(transaction=False) as pipe:
-                        pipe.rpush(_buffet_key, json.dumps({
-                            "text": payload.get("content", "") if payload.get("content", "") not in ("[Imagem recebida]", "[Vídeo recebido]") else "",
-                            "files": [{"url": _image_url, "type": "image"}]
-                        }))
-                        pipe.expire(_buffet_key, 60)
-                        await pipe.execute()
+                    await redis_client.rpush(_buffet_key, json.dumps({
+                        "text": payload.get("content", "") if payload.get("content", "") not in ("[Imagem recebida]", "[Vídeo recebido]") else "",
+                        "files": [{"url": _image_url, "type": "image"}]
+                    }))
+                    await redis_client.expire(_buffet_key, 60)
                     logger.info(f"🖼️ Imagem UazAPI → buffet: {contato_fone} conv={conversation_id}")
                 else:
                     # Sem mediaUrl do UazAPI → busca no Chatwoot
@@ -236,13 +223,11 @@ async def _process_job(msg_id: str, payload: dict):
                                             if _found_img_url:
                                                 break
                                         if _found_img_url:
-                                            async with redis_client.pipeline(transaction=False) as pipe:
-                                                pipe.rpush(_buffet_key, json.dumps({
-                                                    "text": "",
-                                                    "files": [{"url": _found_img_url, "type": "image"}]
-                                                }))
-                                                pipe.expire(_buffet_key, 60)
-                                                await pipe.execute()
+                                            await redis_client.rpush(_buffet_key, json.dumps({
+                                                "text": "",
+                                                "files": [{"url": _found_img_url, "type": "image"}]
+                                            }))
+                                            await redis_client.expire(_buffet_key, 60)
                                             logger.info(f"🖼️ Imagem Chatwoot → buffet: {contato_fone} conv={conversation_id}")
                                         else:
                                             logger.warning(f"⚠️ Imagem não encontrada no Chatwoot para {contato_fone}")
@@ -261,12 +246,10 @@ async def _process_job(msg_id: str, payload: dict):
                 if _text_content not in _placeholders:
                     # Só empurra texto se NÃO veio junto com imagem (evita duplicação)
                     if payload.get("has_image") != "1":
-                        async with redis_client.pipeline(transaction=False) as pipe:
-                            pipe.rpush(_buffet_key_txt, json.dumps({
-                                "text": _text_content, "files": []
-                            }))
-                            pipe.expire(_buffet_key_txt, 60)
-                            await pipe.execute()
+                        await redis_client.rpush(_buffet_key_txt, json.dumps({
+                            "text": _text_content, "files": []
+                        }))
+                        await redis_client.expire(_buffet_key_txt, 60)
 
             integracao = await carregar_integracao(empresa_id, 'chatwoot' if source == "chatwoot" else 'uazapi')
             if not integracao:
