@@ -15,10 +15,9 @@ async def set_tenant_cache(empresa_id: int, key: str, value: Any, ttl: int = 360
     t_key = get_tenant_key(empresa_id, key)
     if isinstance(value, (dict, list)):
         if nx:
-            # Atomic NX for JSON: SET NX the serialized value, then set TTL
-            _json_str = json.dumps(value, ensure_ascii=False)
-            result = await redis_client.set(t_key, _json_str, nx=True, ex=ttl)
-            return bool(result)
+            # Para JSON com NX, verifica se existe antes
+            if await redis_client.exists(t_key):
+                return False
         await redis_set_json(t_key, value, ttl)
         return True
     else:

@@ -108,30 +108,16 @@ async def enviar_mensagem_chatwoot(
             instance_name=_cfg.get("instance_name") or "lead"
         )
         try:
+            # Prefixo de nome sem emoticons
+            _prefixed_content = f"*{nome_ia}*\n{content}" if nome_ia else f"{content}"
+            
             await set_tenant_cache(empresa_id, f"uaz_bot_sent_conv:{conversation_id}", "1", 120)
             # Chave usada pelo uaz_webhook.py para identificar eco de imagem enviada pelo bot
             await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{fone}", 120, "1")
 
             if is_direct_url:
-                # Envia mídia sem prefixo de nome (content é a URL)
-                _url_lower = content.strip().lower()
-                _media_url = content.strip()
-                if any(ext in _url_lower for ext in ('.mp4', '.mov', '.avi', '.webm', 'video')):
-                    _mtype = "video"
-                elif any(ext in _url_lower for ext in ('.mp3', '.ogg', '.wav', '.opus', 'audio')):
-                    _mtype = "audio"
-                else:
-                    _mtype = "image"
-                logger.info(f"📎 [UazAPI Media] type={_mtype} url={_media_url[:80]} fone={fone}")
-                _media_ok = await client.send_media(fone, _media_url, media_type=_mtype)
-                if not _media_ok:
-                    logger.warning(f"⚠️ [UazAPI Media] send_media falhou, tentando como document...")
-                    _media_ok = await client.send_media(fone, _media_url, media_type="document")
-                if not _media_ok:
-                    logger.error(f"❌ [UazAPI Media] Falha total ao enviar mídia: {_media_url[:80]}")
+                await client.send_media(fone, _prefixed_content, media_type="image")
             else:
-                # Prefixo de nome apenas para texto
-                _prefixed_content = f"*{nome_ia}*\n{content}" if nome_ia else f"{content}"
                 await client.send_text(fone, _prefixed_content)
             return True
         except Exception as e:

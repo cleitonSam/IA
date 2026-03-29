@@ -4,7 +4,6 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { History, Loader2, Search, Calendar, MessageCircle, ArrowLeft, ChevronRight, X, User, Phone, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useApiConfig } from "@/hooks/useApiConfig";
 
 interface ConversationLog {
   conversation_id: number;
@@ -27,11 +26,12 @@ export default function LogsPage() {
     fetchLogs();
   }, []);
 
-  const { config } = useApiConfig();
-
   const fetchLogs = async () => {
     try {
-      const response = await axios.get("/api-backend/management/logs", config);
+      const token = localStorage.getItem("token");
+      const response = await axios.get("/api-backend/management/logs", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setLogs(response.data);
     } catch (error) {
       console.error("Erro ao carregar logs:", error);

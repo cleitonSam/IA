@@ -10,7 +10,6 @@ import {
   Pencil, Trash2, X, UserCheck, UserX, ShieldCheck,
   Brain, HelpCircle, Network, History, Settings
 } from "lucide-react";
-import { useApiConfig } from "@/hooks/useApiConfig";
 
 export default function AdminPage() {
   const router = useRouter();
@@ -37,11 +36,13 @@ export default function AdminPage() {
   const [msgConvite, setMsgConvite] = useState<{ ok: boolean; text: string } | null>(null);
   const [linkConvite, setLinkConvite] = useState<string | null>(null);
 
-  const { config } = useApiConfig();
+  const getConfig = () => ({
+    headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+  });
 
   const fetchData = async () => {
     try {
-      const meRes = await axios.get("/api-backend/auth/me", config);
+      const meRes = await axios.get("/api-backend/auth/me", getConfig());
       if (meRes.data.perfil !== "admin_master") {
         router.push("/dashboard");
         return;
@@ -54,8 +55,8 @@ export default function AdminPage() {
 
     try {
       const [empRes, usersRes] = await Promise.all([
-        axios.get("/api-backend/auth/empresas", config),
-        axios.get("/api-backend/auth/usuarios", config),
+        axios.get("/api-backend/auth/empresas", getConfig()),
+        axios.get("/api-backend/auth/usuarios", getConfig()),
       ]);
       setEmpresas(empRes.data);
       setUsuarios(usersRes.data);
@@ -73,7 +74,7 @@ export default function AdminPage() {
     setCriandoEmpresa(true);
     setMsgEmpresa(null);
     try {
-      await axios.post("/api-backend/auth/create-empresa", novaEmpresa, config);
+      await axios.post("/api-backend/auth/create-empresa", novaEmpresa, getConfig());
       setMsgEmpresa({ ok: true, text: `Empresa "${novaEmpresa.nome}" criada com sucesso!` });
       setNovaEmpresa({ nome: "", nome_fantasia: "", cnpj: "", email: "", telefone: "" });
       await fetchData();
@@ -89,7 +90,7 @@ export default function AdminPage() {
     setSalvando(true);
     setMsgEdit(null);
     try {
-      await axios.put(`/api-backend/auth/empresas/${editando.id}`, editando, config);
+      await axios.put(`/api-backend/auth/empresas/${editando.id}`, editando, getConfig());
       setMsgEdit({ ok: true, text: "Empresa atualizada com sucesso!" });
       await fetchData();
       setTimeout(() => { setEditando(null); setMsgEdit(null); }, 1200);
@@ -103,7 +104,7 @@ export default function AdminPage() {
   const handleExcluir = async (id: number) => {
     setExcluindoId(id);
     try {
-      await axios.delete(`/api-backend/auth/empresas/${id}`, config);
+      await axios.delete(`/api-backend/auth/empresas/${id}`, getConfig());
       await fetchData();
     } catch (err: any) {
       alert(err.response?.data?.detail || "Erro ao excluir empresa.");
@@ -114,7 +115,7 @@ export default function AdminPage() {
 
   const handleToggleUsuario = async (id: number) => {
     try {
-      await axios.patch(`/api-backend/auth/usuarios/${id}`, {}, config);
+      await axios.patch(`/api-backend/auth/usuarios/${id}`, {}, getConfig());
       await fetchData();
     } catch (err: any) {
       alert(err.response?.data?.detail || "Erro ao alterar usuário.");
@@ -124,7 +125,7 @@ export default function AdminPage() {
   const handleExcluirUsuario = async (id: number, nome: string) => {
     if (!confirm(`Excluir o usuário "${nome}"? Esta ação não pode ser desfeita.`)) return;
     try {
-      await axios.delete(`/api-backend/auth/usuarios/${id}`, config);
+      await axios.delete(`/api-backend/auth/usuarios/${id}`, getConfig());
       await fetchData();
     } catch (err: any) {
       alert(err.response?.data?.detail || "Erro ao excluir usuário.");
@@ -144,7 +145,7 @@ export default function AdminPage() {
       const res = await axios.post(
         "/api-backend/auth/invite",
         { email: convite.email, empresa_id: Number(convite.empresa_id) },
-        config
+        getConfig()
       );
       if (res.data.email_enviado) {
         setMsgConvite({ ok: true, text: `Convite enviado por e-mail para ${convite.email}!` });

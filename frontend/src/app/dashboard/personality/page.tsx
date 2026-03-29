@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
-import { useApiConfig } from "@/hooks/useApiConfig";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -282,8 +281,7 @@ export default function PersonalityPage() {
     });
   }, [pgActiveId]);
 
-  const { config: getConfigResult } = useApiConfig();
-  const getConfig = () => getConfigResult;
+  const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
   // Helpers para emoji_tipo como lista separada por vírgula
   const getEmojiList = (s: string) => s ? s.split(",").map(e => e.trim()).filter(Boolean) : [];
