@@ -661,8 +661,6 @@ export default function SettingsPage() {
                 )}
               </div>
 
-          --- fim do form removido --- */}
-
           {/* --- Tab: FAQ --- */}
           {activeTab === "faq" && (
             <div className="space-y-6">
