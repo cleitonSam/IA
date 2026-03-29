@@ -12,8 +12,9 @@ from src.services.db_queries import (
     buscar_empresa_por_account_id, carregar_integracao, bd_finalizar_conversa,
     bd_iniciar_conversa, bd_registrar_evento_funil, bd_atualizar_msg_cliente,
     listar_unidades_ativas, buscar_unidade_na_pergunta, carregar_unidade,
-    carregar_personalidade, carregar_menu_triagem,
+    carregar_personalidade, carregar_menu_triagem, carregar_fluxo_triagem,
 )
+from src.services.flow_executor import executar_fluxo
 from src.services.uaz_client import UazAPIClient
 from src.services.chatwoot_client import (
     enviar_mensagem_chatwoot, validar_assinatura, atualizar_nome_contato_chatwoot,
@@ -25,7 +26,8 @@ from src.services.bot_core import (
 )
 from src.services.ia_processor import montar_saudacao_humanizada, extrair_endereco_unidade
 from src.utils.redis_helper import (
-    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache,
+    get_tenant_key,
 )
 from src.utils.text_helpers import (
     normalizar, limpar_nome, nome_eh_valido, extrair_nome_do_texto,
@@ -34,6 +36,11 @@ from src.utils.time_helpers import saudacao_por_horario, horario_hoje_formatado
 from src.utils.intent_helpers import eh_saudacao
 
 router = APIRouter()
+
+@router.get("/webhook")
+async def chatwoot_webhook_verify():
+    """Endpoint de verificação para o Chatwoot (requisição GET de handshake)."""
+    return {"status": "ok", "message": "Webhook ativo"}
 
 @router.post("/webhook")
 async def chatwoot_webhook(
@@ -197,11 +204,13 @@ async def chatwoot_webhook(
             else:
                 _aguardando_nome = await get_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}")
                 if not _aguardando_nome:
+                    _pers_nome = await carregar_personalidade(empresa_id) or {}
+                    _nome_ia_nome = _pers_nome.get('nome_ia') or 'Atendente'
                     msg_nome = (
                         "Antes de continuar, me fala seu *nome* pra eu te atender certinho 😊\n\n"
                         "Pode me responder só com seu primeiro nome."
                     )
-                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia="Assistente Virtual")
+                    await enviar_mensagem_chatwoot(account_id, id_conv, msg_nome, integracao, empresa_id, nome_ia=_nome_ia_nome)
                     await set_tenant_cache(empresa_id, f"aguardando_nome:{id_conv}", "1", 900)
                     return {"status": "aguardando_nome"}
 
@@ -439,6 +448,32 @@ async def chatwoot_webhook(
             else:
                 logger.info(f"📋 Menu triagem: config ausente ou inativo para empresa {empresa_id} — seguindo fluxo normal")
     # --- Fim do Menu de Triagem ---
+
+    # --- Fluxo Visual de Triagem (n8n-style) ---
+    # Se houver fluxo ativo e telefone disponível, tenta executar o fluxo antes da IA.
+    if contato_fone:
+        _fluxo_config = await carregar_fluxo_triagem(empresa_id)
+        if _fluxo_config and _fluxo_config.get("ativo"):
+            _ia_pausada_fluxo = bool(await exists_tenant_cache(empresa_id, f"pause_ia:{id_conv}"))
+            _fone_clean = "".join(filter(str.isdigit, str(contato_fone)))
+            _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_clean}"))
+
+            if not _ia_pausada_fluxo and not _phone_paused:
+                integracao_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                if integracao_uaz:
+                    _uaz_fluxo = UazAPIClient(
+                        base_url=integracao_uaz.get("url") or integracao_uaz.get("api_url") or "",
+                        token=integracao_uaz.get("token", ""),
+                        instance_name=integracao_uaz.get("instance", "default")
+                    )
+                    try:
+                        _fluxo_tratou = await executar_fluxo(empresa_id, _fone_clean, conteudo_texto, _fluxo_config, _uaz_fluxo)
+                        if _fluxo_tratou:
+                            logger.info(f"✅ [FluxoTriagem Chatwoot] Mensagem tratada pelo fluxo visual (conv={id_conv})")
+                            return {"status": "flow_handled"}
+                    except Exception as _fe:
+                        logger.error(f"❌ [FluxoTriagem Chatwoot] Erro ao executar fluxo: {_fe}")
+    # --- Fim Fluxo Visual ---
 
     anexos = payload.get("attachments") or payload.get("message", {}).get("attachments", [])
     arquivos = []

@@ -1857,8 +1857,18 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                     except (json.JSONDecodeError, ValueError):
                         pass
 
+                # Extrai tags de mídia ANTES de cortar frases (senão _garantir_frase_completa remove)
+                _TAG_MIDIA_RE = re.compile(r'<SEND_(?:VIDEO|IMAGE)(?::[^>]*)?>')
+                _tags_midia = _TAG_MIDIA_RE.findall(resposta_texto or '')
+                if _tags_midia:
+                    resposta_texto = _TAG_MIDIA_RE.sub('', resposta_texto).strip()
+
                 # Aplica a garantia de frase completa para evitar truncamento feio
                 resposta_texto = _garantir_frase_completa(resposta_texto)
+
+                # Reanexa as tags de mídia ao final para processamento posterior
+                if _tags_midia:
+                    resposta_texto = resposta_texto + ' ' + ' '.join(_tags_midia)
 
                 _resp_norm = normalizar(resposta_texto)
                 if any(w in _resp_norm for w in ("matricula", "matricular", "assinar", "plano", "checkout", "comecar agora")):
@@ -2270,7 +2280,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 temperature=temperature,
                                 max_tokens=max_tokens,
                             ),
-                            timeout=20
+                            timeout=35
                         )
                     _drain_bruta = _drain_resp.choices[0].message.content or ""
 
