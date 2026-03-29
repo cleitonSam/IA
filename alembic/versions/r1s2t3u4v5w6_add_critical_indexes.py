@@ -22,10 +22,10 @@ def upgrade() -> None:
     # Nota: CONCURRENTLY removido — não pode rodar dentro de transaction block (Alembic).
     # Os índices ainda são criados com IF NOT EXISTS para ser idempotente.
 
-    # Hot path do bot: busca conversa ativa por phone (chamado em TODA mensagem recebida)
+    # Hot path do bot: busca conversa ativa por contato_fone (chamado em TODA mensagem recebida)
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_conversas_empresa_phone
-        ON conversas(empresa_id, phone)
+        CREATE INDEX IF NOT EXISTS idx_conversas_empresa_fone
+        ON conversas(empresa_id, contato_fone)
     """)
 
     # Dashboard de conversas: ordenação por data de criação
@@ -37,14 +37,14 @@ def upgrade() -> None:
     # Histórico de mensagens: context window do LLM (chamado em toda resposta)
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_mensagens_conversa_created
-        ON mensagens_locais(conversa_id, created_at DESC)
+        ON mensagens(conversa_id, created_at DESC)
     """)
 
     # Worker de followup: busca apenas pendentes (partial index — muito eficiente)
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_followups_pending
-        ON followups(status, scheduled_at)
-        WHERE status = 'pending'
+        CREATE INDEX IF NOT EXISTS idx_followups_pendente
+        ON followups(status, agendado_para)
+        WHERE status = 'pendente'
     """)
 
     # Dashboard de métricas: queries de séries temporais por empresa
@@ -55,8 +55,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS idx_conversas_empresa_phone")
+    op.execute("DROP INDEX IF EXISTS idx_conversas_empresa_fone")
     op.execute("DROP INDEX IF EXISTS idx_conversas_empresa_created")
     op.execute("DROP INDEX IF EXISTS idx_mensagens_conversa_created")
-    op.execute("DROP INDEX IF EXISTS idx_followups_pending")
+    op.execute("DROP INDEX IF EXISTS idx_followups_pendente")
     op.execute("DROP INDEX IF EXISTS idx_metricas_empresa_data")
