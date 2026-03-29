@@ -2,16 +2,21 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
 from src.core.config import logger, ACCESS_TOKEN_EXPIRE_MINUTES
 from src.core.security import verify_password, get_password_hash, create_access_token, get_current_user_token
+from src.core.redis_client import redis_client
 from src.services.db_queries import buscar_usuario_por_email, criar_usuario
 from src.services.email_service import enviar_convite
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Rate limit para login: máx 5 tentativas por IP por minuto
+_LOGIN_RATE_LIMIT = 5
+_LOGIN_RATE_WINDOW = 60  # segundos
 
 
 # ---------- schemas ----------
@@ -103,7 +108,25 @@ async def _marcar_convite_usado(token: str):
 # ---------- endpoints ----------
 
 @router.post("/login")
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    # Rate limiting por IP
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"login_rate:{client_ip}"
+    try:
+        attempts = await redis_client.incr(rate_key)
+        if attempts == 1:
+            await redis_client.expire(rate_key, _LOGIN_RATE_WINDOW)
+        if attempts > _LOGIN_RATE_LIMIT:
+            logger.warning(f"🚫 Rate limit login excedido para IP {client_ip}")
+            raise HTTPException(
+                status_code=429,
+                detail=f"Muitas tentativas de login. Aguarde {_LOGIN_RATE_WINDOW}s.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Se Redis falhar, permite login normalmente
+
     email_login = (form_data.username or "").strip().lower()
     senha_login = form_data.password or ""
 
@@ -172,7 +195,8 @@ async def atualizar_empresa(
     if token_payload.get("perfil") != "admin_master":
         raise HTTPException(status_code=403, detail="Apenas admin_master pode editar empresas")
 
-    fields = {k: v for k, v in body.dict().items() if v is not None}
+    _CAMPOS_PERMITIDOS = {"nome", "nome_fantasia", "cnpj", "email", "telefone", "website", "plano", "status"}
+    fields = {k: v for k, v in body.dict().items() if v is not None and k in _CAMPOS_PERMITIDOS}
     if not fields:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 

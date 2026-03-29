@@ -84,6 +84,25 @@ CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 
 app = FastAPI()
 
+# ── CORS ─────────────────────────────────────────────────────────────────────
+from fastapi.middleware.cors import CORSMiddleware
+from src.core.config import FRONTEND_URL
+
+_cors_origins = [
+    FRONTEND_URL,
+    "http://localhost:3000",
+]
+# Remove duplicatas e vazios
+_cors_origins = list({o for o in _cors_origins if o})
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Rotas de dashboard/auth da versão modular (sem quebrar o webhook legado)
 from src.api.routers.auth import router as auth_router
 from src.api.routers.dashboard import router as dashboard_router
