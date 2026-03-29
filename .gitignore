@@ -1,24 +1,31 @@
-# Python
+# ─── Python ──────────────────────────────────────
 __pycache__/
 *.pyc
-.env
+*.pyo
+*.log
 
-# Frontend
-frontend/node_modules/
-frontend/.next/
-frontend/dist/
-# Python venv
+# ─── Environments (NUNCA commite arquivos .env com dados reais) ──────────────
+.env
+.env.dev
+.env.staging
+.env.production
+# Os arquivos .example SÃO commitados (templates sem credenciais reais)
+# .env.dev.example       ← commitado ✅
+# .env.staging.example   ← commitado ✅
+# .env.production.example← commitado ✅
+
+# ─── Python venv ─────────────────────────────────
 IA/
 bin/
 lib/
 lib64/
 include/
 pyvenv.cfg
-__pycache__/
-*.pyc
-*.pyo
-.env
-*.log
 
-# Claude
+# ─── Frontend ────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+
+# ─── Claude / Ferramentas ────────────────────────
 .claude/

@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────
+#  Ambiente: DEVELOPMENT
+#  URL:      http://dev.ia.fluxodigitaltech.com.br  (ou VPS:8081)
+#  Branch:   dev
+#  .env:     .env.dev
+# ─────────────────────────────────────────────
+name: ia-dev
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ia-dev-api
+    expose:
+      - "8000"
+    env_file:
+      - .env.dev
+    environment:
+      - APP_MODE=api
+    restart: unless-stopped
+    networks:
+      - ia-dev-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ia-dev-worker
+    env_file:
+      - .env.dev
+    environment:
+      - APP_MODE=worker
+    restart: unless-stopped
+    networks:
+      - ia-dev-net
+    depends_on:
+      - api
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_ENV=development
+    container_name: ia-dev-frontend
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - ia-dev-net
+    depends_on:
+      - api
+
+  nginx:
+    image: nginx:alpine
+    container_name: ia-dev-nginx
+    ports:
+      - "8081:80"       # acesso externo: http://VPS_IP:8081
+    volumes:
+      - ./nginx/dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+    networks:
+      - ia-dev-net
+
+networks:
+  ia-dev-net:
+    driver: bridge

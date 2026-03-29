@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────
+#  Ambiente: PRODUCTION
+#  URL:      https://ia.fluxodigitaltech.com.br  (porta 80)
+#  Branch:   main
+#  .env:     .env.production
+# ─────────────────────────────────────────────
+name: ia-prod
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ia-prod-api
+    expose:
+      - "8000"
+    env_file:
+      - .env.production
+    environment:
+      - APP_MODE=api
+    restart: always
+    networks:
+      - ia-prod-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ia-prod-worker
+    env_file:
+      - .env.production
+    environment:
+      - APP_MODE=worker
+    restart: always
+    networks:
+      - ia-prod-net
+    depends_on:
+      - api
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_ENV=production
+    container_name: ia-prod-frontend
+    expose:
+      - "3000"
+    restart: always
+    networks:
+      - ia-prod-net
+    depends_on:
+      - api
+
+  nginx:
+    image: nginx:alpine
+    container_name: ia-prod-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - frontend
+    restart: always
+    networks:
+      - ia-prod-net
+
+networks:
+  ia-prod-net:
+    driver: bridge

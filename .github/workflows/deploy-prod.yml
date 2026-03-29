@@ -1,0 +1,40 @@
+name: Deploy — PRODUCTION
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔔 Notifica início do deploy
+        run: echo "🚀 Iniciando deploy PRODUCTION — commit ${{ github.sha }}"
+
+      - name: 🛳️ Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key:      ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            echo "📦 Atualizando código PRODUCTION..."
+            cd ${{ secrets.PROD_PATH }}
+
+            git fetch origin main
+            git checkout main
+            git pull origin main
+
+            echo "🐳 Rebuild e restart dos containers PRODUCTION..."
+            docker compose -f docker-compose.prod.yml pull 2>/dev/null || true
+            docker compose -f docker-compose.prod.yml up --build -d
+
+            echo "🧹 Limpando imagens antigas..."
+            docker image prune -f
+
+            echo "✅ Deploy PRODUCTION concluído!"
+            docker compose -f docker-compose.prod.yml ps
