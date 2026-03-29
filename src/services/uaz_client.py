@@ -53,7 +53,12 @@ class UazAPIClient:
                     logger.warning(f"⚠️ UazAPI rate limited ({endpoint}), retry em {delay}s")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e}")
+                    body = ""
+                    try:
+                        body = e.response.text[:300]
+                    except Exception:
+                        pass
+                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e} | body={body}")
                     if PROMETHEUS_OK:
                         METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
                     return None
@@ -101,11 +106,18 @@ class UazAPIClient:
             "number": clean_number,
             "type": media_type,
             "file": file_url,
-            "delay": str(delay)
+            "delay": delay
         }
         if caption:
-            payload["caption"] = caption
+            payload["text"] = caption
+        logger.debug(f"📎 send_media payload: number={clean_number}, type={media_type}, file={file_url[:80]}...")
         res = await self._request("POST", "/send/media", json=payload)
+        if res is None:
+            # Fallback: tenta como document (URLs que falham como image/video)
+            if media_type != "document":
+                logger.warning(f"⚠️ send_media fallback: tentando como document para {file_url[:80]}")
+                payload["type"] = "document"
+                res = await self._request("POST", "/send/media", json=payload)
         return res is not None
 
     async def send_ptt(self, number: str, file_url: str, delay: int = 0) -> bool:
