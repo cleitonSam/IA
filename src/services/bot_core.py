@@ -116,6 +116,22 @@ import asyncpg
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from rapidfuzz import fuzz
 
+
+# ── Helper para tarefas async seguras ────────────────────────────────────────
+def safe_create_task(coro, *, name: str = None):
+    """Cria asyncio.Task com callback que loga exceções não tratadas."""
+    task = asyncio.create_task(coro, name=name)
+    task.add_done_callback(_safe_task_done)
+    return task
+
+def _safe_task_done(task: asyncio.Task):
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(f"🔥 Exceção não tratada em task '{task.get_name()}': {type(exc).__name__}: {exc}")
+
+
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook
 async def rate_limit_middleware(request: Request, call_next):
@@ -1150,7 +1166,7 @@ async def processar_ia_e_responder(
                             )
                             logger.info(f"💾 Prospect ID {res_id} registrado para conv {conversation_id}")
                     
-                    asyncio.create_task(_criar_e_registrar())
+                    safe_create_task(_criar_e_registrar(), name="criar_prospect_evo")
                 else:
                     logger.debug(f"⏭️ Prospect já existe para {contato_fone} (ID: {_ja_prospect}). Pulando criação.")
             # ─────────────────────────────────────────────────────────────
@@ -1162,7 +1178,7 @@ async def processar_ia_e_responder(
         # Registra resultado do A/B testing (se ativo)
         if _ab_info:
             try:
-                asyncio.create_task(registrar_resultado_ab(
+                safe_create_task(registrar_resultado_ab(
                     teste_id=_ab_info["teste_id"],
                     conversa_id=conversation_id,
                     variante=_ab_info["variante"],
@@ -1170,7 +1186,7 @@ async def processar_ia_e_responder(
                     intencao_compra=bool("matricula" in (novo_estado or "") or "conversao" in (novo_estado or "")),
                     score_lead=0,
                     msgs_total=total_msgs_cliente,
-                ))
+                ), name="registrar_ab")
             except Exception:
                 pass
 
@@ -1283,8 +1299,9 @@ async def processar_ia_e_responder(
 
         # 💾 Extrai memórias de longo prazo das mensagens (async, sem bloquear)
         if contato_fone and textos:
-            asyncio.create_task(
-                extrair_memorias_da_conversa(textos, resposta_texto, empresa_id, contato_fone)
+            safe_create_task(
+                extrair_memorias_da_conversa(textos, resposta_texto, empresa_id, contato_fone),
+                name="extrair_memorias"
             )
 
         # 🔄 DRAIN — processa mensagens que chegaram DURANTE o processamento da IA
@@ -1361,7 +1378,7 @@ async def processar_ia_e_responder(
                     logger.warning(f"⚠️ Erro no drain inline LLM: {e_drain_llm}")
 
     except Exception:
-        logger.exception("🔥 Erro Crítico no processamento")
+        logger.exception(f"🔥 Erro Crítico no processamento | empresa={empresa_id} conv={conversation_id} phone={contato_fone}")
     finally:
         watchdog.cancel()
         try:

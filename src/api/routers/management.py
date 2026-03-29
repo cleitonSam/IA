@@ -55,6 +55,9 @@ class PersonalityUpdate(BaseModel):
     tts_ativo: Optional[bool] = None
     tts_voz: Optional[str] = None
     oferecer_tour: Optional[bool] = None
+    estrategia_tour: Optional[str] = None
+    tour_perguntar_primeira_visita: Optional[bool] = None
+    tour_mensagem_custom: Optional[str] = None
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -112,6 +115,9 @@ class PersonalityCreate(BaseModel):
     tts_ativo: Optional[bool] = True
     tts_voz: Optional[str] = "Kore"
     oferecer_tour: Optional[bool] = True
+    estrategia_tour: Optional[str] = "smart"
+    tour_perguntar_primeira_visita: Optional[bool] = True
+    tour_mensagem_custom: Optional[str] = None
 
     model_config = {"extra": "allow"}
 
@@ -329,7 +335,9 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       exemplos, palavras_proibidas, despedida_personalizada,
                       regras_formatacao, regras_seguranca,
                       emoji_tipo, emoji_cor,
-                      tts_ativo, tts_voz
+                      tts_ativo, tts_voz,
+                      oferecer_tour, estrategia_tour,
+                      tour_perguntar_primeira_visita, tour_mensagem_custom
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -340,7 +348,10 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
         rows = await _database.db_pool.fetch(
             """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
                       modelo_preferido AS model_name, temperatura AS temperature,
-                      max_tokens, ativo, true AS usar_emoji, NULL AS horario_atendimento_ia, NULL AS menu_triagem
+                      max_tokens, ativo, true AS usar_emoji,
+                      NULL AS horario_atendimento_ia, NULL AS menu_triagem,
+                      true AS oferecer_tour, 'smart' AS estrategia_tour,
+                      true AS tour_perguntar_primeira_visita, NULL AS tour_mensagem_custom
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -436,6 +447,19 @@ async def update_personality_by_id(
     horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
     menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
     logger.info(f"💾 [Save Personalidade] pid={pid} empresa={empresa_id} | horario_atendimento_ia={horario_json}")
+    _base_params = [
+        data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
+        data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
+        horario_json, horario_comercial_json, menu_json,
+        data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
+        data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
+        data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
+        data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
+        data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
+        data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
+        data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
+        data.oferecer_tour if data.oferecer_tour is not None else True,
+    ]
     try:
         await _database.db_pool.execute(
             """UPDATE personalidade_ia
@@ -451,24 +475,58 @@ async def update_personality_by_id(
                    emoji_tipo=$32, emoji_cor=$33,
                    tts_ativo=$34, tts_voz=$35,
                    oferecer_tour=$36,
+                   estrategia_tour=$37, tour_perguntar_primeira_visita=$38,
+                   tour_mensagem_custom=$39,
                    updated_at=NOW()
-               WHERE id=$37 AND empresa_id=$38""",
-            data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
-            data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-            horario_json, horario_comercial_json, menu_json,
-            data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
-            data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
-            data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
-            data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
-            data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
-            data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
-            data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
-            data.oferecer_tour if data.oferecer_tour is not None else True,
+               WHERE id=$40 AND empresa_id=$41""",
+            *_base_params,
+            data.estrategia_tour or "smart",
+            data.tour_perguntar_primeira_visita if data.tour_perguntar_primeira_visita is not None else True,
+            data.tour_mensagem_custom,
             pid, empresa_id
         )
-    except Exception as e:
-        logger.error(f"Erro ao atualizar personalidade {pid}: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e)}")
+    except Exception:
+        # Fallback: colunas tour strategy podem não existir ainda (migration pendente)
+        # Tenta criar as colunas automaticamente e salva sem elas
+        try:
+            await _database.db_pool.execute(
+                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS estrategia_tour TEXT DEFAULT 'smart'"
+            )
+            await _database.db_pool.execute(
+                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS tour_perguntar_primeira_visita BOOLEAN DEFAULT TRUE"
+            )
+            await _database.db_pool.execute(
+                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS tour_mensagem_custom TEXT"
+            )
+            # Retry com campos novos
+            await _database.db_pool.execute(
+                """UPDATE personalidade_ia
+                   SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
+                       modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
+                       horario_atendimento_ia=$10::jsonb, horario_comercial=$11::jsonb, menu_triagem=$12::jsonb,
+                       idioma=$13, objetivos_venda=$14, metas_comerciais=$15, script_vendas=$16,
+                       scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
+                       posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
+                       contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
+                       exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
+                       regras_formatacao=$30, regras_seguranca=$31,
+                       emoji_tipo=$32, emoji_cor=$33,
+                       tts_ativo=$34, tts_voz=$35,
+                       oferecer_tour=$36,
+                       estrategia_tour=$37, tour_perguntar_primeira_visita=$38,
+                       tour_mensagem_custom=$39,
+                       updated_at=NOW()
+                   WHERE id=$40 AND empresa_id=$41""",
+                *_base_params,
+                data.estrategia_tour or "smart",
+                data.tour_perguntar_primeira_visita if data.tour_perguntar_primeira_visita is not None else True,
+                data.tour_mensagem_custom,
+                pid, empresa_id
+            )
+            logger.info(f"✅ Colunas tour strategy criadas automaticamente e personalidade salva")
+        except Exception as e2:
+            logger.error(f"Erro ao atualizar personalidade {pid}: {e2}")
+            raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e2)}")
 
     # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
     if data.ativo:

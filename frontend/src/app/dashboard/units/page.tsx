@@ -164,7 +164,7 @@ export default function UnitsPage() {
     // Validação client-side
     const isVideo = file.type.startsWith("video/");
     const isImage = file.type.startsWith("image/");
-    const maxSize = 50 * 1024 * 1024; // 50MB
+    const maxSize = isVideo ? 100 * 1024 * 1024 : 10 * 1024 * 1024; // 100MB vídeo, 10MB imagem
 
     if (!isImage && !isVideo) {
       alert(`Formato não suportado: ${file.type || "desconhecido"}.\n\nFormatos aceitos:\n• Imagens: JPG, PNG, WebP\n• Vídeos: MP4, MOV`);
@@ -176,7 +176,8 @@ export default function UnitsPage() {
     }
     if (file.size > maxSize) {
       const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-      alert(`Arquivo muito grande (${sizeMB}MB).\nO limite é 50MB.`);
+      const limitMB = isVideo ? 100 : 10;
+      alert(`Arquivo muito grande (${sizeMB}MB).\nO limite é ${limitMB}MB.`);
       return;
     }
 
@@ -687,7 +688,7 @@ export default function UnitsPage() {
                                         <Upload className="w-4 h-4 text-[#00d2ff]" />
                                       </div>
                                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ou suba um vídeo curto</p>
-                                      <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 50MB)</p>
+                                      <p className="text-[9px] text-slate-600 mt-0.5 uppercase tracking-wider">MP4 ou MOV (Max 100MB)</p>
                                     </div>
                                   )}
                                   <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} disabled={!!uploadingField} />

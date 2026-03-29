@@ -175,8 +175,8 @@ async def get_metrics(
 @router.get("/conversations")
 async def get_conversations(
     unidade_id: Optional[int] = Query(None, description="Filtrar por unidade (omitir = todas da empresa)"),
-    limit: int = Query(20, le=100),
-    offset: int = Query(0),
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None, description="Filtro de status: open, resolved, closed"),
     busca: Optional[str] = Query(None, description="Busca por nome ou telefone"),
     token_payload: dict = Depends(get_current_user_token)
@@ -226,12 +226,17 @@ async def get_conversations(
         total_query = f"SELECT COUNT(*) FROM conversas c WHERE {where}"
         total = await _database.db_pool.fetchval(total_query, *params[:-2])
 
-        result_data = []
-        for r in rows:
-            d = dict(r)
-            # Verifica se a IA está pausada no Redis
-            d["pausada"] = await redis_client.exists(f"pause_ia:{empresa_id}:{d['conversation_id']}")
-            result_data.append(d)
+        # Batch Redis lookup para evitar N+1 (1 pipeline ao invés de N calls)
+        result_data = [dict(r) for r in rows]
+        if result_data:
+            pause_keys = [f"pause_ia:{empresa_id}:{d['conversation_id']}" for d in result_data]
+            try:
+                pause_values = await redis_client.mget(*pause_keys)
+                for d, pv in zip(result_data, pause_values):
+                    d["pausada"] = pv is not None
+            except Exception:
+                for d in result_data:
+                    d["pausada"] = False
 
         return {
             "total": total,
@@ -560,14 +565,15 @@ async def upload_unidade_foto(
             detail=f"Formato não suportado: {content_type}. Envie imagem (JPG, PNG) ou vídeo (MP4, MOV)."
         )
 
-    # Limite de tamanho: 50MB
-    max_size = 50 * 1024 * 1024
+    # Limite de tamanho: 100MB para vídeos, 10MB para imagens
+    max_size = (100 if is_video else 10) * 1024 * 1024
     content = await file.read()
     if len(content) > max_size:
         size_mb = len(content) / (1024 * 1024)
+        limit_mb = 100 if is_video else 10
         raise HTTPException(
             status_code=400,
-            detail=f"Arquivo muito grande ({size_mb:.1f}MB). O limite é 50MB."
+            detail=f"Arquivo muito grande ({size_mb:.1f}MB). O limite é {limit_mb}MB."
         )
 
     try:
@@ -751,7 +757,7 @@ async def atualizar_unidade(
         # Limpa cache individual da unidade (usado pelo carregar_unidade do bot)
         _slug_updated = body.nome.lower().replace(" ", "-") if body.nome else None
         # Busca slug real do banco para garantir
-        _row_slug = await db_pool.fetchval("SELECT slug FROM unidades WHERE id = $1", unidade_id)
+        _row_slug = await _database.db_pool.fetchval("SELECT slug FROM unidades WHERE id = $1", unidade_id)
         if _row_slug:
             await redis_client.delete(f"cfg:unidade:{empresa_id}:{_row_slug}:v2")
         return {"status": "success", "message": "Unidade atualizada"}

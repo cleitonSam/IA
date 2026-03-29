@@ -6,6 +6,10 @@ from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL
 # HTTP client — deve ser inicializado pelo startup_event no bot_core
 http_client: httpx.AsyncClient = None
 
+# Retry config
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1.0, 2.0, 4.0]  # exponential backoff
+
 class UazAPIClient:
     """
     Cliente para interface com UazAPI.
@@ -23,22 +27,47 @@ class UazAPIClient:
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        try:
-            # Usa o http_client global se disponível; cria um local como fallback
-            client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
-            own_client = http_client is None
+        last_error = None
+
+        for attempt in range(_MAX_RETRIES):
             try:
-                resp = await client.request(method, url, headers=self.headers, **kwargs)
-                resp.raise_for_status()
-                return resp.json()
-            finally:
-                if own_client:
-                    await client.aclose()
-        except Exception as e:
-            logger.error(f"❌ Erro na UazAPI ({endpoint}): {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
-            return None
+                client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
+                own_client = http_client is None
+                try:
+                    resp = await client.request(method, url, headers=self.headers, **kwargs)
+                    resp.raise_for_status()
+                    return resp.json()
+                finally:
+                    if own_client:
+                        await client.aclose()
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                last_error = e
+                delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+                logger.warning(f"⚠️ UazAPI retry {attempt+1}/{_MAX_RETRIES} ({endpoint}): {type(e).__name__} — aguardando {delay}s")
+                await asyncio.sleep(delay)
+            except httpx.HTTPStatusError as e:
+                # Não faz retry para erros 4xx (exceto 429)
+                if e.response.status_code == 429:
+                    last_error = e
+                    delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+                    logger.warning(f"⚠️ UazAPI rate limited ({endpoint}), retry em {delay}s")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e}")
+                    if PROMETHEUS_OK:
+                        METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+                    return None
+            except Exception as e:
+                last_error = e
+                logger.error(f"❌ UazAPI erro inesperado ({endpoint}): {type(e).__name__}: {e}")
+                if PROMETHEUS_OK:
+                    METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+                return None
+
+        logger.error(f"❌ UazAPI falhou após {_MAX_RETRIES} tentativas ({endpoint}): {last_error}")
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+        return None
 
     async def send_text(self, number: str, text: str, delay: int = 0) -> bool:
         """Envia mensagem de texto com simulação opcional de typing."""

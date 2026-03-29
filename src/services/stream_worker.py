@@ -36,7 +36,15 @@ async def _process_job(msg_id: str, payload: dict):
     """Processa um job individual do stream de forma isolada."""
     _start = time.time()
     try:
-        async with _semaphore:
+        try:
+            await asyncio.wait_for(_semaphore.acquire(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning(f"⚠️ Semaphore timeout (30s) para job {msg_id} — descartando")
+            await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+            if PROMETHEUS_OK and METRIC_WORKER_PROCESSED:
+                METRIC_WORKER_PROCESSED.labels(status="semaphore_timeout").inc()
+            return
+        try:
             source = payload.get("source", "chatwoot")
             empresa_id = int(payload.get("empresa_id") or 0)
             logger.info(f"📥 Job recebido no Worker: empresa={empresa_id} source={source} msg_id={msg_id}")
@@ -301,6 +309,8 @@ async def _process_job(msg_id: str, payload: dict):
             if PROMETHEUS_OK:
                 METRIC_WORKER_PROCESSED.labels(status="success").inc()
                 METRIC_WORKER_LATENCY.observe(time.time() - _start)
+        finally:
+            _semaphore.release()
 
     except Exception as e:
         logger.error(f"❌ Erro ao processar mensagem do stream {msg_id}: {e}", exc_info=True)
