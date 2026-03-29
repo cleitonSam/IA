@@ -363,16 +363,33 @@ async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[st
 _TAG_MIDIA_RE = re.compile(r'<SEND_(?:VIDEO|IMAGE)(?::[^>]*)?>')
 
 
+_ABREVIACOES = {'dr', 'dra', 'sr', 'sra', 'av', 'prof', 'eng', 'arq', 'min', 'máx', 'max', 'tel', 'cel', 'nº', 'etc', 'ex', 'obs', 'ref', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'sab', 'dom', 'jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'}
+
 def garantir_frase_completa(txt: str) -> str:
     """Garante que o texto termina com uma frase completa (sem corte abrupto)."""
     if not txt:
         return txt
     txt = txt.strip()
-    if txt[-1] in '.!?😊💪✅🏋🎯':
+    if txt[-1] in '.!?😊💪✅🏋🎯✨🔥':
         return txt
+
+    # Busca o último ponto final real (não abreviação) para cortar
     for _sep in ['. ', '! ', '? ', '!\n', '?\n', '.\n']:
         _pos = txt.rfind(_sep)
         if _pos > len(txt) * 0.3:
+            # Verifica se o "." é de abreviação (ex: "Av. Dr." não é fim de frase)
+            if _sep.startswith('.'):
+                _before = txt[:_pos].rstrip()
+                _last_word = _before.split()[-1].lower().rstrip('.') if _before.split() else ""
+                if _last_word in _ABREVIACOES:
+                    # É abreviação — tenta encontrar um ponto anterior
+                    _pos2 = txt.rfind(_sep, 0, _pos)
+                    if _pos2 > len(txt) * 0.3:
+                        _before2 = txt[:_pos2].rstrip()
+                        _lw2 = _before2.split()[-1].lower().rstrip('.') if _before2.split() else ""
+                        if _lw2 not in _ABREVIACOES:
+                            return txt[:_pos2 + 1].strip()
+                    continue  # Pula essa posição de abreviação
             return txt[:_pos + 1].strip()
     return txt
 
