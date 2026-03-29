@@ -699,6 +699,7 @@ async def processar_ia_e_responder(
 
         # Mídia pendente — coletada durante parse de tags, enviada APÓS o texto
         _pending_media = []
+        _ab_info = None
 
         # Cache semântico (embedding) — consultado apenas se não houver cache exato nem contexto live
         _cache_sem = None
