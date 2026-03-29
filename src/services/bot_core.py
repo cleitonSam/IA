@@ -697,6 +697,9 @@ async def processar_ia_e_responder(
         else:
             resposta_cacheada = await redis_client.get(chave_cache_ia)
 
+        # Mídia pendente — coletada durante parse de tags, enviada APÓS o texto
+        _pending_media = []
+
         # Cache semântico (embedding) — consultado apenas se não houver cache exato nem contexto live
         _cache_sem = None
         if USAR_CACHE_SEMANTICO and intencao == "llm" and not resposta_cacheada and not fast_reply and not contexto_precarregado and not imagens_urls and not mudou_unidade and primeira_mensagem:
@@ -949,129 +952,39 @@ async def processar_ia_e_responder(
                 resposta_texto = _resp_result["resposta_texto"]
                 novo_estado = _resp_result["novo_estado"]
 
-                # Envio cross-unit: <SEND_IMAGE:slug> — mídia de outra unidade da rede
+                # Cross-unit: <SEND_IMAGE:slug>
                 _cross_img_match = re.search(r'<SEND_IMAGE:([^>]+)>', resposta_texto)
                 if _cross_img_match:
                     _target_slug = _cross_img_match.group(1).strip()
                     _target_unit = next((u for u in todas_unidades if u.get('slug') == _target_slug), None)
                     _cross_foto = _target_unit.get('foto_grade') if _target_unit else None
                     resposta_texto = re.sub(r'<SEND_IMAGE:[^>]+>', '', resposta_texto).strip()
-                    if _cross_foto and _target_unit:
-                        try:
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id,
-                                f"Enviando a grade da unidade *{_target_unit.get('nome')}*... 🖼️",
-                                integracao, nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone
-                            )
-                            await asyncio.sleep(random.uniform(1.5, 3.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
-                                except Exception: pass
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, _cross_foto, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True
-                            )
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar imagem cross-unit ({_target_slug}): {e}")
+                    if _cross_foto:
+                        _pending_media.append(_cross_foto)
 
-                # Envio cross-unit: <SEND_VIDEO:slug> — tour virtual de outra unidade
+                # Cross-unit: <SEND_VIDEO:slug>
                 _cross_vid_match = re.search(r'<SEND_VIDEO:([^>]+)>', resposta_texto)
                 if _cross_vid_match:
                     _target_slug_v = _cross_vid_match.group(1).strip()
                     _target_unit_v = next((u for u in todas_unidades if u.get('slug') == _target_slug_v), None)
                     _cross_tour = _target_unit_v.get('link_tour_virtual') if _target_unit_v else None
                     resposta_texto = re.sub(r'<SEND_VIDEO:[^>]+>', '', resposta_texto).strip()
-                    if _cross_tour and _target_unit_v:
-                        try:
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id,
-                                f"Vou te enviar um vídeo da unidade *{_target_unit_v.get('nome')}* por dentro! 🎥",
-                                integracao, nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone
-                            )
-                            await asyncio.sleep(random.uniform(2.0, 4.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
-                                except Exception: pass
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, _cross_tour, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True
-                            )
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar vídeo cross-unit ({_target_slug_v}): {e}")
+                    if _cross_tour:
+                        _pending_media.append(_cross_tour)
 
-                # Se a IA usou a tag <SEND_IMAGE> e temos a URL
+                # Same-unit: <SEND_IMAGE>
                 _foto_grade = unidade.get("foto_grade")
                 if "<SEND_IMAGE>" in resposta_texto:
+                    resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
                     if _foto_grade:
-                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
-                        try:
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
-                                f"Enviando a grade da unidade *{unidade.get('nome')}*... 🖼️",
-                                integracao, 
-                                nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone
-                            )
-                            await asyncio.sleep(random.uniform(1.5, 3.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=1500)
-                                except Exception: pass
-                            
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
-                                _foto_grade,
-                                integracao,
-                                nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
-                            )
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar imagem da grade: {e}")
-                    else:
-                        resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
+                        _pending_media.append(_foto_grade)
 
-                # Se a IA usou a tag <SEND_VIDEO> e temos a URL
+                # Same-unit: <SEND_VIDEO>
                 _link_tour = unidade.get("link_tour_virtual")
                 if "<SEND_VIDEO>" in resposta_texto:
+                    resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
                     if _link_tour:
-                        resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
-                        try:
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
-                                f"Vou te enviar um vídeo mostrando nossa unidade por dentro! 🎥",
-                                integracao, 
-                                nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone
-                            )
-                            await asyncio.sleep(random.uniform(2.0, 4.5))
-                            if source == 'uazapi' and contato_fone:
-                                try:
-                                    uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
-                                    await uaz.set_presence(contato_fone, presence="composing", delay=2000)
-                                except Exception: pass
-
-                            await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
-                                _link_tour,
-                                integracao,
-                                nome_ia=nome_ia,
-                                contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
-                            )
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar vídeo do tour: {e}")
-                    else:
-                        resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
+                        _pending_media.append(_link_tour)
 
                 if _intencao_compra and link_plano and link_plano.startswith('http'):
                     _resp_norm_compra = normalizar(resposta_texto or "")
@@ -1272,15 +1185,8 @@ async def processar_ia_e_responder(
                             typing_time = min(len(_bloco) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                             await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                         elif _i > 0:
-                            # UazAPI: simula "digitando..." antes de cada mensagem
-                            _chat_id = contato_fone or str(conversation_id)
-                            _uaz_typing = UazAPIClient(
-                                integracao.get('url') or integracao.get('api_url'),
-                                integracao.get('token'),
-                                integracao.get('instance', 'default')
-                            )
+                            # UazAPI: pausa proporcional entre blocos (simula leitura)
                             _typing_ms = min(len(_bloco) * 15, 3000) + random.randint(300, 800)
-                            await _uaz_typing.set_presence(_chat_id, "composing", delay=_typing_ms)
                             await asyncio.sleep(_typing_ms / 1000)
 
                         # Áudio PTT apenas no último bloco
@@ -1293,6 +1199,20 @@ async def processar_ia_e_responder(
                         await bd_atualizar_msg_ia(conversation_id, empresa_id)
                         if _i == 0:
                             await bd_registrar_primeira_resposta(conversation_id, empresa_id)
+
+            # ── Enviar mídia pendente (imagens/vídeos) APÓS o texto ──
+            if _pending_media:
+                for _media_url in _pending_media:
+                    try:
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, _media_url, integracao,
+                            empresa_id, nome_ia=nome_ia,
+                            contact_id=contact_id, source=source, fone=contato_fone,
+                            is_direct_url=True
+                        )
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar mídia pendente ({_media_url[:60]}): {e}")
 
         # Registra hash das mensagens respondidas para bloquear duplicatas no drain
         await redis_client.setex(_ultima_resp_key, 120, _hash_msgs)
