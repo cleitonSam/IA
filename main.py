@@ -1028,7 +1028,7 @@ async def startup_event():
             import src.core.database as core_database
             core_database.db_pool = db_pool
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
-        except asyncpg.PostgresConnectionStatusError as e:
+        except asyncpg.PostgresError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
             raise e
         except asyncpg.CannotConnectNowError as e:

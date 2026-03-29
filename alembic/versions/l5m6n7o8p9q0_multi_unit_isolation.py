@@ -1,7 +1,7 @@
 """multi-unit isolation: conversas composite index + webhook_secret
 
-Revision ID: l5m6n7o8p9q0
-Revises: k4l5m6n7o8p9
+Revision ID: r2s3t4u5v6w7
+Revises: l5m6n7o8p9q0
 Create Date: 2026-03-27
 
 """
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = 'l5m6n7o8p9q0'
-down_revision: Union[str, Sequence[str], None] = 'k4l5m6n7o8p9'
+revision: str = 'r2s3t4u5v6w7'
+down_revision: Union[str, Sequence[str], None] = 'l5m6n7o8p9q0'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
