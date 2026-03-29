@@ -921,7 +921,7 @@ async def despachar_resposta(
 
         # Randomiza o conteúdo da mensagem de texto
         content_randomizado = randomizar_mensagem(content)
-        res = await uaz.send_text(chat_id, content_randomizado, delay=tempo_digitacao)
+        res = await uaz.send_text_smart(chat_id, content_randomizado, delay=tempo_digitacao)
         logger.info(f"✅ UazAPI Result: {res}")
         return res
     else:

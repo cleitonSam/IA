@@ -689,8 +689,8 @@ async def _execute_from(
         
         if resposta_ia:
             await _bot_sent_marker(empresa_id, phone, unidade_id)
-            await uaz_client.send_text(phone, resposta_ia)
-            
+            await uaz_client.send_text_smart(phone, resposta_ia)
+
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
@@ -1009,7 +1009,7 @@ async def _execute_from(
             ia_response = await _call_ia(empresa_id, instrucaoIA, mensagem, max_tokens=300)
             if ia_response:
                 await _bot_sent_marker(empresa_id, phone, unidade_id)
-                await uaz_client.send_text(phone, ia_response)
+                await uaz_client.send_text_smart(phone, ia_response)
             # Limpa flag temporária
             session_vars.pop("_menuFixoIA_handle", None)
             await _set_vars(empresa_id, phone, session_vars, unidade_id)
@@ -1048,7 +1048,7 @@ async def _execute_from(
             ia_response = await _call_ia(empresa_id, instrucaoResposta, mensagem, max_tokens=300)
             if ia_response:
                 await _bot_sent_marker(empresa_id, phone, unidade_id)
-                await uaz_client.send_text(phone, ia_response)
+                await uaz_client.send_text_smart(phone, ia_response)
             handle = f"h{int(matched_pos) + 1}"
             session_vars.pop("_aimenudionamicoIA_pos", None)
             await _set_vars(empresa_id, phone, session_vars, unidade_id)

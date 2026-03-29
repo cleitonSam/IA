@@ -1,7 +1,74 @@
 import asyncio
+import re
 import httpx
 from typing import Optional, List, Dict, Any
 from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL
+
+
+# ── Smart split: divide mensagem longa em blocos lógicos ──────────────
+_MIN_BLOCK_LEN = 30   # bloco mínimo para não gerar micro-mensagens
+_MAX_BLOCK_LEN = 700  # acima disso, WhatsApp corta ou fica ruim de ler
+
+
+def _smart_split(text: str) -> List[str]:
+    """
+    Divide texto em blocos semânticos para envio sequencial no WhatsApp.
+    Regras de separação (em ordem de prioridade):
+      1. Blocos separados por linha dupla em branco (\n\n)
+      2. Se um bloco ainda for grande, separa por bullet/tópico (• ou - ou *)
+      3. Pergunta final (última frase terminando em ?) vira bloco próprio
+    Blocos muito pequenos são mesclados com o anterior.
+    """
+    text = text.strip()
+    if not text or len(text) <= _MAX_BLOCK_LEN:
+        return [text] if text else []
+
+    # ── Passo 1: separar por parágrafos (dupla quebra de linha) ──
+    raw_blocks = re.split(r'\n\s*\n', text)
+    blocks: List[str] = []
+
+    for raw in raw_blocks:
+        raw = raw.strip()
+        if not raw:
+            continue
+
+        # ── Passo 2: se o bloco for grande, tentar separar por bullets ──
+        if len(raw) > _MAX_BLOCK_LEN:
+            # Separa por linhas que começam com bullet (•, -, *, ou número.)
+            bullet_parts = re.split(r'(?=\n\s*(?:[•\-\*]|\d+[\.\)])\s)', raw)
+            # Primeiro item pode ser um header ("Oferecemos:")
+            for part in bullet_parts:
+                part = part.strip()
+                if part:
+                    blocks.append(part)
+        else:
+            blocks.append(raw)
+
+    # ── Passo 3: extrair pergunta final como bloco próprio ──
+    if len(blocks) > 0:
+        last = blocks[-1]
+        # Procura última frase terminando com ? (possivelmente seguida de emoji)
+        match = re.search(r'(?:^|\n)([^\n]*\?[^\n]{0,10})$', last)
+        if match and len(last) > len(match.group(1)) + _MIN_BLOCK_LEN:
+            pergunta = match.group(1).strip()
+            resto = last[:match.start(1)].strip()
+            if resto:
+                blocks[-1] = resto
+                blocks.append(pergunta)
+
+    # ── Passo 4: mesclar blocos pequenos demais com o anterior ──
+    merged: List[str] = []
+    for blk in blocks:
+        if merged and len(blk) < _MIN_BLOCK_LEN:
+            merged[-1] = merged[-1] + "\n\n" + blk
+        else:
+            merged.append(blk)
+
+    # Se resultou em 1 bloco igual ao original, retorna sem split
+    if len(merged) <= 1:
+        return [text]
+
+    return merged
 
 # HTTP client — deve ser inicializado pelo startup_event no bot_core
 http_client: httpx.AsyncClient = None
@@ -75,16 +142,36 @@ class UazAPIClient:
         return None
 
     async def send_text(self, number: str, text: str, delay: int = 0) -> bool:
-        """Envia mensagem de texto com simulação opcional de typing."""
-        # Limpa o número para conter apenas dígitos (remove @s.whatsapp.net se presente)
+        """Envia mensagem de texto simples (bloco único)."""
         clean_number = "".join(filter(str.isdigit, number))
         payload = {
             "number": clean_number,
             "text": text,
-            "delay": str(delay) # UazAPI as vezes prefere string para delay
+            "delay": delay
         }
         res = await self._request("POST", "/send/text", json=payload)
         return res is not None
+
+    async def send_text_smart(self, number: str, text: str, delay: int = 0) -> bool:
+        """
+        Envia texto dividido em blocos semânticos.
+        Cada bloco vira uma mensagem separada no WhatsApp com delay de digitação.
+        """
+        blocks = _smart_split(text)
+        if len(blocks) <= 1:
+            return await self.send_text(number, text, delay=delay)
+
+        logger.debug(f"📨 smart_split: {len(blocks)} blocos para {number}")
+        ok = True
+        for i, block in enumerate(blocks):
+            # Delay proporcional ao tamanho do bloco (simula digitação)
+            typing_delay = max(800, min(len(block) * 8, 3000))
+            if i == 0:
+                typing_delay = delay or typing_delay
+            res = await self.send_text(number, block, delay=typing_delay)
+            if not res:
+                ok = False
+        return ok
 
     async def set_presence(self, number: str, presence: str = "composing", delay: int = 2000) -> bool:
         """
