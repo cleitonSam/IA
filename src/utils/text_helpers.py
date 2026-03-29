@@ -59,7 +59,7 @@ _NOMES_INVALIDOS = {
     # Adjetivos / apelidos genéricos
     "amor", "amiga", "amigo", "querido", "querida", "lindo", "linda", "fofo",
     "fofa", "mano", "mana", "brother", "parceiro", "parceira", "chefe", "boss",
-    "gato", "gata", "principe", "princesa", "rei", "rainha", "anjo",
+    "gato", "gata", "principe", "princesa", "prince", "princess", "rei", "rainha", "anjo",
     # Parentesco
     "mae", "pai", "filho", "filha", "esposo", "esposa", "marido", "mulher",
     "tio", "tia", "primo", "prima", "sogro", "sogra", "cunhado", "cunhada",
@@ -73,6 +73,17 @@ _NOMES_INVALIDOS = {
     "dieta", "projeto", "resultado", "objetivo", "meta", "corpo",
     "praia", "sol", "lua", "ceu", "terra", "mar", "rio", "moda",
     "negocio", "negocios", "servico", "servicos", "produto", "produtos",
+    # Nomes comuns de WhatsApp / redes sociais
+    "baby", "babe", "honey", "dear", "queen", "king", "lion", "tiger",
+    "wolf", "angel", "star", "sunshine", "rainbow", "diamond", "gold",
+    "silver", "dark", "light", "magic", "power", "super", "top",
+    "best", "real", "oficial", "original", "novo", "nova",
+    # Números / abreviações viram "nome"
+    "msg", "info", "contato", "atendimento", "sac", "central",
+    "equipe", "time", "grupo", "turma", "galera", "pessoal",
+    # Emojis e variações que sobram após limpar_nome
+    "coracao", "estrelas", "anjinho", "anjinha", "gatinha", "gatinho",
+    "mozao", "mozinho", "mozinha", "docinho", "docinha", "benzinho", "benzinha",
 }
 
 def nome_eh_valido(nome: Optional[str]) -> bool:

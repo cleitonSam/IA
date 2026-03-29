@@ -26,7 +26,13 @@ async def init_db_pool():
                 except Exception:
                     pass # Fallback para original se falhar o parsing
 
-            db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+            db_pool = await asyncpg.create_pool(
+                dsn,
+                min_size=2,
+                max_size=10,
+                command_timeout=10,
+                timeout=5,       # timeout para adquirir conexão do pool
+            )
             logger.info("✅ Conectado ao PostgreSQL com sucesso!")
         except Exception as e:
             # Mascarar senha para o log (por segurança)

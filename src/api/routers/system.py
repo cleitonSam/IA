@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import JSONResponse
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import time
 import asyncpg
 
 from src.core.config import (
@@ -9,6 +11,7 @@ from src.core.config import (
 )
 import src.core.database as _database
 from src.core.redis_client import redis_client
+from src.core.security import cb_llm
 from src.utils.redis_helper import delete_tenant_cache
 from src.services.db_queries import sincronizar_planos_evo
 
@@ -159,6 +162,60 @@ async def health():
         "service": "Motor SaaS IA",
         "version": APP_VERSION
     }
+
+
+@router.get("/health")
+async def health_check():
+    """
+    Health check completo — verifica DB, Redis e estado do circuit breaker LLM.
+    Retorna 200 se tudo ok, 503 se algum componente crítico falhou.
+    """
+    checks: dict = {}
+    all_ok = True
+
+    # PostgreSQL
+    db_start = time.time()
+    try:
+        if _database.db_pool:
+            await _database.db_pool.fetchval("SELECT 1")
+            checks["postgres"] = {"status": "ok", "latency_ms": round((time.time() - db_start) * 1000, 1)}
+        else:
+            checks["postgres"] = {"status": "unavailable", "error": "pool not initialized"}
+            all_ok = False
+    except Exception as e:
+        checks["postgres"] = {"status": "error", "error": str(type(e).__name__)}
+        all_ok = False
+
+    # Redis
+    redis_start = time.time()
+    try:
+        await redis_client.ping()
+        checks["redis"] = {"status": "ok", "latency_ms": round((time.time() - redis_start) * 1000, 1)}
+    except Exception as e:
+        checks["redis"] = {"status": "error", "error": str(type(e).__name__)}
+        all_ok = False
+
+    # Circuit Breaker LLM
+    try:
+        cb_state = await cb_llm.get_state()
+        checks["llm_circuit_breaker"] = {"status": cb_state.lower()}
+        if cb_state == "OPEN":
+            checks["llm_circuit_breaker"]["warning"] = "LLM calls blocked — circuit breaker open"
+    except Exception:
+        checks["llm_circuit_breaker"] = {"status": "unknown"}
+
+    # Prometheus
+    checks["prometheus"] = {"status": "ok" if PROMETHEUS_OK else "not_installed"}
+
+    status_code = 200 if all_ok else 503
+    return JSONResponse(
+        {
+            "status": "healthy" if all_ok else "degraded",
+            "version": APP_VERSION,
+            "checks": checks,
+        },
+        status_code=status_code,
+    )
 
 @router.get("/sync-planos/{empresa_id}")
 async def sync_planos_manual(empresa_id: int):

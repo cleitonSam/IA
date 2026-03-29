@@ -183,12 +183,83 @@ async def enviar_mensagem_chatwoot(
     try:
         resp = await http_client.post(url_m, json=payload, headers=headers, timeout=15.0)
         resp.raise_for_status()
+
+        # Salva ID da mensagem no Redis para identificação no webhook
+        # Evita que mensagens da IA sejam confundidas com mensagens humanas (pause_ia)
+        try:
+            msg_data = resp.json()
+            if msg_data and "id" in msg_data:
+                await redis_client.setex(f"ai_msg_id:{msg_data['id']}", 600, "1")
+        except Exception:
+            pass
+
         return resp
     except Exception as e:
         logger.error(f"❌ Erro Chatwoot: {e} | URL: {url_m}")
         if PROMETHEUS_OK:
             METRIC_ERROS_TOTAL.labels(tipo="chatwoot_error").inc()
         return None
+
+
+async def escalar_para_humano(
+    account_id: int,
+    conversation_id: int,
+    empresa_id: int,
+    integracao: dict,
+    motivo: str = "Cliente precisa de atendimento humano",
+    nome_ia: str = "Assistente"
+) -> bool:
+    """
+    Escala conversa para atendente humano:
+    1. Pausa a IA nesta conversa
+    2. Envia mensagem informando o cliente
+    3. Tenta mudar status da conversa no Chatwoot para "open" (fila de atendimento)
+    """
+    try:
+        # 1. Pausa IA
+        await redis_client.setex(f"pause_ia:{empresa_id}:{conversation_id}", 43200, "1")  # 12h
+
+        # 2. Mensagem para o cliente
+        _msg_escalacao = (
+            "Entendi sua situação e quero garantir o melhor atendimento possível. "
+            "Vou te transferir para um dos nossos atendentes que poderá te ajudar pessoalmente. "
+            "Aguarde um momento, por favor! 🤝"
+        )
+        await enviar_mensagem_chatwoot(
+            account_id, conversation_id, _msg_escalacao,
+            integracao, empresa_id,
+            nome_ia=nome_ia, evitar_prefixo_nome=True
+        )
+
+        # 3. Nota interna no Chatwoot com o motivo
+        nested = integracao.get('token') if isinstance(integracao.get('token'), dict) else None
+        if nested:
+            url_base = integracao.get('url') or nested.get('url')
+            token = nested.get('access_token') or nested.get('token')
+        else:
+            url_base = integracao.get('url') or integracao.get('base_url')
+            token = integracao.get('access_token') or integracao.get('token')
+
+        if url_base and token:
+            headers = {"api_access_token": str(token)}
+            # Nota privada com motivo
+            nota_url = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+            await http_client.post(nota_url, json={
+                "content": f"🚨 **Escalação automática por IA**\nMotivo: {motivo}",
+                "message_type": "outgoing",
+                "private": True,
+                "content_attributes": {"origin": "ai"}
+            }, headers=headers, timeout=10.0)
+
+            # Muda status para "open" (fila de atendimento humano)
+            status_url = f"{str(url_base).rstrip('/')}/api/v1/accounts/{account_id}/conversations/{conversation_id}/toggle_status"
+            await http_client.post(status_url, json={"status": "open"}, headers=headers, timeout=10.0)
+
+        logger.info(f"🚨 [E:{empresa_id}] Conversa {conversation_id} escalada para humano: {motivo}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao escalar conversa {conversation_id}: {e}")
+        return False
 
 
 async def validar_assinatura(request, signature: str):

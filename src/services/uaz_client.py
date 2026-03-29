@@ -6,6 +6,10 @@ from src.core.config import logger, PROMETHEUS_OK, METRIC_ERROS_TOTAL
 # HTTP client — deve ser inicializado pelo startup_event no bot_core
 http_client: httpx.AsyncClient = None
 
+# Retry config
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1.0, 2.0, 4.0]  # exponential backoff
+
 class UazAPIClient:
     """
     Cliente para interface com UazAPI.
@@ -23,22 +27,47 @@ class UazAPIClient:
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        try:
-            # Usa o http_client global se disponível; cria um local como fallback
-            client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
-            own_client = http_client is None
+        last_error = None
+
+        for attempt in range(_MAX_RETRIES):
             try:
-                resp = await client.request(method, url, headers=self.headers, **kwargs)
-                resp.raise_for_status()
-                return resp.json()
-            finally:
-                if own_client:
-                    await client.aclose()
-        except Exception as e:
-            logger.error(f"❌ Erro na UazAPI ({endpoint}): {e}")
-            if PROMETHEUS_OK:
-                METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
-            return None
+                client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
+                own_client = http_client is None
+                try:
+                    resp = await client.request(method, url, headers=self.headers, **kwargs)
+                    resp.raise_for_status()
+                    return resp.json()
+                finally:
+                    if own_client:
+                        await client.aclose()
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                last_error = e
+                delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+                logger.warning(f"⚠️ UazAPI retry {attempt+1}/{_MAX_RETRIES} ({endpoint}): {type(e).__name__} — aguardando {delay}s")
+                await asyncio.sleep(delay)
+            except httpx.HTTPStatusError as e:
+                # Não faz retry para erros 4xx (exceto 429)
+                if e.response.status_code == 429:
+                    last_error = e
+                    delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+                    logger.warning(f"⚠️ UazAPI rate limited ({endpoint}), retry em {delay}s")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e}")
+                    if PROMETHEUS_OK:
+                        METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+                    return None
+            except Exception as e:
+                last_error = e
+                logger.error(f"❌ UazAPI erro inesperado ({endpoint}): {type(e).__name__}: {e}")
+                if PROMETHEUS_OK:
+                    METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+                return None
+
+        logger.error(f"❌ UazAPI falhou após {_MAX_RETRIES} tentativas ({endpoint}): {last_error}")
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+        return None
 
     async def send_text(self, number: str, text: str, delay: int = 0) -> bool:
         """Envia mensagem de texto com simulação opcional de typing."""
@@ -80,14 +109,13 @@ class UazAPIClient:
         return res is not None
 
     async def send_ptt(self, number: str, file_url: str, delay: int = 0) -> bool:
-        """Envia áudio como PTT (gravado na hora)."""
+        """Envia áudio como PTT (Push-to-Talk / mensagem de voz)."""
         clean_number = "".join(filter(str.isdigit, number))
         payload = {
             "number": clean_number,
-            "type": "audio",
+            "type": "ptt",
             "file": file_url,
-            "ptt": True,
-            "delay": str(delay)
+            "delay": delay
         }
         res = await self._request("POST", "/send/media", json=payload)
         return res is not None
@@ -142,4 +170,71 @@ class UazAPIClient:
             return False
 
         res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_buttons(self, number: str, text: str, buttons: list, footer: str = "") -> bool:
+        """
+        Envia mensagem com botões de resposta rápida (máx 3 no WhatsApp).
+        buttons: [{"id": "btn1", "text": "Opção 1"}, ...]
+        """
+        clean_number = "".join(filter(str.isdigit, number))
+        choices = [btn.get("text", btn.get("titulo", "")) for btn in buttons[:3]]
+        payload = {
+            "number": clean_number,
+            "type": "button",
+            "text": text,
+            "footerText": footer,
+            "choices": choices,
+            "readchat": True,
+            "readmessages": True,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_list(self, number: str, text: str, sections: list,
+                        button_text: str = "Ver opções", footer: str = "") -> bool:
+        """
+        Envia lista interativa com seções e itens (máx 10 opções no WhatsApp).
+        sections: [{"title": "Seção", "rows": [{"id": "1", "title": "Item", "description": "Desc"}]}]
+        """
+        clean_number = "".join(filter(str.isdigit, number))
+        choices = []
+        for section in sections:
+            section_title = section.get("title", "Opções")
+            choices.append(f"[{section_title}]")
+            for row in section.get("rows", []):
+                titulo = row.get("title", "")
+                row_id = row.get("id", titulo)
+                desc = row.get("description", "")
+                choices.append(f"{titulo}|{row_id}|{desc}")
+
+        payload = {
+            "number": clean_number,
+            "type": "list",
+            "text": text,
+            "footerText": footer,
+            "listButton": button_text,
+            "selectableCount": 1,
+            "choices": choices,
+            "readchat": True,
+            "readmessages": True,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_location(self, number: str, latitude: float, longitude: float,
+                            name: str = "", address: str = "") -> bool:
+        """Envia localização (pin no mapa) via WhatsApp."""
+        clean_number = "".join(filter(str.isdigit, number))
+        payload = {
+            "number": clean_number,
+            "latitude": latitude,
+            "longitude": longitude,
+            "name": name,
+            "address": address,
+            "delay": 1000
+        }
+        res = await self._request("POST", "/send/location", json=payload)
         return res is not None

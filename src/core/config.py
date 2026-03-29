@@ -86,7 +86,9 @@ if not REDIS_URL:
     raise RuntimeError("REDIS_URL não definido")
 
 # --- DASHBOARD SECURITY ---
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "uaz_ia_revolutionary_dashboard_secret_2026")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY não definido — defina uma chave secreta segura como variável de ambiente")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440)) # 24h
 
@@ -102,8 +104,11 @@ MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Antigravity IA <ti@fluxo
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both
 
+# --- GOOGLE (Gemini TTS) ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
 # --- IMAGEKIT ---
-IMAGEKIT_ID = os.getenv("IMAGEKIT_ID", "0jwoagmre")
-IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY", "public_FbnUvM0qv3WeLi0dJ51f+ZhEL9M=")
-IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY", "private_23DVHBZEcaUv5TebKcOufmVgxOA=")
-IMAGEKIT_URL_ENDPOINT = f"https://ik.imagekit.io/{IMAGEKIT_ID}/"
+IMAGEKIT_ID = os.getenv("IMAGEKIT_ID", "")
+IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY", "")
+IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY", "")
+IMAGEKIT_URL_ENDPOINT = f"https://ik.imagekit.io/{IMAGEKIT_ID}/" if IMAGEKIT_ID else ""
