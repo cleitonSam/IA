@@ -48,6 +48,9 @@ services:
       dockerfile: Dockerfile
       args:
         - NEXT_PUBLIC_ENV=staging
+        - API_URL=http://ia-staging-api:8000
+    environment:
+      - API_URL=http://ia-staging-api:8000
     container_name: ia-staging-frontend
     expose:
       - "3000"

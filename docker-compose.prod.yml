@@ -48,6 +48,9 @@ services:
       dockerfile: Dockerfile
       args:
         - NEXT_PUBLIC_ENV=production
+        - API_URL=http://ia-prod-api:8000
+    environment:
+      - API_URL=http://ia-prod-api:8000
     container_name: ia-prod-frontend
     expose:
       - "3000"

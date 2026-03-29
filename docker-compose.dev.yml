@@ -48,6 +48,9 @@ services:
       dockerfile: Dockerfile
       args:
         - NEXT_PUBLIC_ENV=development
+        - API_URL=http://ia-dev-api:8000
+    environment:
+      - API_URL=http://ia-dev-api:8000
     container_name: ia-dev-frontend
     expose:
       - "3000"
