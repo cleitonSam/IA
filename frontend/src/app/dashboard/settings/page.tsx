@@ -265,6 +265,8 @@ export default function SettingsPage() {
     { id: "faq", label: "FAQ", icon: HelpCircle },
     { id: "integrations", label: "Integrações", icon: Network },
   ];
+  // Nota: a aba "personality" agora redireciona para /dashboard/personality
+  // onde o editor completo com playground, preview de prompt e templates está disponível.
 
   return (
     <div className="min-h-screen bg-background text-white p-4 md:p-12">
@@ -347,9 +349,38 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* --- Tab: Personality --- */}
+          {/* --- Tab: Personality (Redireciona para editor completo) --- */}
           {activeTab === "personality" && (
-            <form onSubmit={handleSavePersonality} className="bg-white/5 border border-white/10 p-8 rounded-3xl space-y-8 max-w-4xl">
+            <div className="bg-white/5 border border-white/10 p-8 rounded-3xl space-y-8 max-w-4xl">
+              <div className="text-center py-12">
+                <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-cyan-500/10 flex items-center justify-center">
+                  <Brain className="w-10 h-10 text-cyan-400" />
+                </div>
+                <h3 className="text-2xl font-bold mb-3">Editor de Personalidade IA</h3>
+                <p className="text-gray-400 mb-2 max-w-md mx-auto">
+                  A personalidade da IA foi movida para uma página dedicada com recursos avançados:
+                </p>
+                <ul className="text-gray-500 text-sm mb-8 space-y-1">
+                  <li>✦ Editor em 8 seções organizadas</li>
+                  <li>✦ Playground de testes com streaming</li>
+                  <li>✦ Preview do prompt completo enviado ao LLM</li>
+                  <li>✦ Templates pré-prontos de personalidade</li>
+                  <li>✦ Controle de verbosidade das respostas</li>
+                </ul>
+                <a
+                  href="/dashboard/personality"
+                  className="inline-flex items-center gap-2 bg-cyan-500 hover:bg-cyan-400 text-black px-8 py-3.5 rounded-xl font-bold text-base transition-all shadow-lg shadow-cyan-500/20"
+                >
+                  <Brain className="w-5 h-5" />
+                  Ir para Personalidade IA
+                  <ChevronRight className="w-5 h-5" />
+                </a>
+              </div>
+            </div>
+          )}
+          {/* Formulário antigo de personalidade removido — editor completo em /dashboard/personality
+          {activeTab === "personality_REMOVED" && (
+            <form onSubmit={handleSavePersonality} className="placeholder">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-6">
                   <div>
@@ -630,14 +661,7 @@ export default function SettingsPage() {
                 )}
               </div>
 
-              <div className="flex justify-end">
-                <button type="submit" disabled={saving} className="bg-primary hover:bg-primary/90 text-black px-10 py-3 rounded-xl font-bold flex items-center gap-2">
-                  {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : success ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
-                  Salvar Alterações
-                </button>
-              </div>
-            </form>
-          )}
+          --- fim do form removido --- */}
 
           {/* --- Tab: FAQ --- */}
           {activeTab === "faq" && (

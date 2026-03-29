@@ -19,6 +19,124 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 
 _WORKER_ID = str(uuid.uuid4())  # ID único deste processo
 
+# ── Tabela de custo por modelo (USD por 1M tokens) ────────────────────────────
+# Atualizar conforme OpenRouter pricing mudar.
+_MODEL_PRICING: Dict[str, Dict[str, float]] = {
+    "openai/gpt-4o":                   {"input": 2.50,  "output": 10.00},
+    "openai/gpt-4.1":                  {"input": 2.00,  "output": 8.00},
+    "openai/gpt-4.1-mini":             {"input": 0.40,  "output": 1.60},
+    "openai/gpt-4o-mini":              {"input": 0.15,  "output": 0.60},
+    "google/gemini-2.5-pro":           {"input": 1.25,  "output": 10.00},
+    "google/gemini-2.5-flash":         {"input": 0.15,  "output": 0.60},
+    "google/gemini-2.5-flash-lite":    {"input": 0.075, "output": 0.30},
+    "google/gemini-2.0-flash-001":     {"input": 0.10,  "output": 0.40},
+    "google/gemini-2.0-flash-lite":    {"input": 0.075, "output": 0.30},
+    "anthropic/claude-3-5-sonnet":     {"input": 3.00,  "output": 15.00},
+    "anthropic/claude-3-5-haiku":      {"input": 0.80,  "output": 4.00},
+    "_default":                        {"input": 1.00,  "output": 4.00},
+}
+
+
+def _calcular_custo_usd(modelo: str, tokens_in: int, tokens_out: int) -> float:
+    """Calcula custo estimado em USD para uma chamada LLM."""
+    pricing = _MODEL_PRICING.get(modelo) or _MODEL_PRICING["_default"]
+    custo = (tokens_in * pricing["input"] + tokens_out * pricing["output"]) / 1_000_000
+    return round(custo, 8)
+
+
+async def registrar_token_usage(
+    empresa_id: int,
+    modelo: str,
+    tokens_in: int,
+    tokens_out: int,
+) -> None:
+    """
+    Registra consumo de tokens na tabela `token_usage`.
+    Usa UPSERT para acumular por (empresa_id, data, modelo).
+    Projetado para ser chamado via asyncio.create_task() — fire-and-forget.
+
+    A tabela `token_usage` deve existir (migration t3u4v5w6x7y8).
+    Se não existir, a função loga warning e retorna silenciosamente.
+    """
+    if not _database.db_pool or not tokens_in and not tokens_out:
+        return
+
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    custo = _calcular_custo_usd(modelo, tokens_in, tokens_out)
+
+    try:
+        await _database.db_pool.execute(
+            """
+            INSERT INTO token_usage (empresa_id, data, modelo, tokens_in, tokens_out, custo_usd, req_count)
+            VALUES ($1, $2::date, $3, $4, $5, $6, 1)
+            ON CONFLICT (empresa_id, data, modelo)
+            DO UPDATE SET
+                tokens_in  = token_usage.tokens_in  + EXCLUDED.tokens_in,
+                tokens_out = token_usage.tokens_out + EXCLUDED.tokens_out,
+                custo_usd  = token_usage.custo_usd  + EXCLUDED.custo_usd,
+                req_count  = token_usage.req_count  + 1
+            """,
+            empresa_id, today, modelo, tokens_in, tokens_out, custo
+        )
+        logger.debug(
+            f"💰 Token usage: empresa={empresa_id} modelo={modelo} "
+            f"in={tokens_in} out={tokens_out} custo=${custo:.6f}"
+        )
+    except asyncpg.UndefinedTableError:
+        logger.warning("⚠️ Tabela token_usage não existe — rode a migration t3u4v5w6x7y8")
+    except Exception as e:
+        logger.warning(f"⚠️ Falha ao registrar token_usage: {e}")
+
+# Timeout padrão para queries ao banco (segundos).
+# Queries lentas são logadas como warning mesmo que não excedam o limite.
+_DB_QUERY_TIMEOUT = 10.0   # timeout máximo por query
+_DB_SLOW_QUERY_THRESHOLD = 2.0  # acima disso, loga como slow query
+
+
+async def _db_fetch(coro, tag: str = "query", timeout: float = _DB_QUERY_TIMEOUT):
+    """
+    Wrapper centralizado para chamadas ao banco com:
+    - Timeout via asyncio.wait_for (evita queries travadas indefinidamente)
+    - Slow query logging (queries > 2s aparecem como warning nos logs)
+    - Métricas Prometheus em erros/timeouts
+
+    Uso:
+        row = await _db_fetch(
+            _database.db_pool.fetchrow("SELECT ..."),
+            tag="buscar_conversa"
+        )
+    """
+    import time
+    start = time.monotonic()
+    try:
+        result = await asyncio.wait_for(coro, timeout=timeout)
+        elapsed = time.monotonic() - start
+        if elapsed > _DB_SLOW_QUERY_THRESHOLD:
+            logger.warning(
+                f"🐢 [DB] Slow query detectada [{tag}]: {elapsed:.2f}s "
+                f"(limite slow={_DB_SLOW_QUERY_THRESHOLD}s)"
+            )
+        return result
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - start
+        logger.error(
+            f"⏰ [DB] Timeout na query [{tag}] após {elapsed:.2f}s "
+            f"(limite={timeout}s)"
+        )
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="db_timeout").inc()
+        return None
+    except asyncpg.PostgresError as e:
+        logger.error(f"❌ [DB] PostgreSQL error [{tag}]: {type(e).__name__}: {e}")
+        if PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="db_postgres_error").inc()
+        raise
+    except Exception as e:
+        logger.error(f"❌ [DB] Erro inesperado [{tag}]: {type(e).__name__}: {e}")
+        raise
+
+
 # is_shutting_down is imported from workers to avoid circular imports at call time
 def _get_is_shutting_down() -> bool:
     try:

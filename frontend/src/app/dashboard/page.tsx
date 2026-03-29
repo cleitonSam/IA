@@ -7,7 +7,7 @@ import {
   ChevronRight, LayoutDashboard, Settings, LogOut, Bell,
   Building2, Brain, HelpCircle, Network, Zap, ChevronDown,
   Activity, Star, ArrowRight, Sparkles, MessageSquare as MsgIcon,
-  BarChart3
+  BarChart3, Cpu, DollarSign
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [unidades, setUnidades] = useState<any[]>([]);
   const [selectedUnidadeId, setSelectedUnidadeId] = useState<number | null>(null);
+  const [budget, setBudget] = useState<any>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [unitDropdownOpen, setUnitDropdownOpen] = useState(false);
 
@@ -42,16 +43,20 @@ export default function DashboardPage() {
       if (!token) { window.location.href = "/login"; return; }
       try {
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        const [userRes, unitsRes, empMetRes] = await Promise.all([
+        const [userRes, unitsRes, empMetRes, budgetRes] = await Promise.all([
           axios.get(`/api-backend/auth/me`, config),
           axios.get(`/api-backend/dashboard/unidades`, config),
-          axios.get(`/api-backend/dashboard/metrics/empresa?days=30`, config)
+          axios.get(`/api-backend/dashboard/metrics/empresa?days=30`, config),
+          axios.get(`/api-backend/dashboard/budget/summary`, config).catch(() => ({ data: null })),
         ]);
         setUser(userRes.data);
-        setUnidades(unitsRes.data);
+        // Suporta tanto resposta paginada {data, meta} quanto array direto (legado)
+        const unidadesArr: any[] = unitsRes.data?.data || unitsRes.data || [];
+        setUnidades(unidadesArr);
         setEmpresaMetrics(empMetRes.data?.totals || null);
         setPerUnit(empMetRes.data?.por_unidade || []);
-        if (unitsRes.data.length > 0) setSelectedUnidadeId(unitsRes.data[0].id);
+        setBudget(budgetRes.data);
+        if (unidadesArr.length > 0) setSelectedUnidadeId(unidadesArr[0].id);
       } catch (err) {
         console.error(err);
       } finally {
@@ -304,6 +309,73 @@ export default function DashboardPage() {
               </motion.div>
             ))}
           </div>
+
+          {/* Budget / Consumo IA */}
+          {budget && (
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="mb-6 bg-slate-900/40 border border-white/[0.06] hover:border-primary/20 rounded-2xl p-5 transition-all">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                {/* Título */}
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-violet-500/10">
+                    <Cpu className="w-5 h-5 text-violet-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold">Consumo IA — {budget.mes_atual?.label || "Mês Atual"}</p>
+                    <p className="text-xs text-gray-500">Custo acumulado de chamadas ao modelo</p>
+                  </div>
+                </div>
+
+                {/* Métricas */}
+                <div className="flex flex-wrap items-center gap-6">
+                  {/* Tokens */}
+                  <div className="text-center">
+                    <p className="text-xs text-gray-500 mb-1">Tokens</p>
+                    <p className="text-xl font-bold text-white">
+                      {((budget.mes_atual?.tokens_total || 0) / 1000).toFixed(1)}K
+                    </p>
+                    {budget.variacao?.tokens_pct !== undefined && (
+                      <p className={`text-[10px] font-bold mt-0.5 ${budget.variacao.tokens_pct >= 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                        {budget.variacao.tokens_pct >= 0 ? "+" : ""}{budget.variacao.tokens_pct}% vs mês ant.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Custo */}
+                  <div className="text-center">
+                    <p className="text-xs text-gray-500 mb-1">Custo (BRL)</p>
+                    <p className="text-xl font-bold text-white flex items-center gap-1">
+                      <DollarSign className="w-4 h-4 text-emerald-400" />
+                      {(budget.mes_atual?.custo_brl || 0).toFixed(2)}
+                    </p>
+                    {budget.variacao?.custo_pct !== undefined && (
+                      <p className={`text-[10px] font-bold mt-0.5 ${budget.variacao.custo_pct >= 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                        {budget.variacao.custo_pct >= 0 ? "+" : ""}{budget.variacao.custo_pct}% vs mês ant.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Requisições */}
+                  <div className="text-center">
+                    <p className="text-xs text-gray-500 mb-1">Requisições</p>
+                    <p className="text-xl font-bold text-white">
+                      {(budget.mes_atual?.req_count || 0).toLocaleString("pt-BR")}
+                    </p>
+                    <p className="text-[10px] text-gray-600 mt-0.5">chamadas ao LLM</p>
+                  </div>
+
+                  {/* Link detalhamento */}
+                  <a href="/dashboard/insights"
+                    className="flex items-center gap-1 text-xs font-bold text-primary/70 hover:text-primary transition-colors">
+                    Ver detalhes <ArrowRight className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
           {/* Main Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">

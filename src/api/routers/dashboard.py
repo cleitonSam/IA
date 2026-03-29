@@ -53,16 +53,28 @@ async def _get_empresa_id_da_unidade(unidade_id: int) -> Optional[int]:
 
 @router.get("/unidades")
 async def get_unidades(
+    page: int = Query(1, ge=1, description="Página (começa em 1)"),
+    limit: int = Query(20, ge=1, le=100, description="Registros por página (máx 100)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Lista unidades ativas. admin_master vê todas; outros veem só da sua empresa.
+    Lista unidades ativas com paginação.
+    admin_master vê todas; outros veem só da sua empresa.
+
+    Retorna: {data, meta:{total, page, per_page, total_pages}}
+    Compatibilidade retroativa: se page=1 e limit=100 é equivalente à resposta anterior.
     """
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
+    offset = (page - 1) * limit
+
     try:
         if perfil == "admin_master":
-            # Retorna todas as unidades ativas de todas as empresas (legítimo para admin_master)
+            total_row = await _database.db_pool.fetchrow(
+                "SELECT COUNT(*) AS total FROM unidades u WHERE u.ativa = true"
+            )
+            total = total_row["total"] if total_row else 0
+
             rows = await _database.db_pool.fetch(
                 """
                 SELECT u.id, u.nome, u.slug, e.nome as empresa_nome
@@ -70,26 +82,58 @@ async def get_unidades(
                 JOIN empresas e ON e.id = u.empresa_id
                 WHERE u.ativa = true
                 ORDER BY e.nome, u.nome
-                """
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
             )
-            return [dict(r) for r in rows]
+            data = [dict(r) for r in rows]
 
-        if not empresa_id:
-            raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+        else:
+            if not empresa_id:
+                raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
 
-        unidades = await listar_unidades_ativas(empresa_id)
-        return [{
-            "id": u["id"],
-            "nome": u["nome"],
-            "slug": u["slug"],
-            "nome_abreviado": u.get("nome_abreviado"),
-            "cidade": u.get("cidade"),
-            "bairro": u.get("bairro"),
-            "estado": u.get("estado"),
-            "whatsapp": u.get("whatsapp"),
-            "instagram": u.get("instagram"),
-            "convenios": u.get("convenios"),
-        } for u in unidades]
+            total_row = await _database.db_pool.fetchrow(
+                "SELECT COUNT(*) AS total FROM unidades WHERE empresa_id = $1 AND ativa = true",
+                empresa_id
+            )
+            total = total_row["total"] if total_row else 0
+
+            unidades = await _database.db_pool.fetch(
+                """
+                SELECT id, nome, slug, nome_abreviado, cidade, bairro, estado,
+                       whatsapp, instagram, convenios
+                FROM unidades
+                WHERE empresa_id = $1 AND ativa = true
+                ORDER BY nome
+                LIMIT $2 OFFSET $3
+                """,
+                empresa_id, limit, offset
+            )
+            data = [{
+                "id": u["id"],
+                "nome": u["nome"],
+                "slug": u["slug"],
+                "nome_abreviado": u.get("nome_abreviado"),
+                "cidade": u.get("cidade"),
+                "bairro": u.get("bairro"),
+                "estado": u.get("estado"),
+                "whatsapp": u.get("whatsapp"),
+                "instagram": u.get("instagram"),
+                "convenios": u.get("convenios"),
+            } for u in unidades]
+
+        import math
+        total_pages = math.ceil(total / limit) if limit > 0 else 1
+        return {
+            "data": data,
+            "meta": {
+                "total": total,
+                "page": page,
+                "per_page": limit,
+                "total_pages": max(1, total_pages),
+            }
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -343,13 +387,183 @@ async def limpar_memoria_conversa(
     return {"status": "ok", "mensagem": "Memória da IA limpa com sucesso"}
 
 
+# ══ BUDGET — consumo de tokens por empresa ════════════════════════════════════
+
+@router.get("/budget/summary")
+async def get_budget_summary(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna resumo de consumo de tokens e custo estimado.
+    Mês atual vs mês anterior, com variação percentual.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    try:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT
+                to_char(data, 'YYYY-MM') AS mes,
+                SUM(tokens_in)::bigint   AS tokens_in,
+                SUM(tokens_out)::bigint  AS tokens_out,
+                SUM(custo_usd)           AS custo_usd,
+                SUM(req_count)::bigint   AS req_count
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= date_trunc('month', CURRENT_DATE - interval '1 month')
+            GROUP BY mes
+            ORDER BY mes DESC
+            """,
+            empresa_id
+        )
+
+        from datetime import datetime as _dt
+        mes_atual = _dt.now().strftime("%Y-%m")
+        mes_ant = (_dt.now().replace(day=1) - __import__('datetime').timedelta(days=1)).strftime("%Y-%m")
+
+        def _find(mes: str):
+            for r in rows:
+                if r["mes"] == mes:
+                    return dict(r)
+            return {"tokens_in": 0, "tokens_out": 0, "custo_usd": 0.0, "req_count": 0}
+
+        atual = _find(mes_atual)
+        anterior = _find(mes_ant)
+
+        def _variacao(a, b):
+            if not b:
+                return None
+            return round((a - b) / b * 100, 1)
+
+        custo_atual = float(atual["custo_usd"] or 0)
+        custo_ant = float(anterior["custo_usd"] or 0)
+        total_tokens_atual = (atual["tokens_in"] or 0) + (atual["tokens_out"] or 0)
+        total_tokens_ant = (anterior["tokens_in"] or 0) + (anterior["tokens_out"] or 0)
+
+        # Estimativa em BRL (taxa aproximada — usuário pode sobrescrever via env)
+        import os
+        brl_rate = float(os.getenv("USD_TO_BRL", "5.70"))
+
+        return {
+            "mes_atual": {
+                "mes": mes_atual,
+                "tokens_in": atual["tokens_in"] or 0,
+                "tokens_out": atual["tokens_out"] or 0,
+                "tokens_total": total_tokens_atual,
+                "custo_usd": round(custo_atual, 4),
+                "custo_brl": round(custo_atual * brl_rate, 2),
+                "req_count": atual["req_count"] or 0,
+            },
+            "mes_anterior": {
+                "mes": mes_ant,
+                "tokens_total": total_tokens_ant,
+                "custo_usd": round(custo_ant, 4),
+                "custo_brl": round(custo_ant * brl_rate, 2),
+            },
+            "variacao": {
+                "tokens_pct": _variacao(total_tokens_atual, total_tokens_ant),
+                "custo_pct": _variacao(custo_atual, custo_ant),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar budget summary empresa={empresa_id}: {e}")
+        # Tabela pode não existir ainda — retorna zeros sem erro 500
+        return {
+            "mes_atual": {"tokens_in": 0, "tokens_out": 0, "tokens_total": 0,
+                          "custo_usd": 0.0, "custo_brl": 0.0, "req_count": 0},
+            "mes_anterior": {"tokens_total": 0, "custo_usd": 0.0, "custo_brl": 0.0},
+            "variacao": {"tokens_pct": None, "custo_pct": None},
+        }
+
+
+@router.get("/budget/breakdown")
+async def get_budget_breakdown(
+    days: int = Query(30, ge=7, le=90, description="Dias para retroagir (7-90)"),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Detalhamento de consumo por modelo e por dia (últimos N dias).
+    Útil para gráficos no dashboard.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    try:
+        by_model = await _database.db_pool.fetch(
+            """
+            SELECT
+                modelo,
+                SUM(tokens_in)::bigint  AS tokens_in,
+                SUM(tokens_out)::bigint AS tokens_out,
+                SUM(custo_usd)          AS custo_usd,
+                SUM(req_count)::bigint  AS req_count
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= CURRENT_DATE - ($2 * interval '1 day')
+            GROUP BY modelo
+            ORDER BY custo_usd DESC
+            """,
+            empresa_id, days
+        )
+
+        by_day = await _database.db_pool.fetch(
+            """
+            SELECT
+                data::text,
+                SUM(tokens_in)::bigint  AS tokens_in,
+                SUM(tokens_out)::bigint AS tokens_out,
+                SUM(custo_usd)          AS custo_usd
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= CURRENT_DATE - ($2 * interval '1 day')
+            GROUP BY data
+            ORDER BY data ASC
+            """,
+            empresa_id, days
+        )
+
+        return {
+            "days": days,
+            "by_model": [
+                {
+                    "modelo": r["modelo"],
+                    "tokens_in": r["tokens_in"] or 0,
+                    "tokens_out": r["tokens_out"] or 0,
+                    "tokens_total": (r["tokens_in"] or 0) + (r["tokens_out"] or 0),
+                    "custo_usd": round(float(r["custo_usd"] or 0), 4),
+                    "req_count": r["req_count"] or 0,
+                }
+                for r in by_model
+            ],
+            "by_day": [
+                {
+                    "data": r["data"],
+                    "tokens_total": (r["tokens_in"] or 0) + (r["tokens_out"] or 0),
+                    "custo_usd": round(float(r["custo_usd"] or 0), 4),
+                }
+                for r in by_day
+            ],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar budget breakdown empresa={empresa_id}: {e}")
+        return {"days": days, "by_model": [], "by_day": []}
+
+
 @router.get("/conversations/{conversation_id}/eventos")
 async def get_eventos_funil(
     conversation_id: int,
+    limit: int = Query(50, ge=1, le=200, description="Máximo de eventos por página"),
+    offset: int = Query(0, ge=0, description="Offset para paginação"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
     Retorna o histórico de eventos de pontuação (funil) de uma conversa específica.
+    Suporta paginação via limit/offset (padrão: 50 eventos por vez).
+
+    Retorna: {data, meta:{total, offset, limit}}
     """
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
@@ -362,13 +576,26 @@ async def get_eventos_funil(
     if not row:
         raise HTTPException(status_code=404, detail="Conversa não encontrada")
 
+    conversa_id = row["id"]
     try:
+        total_row = await _database.db_pool.fetchrow(
+            "SELECT COUNT(*) AS total FROM eventos_funil WHERE conversa_id = $1",
+            conversa_id
+        )
+        total = total_row["total"] if total_row else 0
+
         eventos = await _database.db_pool.fetch(
             """SELECT tipo_evento, descricao, score_incremento, created_at
-               FROM eventos_funil WHERE conversa_id = $1 ORDER BY created_at ASC""",
-            row["id"]
+               FROM eventos_funil
+               WHERE conversa_id = $1
+               ORDER BY created_at ASC
+               LIMIT $2 OFFSET $3""",
+            conversa_id, limit, offset
         )
-        return [dict(e) for e in eventos]
+        return {
+            "data": [dict(e) for e in eventos],
+            "meta": {"total": total, "offset": offset, "limit": limit}
+        }
     except Exception as e:
         logger.error(f"Erro ao buscar eventos funil para conversa {conversation_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar eventos de pontuação")

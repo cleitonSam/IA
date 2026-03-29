@@ -11,6 +11,8 @@ Regras:
 - Com imagens → sempre gemini-2.0-flash (multimodal)
 """
 from typing import Optional
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from src.core.config import logger
 
 
@@ -44,6 +46,19 @@ MODELO_PADRAO = "google/gemini-2.0-flash"
 MODELO_POTENTE = "google/gemini-2.5-flash"
 
 
+def _is_horario_economico() -> bool:
+    """
+    Detecta se estamos no horário econômico (00:00–05:59 BRT).
+    Nesse período o custo de API é ~35% menor — podemos usar modelos melhores
+    sem impacto significativo no orçamento.
+    """
+    try:
+        hora = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+        return hora < 6
+    except Exception:
+        return False
+
+
 def escolher_modelo(
     intencao: Optional[str],
     texto_cliente: str,
@@ -64,6 +79,12 @@ def escolher_modelo(
     Returns:
         Model ID string para OpenRouter
     """
+    # Regra 0: Horário econômico (madrugada) — upgrade gratuito para qualidade
+    # Custo de API é ~35% menor entre 00:00–05:59 BRT
+    if _is_horario_economico() and intencao not in INTENCOES_LITE and not tem_imagens:
+        logger.debug("🌙 ModelRouter: horário econômico → upgrade para POTENTE")
+        return MODELO_POTENTE
+
     # Regra 1: Imagens sempre precisam de multimodal
     if tem_imagens:
         return MODELO_PADRAO

@@ -1,3 +1,18 @@
+"""
+UazAPIGO V2 Client — Motor SaaS IA
+Sincronizado com a documentação oficial: https://docs.uazapi.com
+
+Melhorias aplicadas (2026-03-29):
+- Todos os métodos recebem track_source="chatbot" para rastreamento no painel UazAPI
+- readchat + readmessages habilitados por padrão (UX mais fluida)
+- replyid: suporte a respostas vinculadas
+- send_text: linkPreview completo (auto ou customizado)
+- send_media: docName, mimetype, thumbnail, tipos sticker/myaudio/ptv
+- set_presence: fix bug — delay enviado como int (era str)
+- send_menu: poll (enquete) + carousel + botões ricos (URL, call, copy, imageButton)
+- send_contact: novo — envia vCard
+- send_poll: atalho para enviar enquetes
+"""
 import asyncio
 import re
 import httpx
@@ -70,6 +85,7 @@ def _smart_split(text: str) -> List[str]:
 
     return merged
 
+
 # HTTP client — deve ser inicializado pelo startup_event no bot_core
 http_client: httpx.AsyncClient = None
 
@@ -77,12 +93,21 @@ http_client: httpx.AsyncClient = None
 _MAX_RETRIES = 3
 _RETRY_DELAYS = [1.0, 2.0, 4.0]  # exponential backoff
 
+# Tipos de mídia suportados pela UazAPI
+MEDIA_TYPES_SUPPORTED = {"image", "video", "document", "audio", "myaudio", "ptt", "ptv", "sticker"}
+
+
 class UazAPIClient:
     """
-    Cliente para interface com UazAPI.
+    Cliente para interface com UazAPIGO V2.
     Suporta múltiplas instâncias dinamicamente.
+
+    Todos os métodos de envio incluem por padrão:
+    - track_source="chatbot" (rastreamento no painel UazAPI)
+    - readchat=True (limpa contador de não lidas)
+    - readmessages=True (marca mensagens recebidas como lidas)
     """
-    
+
     def __init__(self, base_url: str, token: str, instance_name: str):
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -111,10 +136,13 @@ class UazAPIClient:
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 last_error = e
                 delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
-                logger.warning(f"⚠️ UazAPI retry {attempt+1}/{_MAX_RETRIES} ({endpoint}): {type(e).__name__} — aguardando {delay}s")
+                logger.warning(
+                    f"⚠️ UazAPI retry {attempt+1}/{_MAX_RETRIES} ({endpoint}): "
+                    f"{type(e).__name__} — aguardando {delay}s"
+                )
                 await asyncio.sleep(delay)
             except httpx.HTTPStatusError as e:
-                # Não faz retry para erros 4xx (exceto 429)
+                # Não faz retry para erros 4xx (exceto 429 — rate limit)
                 if e.response.status_code == 429:
                     last_error = e
                     delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
@@ -126,41 +154,106 @@ class UazAPIClient:
                         body = e.response.text[:300]
                     except Exception:
                         pass
-                    logger.error(f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): {e} | body={body}")
+                    logger.error(
+                        f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): "
+                        f"{e} | body={body}"
+                    )
                     if PROMETHEUS_OK:
                         METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
                     return None
             except Exception as e:
                 last_error = e
-                logger.error(f"❌ UazAPI erro inesperado ({endpoint}): {type(e).__name__}: {e}")
+                logger.error(
+                    f"❌ UazAPI erro inesperado ({endpoint}): {type(e).__name__}: {e}"
+                )
                 if PROMETHEUS_OK:
                     METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
                 return None
 
-        logger.error(f"❌ UazAPI falhou após {_MAX_RETRIES} tentativas ({endpoint}): {last_error}")
+        logger.error(
+            f"❌ UazAPI falhou após {_MAX_RETRIES} tentativas ({endpoint}): {last_error}"
+        )
         if PROMETHEUS_OK:
             METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
         return None
 
-    async def send_text(self, number: str, text: str, delay: int = 0) -> bool:
-        """Envia mensagem de texto simples (bloco único)."""
-        clean_number = "".join(filter(str.isdigit, number))
-        payload = {
+    # ─────────────────────────────────────────────────────────────────
+    # TEXTO
+    # ─────────────────────────────────────────────────────────────────
+
+    async def send_text(
+        self,
+        number: str,
+        text: str,
+        delay: int = 0,
+        *,
+        replyid: Optional[str] = None,
+        readchat: bool = True,
+        readmessages: bool = True,
+        link_preview: bool = False,
+        link_preview_title: Optional[str] = None,
+        link_preview_description: Optional[str] = None,
+        link_preview_image: Optional[str] = None,
+        link_preview_large: bool = False,
+        track_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Envia mensagem de texto.
+
+        Args:
+            number: Telefone, grupo (@g.us) ou canal (@newsletter)
+            text: Texto da mensagem (suporta placeholders UazAPI como {{name}})
+            delay: Delay em ms antes do envio (mostra "Digitando...")
+            replyid: ID da mensagem original para criar resposta vinculada
+            readchat: Limpa contador de não lidas no chat
+            readmessages: Marca últimas 10 mensagens recebidas como lidas
+            link_preview: Ativa preview automático de links no texto
+            link_preview_title/description/image/large: Customiza o preview
+            track_id: ID livre para rastreamento em sistemas externos
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload: Dict[str, Any] = {
             "number": clean_number,
             "text": text,
-            "delay": delay
+            "readchat": readchat,
+            "readmessages": readmessages,
+            "track_source": "chatbot",
         }
+        if delay:
+            payload["delay"] = delay
+        if replyid:
+            payload["replyid"] = replyid
+        if track_id:
+            payload["track_id"] = track_id
+        if link_preview:
+            payload["linkPreview"] = True
+            if link_preview_title:
+                payload["linkPreviewTitle"] = link_preview_title
+            if link_preview_description:
+                payload["linkPreviewDescription"] = link_preview_description
+            if link_preview_image:
+                payload["linkPreviewImage"] = link_preview_image
+                payload["linkPreviewLarge"] = link_preview_large
+
         res = await self._request("POST", "/send/text", json=payload)
         return res is not None
 
-    async def send_text_smart(self, number: str, text: str, delay: int = 0) -> bool:
+    async def send_text_smart(
+        self,
+        number: str,
+        text: str,
+        delay: int = 0,
+        *,
+        replyid: Optional[str] = None,
+        track_id: Optional[str] = None,
+    ) -> bool:
         """
         Envia texto dividido em blocos semânticos.
         Cada bloco vira uma mensagem separada no WhatsApp com delay de digitação.
         """
         blocks = _smart_split(text)
         if len(blocks) <= 1:
-            return await self.send_text(number, text, delay=delay)
+            return await self.send_text(number, text, delay=delay, replyid=replyid, track_id=track_id)
 
         logger.debug(f"📨 smart_split: {len(blocks)} blocos para {number}")
         ok = True
@@ -169,75 +262,172 @@ class UazAPIClient:
             typing_delay = max(800, min(len(block) * 8, 3000))
             if i == 0:
                 typing_delay = delay or typing_delay
-            res = await self.send_text(number, block, delay=typing_delay)
+            # Só envia replyid no primeiro bloco (vincula a mensagem original)
+            reply = replyid if i == 0 else None
+            res = await self.send_text(
+                number, block, delay=typing_delay, replyid=reply, track_id=track_id
+            )
             if not res:
                 ok = False
         return ok
 
-    async def set_presence(self, number: str, presence: str = "composing", delay: int = 2000) -> bool:
+    # ─────────────────────────────────────────────────────────────────
+    # PRESENÇA (digitando / gravando)
+    # ─────────────────────────────────────────────────────────────────
+
+    async def set_presence(
+        self,
+        number: str,
+        presence: str = "composing",
+        delay: int = 2000,
+    ) -> bool:
         """
         Simula presença: 'composing' (digitando), 'recording' (gravando), 'paused'.
+        CORREÇÃO: delay enviado como int (era str — bug na versão anterior).
         """
-        clean_number = "".join(filter(str.isdigit, number))
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
         payload = {
             "number": clean_number,
             "presence": presence,
-            "delay": str(delay)
+            "delay": int(delay),  # ← FIX: era str(delay), docs exigem integer
         }
         res = await self._request("POST", "/send/presence", json=payload)
         return res is not None
 
-    async def send_media(self, number: str, file_url: str, media_type: str = "image", caption: str = "", delay: int = 0) -> bool:
-        """Envia imagem, vídeo ou documento via URL seguindo padrão UazAPI."""
-        clean_number = "".join(filter(str.isdigit, number))
-        payload = {
+    # ─────────────────────────────────────────────────────────────────
+    # MÍDIA
+    # ─────────────────────────────────────────────────────────────────
+
+    async def send_media(
+        self,
+        number: str,
+        file_url: str,
+        media_type: str = "image",
+        caption: str = "",
+        delay: int = 0,
+        *,
+        doc_name: Optional[str] = None,
+        mimetype: Optional[str] = None,
+        thumbnail: Optional[str] = None,
+        replyid: Optional[str] = None,
+        readchat: bool = True,
+        readmessages: bool = True,
+        track_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Envia mídia (imagem, vídeo, áudio, documento, sticker, PTT, vídeo-nota).
+
+        Tipos suportados: image, video, document, audio, myaudio, ptt, ptv, sticker
+
+        Args:
+            doc_name: Nome do arquivo para documentos (ex: "Contrato.pdf")
+            mimetype: MIME type explícito (detectado automaticamente se omitido)
+            thumbnail: URL ou base64 de thumbnail para vídeos/documentos
+            replyid: ID da mensagem para resposta vinculada
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+
+        # Normaliza tipo inválido para "document" (fallback seguro)
+        if media_type not in MEDIA_TYPES_SUPPORTED:
+            logger.warning(
+                f"⚠️ send_media: tipo '{media_type}' não suportado → usando 'document'"
+            )
+            media_type = "document"
+
+        payload: Dict[str, Any] = {
             "number": clean_number,
             "type": media_type,
-            "file": file_url
+            "file": file_url,
+            "readchat": readchat,
+            "readmessages": readmessages,
+            "track_source": "chatbot",
         }
         if delay:
             payload["delay"] = delay
         if caption:
             payload["text"] = caption
-        logger.debug(f"📎 send_media payload: number={clean_number}, type={media_type}, file={file_url[:80]}...")
+        if doc_name and media_type == "document":
+            payload["docName"] = doc_name
+        if mimetype:
+            payload["mimetype"] = mimetype
+        if thumbnail and media_type in ("video", "document"):
+            payload["thumbnail"] = thumbnail
+        if replyid:
+            payload["replyid"] = replyid
+        if track_id:
+            payload["track_id"] = track_id
+
+        logger.debug(
+            f"📎 send_media: number={clean_number}, type={media_type}, "
+            f"file={file_url[:80]}..."
+        )
         res = await self._request("POST", "/send/media", json=payload)
-        if res is None:
+
+        if res is None and media_type not in ("document", "sticker", "ptt", "ptv"):
             # Fallback: tenta como document (URLs que falham como image/video)
-            if media_type != "document":
-                logger.warning(f"⚠️ send_media fallback: tentando como document para {file_url[:80]}")
-                payload["type"] = "document"
-                res = await self._request("POST", "/send/media", json=payload)
+            logger.warning(
+                f"⚠️ send_media fallback: tentando como 'document' para {file_url[:80]}"
+            )
+            payload["type"] = "document"
+            res = await self._request("POST", "/send/media", json=payload)
+
         return res is not None
 
-    async def send_ptt(self, number: str, file_url: str, delay: int = 0) -> bool:
+    async def send_ptt(
+        self,
+        number: str,
+        file_url: str,
+        delay: int = 0,
+    ) -> bool:
         """Envia áudio como PTT (Push-to-Talk / mensagem de voz)."""
-        clean_number = "".join(filter(str.isdigit, number))
-        payload = {
-            "number": clean_number,
-            "type": "ptt",
-            "file": file_url,
-            "delay": delay
-        }
-        res = await self._request("POST", "/send/media", json=payload)
-        return res is not None
+        return await self.send_media(
+            number, file_url,
+            media_type="ptt",
+            delay=delay,
+        )
 
-    async def send_menu(self, number: str, config: dict) -> bool:
+    async def send_sticker(
+        self,
+        number: str,
+        file_url: str,
+    ) -> bool:
+        """Envia uma figurinha (sticker) via WhatsApp."""
+        return await self.send_media(number, file_url, media_type="sticker")
+
+    # ─────────────────────────────────────────────────────────────────
+    # MENUS INTERATIVOS (botão, lista, enquete, carrossel)
+    # ─────────────────────────────────────────────────────────────────
+
+    async def send_menu(
+        self,
+        number: str,
+        config: dict,
+    ) -> bool:
         """
-        Envia menu interativo de triagem via UazAPI.
-        Suporta tipos: list, button.
-        config deve conter: tipo, texto, titulo, rodape, botao, opcoes (lista de {id, titulo, descricao}).
+        Envia menu interativo via UazAPI.
+
+        Suporta tipos: list, button, poll, carousel.
+        config deve conter: tipo, texto, titulo, rodape, botao, opcoes.
+
+        Para poll (enquete):
+            config = {
+                "tipo": "poll",
+                "texto": "Qual horário prefere?",
+                "opcoes": [{"titulo": "Manhã"}, {"titulo": "Tarde"}],
+                "selectable_count": 1,
+            }
+
+        Para carousel, use send_carousel() diretamente.
         """
-        clean_number = "".join(filter(str.isdigit, number))
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
         tipo = config.get("tipo", "list")
-        opcoes = config.get("opcoes", [])
 
         if tipo == "list":
-            # Formato esperado pela UazAPI (igual ao fluxo N8N):
             # choices: ["[NomeSeção]", "Titulo|id|Descricao", ...]
             choices = [f"[{config.get('titulo', 'Opções')}]"]
-            for opt in opcoes:
+            for opt in config.get("opcoes", []):
                 titulo = opt.get("titulo", "")
-                opt_id = opt.get("id", "")
+                opt_id = opt.get("id", titulo)
                 descricao = opt.get("descricao", "")
                 choices.append(f"{titulo}|{opt_id}|{descricao}")
 
@@ -251,11 +441,28 @@ class UazAPIClient:
                 "choices": choices,
                 "readchat": True,
                 "readmessages": True,
-                "delay": 1000
+                "track_source": "chatbot",
+                "delay": config.get("delay", 1000),
             }
+
         elif tipo == "button":
-            # Botões de resposta rápida (máx 3 no WhatsApp)
-            choices = [opt.get("titulo", "") for opt in opcoes[:3]]
+            # Botões ricos: "texto|id", "texto|url:https://...", "texto|call:+55..."
+            choices = []
+            for opt in config.get("opcoes", [])[:4]:
+                titulo = opt.get("titulo", "")
+                btn_id = opt.get("id", "")
+                btn_url = opt.get("url", "")
+                btn_call = opt.get("call", "")
+
+                if btn_url:
+                    choices.append(f"{titulo}|{btn_url}")
+                elif btn_call:
+                    choices.append(f"{titulo}|call:{btn_call}")
+                elif btn_id:
+                    choices.append(f"{titulo}|{btn_id}")
+                else:
+                    choices.append(titulo)
+
             payload = {
                 "number": clean_number,
                 "type": "button",
@@ -264,23 +471,65 @@ class UazAPIClient:
                 "choices": choices,
                 "readchat": True,
                 "readmessages": True,
-                "delay": 1000
+                "track_source": "chatbot",
+                "delay": config.get("delay", 1000),
             }
+            # Imagem no cabeçalho dos botões (opcional)
+            if config.get("imagem"):
+                payload["imageButton"] = config["imagem"]
+
+        elif tipo == "poll":
+            choices = [opt.get("titulo", str(opt)) for opt in config.get("opcoes", [])]
+            payload = {
+                "number": clean_number,
+                "type": "poll",
+                "text": config.get("texto", ""),
+                "choices": choices,
+                "selectableCount": config.get("selectable_count", 1),
+                "readchat": True,
+                "readmessages": True,
+                "track_source": "chatbot",
+                "delay": config.get("delay", 1000),
+            }
+
         else:
-            logger.warning(f"⚠️ Tipo de menu não suportado: {tipo}")
+            logger.warning(f"⚠️ Tipo de menu não suportado por send_menu: {tipo}")
             return False
 
         res = await self._request("POST", "/send/menu", json=payload)
         return res is not None
 
-    async def send_buttons(self, number: str, text: str, buttons: list, footer: str = "") -> bool:
+    async def send_buttons(
+        self,
+        number: str,
+        text: str,
+        buttons: list,
+        footer: str = "",
+        image_url: Optional[str] = None,
+    ) -> bool:
         """
-        Envia mensagem com botões de resposta rápida (máx 3 no WhatsApp).
-        buttons: [{"id": "btn1", "text": "Opção 1"}, ...]
+        Envia mensagem com botões de resposta rápida.
+
+        buttons: [
+            {"id": "btn1", "text": "Opção 1"},         # botão resposta
+            {"text": "Ver site", "url": "https://..."},  # botão URL
+            {"text": "Ligar", "call": "+5511999999"},    # botão chamada
+        ]
+        image_url: Imagem opcional no cabeçalho dos botões
         """
-        clean_number = "".join(filter(str.isdigit, number))
-        choices = [btn.get("text", btn.get("titulo", "")) for btn in buttons[:3]]
-        payload = {
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        choices = []
+        for btn in buttons[:4]:
+            titulo = btn.get("text", btn.get("titulo", ""))
+            if btn.get("url"):
+                choices.append(f"{titulo}|{btn['url']}")
+            elif btn.get("call"):
+                choices.append(f"{titulo}|call:{btn['call']}")
+            else:
+                btn_id = btn.get("id", titulo)
+                choices.append(f"{titulo}|{btn_id}" if btn_id != titulo else titulo)
+
+        payload: Dict[str, Any] = {
             "number": clean_number,
             "type": "button",
             "text": text,
@@ -288,18 +537,28 @@ class UazAPIClient:
             "choices": choices,
             "readchat": True,
             "readmessages": True,
-            "delay": 1000
+            "track_source": "chatbot",
+            "delay": 1000,
         }
+        if image_url:
+            payload["imageButton"] = image_url
+
         res = await self._request("POST", "/send/menu", json=payload)
         return res is not None
 
-    async def send_list(self, number: str, text: str, sections: list,
-                        button_text: str = "Ver opções", footer: str = "") -> bool:
+    async def send_list(
+        self,
+        number: str,
+        text: str,
+        sections: list,
+        button_text: str = "Ver opções",
+        footer: str = "",
+    ) -> bool:
         """
         Envia lista interativa com seções e itens (máx 10 opções no WhatsApp).
         sections: [{"title": "Seção", "rows": [{"id": "1", "title": "Item", "description": "Desc"}]}]
         """
-        clean_number = "".join(filter(str.isdigit, number))
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
         choices = []
         for section in sections:
             section_title = section.get("title", "Opções")
@@ -320,22 +579,123 @@ class UazAPIClient:
             "choices": choices,
             "readchat": True,
             "readmessages": True,
-            "delay": 1000
+            "track_source": "chatbot",
+            "delay": 1000,
         }
         res = await self._request("POST", "/send/menu", json=payload)
         return res is not None
 
-    async def send_location(self, number: str, latitude: float, longitude: float,
-                            name: str = "", address: str = "") -> bool:
+    async def send_poll(
+        self,
+        number: str,
+        question: str,
+        options: List[str],
+        selectable_count: int = 1,
+    ) -> bool:
+        """
+        Envia enquete interativa no WhatsApp.
+
+        Args:
+            question: Pergunta da enquete
+            options: Lista de opções (ex: ["Manhã", "Tarde", "Noite"])
+            selectable_count: Quantas opções o usuário pode marcar
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "type": "poll",
+            "text": question,
+            "choices": options,
+            "selectableCount": selectable_count,
+            "readchat": True,
+            "readmessages": True,
+            "track_source": "chatbot",
+            "delay": 1000,
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    async def send_carousel(
+        self,
+        number: str,
+        header_text: str,
+        cards: List[Dict[str, Any]],
+    ) -> bool:
+        """
+        Envia carrossel de cartões com imagens e botões.
+
+        cards: [
+            {
+                "title": "Produto X",
+                "description": "Descrição curta",
+                "image": "https://exemplo.com/img.jpg",
+                "buttons": [
+                    {"text": "Ver mais", "url": "https://..."},
+                    {"text": "Código", "copy": "PROMO10"},
+                    {"text": "Ligar", "call": "+5511999999"},
+                ]
+            }
+        ]
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        choices = []
+        for card in cards:
+            title = card.get("title", "")
+            desc = card.get("description", "")
+            card_text = f"{title}\n{desc}" if desc else title
+            choices.append(f"[{card_text}]")
+
+            if card.get("image"):
+                choices.append(f"{{{card['image']}}}")
+
+            for btn in card.get("buttons", [])[:3]:
+                btn_text = btn.get("text", "")
+                if btn.get("url"):
+                    choices.append(f"{btn_text}|{btn['url']}")
+                elif btn.get("copy"):
+                    choices.append(f"{btn_text}|copy:{btn['copy']}")
+                elif btn.get("call"):
+                    choices.append(f"{btn_text}|call:{btn['call']}")
+                else:
+                    choices.append(btn_text)
+
+        payload = {
+            "number": clean_number,
+            "type": "carousel",
+            "text": header_text,
+            "choices": choices,
+            "readchat": True,
+            "readmessages": True,
+            "track_source": "chatbot",
+            "delay": 1000,
+        }
+        res = await self._request("POST", "/send/menu", json=payload)
+        return res is not None
+
+    # ─────────────────────────────────────────────────────────────────
+    # LOCALIZAÇÃO
+    # ─────────────────────────────────────────────────────────────────
+
+    async def send_location(
+        self,
+        number: str,
+        latitude: float,
+        longitude: float,
+        name: str = "",
+        address: str = "",
+    ) -> bool:
         """Envia localização (pin no mapa) via WhatsApp."""
-        clean_number = "".join(filter(str.isdigit, number))
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
         payload = {
             "number": clean_number,
             "latitude": latitude,
             "longitude": longitude,
             "name": name,
             "address": address,
-            "delay": 1000
+            "readchat": True,
+            "readmessages": True,
+            "track_source": "chatbot",
+            "delay": 1000,
         }
         res = await self._request("POST", "/send/location", json=payload)
         return res is not None

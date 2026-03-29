@@ -1778,6 +1778,19 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_bruta = response.choices[0].message.content
                         if resposta_bruta:
                             logger.info(f"✅ LLM: Resposta recebida ({len(resposta_bruta)} chars). Final: '{resposta_bruta[-20:]}'")
+                        # ── Budget Tracker: captura uso de tokens (fire-and-forget) ──
+                        try:
+                            _usage = getattr(response, "usage", None)
+                            if _usage and empresa_id:
+                                from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                asyncio.create_task(_reg_tokens(
+                                    empresa_id=empresa_id,
+                                    modelo=modelo_escolhido,
+                                    tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                    tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                ))
+                        except Exception:
+                            pass  # token tracking nunca deve quebrar o fluxo principal
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -1789,6 +1802,18 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                             modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                             response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                             resposta_bruta = response.choices[0].message.content
+                            try:
+                                _usage = getattr(response, "usage", None)
+                                if _usage and empresa_id:
+                                    from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                    asyncio.create_task(_reg_tokens(
+                                        empresa_id=empresa_id,
+                                        modelo=modelo_fallback,
+                                        tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                        tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                    ))
+                            except Exception:
+                                pass
                             await cb_llm.record_success()
                         except asyncio.TimeoutError:
                             logger.error(f"❌ Timeout no fallback também. Conv {conversation_id}")
@@ -1834,6 +1859,18 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                                 response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                                 resposta_bruta = response.choices[0].message.content
+                                try:
+                                    _usage = getattr(response, "usage", None)
+                                    if _usage and empresa_id:
+                                        from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                        asyncio.create_task(_reg_tokens(
+                                            empresa_id=empresa_id,
+                                            modelo=modelo_fallback,
+                                            tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                            tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                        ))
+                                except Exception:
+                                    pass
                                 await cb_llm.record_success()
                             except Exception as e2:
                                 if is_provider_unavailable_error(e2):

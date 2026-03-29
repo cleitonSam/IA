@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Motor SaaS IA — Fluxograma do Sistema</title>
+  <style>
+    :root {
+      --bg: #060d18;
+      --surface: #0e1a2b;
+      --surface2: #152236;
+      --surface3: #1c2e47;
+      --border: rgba(255,255,255,0.07);
+      --border2: rgba(255,255,255,0.12);
+      --primary: #00d2ff;
+      --primary-dim: rgba(0,210,255,0.15);
+      --violet: #7c3aed;
+      --violet-dim: rgba(124,58,237,0.15);
+      --success: #10b981;
+      --success-dim: rgba(16,185,129,0.12);
+      --warning: #f59e0b;
+      --warning-dim: rgba(245,158,11,0.12);
+      --danger: #ef4444;
+      --danger-dim: rgba(239,68,68,0.12);
+      --sky: #38bdf8;
+      --sky-dim: rgba(56,189,248,0.12);
+      --text: #e2e8f0;
+      --text-muted: #64748b;
+      --text-dim: #94a3b8;
+      --radius: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── HEADER ── */
+    .header {
+      background: linear-gradient(135deg, var(--surface) 0%, #0a1528 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 32px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(20px);
+    }
+    .header-logo {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, var(--primary), var(--violet));
+      border-radius: 11px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+      box-shadow: 0 0 20px rgba(0,210,255,0.25);
+    }
+    .header-info h1 { font-size: 18px; font-weight: 800; letter-spacing: -0.3px; }
+    .header-info p { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .header-badges { margin-left: auto; display: flex; gap: 8px; }
+    .badge {
+      font-size: 10px; font-weight: 700;
+      padding: 3px 10px; border-radius: 20px;
+      background: var(--primary-dim); color: var(--primary);
+      border: 1px solid rgba(0,210,255,0.2);
+    }
+
+    /* ── TABS ── */
+    .tabs {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 28px;
+      display: flex;
+      gap: 0;
+      overflow-x: auto;
+    }
+    .tab {
+      padding: 14px 18px;
+      background: none; border: none;
+      color: var(--text-muted);
+      font-size: 13px; font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+    /* ── CONTENT ── */
+    .content { padding: 32px 28px; max-width: 1280px; margin: 0 auto; }
+    .diagram { display: none; }
+    .diagram.active { display: block; animation: fadeIn 0.25s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ── SECTION HEADER ── */
+    .section-head { margin-bottom: 28px; }
+    .section-head h2 { font-size: 22px; font-weight: 800; margin-bottom: 6px; letter-spacing: -0.4px; }
+    .section-head p { font-size: 13px; color: var(--text-muted); }
+    .section-sub { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); margin: 28px 0 14px; display: flex; align-items: center; gap: 8px; }
+    .section-sub::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+    /* ── ARCHITECTURE LAYERS ── */
+    .arch-wrapper { display: flex; flex-direction: column; gap: 0; }
+    .arch-layer { display: flex; flex-direction: column; gap: 0; }
+    .layer-label {
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.2em;
+      color: var(--text-muted); padding: 20px 0 8px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .layer-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .layer-cards { display: flex; gap: 10px; flex-wrap: wrap; padding-bottom: 4px; }
+
+    .arch-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      flex: 1; min-width: 150px; max-width: 260px;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+    }
+    .arch-card:hover {
+      border-color: var(--primary);
+      background: var(--surface2);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,210,255,0.08);
+    }
+    .arch-card.highlight { border-color: var(--primary); background: var(--primary-dim); }
+    .card-icon { font-size: 22px; margin-bottom: 8px; }
+    .card-name { font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+    .card-file { font-size: 10px; font-family: monospace; color: var(--primary); opacity: 0.8; margin-bottom: 4px; }
+    .card-desc { font-size: 10px; color: var(--text-muted); line-height: 1.5; }
+    .card-tag {
+      position: absolute; top: 8px; right: 8px;
+      font-size: 8px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+    }
+    .tag-new { background: var(--success-dim); color: var(--success); }
+    .tag-core { background: var(--primary-dim); color: var(--primary); }
+    .tag-ext { background: var(--warning-dim); color: var(--warning); }
+
+    .layer-arrow {
+      display: flex; justify-content: center; align-items: center;
+      gap: 6px; padding: 6px 0; color: var(--text-muted); font-size: 12px;
+    }
+    .arrow-line { flex: 1; max-width: 200px; height: 1px; background: linear-gradient(90deg, transparent, var(--border2), transparent); }
+
+    /* ── FLOW STEPS ── */
+    .flow-wrap { max-width: 680px; margin: 0 auto; }
+    .flow-step { display: flex; gap: 16px; }
+    .flow-indicator { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+    .flow-num {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800; flex-shrink: 0;
+    }
+    .num-primary { background: var(--primary); color: #000; }
+    .num-violet { background: var(--violet); color: #fff; }
+    .num-success { background: var(--success); color: #fff; }
+    .num-warning { background: var(--warning); color: #000; }
+    .flow-line { width: 2px; flex: 1; background: var(--border2); min-height: 20px; margin-top: 4px; }
+    .flow-body { flex: 1; padding-bottom: 24px; }
+    .flow-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .flow-badge {
+      font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 10px;
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .badge-fast { background: var(--success-dim); color: var(--success); }
+    .badge-llm { background: var(--violet-dim); color: #a78bfa; }
+    .badge-queue { background: var(--warning-dim); color: var(--warning); }
+    .badge-db { background: var(--sky-dim); color: var(--sky); }
+    .flow-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 12px; line-height: 1.65; color: var(--text-dim);
+    }
+    .flow-box code {
+      background: var(--primary-dim); color: var(--primary);
+      padding: 1px 5px; border-radius: 4px; font-size: 11px; font-family: monospace;
+    }
+    .flow-box strong { color: var(--text); }
+    .flow-box ul { padding-left: 16px; margin-top: 6px; }
+    .flow-box li { margin-bottom: 3px; }
+
+    .flow-branch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .flow-branch-card {
+      border-radius: 10px; padding: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .branch-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; }
+    .branch-items { display: flex; flex-direction: column; gap: 4px; }
+    .branch-item { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+    .branch-item::before { content: '→'; color: var(--text-muted); flex-shrink: 0; }
+    .fast-card { border-color: rgba(16,185,129,0.25); }
+    .fast-card .branch-label { color: var(--success); }
+    .llm-card { border-color: rgba(124,58,237,0.25); }
+    .llm-card .branch-label { color: #a78bfa; }
+
+    /* ── DB GRID ── */
+    .db-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+    .db-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .db-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+    .db-card-header {
+      background: var(--surface2);
+      padding: 10px 14px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .db-card-title { font-size: 12px; font-weight: 700; }
+    .db-card-body { padding: 10px 14px; }
+    .db-field { font-size: 11px; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; }
+    .field-name { color: var(--text-dim); font-weight: 600; }
+    .field-type { color: var(--primary); font-size: 10px; font-family: monospace; }
+    .field-pk { color: var(--warning); font-size: 9px; font-weight: 700; }
+    .field-fk { color: #a78bfa; font-size: 9px; font-weight: 700; }
+
+    /* ── REDIS KEYS ── */
+    .redis-grid { display: flex; flex-direction: column; gap: 8px; }
+    .redis-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 16px;
+      display: grid;
+      grid-template-columns: 2fr 1fr 1.5fr;
+      gap: 12px; align-items: center;
+    }
+    .redis-row:hover { border-color: rgba(0,210,255,0.3); background: var(--surface2); }
+    .redis-key-name { font-family: monospace; font-size: 12px; color: var(--primary); }
+    .redis-ttl {
+      font-size: 10px; font-weight: 700;
+      background: var(--warning-dim); color: var(--warning);
+      padding: 2px 8px; border-radius: 5px; text-align: center;
+      width: fit-content;
+    }
+    .redis-purpose { font-size: 11px; color: var(--text-muted); }
+
+    /* ── SERVICES TABLE ── */
+    .svc-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    .svc-table th {
+      text-align: left; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--text-muted); padding: 8px 14px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .svc-table td { padding: 10px 14px; font-size: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .svc-table tr:hover td { background: var(--surface2); }
+    .svc-table tr:last-child td { border-bottom: none; }
+    td.svc-file { font-family: monospace; font-size: 11px; color: var(--primary); white-space: nowrap; }
+    td.svc-desc { color: var(--text-muted); line-height: 1.5; }
+    .svc-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+    /* ── TOOLTIP ── */
+    [data-tip] { position: relative; }
+    [data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: #0f1f35; border: 1px solid var(--border2);
+      color: var(--text); font-size: 11px; padding: 6px 10px;
+      border-radius: 8px; white-space: nowrap; z-index: 200;
+      pointer-events: none; max-width: 260px; white-space: normal; text-align: left;
+      box-shadow: var(--shadow);
+    }
+
+    /* MOBILE */
+    @media (max-width: 700px) {
+      .content { padding: 16px; }
+      .header { padding: 16px; }
+      .flow-branch-grid { grid-template-columns: 1fr; }
+      .db-grid { grid-template-columns: 1fr; }
+      .redis-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--surface3); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header class="header">
+  <div class="header-logo">⚡</div>
+  <div class="header-info">
+    <h1>Motor SaaS IA</h1>
+    <p>Fluxograma &amp; Documentação Visual Completa do Sistema</p>
+  </div>
+  <div class="header-badges">
+    <span class="badge">FastAPI</span>
+    <span class="badge">Next.js</span>
+    <span class="badge">v2.0 · Mar 2026</span>
+  </div>
+</header>
+
+<!-- ══════════════════ TABS ══════════════════ -->
+<nav class="tabs">
+  <button class="tab active" onclick="showTab('architecture',this)">🏗️ Arquitetura</button>
+  <button class="tab" onclick="showTab('message-flow',this)">💬 Fluxo de Mensagem</button>
+  <button class="tab" onclick="showTab('auth-flow',this)">🔐 Autenticação</button>
+  <button class="tab" onclick="showTab('data-layer',this)">🗄️ Banco &amp; Cache</button>
+  <button class="tab" onclick="showTab('services',this)">⚙️ Serviços</button>
+</nav>
+
+<!-- ══════════════════ CONTENT ══════════════════ -->
+<div class="content">
+
+  <!-- ───────── TAB 1: ARQUITETURA ───────── -->
+  <div id="architecture" class="diagram active">
+    <div class="section-head">
+      <h2>Arquitetura do Sistema</h2>
+      <p>Visão em camadas de todos os módulos, integrações e infraestrutura. Passe o mouse sobre os componentes para ver detalhes.</p>
+    </div>
+
+    <div class="arch-wrapper">
+
+      <!-- CAMADA 0: CLIENTES -->
+      <div class="layer-label">Camada de Clientes</div>
+      <div class="layer-cards">
+        <div class="arch-card border-primary" data-tip="Usuários finais interagindo pelo WhatsApp com o bot de IA">
+          <div class="card-icon">📱</div>
+          <div class="card-name">WhatsApp</div>
+          <div class="card-desc">Clientes (leads e alunos) enviando mensagens de texto, áudio e mídia</div>
+        </div>
+        <div class="arch-card" data-tip="Gestores e operadores acessando o painel de controle via browser">
+          <div class="card-icon">🌐</div>
+          <div class="card-name">Browser (Dashboard)</div>
+          <div class="card-desc">Usuários do painel — admins, operadores e visualizadores</div>
+        </div>
+      </div>
+
+      <!-- ARROW -->
+      <div class="layer-arrow"><div class="arrow-line"></div>↓ webhooks &amp; requisições HTTP ↓<div class="arrow-line"></div></div>
+
+      <!-- CAMADA 1: GATEWAYS -->
+      <div class="layer-label">Gateways de Entrada</div>
+      <div class="layer-cards">
+        <div class="arch-card" data-tip="Provedor de API WhatsApp. Recebe mensagens e dispara webhook POST /webhook/uazapi">
+          <div class="card-icon">📡</div>
+          <div class="card-name">UazAPI</div>
+          <div class="card-file">uaz_client.py / uaz_webhook.py</div>
+          <div class="card-desc">Gateway WhatsApp. Envia e recebe mensagens, presença, mídia, polls, carrossel</div>
+          <span class="card-tag tag-ext">Externo</span>
+        </div>
+        <div class="arch-card" data-tip="CRM Chatwoot — painel de atendimento. Também pode receber webhooks e enviar mensagens">
+          <div class="card-icon">💬</div>
+          <div class="card-name">Chatwoot CRM</div>
+          <div class="card-file">chatwoot_client.py / webhook.py</div>
+          <div class="card-desc">CRM para atendimento humano e bot. Fonte de conversas, labels e contatos</div>
+          <span class="card-tag tag-ext">Externo</span>
+        </div>
+        <div class="arch-card" data-tip="Sistema de gestão da academia (ERP). Usado para verificar matrículas, criar prospects e sincronizar planos">
+          <div class="card-icon">🏋️</div>
+          <div class="card-name">Evo (Academia)</div>
+          <div class="card-file">evo_client.py</div>
+          <div class="card-desc">ERP da academia. Verifica status de membros, planos e cria prospects</div>
+          <span class="card-tag tag-ext">Externo</span>
+        </div>
+        <div class="arch-card" data-tip="Next.js frontend servindo o dashboard. Faz chamadas ao backend via /api-backend (proxy reverso)">
+          <div class="card-icon">⚛️</div>
+          <div class="card-name">Frontend Next.js</div>
+          <div class="card-file">frontend/src/app/</div>
+          <div class="card-desc">Dashboard React com rotas para conversas, insights, personalidade IA, unidades, integrações</div>
+        </div>
+      </div>
+
+      <!-- ARROW -->
+      <div class="layer-arrow"><div class="arrow-line"></div>↓ FastAPI Routers ↓<div class="arrow-line"></div></div>
+
+      <!-- CAMADA 2: BACKEND API -->
+      <div class="layer-label">Backend FastAPI — Routers</div>
+      <div class="layer-cards">
+        <div class="arch-card highlight" data-tip="POST /webhook/uazapi — recebe mensagens UazAPI, identifica empresa/unidade e enfileira no Redis Stream">
+          <div class="card-icon">🔗</div>
+          <div class="card-name">uaz_webhook.py</div>
+          <div class="card-file">POST /webhook/uazapi</div>
+          <div class="card-desc">Recebe webhook WhatsApp → valida → enfileira no Redis Stream</div>
+          <span class="card-tag tag-core">Core</span>
+        </div>
+        <div class="arch-card" data-tip="POST /webhook — recebe eventos do Chatwoot (message_created, conversation_updated). Valida HMAC e processa.">
+          <div class="card-icon">🔗</div>
+          <div class="card-name">webhook.py</div>
+          <div class="card-file">POST /webhook</div>
+          <div class="card-desc">Recebe eventos Chatwoot — validação HMAC, rate limit e enfileiramento</div>
+        </div>
+        <div class="arch-card" data-tip="POST /auth/login — gera JWT. GET /auth/me — retorna usuário. Gerencia convites e criação de empresas.">
+          <div class="card-icon">🔐</div>
+          <div class="card-name">auth.py</div>
+          <div class="card-file">/auth/*</div>
+          <div class="card-desc">Login, JWT, registro via convite, criação de empresas (admin_master)</div>
+        </div>
+        <div class="arch-card" data-tip="KPIs, conversas paginadas, funil de vendas, budget/summary, budget/breakdown — alimenta o dashboard frontend">
+          <div class="card-icon">📊</div>
+          <div class="card-name">dashboard.py</div>
+          <div class="card-file">/dashboard/*</div>
+          <div class="card-desc">Métricas, unidades paginadas, conversas, budget tracker IA</div>
+        </div>
+        <div class="arch-card" data-tip="CRUD de unidades, personalidade, FAQ, fluxos visuais, menus, follow-ups, integrações. Rate limiting por empresa.">
+          <div class="card-icon">⚙️</div>
+          <div class="card-name">management.py</div>
+          <div class="card-file">/management/* (rate limited)</div>
+          <div class="card-desc">Configurações de unidade, personalidade IA, playground, preview de prompt, TTS</div>
+        </div>
+        <div class="arch-card" data-tip="WebSocket para stream de eventos em tempo real — atualizações ao vivo no dashboard de conversas">
+          <div class="card-icon">⚡</div>
+          <div class="card-name">ws.py + system.py</div>
+          <div class="card-file">WS /ws/* · GET /health</div>
+          <div class="card-desc">WebSocket em tempo real e endpoints de saúde, métricas Prometheus</div>
+        </div>
+      </div>
+
+      <!-- ARROW -->
+      <div class="layer-arrow"><div class="arrow-line"></div>↓ serviços de negócio ↓<div class="arrow-line"></div></div>
+
+      <!-- CAMADA 3: CORE ENGINE -->
+      <div class="layer-label">Motor Central (Processamento de IA)</div>
+      <div class="layer-cards">
+        <div class="arch-card highlight" data-tip="Orquestrador central. Recebe mensagem, classifica intenção, decide fast path ou LLM, registra eventos, envia resposta.">
+          <div class="card-icon">🧠</div>
+          <div class="card-name">bot_core.py</div>
+          <div class="card-file">processar_ia_e_responder()</div>
+          <div class="card-desc">Coração do sistema. Classifica intenção → roteia para fast path ou LLM → registra → responde</div>
+          <span class="card-tag tag-core">Core</span>
+        </div>
+        <div class="arch-card" data-tip="Worker que lê o Redis Stream (XREAD) e chama processar_ia_e_responder() de forma assíncrona para cada mensagem">
+          <div class="card-icon">🔄</div>
+          <div class="card-name">stream_worker.py</div>
+          <div class="card-file">XREAD chat_messages:{empresa_id}</div>
+          <div class="card-desc">Consome fila Redis Stream e despacha mensagens para o bot_core</div>
+        </div>
+        <div class="arch-card" data-tip="Workers periódicos: follow-up automático, resumo IA, sincronização de planos e métricas diárias">
+          <div class="card-icon">⏱️</div>
+          <div class="card-name">workers.py</div>
+          <div class="card-file">follow-up · métricas · sync</div>
+          <div class="card-desc">Jobs periódicos: follow-ups, resumo IA, sync planos Evo, métricas diárias</div>
+        </div>
+      </div>
+
+      <!-- ARROW -->
+      <div class="layer-arrow"><div class="arrow-line"></div>↓ chamadas de serviço ↓<div class="arrow-line"></div></div>
+
+      <!-- CAMADA 4: SERVICES -->
+      <div class="layer-label">Serviços de Suporte</div>
+      <div class="layer-cards">
+        <div class="arch-card" data-tip="Seleciona dinamicamente qual modelo LLM usar (Gemini Flash, GPT-4o, etc.) com base na personalidade e carga">
+          <div class="card-icon">🎯</div>
+          <div class="card-name">model_router.py</div>
+          <div class="card-desc">Roteamento dinâmico de modelo LLM por empresa/unidade</div>
+        </div>
+        <div class="arch-card" data-tip="Faz chamadas ao OpenRouter e OpenAI com retry automático (tenacity) e tratamento de erros de provider">
+          <div class="card-icon">🤖</div>
+          <div class="card-name">llm_service.py</div>
+          <div class="card-desc">Cliente OpenRouter/OpenAI com retry, fallback e circuit breaker</div>
+        </div>
+        <div class="arch-card" data-tip="RAG — Retrieval Augmented Generation. Busca semântica no FAQ para enriquecer o contexto do LLM">
+          <div class="card-icon">📚</div>
+          <div class="card-name">rag_service.py</div>
+          <div class="card-desc">Busca semântica no FAQ. Injeta contexto relevante no prompt LLM</div>
+        </div>
+        <div class="arch-card" data-tip="Classificação de intenções (horário, endereço, planos, etc.), detecção de saudações e extração de entidades">
+          <div class="card-icon">🔍</div>
+          <div class="card-name">ia_processor.py</div>
+          <div class="card-desc">Classificação de intenções, extração de entidades, análise de sentimento</div>
+        </div>
+        <div class="arch-card" data-tip="Executa fluxos de triagem visuais (nodes/edges) construídos pelo gestor no editor drag-and-drop">
+          <div class="card-icon">🌊</div>
+          <div class="card-name">flow_executor.py</div>
+          <div class="card-desc">Executa fluxos visuais de triagem (nodes JSON)</div>
+        </div>
+        <div class="arch-card" data-tip="Gera áudio TTS via Google Gemini em PT-BR. Usado no playground e respostas de voz">
+          <div class="card-icon">🔊</div>
+          <div class="card-name">tts_service.py</div>
+          <div class="card-desc">Text-To-Speech via Google Gemini (PT-BR)</div>
+        </div>
+        <div class="arch-card" data-tip="Testes A/B entre personalidades e modelos. Registra qual variante gerou mais conversões">
+          <div class="card-icon">🧪</div>
+          <div class="card-name">ab_testing.py</div>
+          <div class="card-desc">Testes A/B entre variantes de personalidade e modelo</div>
+        </div>
+        <div class="arch-card" data-tip="SMTP via Hostinger. Envia convites de usuário, relatórios periódicos e notificações">
+          <div class="card-icon">📧</div>
+          <div class="card-name">email_service.py</div>
+          <div class="card-desc">SMTP Hostinger — convites, relatórios e notificações</div>
+        </div>
+        <div class="arch-card" data-tip="Todas as queries ao PostgreSQL — busca, insert, update e upsert. Inclui cache de integração via Redis e timeout wrapper">
+          <div class="card-icon">🗃️</div>
+          <div class="card-name">db_queries.py</div>
+          <div class="card-desc">Todas as queries ao PostgreSQL com timeout e slow query logging</div>
+        </div>
+        <div class="arch-card" data-tip="Decorator @rate_limit_empresa — limita requisições por empresa_id via Redis com janelas fixas e fail-open">
+          <div class="card-icon">🛡️</div>
+          <div class="card-name">rate_limit.py</div>
+          <div class="card-desc">Rate limiting por tenant via Redis. Playground: 10/min, Stream: 5/min</div>
+          <span class="card-tag tag-new">Novo</span>
+        </div>
+      </div>
+
+      <!-- ARROW -->
+      <div class="layer-arrow"><div class="arrow-line"></div>↓ infraestrutura ↓<div class="arrow-line"></div></div>
+
+      <!-- CAMADA 5: INFRA -->
+      <div class="layer-label">Infraestrutura</div>
+      <div class="layer-cards">
+        <div class="arch-card" data-tip="Banco principal. Pool asyncpg com 20 conexões. Tabelas: empresas, unidades, conversas, mensagens, personalidade, planos, faq, métricas, token_usage...">
+          <div class="card-icon">🐘</div>
+          <div class="card-name">PostgreSQL</div>
+          <div class="card-file">database.py · asyncpg pool</div>
+          <div class="card-desc">Banco relacional principal com 18+ tabelas. Pool de 20 conexões.</div>
+        </div>
+        <div class="arch-card" data-tip="Cache de conversas, planos, integrações, rate limiting por tenant, Redis Streams para fila de mensagens assíncrona">
+          <div class="card-icon">⚡</div>
+          <div class="card-name">Redis</div>
+          <div class="card-file">redis_client.py · redis_helper.py</div>
+          <div class="card-desc">Cache multi-tenant, filas (Streams), rate limiting e estado de conversas</div>
+        </div>
+        <div class="arch-card" data-tip="Gateway de IA com acesso a GPT-4o, Claude, Gemini e Llama. Retry automático com fallback entre providers.">
+          <div class="card-icon">🌐</div>
+          <div class="card-name">OpenRouter / OpenAI</div>
+          <div class="card-file">llm_service.py · model_router.py</div>
+          <div class="card-desc">Gateway de modelos LLM com fallback automático entre providers</div>
+          <span class="card-tag tag-ext">Externo</span>
+        </div>
+        <div class="arch-card" data-tip="CDN de imagens para upload e servir fotos de unidades, grade de aulas e tour virtual">
+          <div class="card-icon">🖼️</div>
+          <div class="card-name">ImageKit CDN</div>
+          <div class="card-file">imagekit.py</div>
+          <div class="card-desc">Upload e servir imagens: fotos de unidades, grade e tour virtual</div>
+          <span class="card-tag tag-ext">Externo</span>
+        </div>
+      </div>
+
+    </div><!-- arch-wrapper -->
+  </div><!-- #architecture -->
+
+
+  <!-- ───────── TAB 2: FLUXO DE MENSAGEM ───────── -->
+  <div id="message-flow" class="diagram">
+    <div class="section-head">
+      <h2>Fluxo Completo de uma Mensagem WhatsApp</h2>
+      <p>Do cliente enviar até receber a resposta — passo a passo com bifurcação Fast Path vs LLM Path.</p>
+    </div>
+
+    <div class="flow-wrap">
+
+      <!-- Step 1 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">1</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">📱 Cliente envia mensagem</div>
+          <div class="flow-box">
+            Cliente envia texto, áudio ou mídia pelo <strong>WhatsApp</strong>.
+            A UazAPI recebe e dispara um <code>POST /webhook/uazapi</code> para o backend.
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">2</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🔗 Webhook recebido <span class="flow-badge badge-queue">Roteamento</span></div>
+          <div class="flow-box">
+            <code>uaz_webhook.py</code> identifica <strong>empresa_id</strong> e <strong>unidade_id</strong>
+            a partir do número WhatsApp da unidade. Valida a assinatura e aplica rate limit
+            por conversa (<code>max 10 req / 10s</code>).
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-warning">3</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">📨 Enfileiramento no Redis Stream <span class="flow-badge badge-queue">Assíncrono</span></div>
+          <div class="flow-box">
+            Mensagem adicionada ao stream <code>chat_messages:{empresa_id}</code> com campos:
+            <code>conversation_id</code>, <code>content</code>, <code>sender</code>, <code>unidade_id</code>.
+            O webhook retorna <code>200 OK</code> imediatamente para a UazAPI.
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">4</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🔄 stream_worker.py consome a fila</div>
+          <div class="flow-box">
+            Worker em background faz <code>XREAD BLOCK 30s</code> no stream.
+            Ao receber a mensagem, chama <code>processar_ia_e_responder()</code> do
+            <strong>bot_core.py</strong> de forma assíncrona.
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">5</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🧠 Classificação de Intenção <span class="flow-badge badge-fast">ia_processor</span></div>
+          <div class="flow-box">
+            <code>classificar_intencao(texto)</code> analisa palavras-chave e padrões para identificar:
+            <ul>
+              <li><code>horario</code> — consulta de horário de funcionamento</li>
+              <li><code>endereco</code> — localização e endereço da unidade</li>
+              <li><code>planos</code> — preços, mensalidades, matrículas</li>
+              <li><code>modalidades</code> — grade de aulas, esportes</li>
+              <li><code>saudacao</code> — cumprimentos e boas-vindas</li>
+              <li><code>llm</code> — perguntas abertas → requer IA</li>
+            </ul>
+          </div>
+
+          <!-- Branch -->
+          <div class="flow-branch-grid" style="margin-top:12px">
+            <div class="flow-branch-card fast-card">
+              <div class="branch-label">⚡ Fast Path (~50ms)</div>
+              <div class="branch-items">
+                <div class="branch-item">Busca unidade no cache Redis</div>
+                <div class="branch-item">Carrega dados do PostgreSQL</div>
+                <div class="branch-item">Formata resposta pronta</div>
+                <div class="branch-item">Zero custo de token</div>
+              </div>
+            </div>
+            <div class="flow-branch-card llm-card">
+              <div class="branch-label">🤖 LLM Path (~800-2000ms)</div>
+              <div class="branch-items">
+                <div class="branch-item">Busca histórico (Redis)</div>
+                <div class="branch-item">RAG: busca semântica FAQ</div>
+                <div class="branch-item">Monta prompt com contexto</div>
+                <div class="branch-item">Chama OpenRouter/OpenAI</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">6</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🛡️ Circuit Breaker do LLM <span class="flow-badge badge-llm">LLM Path</span></div>
+          <div class="flow-box">
+            Verifica o estado do circuit breaker (<code>cb:llm:state</code> no Redis):
+            <ul>
+              <li><strong>CLOSED</strong> — chama LLM normalmente com retry (tenacity)</li>
+              <li><strong>HALF_OPEN</strong> — testa 1 chamada; se falhar, reabre o circuito</li>
+              <li><strong>OPEN</strong> — retorna resposta genérica sem chamar LLM</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 7 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">7</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">📝 Registro no PostgreSQL <span class="flow-badge badge-db">Banco</span></div>
+          <div class="flow-box">
+            <code>bd_salvar_mensagem_local()</code> — salva mensagem do cliente e resposta da IA.<br>
+            <code>bd_registrar_evento_funil()</code> — registra mudanças de estado (lead quente, intenção de compra).<br>
+            <code>registrar_token_usage()</code> — acumula tokens usados por empresa/dia/modelo (fire-and-forget).
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 8 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-success">8</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">✍️ Simula digitação</div>
+          <div class="flow-box">
+            <code>uaz_client.set_presence(number, presence="composing", delay=2000)</code><br>
+            Mostra "digitando..." no WhatsApp do cliente enquanto processa.
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 9 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-success">9</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">📤 Envio da Resposta</div>
+          <div class="flow-box">
+            Dependendo da integração ativa da unidade:
+            <ul>
+              <li><strong>UazAPI</strong> → <code>uaz_client.send_text(fone, texto)</code></li>
+              <li><strong>Chatwoot</strong> → <code>chatwoot_client.enviar_mensagem(account_id, conv_id, texto)</code></li>
+            </ul>
+            Para mídias: <code>send_media()</code>, para menus: <code>send_menu()</code>, para áudio TTS: <code>send_media(type="myaudio")</code>.
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 10 -->
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-success">10</div></div>
+        <div class="flow-body">
+          <div class="flow-title">💾 Atualiza Cache Redis</div>
+          <div class="flow-box">
+            <ul>
+              <li>Histórico da conversa (<code>historico:{conversation_id}</code>, TTL 24h)</li>
+              <li>Unidade escolhida (<code>unidade_escolhida:{conversation_id}</code>, TTL 24h)</li>
+              <li>Labels no Chatwoot (se mudou estado do funil)</li>
+              <li>Score do lead atualizado no banco</li>
+            </ul>
+            <strong>Tempo total Fast Path: ~50–200ms · LLM Path: ~800–2500ms</strong>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- flow-wrap -->
+  </div><!-- #message-flow -->
+
+
+  <!-- ───────── TAB 3: AUTENTICAÇÃO ───────── -->
+  <div id="auth-flow" class="diagram">
+    <div class="section-head">
+      <h2>Fluxo de Autenticação</h2>
+      <p>Login com JWT de 24 horas, controle de acesso por perfil e registro via convite.</p>
+    </div>
+
+    <div class="flow-wrap">
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">1</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🔑 Login</div>
+          <div class="flow-box">
+            <code>POST /auth/login</code> com body <code>{"username": "email", "password": "senha"}</code>.
+            O backend busca o usuário no PostgreSQL e verifica a senha com <strong>bcrypt</strong>.
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">2</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🎫 Geração do JWT</div>
+          <div class="flow-box">
+            Gera token HS256 com <code>JWT_SECRET_KEY</code> válido por <strong>24 horas</strong>.<br>
+            Payload: <code>{"sub": "email", "empresa_id": 5, "perfil": "admin", "exp": ...}</code>.<br>
+            Retorna: <code>{"access_token": "eyJhbG...", "token_type": "bearer"}</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">3</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">💻 Frontend armazena o token</div>
+          <div class="flow-box">
+            Next.js salva em <code>localStorage.getItem("token")</code>.
+            Todas as requisições enviadas com header: <code>Authorization: Bearer eyJhbG...</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-primary">4</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🛡️ Middleware valida o JWT</div>
+          <div class="flow-box">
+            <code>Depends(get_current_user_token)</code> no endpoint:
+            <ul>
+              <li>Extrai token do header Authorization</li>
+              <li>Verifica assinatura HS256 e expiração (<code>exp</code>)</li>
+              <li>Retorna payload: <code>empresa_id</code>, <code>perfil</code>, <code>sub</code></li>
+              <li>Se inválido ou expirado → <code>401 Unauthorized</code></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-success">5</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">🎭 Controle de Acesso por Perfil</div>
+          <div class="flow-box">
+            <ul>
+              <li><strong>admin_master</strong> — Acesso total: todas as empresas, criação de tenants</li>
+              <li><strong>admin</strong> — Acesso total à própria empresa e unidades</li>
+              <li><strong>operador</strong> — Dashboard, conversas e atendimento</li>
+              <li><strong>visualizador</strong> — Apenas leitura de métricas</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-violet">6</div><div class="flow-line"></div></div>
+        <div class="flow-body">
+          <div class="flow-title">📩 Registro via Convite</div>
+          <div class="flow-box">
+            <code>POST /auth/criar-convite</code> → gera token único e envia e-mail via SMTP.<br>
+            <code>POST /auth/registrar?token=...</code> → valida o convite, cria usuário com senha bcrypt.<br>
+            Convites expiram após 48 horas e são de uso único.
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-indicator"><div class="flow-num num-warning">7</div></div>
+        <div class="flow-body">
+          <div class="flow-title">🚫 Rate Limiting de Login</div>
+          <div class="flow-box">
+            Máximo <strong>5 tentativas de login / minuto</strong> por IP.
+            Endpoints sensíveis de gestão têm rate limiting adicional por <code>empresa_id</code>
+            via Redis: <code>rl:mgmt:{empresa_id}:{tag}:{bucket}</code>.
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- #auth-flow -->
+
+
+  <!-- ───────── TAB 4: BANCO & CACHE ───────── -->
+  <div id="data-layer" class="diagram">
+    <div class="section-head">
+      <h2>Banco de Dados &amp; Cache</h2>
+      <p>Tabelas PostgreSQL principais e padrões de chaves Redis com TTLs.</p>
+    </div>
+
+    <div class="section-sub">🐘 PostgreSQL — Tabelas Principais</div>
+    <div class="db-grid">
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">🏢</span><span class="db-card-title">empresas</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">id</span><span class="field-pk">PK</span></div>
+          <div class="db-field"><span class="field-name">uuid</span><span class="field-type">uuid</span></div>
+          <div class="db-field"><span class="field-name">nome, nome_fantasia</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">cnpj, email</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">plano, status</span><span class="field-type">text</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">👤</span><span class="db-card-title">usuarios</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">id</span><span class="field-pk">PK</span></div>
+          <div class="db-field"><span class="field-name">empresa_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">email, nome</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">senha_hash</span><span class="field-type">bcrypt</span></div>
+          <div class="db-field"><span class="field-name">perfil</span><span class="field-type">enum</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">🏗️</span><span class="db-card-title">unidades</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">id</span><span class="field-pk">PK</span></div>
+          <div class="db-field"><span class="field-name">empresa_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">nome, slug</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">numero_whatsapp</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">horarios</span><span class="field-type">jsonb</span></div>
+          <div class="db-field"><span class="field-name">endereco, cidade</span><span class="field-type">text</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">💬</span><span class="db-card-title">conversas</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">id</span><span class="field-pk">PK</span></div>
+          <div class="db-field"><span class="field-name">conversation_id</span><span class="field-type">text idx</span></div>
+          <div class="db-field"><span class="field-name">empresa_id, unidade_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">contato_nome, contato_fone</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">tipo_cliente</span><span class="field-type">lead|aluno</span></div>
+          <div class="db-field"><span class="field-name">score_lead</span><span class="field-type">int</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">🧠</span><span class="db-card-title">personalidade_ia</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">empresa_id, unidade_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">tom, idioma</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">instrucoes_custom</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">modelo_preferido</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">comprimento_resposta</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">usar_emoji</span><span class="field-type">bool</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">💰</span><span class="db-card-title">planos</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">empresa_id, unidade_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">nome</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">valor, valor_promocional</span><span class="field-type">numeric</span></div>
+          <div class="db-field"><span class="field-name">diferenciais</span><span class="field-type">jsonb[]</span></div>
+          <div class="db-field"><span class="field-name">link_venda</span><span class="field-type">text</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">📖</span><span class="db-card-title">faq</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">empresa_id, unidade_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">pergunta, resposta</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">categoria</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">embedding</span><span class="field-type">vector (pgvector)</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">📊</span><span class="db-card-title">token_usage</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">empresa_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">data</span><span class="field-type">date</span></div>
+          <div class="db-field"><span class="field-name">modelo</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">tokens_in, tokens_out</span><span class="field-type">bigint</span></div>
+          <div class="db-field"><span class="field-name">custo_usd</span><span class="field-type">numeric(12,8)</span></div>
+          <div class="db-field"><span class="field-name">req_count</span><span class="field-type">int</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">📈</span><span class="db-card-title">eventos_funil</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">conversation_id</span><span class="field-type">text idx</span></div>
+          <div class="db-field"><span class="field-name">empresa_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">evento</span><span class="field-type">text</span></div>
+          <div class="db-field"><span class="field-name">timestamp</span><span class="field-type">timestamptz</span></div>
+        </div>
+      </div>
+
+      <div class="db-card">
+        <div class="db-card-header"><span class="db-table-icon">🔗</span><span class="db-card-title">integracoes</span></div>
+        <div class="db-card-body">
+          <div class="db-field"><span class="field-name">empresa_id, unidade_id</span><span class="field-fk">FK</span></div>
+          <div class="db-field"><span class="field-name">tipo</span><span class="field-type">chatwoot|evo|uazapi</span></div>
+          <div class="db-field"><span class="field-name">config</span><span class="field-type">jsonb</span></div>
+          <div class="db-field"><span class="field-name">ativo</span><span class="field-type">bool</span></div>
+        </div>
+      </div>
+
+    </div><!-- db-grid -->
+
+    <div class="section-sub" style="margin-top:36px">⚡ Redis — Chaves e TTLs</div>
+    <div class="redis-grid">
+      <div class="redis-row">
+        <div class="redis-key-name">historico:{conversation_id}</div>
+        <div class="redis-ttl">TTL 24h</div>
+        <div class="redis-purpose">Histórico comprimido da conversa para contexto do LLM</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">unidade_escolhida:{conversation_id}</div>
+        <div class="redis-ttl">TTL 24h</div>
+        <div class="redis-purpose">Unidade (filial) associada à conversa em andamento</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">planos:ativos:{empresa_id}:{unidade_id}</div>
+        <div class="redis-ttl">TTL 5min</div>
+        <div class="redis-purpose">Cache de planos sincronizados com o Evo (academia)</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">cfg:integracao:{empresa_id}:{tipo}</div>
+        <div class="redis-ttl">TTL 5min</div>
+        <div class="redis-purpose">Cache de configuração de integração (Chatwoot, UazAPI, Evo)</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">cache_semantico:{empresa_id}:{hash}</div>
+        <div class="redis-ttl">TTL 1h</div>
+        <div class="redis-purpose">Cache de respostas semânticas para perguntas similares</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">pause_ia:{conversation_id}</div>
+        <div class="redis-ttl">Variável</div>
+        <div class="redis-purpose">Flag para pausar a IA em conversas com atendimento humano</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">cb:llm:state</div>
+        <div class="redis-ttl">Persist</div>
+        <div class="redis-purpose">Estado do Circuit Breaker do LLM (CLOSED / OPEN / HALF_OPEN)</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">rl:mgmt:{empresa_id}:{tag}:{bucket}</div>
+        <div class="redis-ttl">TTL 2min</div>
+        <div class="redis-purpose">Rate limiting por tenant — playground, preview-prompt, TTS, stream</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">rl:conv:{conversation_id}</div>
+        <div class="redis-ttl">TTL 10s</div>
+        <div class="redis-purpose">Rate limit por conversa: máx 10 mensagens a cada 10 segundos</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">chat_messages:{empresa_id}</div>
+        <div class="redis-ttl">Stream</div>
+        <div class="redis-purpose">Redis Stream (fila de mensagens) — consumida pelo stream_worker</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">ai_msg_id:{msg_id}</div>
+        <div class="redis-ttl">TTL 1h</div>
+        <div class="redis-purpose">Marca mensagens enviadas pela IA para evitar reprocessamento</div>
+      </div>
+      <div class="redis-row">
+        <div class="redis-key-name">map:account:{account_id}</div>
+        <div class="redis-ttl">TTL 1h</div>
+        <div class="redis-purpose">Mapa Chatwoot account_id → empresa_id (evita query ao BD)</div>
+      </div>
+    </div>
+
+  </div><!-- #data-layer -->
+
+
+  <!-- ───────── TAB 5: SERVIÇOS ───────── -->
+  <div id="services" class="diagram">
+    <div class="section-head">
+      <h2>Mapa de Serviços &amp; Routers</h2>
+      <p>Responsabilidade detalhada de cada módulo backend e seus endpoints.</p>
+    </div>
+
+    <div class="section-sub">⚙️ Serviços — src/services/</div>
+    <div class="svc-table-wrap">
+      <table class="svc-table">
+        <thead><tr><th>Arquivo</th><th>Responsabilidade</th><th>Funções Principais</th></tr></thead>
+        <tbody>
+          <tr><td class="svc-file">bot_core.py</td><td>Orquestrador central do bot</td><td class="svc-desc"><code>processar_ia_e_responder()</code>, startup/shutdown dos workers, monitoramento de unidade</td></tr>
+          <tr><td class="svc-file">ia_processor.py</td><td>Processamento de intenções</td><td class="svc-desc"><code>classificar_intencao()</code>, <code>responder_horario/endereco/planos()</code>, <code>transcrever_audio()</code></td></tr>
+          <tr><td class="svc-file">llm_service.py</td><td>Cliente LLM com retry</td><td class="svc-desc">Chamadas OpenRouter/OpenAI, retry via tenacity, fallback entre providers</td></tr>
+          <tr><td class="svc-file">model_router.py</td><td>Seleção dinâmica de modelo</td><td class="svc-desc">Roteia para Gemini Flash, GPT-4o, Claude, etc. com base em config e carga</td></tr>
+          <tr><td class="svc-file">rag_service.py</td><td>Busca semântica no FAQ</td><td class="svc-desc"><code>buscar_conhecimento()</code>, embeddings pgvector, injeta contexto no prompt</td></tr>
+          <tr><td class="svc-file">db_queries.py</td><td>Acesso ao PostgreSQL</td><td class="svc-desc">Todas as queries com timeout wrapper, UPSERT de token_usage, slow query logging</td></tr>
+          <tr><td class="svc-file">uaz_client.py</td><td>API WhatsApp (UazAPI)</td><td class="svc-desc"><code>send_text/media/menu/poll/carousel()</code>, <code>set_presence()</code>, retry exponencial</td></tr>
+          <tr><td class="svc-file">chatwoot_client.py</td><td>CRM Chatwoot</td><td class="svc-desc"><code>enviar_mensagem()</code>, validação HMAC, atualizar contato, escalar para humano</td></tr>
+          <tr><td class="svc-file">evo_client.py</td><td>ERP academia</td><td class="svc-desc"><code>verificar_status_membro()</code>, <code>criar_prospect()</code>, sincronizar planos</td></tr>
+          <tr><td class="svc-file">tts_service.py</td><td>Text-To-Speech</td><td class="svc-desc">Google Gemini TTS em PT-BR. Gera áudio para respostas de voz</td></tr>
+          <tr><td class="svc-file">flow_executor.py</td><td>Fluxos visuais</td><td class="svc-desc">Executa nodes/edges JSON criados no editor de fluxo de triagem</td></tr>
+          <tr><td class="svc-file">ab_testing.py</td><td>Testes A/B</td><td class="svc-desc"><code>aplicar_teste_ab()</code>, <code>registrar_resultado_ab()</code> — compara variantes de personalidade</td></tr>
+          <tr><td class="svc-file">email_service.py</td><td>E-mail SMTP</td><td class="svc-desc">Hostinger SMTP — convites, relatórios, notificações (HTML templates)</td></tr>
+          <tr><td class="svc-file">stream_worker.py</td><td>Consumidor de fila</td><td class="svc-desc">XREAD no Redis Stream, despacha para bot_core, gerencia ACKs</td></tr>
+          <tr><td class="svc-file">workers.py</td><td>Jobs periódicos</td><td class="svc-desc">follow-up automático, resumo IA, sync planos, métricas diárias, eleição de líder</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-sub" style="margin-top:36px">🔌 Routers FastAPI — src/api/routers/</div>
+    <div class="svc-table-wrap">
+      <table class="svc-table">
+        <thead><tr><th>Router</th><th>Prefixo</th><th>Endpoints Principais</th></tr></thead>
+        <tbody>
+          <tr><td class="svc-file">auth.py</td><td>/auth</td><td class="svc-desc">POST /login · GET /me · POST /criar-convite · POST /registrar · GET /empresas · POST /create-empresa</td></tr>
+          <tr><td class="svc-file">dashboard.py</td><td>/dashboard</td><td class="svc-desc">GET /unidades (paginado) · GET /conversas · GET /metrics · GET /budget/summary · GET /budget/breakdown · GET /eventos/{id}</td></tr>
+          <tr><td class="svc-file">management.py</td><td>/management</td><td class="svc-desc">CRUD unidades/personalidade/faq/planos/integrações · POST /playground · GET /preview-prompt · POST /tts/preview</td></tr>
+          <tr><td class="svc-file">webhook.py</td><td>/webhook</td><td class="svc-desc">POST / — recebe eventos Chatwoot (message_created, conversation_updated, conversation_created)</td></tr>
+          <tr><td class="svc-file">uaz_webhook.py</td><td>/webhook</td><td class="svc-desc">POST /uazapi — recebe mensagens UazAPI, roteia por número WhatsApp, enfileira no Redis Stream</td></tr>
+          <tr><td class="svc-file">ws.py</td><td>/ws</td><td class="svc-desc">WS /conversa/{id} — stream de eventos em tempo real para o dashboard</td></tr>
+          <tr><td class="svc-file">system.py</td><td>/</td><td class="svc-desc">GET /health · GET /metrics (Prometheus) · GET /version</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-sub" style="margin-top:36px">🌐 Frontend Next.js — Páginas</div>
+    <div class="svc-table-wrap">
+      <table class="svc-table">
+        <thead><tr><th>Página</th><th>Rota</th><th>Função</th></tr></thead>
+        <tbody>
+          <tr><td class="svc-file">page.tsx</td><td>/</td><td class="svc-desc">Login com JWT — autenticação inicial</td></tr>
+          <tr><td class="svc-file">register/page.tsx</td><td>/register</td><td class="svc-desc">Registro de usuário via token de convite</td></tr>
+          <tr><td class="svc-file">dashboard/page.tsx</td><td>/dashboard</td><td class="svc-desc">Hub principal — KPIs, funil de vendas, leads recentes, card Consumo IA</td></tr>
+          <tr><td class="svc-file">conversas/page.tsx</td><td>/dashboard/conversas</td><td class="svc-desc">Histórico de conversas com busca e filtros</td></tr>
+          <tr><td class="svc-file">insights/page.tsx</td><td>/dashboard/insights</td><td class="svc-desc">Analytics — gráficos de conversão, intenções frequentes, sentimento</td></tr>
+          <tr><td class="svc-file">units/page.tsx</td><td>/dashboard/units</td><td class="svc-desc">Gestão de unidades (filiais) — criar, editar, ativar</td></tr>
+          <tr><td class="svc-file">personality/page.tsx</td><td>/dashboard/personality</td><td class="svc-desc">Personalidade da IA — tom, idioma, verbosidade, templates, preview de prompt</td></tr>
+          <tr><td class="svc-file">integrations/page.tsx</td><td>/dashboard/integrations</td><td class="svc-desc">Setup Chatwoot, UazAPI, Evo — tokens, URLs, webhooks</td></tr>
+          <tr><td class="svc-file">faq/page.tsx</td><td>/dashboard/faq</td><td class="svc-desc">Base de conhecimento — perguntas e respostas para RAG</td></tr>
+          <tr><td class="svc-file">fluxo-triagem/page.tsx</td><td>/dashboard/fluxo-triagem</td><td class="svc-desc">Editor visual drag-and-drop de fluxos de triagem</td></tr>
+          <tr><td class="svc-file">followups/page.tsx</td><td>/dashboard/followups</td><td class="svc-desc">Templates de follow-up automático — trigger, mensagem, delay</td></tr>
+          <tr><td class="svc-file">admin/page.tsx</td><td>/admin</td><td class="svc-desc">Painel admin_master — empresas, usuários, métricas globais</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- #services -->
+
+</div><!-- .content -->
+
+<script>
+  function showTab(id, btn) {
+    document.querySelectorAll('.diagram').forEach(d => d.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    if (btn) btn.classList.add('active');
+  }
+
+  // Highlight arch cards on click
+  document.querySelectorAll('.arch-card').forEach(card => {
+    card.addEventListener('click', () => {
+      card.classList.toggle('highlight');
+    });
+  });
+</script>
+</body>
+</html>

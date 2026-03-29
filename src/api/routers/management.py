@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
 import src.core.database as _database
@@ -10,6 +10,7 @@ from src.core.redis_client import redis_client
 import json
 import asyncio
 from src.services.db_queries import listar_unidades_ativas, buscar_planos_ativos, formatar_planos_para_prompt
+from src.utils.rate_limit import rate_limit_empresa
 
 router = APIRouter(prefix="/management", tags=["management"])
 
@@ -58,6 +59,7 @@ class PersonalityUpdate(BaseModel):
     estrategia_tour: Optional[str] = None
     tour_perguntar_primeira_visita: Optional[bool] = None
     tour_mensagem_custom: Optional[str] = None
+    comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -118,6 +120,7 @@ class PersonalityCreate(BaseModel):
     estrategia_tour: Optional[str] = "smart"
     tour_perguntar_primeira_visita: Optional[bool] = True
     tour_mensagem_custom: Optional[str] = None
+    comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
 
     model_config = {"extra": "allow"}
 
@@ -414,14 +417,26 @@ async def create_personality(
             data.oferecer_tour if data.oferecer_tour is not None else True
         )
         new_id = row["id"]
-        
+
+        # Salva comprimento_resposta separadamente (resiliência se migration pendente)
+        try:
+            comprimento = data.comprimento_resposta or "normal"
+            if comprimento not in ("concisa", "normal", "detalhada"):
+                comprimento = "normal"
+            await _database.db_pool.execute(
+                "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2",
+                comprimento, new_id
+            )
+        except Exception:
+            pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
         # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
         if data.ativo:
             await _database.db_pool.execute(
                 "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
                 empresa_id, new_id
             )
-        
+
         return {"id": new_id, "status": "success"}
     except Exception as e:
         logger.error(f"Erro ao criar personalidade: {e}")
@@ -528,6 +543,18 @@ async def update_personality_by_id(
             logger.error(f"Erro ao atualizar personalidade {pid}: {e2}")
             raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e2)}")
 
+    # Salva comprimento_resposta separadamente (resiliência se migration pendente)
+    try:
+        comprimento = data.comprimento_resposta or "normal"
+        if comprimento not in ("concisa", "normal", "detalhada"):
+            comprimento = "normal"
+        await _database.db_pool.execute(
+            "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2 AND empresa_id=$3",
+            comprimento, pid, empresa_id
+        )
+    except Exception:
+        pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
     # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
     if data.ativo:
         await _database.db_pool.execute(
@@ -563,6 +590,120 @@ async def delete_personality(
         "DELETE FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
     )
     return {"status": "success"}
+
+
+# --- Preview de Prompt e Templates ---
+
+@router.post("/personalities/{pid}/preview-prompt")
+@rate_limit_empresa(max_calls=20, window=60, tag="preview_prompt")
+async def preview_personality_prompt(
+    pid: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna o system prompt completo que seria enviado ao LLM para esta personalidade.
+    Inclui contagem de caracteres e estimativa de tokens.
+    Útil para o cliente entender exatamente como a IA está configurada.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    p, _model, _temp, _max_tokens, faq_text, unidades, planos = await _load_playground_context(pid, empresa_id)
+    prompt = _build_playground_prompt(p, faq_text=faq_text, unidades=unidades, planos=planos)
+
+    # Extrai os títulos das seções para exibição na UI
+    sections = [line.strip("[]") for line in prompt.splitlines() if line.startswith("[") and line.endswith("]")]
+
+    char_count = len(prompt)
+    # Estimativa de tokens: ~4 chars por token (regra geral para português)
+    estimated_tokens = max(1, char_count // 4)
+
+    return {
+        "system_prompt": prompt,
+        "char_count": char_count,
+        "estimated_tokens": estimated_tokens,
+        "sections": sections,
+        "model": _model,
+        "nome_ia": p.get("nome_ia") or "Assistente",
+    }
+
+
+@router.get("/personality-templates")
+async def list_personality_templates(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Lista templates pré-prontos de personalidade.
+    Permitem ao cliente começar com uma configuração de qualidade ao invés de campos em branco.
+    """
+    templates = [
+        {
+            "id": "academia_vendas_ativa",
+            "nome": "Academia — Vendas Ativas 💪",
+            "descricao": "Consultora de vendas animada, proativa, foca em converter leads em alunos.",
+            "tom_voz": "Entusiasta",
+            "fields": {
+                "nome_ia": "Ana",
+                "personalidade": "Sou Ana, consultora de vendas da academia. Sou animada, proativa e apaixonada por ajudar pessoas a transformarem suas vidas através do exercício. Celebro cada decisão de começar a treinar!",
+                "instrucoes_base": "Seu objetivo principal é converter cada contato em uma matrícula. Identifique o objetivo do cliente (emagrecer, ganhar músculo, saúde, etc.), mostre o plano ideal e crie urgência para fechar.",
+                "tom_voz": "Entusiasta",
+                "objetivos_venda": "Converter leads em alunos matriculados. Meta: 1 matrícula por cada 3 atendimentos.",
+                "script_vendas": "1. Pergunte o objetivo (emagrecer, ganhar músculo, saúde)\n2. Mostre como a academia ajuda nesse objetivo\n3. Apresente o plano mais adequado\n4. Crie urgência (promoção, vaga, etc.)\n5. Direcione para matrícula",
+                "frases_fechamento": "Que tal começar hoje mesmo? • Temos uma condição especial para novos alunos! • Sua transformação começa agora!",
+                "comprimento_resposta": "concisa",
+                "restricoes": "Não falar mal de outras academias. Não prometer resultados físicos específicos.",
+            }
+        },
+        {
+            "id": "academia_receptiva",
+            "nome": "Academia — Atendente Receptivo 😊",
+            "descricao": "Atendente simpático e prestativo, foca em esclarecer dúvidas com clareza.",
+            "tom_voz": "Amigável",
+            "fields": {
+                "nome_ia": "Carol",
+                "personalidade": "Sou Carol, atendente virtual da academia. Sou simpática, paciente e sempre disposta a ajudar. Me preocupo em entender o que cada pessoa precisa e oferecer a melhor solução.",
+                "instrucoes_base": "Priorize clareza e simpatia. Responda as dúvidas completamente, sugira a melhor opção para o perfil do cliente e sempre convide para uma visita ou agende uma conversa.",
+                "tom_voz": "Amigável",
+                "objetivos_venda": "Gerar visitas presenciais e conversas com a equipe comercial.",
+                "script_vendas": "1. Cumprimente e pergunte como pode ajudar\n2. Esclareça todas as dúvidas com detalhes\n3. Pergunte o objetivo e perfil\n4. Sugira visita ou agendamento",
+                "comprimento_resposta": "normal",
+                "restricoes": "Não pressionar para matrícula imediata. Sempre dar espaço para o cliente decidir.",
+            }
+        },
+        {
+            "id": "academia_premium",
+            "nome": "Academia Premium 💎",
+            "descricao": "Atendimento exclusivo para academias premium. Tom refinado, foco em experiência.",
+            "tom_voz": "Profissional",
+            "fields": {
+                "nome_ia": "Sofia",
+                "personalidade": "Sou Sofia, consultora de bem-estar. Ofereço um atendimento personalizado e exclusivo, focado na experiência completa do membro. Valorizo cada detalhe da jornada de saúde dos nossos clientes.",
+                "instrucoes_base": "Tom refinado e profissional. Destaque os diferenciais exclusivos da academia (equipamentos, metodologia, personalização). Foque na experiência e não apenas no preço.",
+                "tom_voz": "Profissional",
+                "posicionamento": "Academia premium com foco em resultados personalizados e experiência de alto padrão.",
+                "diferenciais": "Equipamentos importados, personal trainers certificados internacionalmente, aulas exclusivas, ambiente climatizado.",
+                "comprimento_resposta": "normal",
+                "restricoes": "Não mencionar preços sem antes apresentar os diferenciais. Nunca comparar com academias populares.",
+            }
+        },
+        {
+            "id": "consultora_vendas_generica",
+            "nome": "Consultora de Vendas Genérica 📈",
+            "descricao": "Template universal para qualquer negócio focado em vendas e conversão.",
+            "tom_voz": "Profissional",
+            "fields": {
+                "nome_ia": "Lia",
+                "personalidade": "Sou Lia, consultora especializada em entender as necessidades dos clientes e encontrar a solução ideal para cada um. Sou objetiva, confiante e focada em resultados.",
+                "instrucoes_base": "Identifique o problema ou necessidade do cliente, apresente a solução mais adequada, destaque os benefícios e direcione para a conversão.",
+                "tom_voz": "Profissional",
+                "objetivos_venda": "Converter contatos em clientes através de atendimento consultivo.",
+                "script_vendas": "1. Entenda o problema\n2. Apresente a solução\n3. Destaque benefícios\n4. Trate objeções\n5. Direcione para conversão",
+                "comprimento_resposta": "concisa",
+            }
+        },
+    ]
+    return templates
 
 
 # --- Fluxo de Triagem Visual (n8n-style) ---
@@ -955,10 +1096,35 @@ REGRAS:
     if despedida.strip():
         blocos.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
 
+    # 18. Controle de verbosidade (comprimento das respostas)
+    _VERBOSIDADE_MAP = {
+        "concisa":   (
+            "[TAMANHO DE RESPOSTA — OBRIGATÓRIO]\n"
+            "- Responda em no máximo 2–3 frases por mensagem.\n"
+            "- Seja direto e objetivo. Elimine qualquer texto desnecessário.\n"
+            "- NUNCA use listas, enumerações ou parágrafos longos.\n"
+            "- Uma ideia por mensagem. Se precisar de mais, faça em mensagens separadas."
+        ),
+        "normal":    (
+            "[TAMANHO DE RESPOSTA]\n"
+            "- Respostas entre 3–5 frases. Balance completude e concisão.\n"
+            "- Use listas apenas quando a comparação de opções for essencial."
+        ),
+        "detalhada": (
+            "[TAMANHO DE RESPOSTA]\n"
+            "- Pode detalhar quando o cliente demonstrar interesse ou pedir mais informações.\n"
+            "- Use listas e estrutura quando ajudar a clareza da resposta."
+        ),
+    }
+    verbosidade = p.get("comprimento_resposta") or "normal"
+    if verbosidade in _VERBOSIDADE_MAP:
+        blocos.append(_VERBOSIDADE_MAP[verbosidade])
+
     return "\n\n".join(blocos)
 
 
 @router.post("/personalities/playground")
+@rate_limit_empresa(max_calls=10, window=60, tag="playground")
 async def personality_playground(
     body: PlaygroundRequest,
     token_payload: dict = Depends(get_current_user_token)
@@ -1067,6 +1233,7 @@ async def _load_playground_context(personality_id: Optional[int], empresa_id: in
 
 
 @router.post("/personalities/playground/stream")
+@rate_limit_empresa(max_calls=5, window=60, tag="playground_stream")
 async def personality_playground_stream(
     body: PlaygroundRequest,
     token_payload: dict = Depends(get_current_user_token)
@@ -1199,6 +1366,7 @@ async def list_tts_voices(token_payload: dict = Depends(get_current_user_token))
 
 
 @router.post("/tts/preview")
+@rate_limit_empresa(max_calls=15, window=60, tag="tts_preview")
 async def preview_tts_voice(
     body: dict,
     token_payload: dict = Depends(get_current_user_token)

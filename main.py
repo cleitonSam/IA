@@ -88,12 +88,19 @@ app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import FRONTEND_URL
 
-_cors_origins = [
-    FRONTEND_URL,
-    "http://localhost:3000",
-]
-# Remove duplicatas e vazios
-_cors_origins = list({o for o in _cors_origins if o})
+def _build_cors_origins() -> list:
+    """
+    Constrói lista de origens CORS permitidas de forma dinâmica.
+    Suporta múltiplos domínios via env var CORS_ORIGINS (separados por vírgula).
+    Exemplo: CORS_ORIGINS=https://app.meudominio.com,https://admin.meudominio.com
+    """
+    base = [FRONTEND_URL, "http://localhost:3000"]
+    extras_raw = os.getenv("CORS_ORIGINS", "")
+    extras = [o.strip() for o in extras_raw.split(",") if o.strip().startswith("http")]
+    return list({o for o in base + extras if o})
+
+_cors_origins = _build_cors_origins()
+logger.info(f"🌐 CORS origins configuradas: {_cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -177,6 +184,44 @@ async def rate_limit_middleware(request: Request, call_next):
         pass
 
     return await call_next(request)
+
+# ── Middleware de Erros Centralizado ─────────────────────────────────────────
+# Captura exceções não tratadas em qualquer endpoint e retorna resposta
+# padronizada com log detalhado (método, path, IP, traceback).
+import traceback as _traceback
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.middleware("http")
+async def error_handler_middleware(request: Request, call_next):
+    """
+    Middleware global de tratamento de erros.
+    - Captura qualquer exceção não tratada em endpoints
+    - Loga com contexto completo (método, path, IP, traceback)
+    - Retorna JSON padronizado {detail, request_id} com status 500
+    - Evita vazar stack traces para o cliente
+    """
+    request_id = str(uuid.uuid4())[:8]  # ID curto para correlação em logs
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as exc:
+        client_ip = request.client.host if request.client else "unknown"
+        tb = _traceback.format_exc()
+        logger.error(
+            f"❌ [{request_id}] Exceção não tratada — "
+            f"{request.method} {request.url.path} | IP: {client_ip}\n"
+            f"{tb}"
+        )
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="unhandled_exception").inc()
+        return _JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Erro interno no servidor. Tente novamente em instantes.",
+                "request_id": request_id,
+            },
+        )
+
 
 # ============================================================
 # ⚡ CIRCUIT BREAKER — protege contra queda do OpenRouter/LLM

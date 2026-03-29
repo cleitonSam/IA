@@ -6,7 +6,8 @@ import {
   Brain, Plus, Pencil, Trash2, Save, Loader2, CheckCircle2,
   Sparkles, Target, Cpu, Thermometer, Send, Bot, PlayCircle,
   Mic2, MessageSquare, Clock, TrendingUp, ShieldAlert, ListChecks,
-  AlertCircle, AlertTriangle, Search, ChevronRight, Zap, X, RotateCcw, Copy
+  AlertCircle, AlertTriangle, Search, ChevronRight, Zap, X, RotateCcw, Copy,
+  Eye, FileText, LayoutTemplate, AlignLeft, AlignCenter, AlignJustify
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -54,6 +55,24 @@ interface Personality {
   estrategia_tour: string;
   tour_perguntar_primeira_visita: boolean;
   tour_mensagem_custom: string;
+  comprimento_resposta?: string;
+}
+
+interface PromptPreviewData {
+  system_prompt: string;
+  char_count: number;
+  estimated_tokens: number;
+  sections: string[];
+  model: string;
+  nome_ia: string;
+}
+
+interface TemplateData {
+  id: string;
+  nome: string;
+  descricao: string;
+  emoji: string;
+  dados: Partial<Omit<Personality, "id">>;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -99,6 +118,7 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   estrategia_tour: "smart",
   tour_perguntar_primeira_visita: true,
   tour_mensagem_custom: "",
+  comprimento_resposta: "normal",
 };
 
 const MODELS = [
@@ -167,6 +187,14 @@ export default function PersonalityPage() {
   const [pgShowSessions, setPgShowSessions] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // ── Preview Prompt state ──
+  const [previewModal, setPreviewModal] = useState(false);
+  const [previewData, setPreviewData] = useState<PromptPreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // ── Templates state ──
+  const [templatesModal, setTemplatesModal] = useState(false);
+  const [templates, setTemplates] = useState<TemplateData[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
 
   const PG_STORAGE_KEY = "pg_sessions_v2";
   const PG_MAX_SESSIONS = 20;
@@ -354,6 +382,7 @@ export default function PersonalityPage() {
       estrategia_tour: p.estrategia_tour || (p.oferecer_tour === false ? "off" : "smart"),
       tour_perguntar_primeira_visita: p.tour_perguntar_primeira_visita ?? true,
       tour_mensagem_custom: p.tour_mensagem_custom || "",
+      comprimento_resposta: p.comprimento_resposta || "normal",
     });
   };
 
@@ -394,6 +423,47 @@ export default function PersonalityPage() {
       }
       setSaveError(msg);
     } finally { setSaving(false); }
+  };
+
+  // ── Preview Prompt ─────────────────────────────────────────────────────────
+  const loadPreview = async () => {
+    if (typeof selected !== "number") return;
+    setPreviewLoading(true);
+    setPreviewModal(true);
+    setPreviewData(null);
+    try {
+      const res = await axios.post(
+        `/api-backend/management/personalities/${selected}/preview-prompt`,
+        {},
+        getConfig()
+      );
+      setPreviewData(res.data);
+    } catch {
+      setPreviewData(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // ── Templates ──────────────────────────────────────────────────────────────
+  const loadTemplates = async () => {
+    setTemplatesLoading(true);
+    setTemplatesModal(true);
+    if (templates.length > 0) { setTemplatesLoading(false); return; }
+    try {
+      const res = await axios.get("/api-backend/management/personality-templates", getConfig());
+      setTemplates(res.data.templates || []);
+    } catch {
+      setTemplates([]);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  const applyTemplate = (t: TemplateData) => {
+    setFormData(prev => ({ ...prev, ...t.dados }));
+    setTemplatesModal(false);
+    setActiveSection("identidade");
   };
 
   const handleDelete = async (id: number) => {
@@ -790,8 +860,28 @@ export default function PersonalityPage() {
                       </div>
                     </div>
 
-                    {/* Tabs */}
-                    <div className="flex items-center gap-3">
+                    {/* Actions + Tabs */}
+                    <div className="flex items-center gap-2">
+                      {/* Templates Button */}
+                      <motion.button
+                        whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                        onClick={loadTemplates}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-bold hover:bg-violet-500/20 transition-all"
+                      >
+                        <LayoutTemplate className="w-3 h-3" /> Templates
+                      </motion.button>
+
+                      {/* Preview Prompt Button */}
+                      {typeof selected === "number" && (
+                        <motion.button
+                          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                          onClick={loadPreview}
+                          className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-bold hover:bg-amber-500/20 transition-all"
+                        >
+                          <Eye className="w-3 h-3" /> Ver Prompt
+                        </motion.button>
+                      )}
+
                       <div className="flex bg-black/40 rounded-xl p-1 border border-white/6">
                         {(["config", "playground"] as TabKey[]).map(tab => (
                           <button
@@ -996,6 +1086,48 @@ export default function PersonalityPage() {
                                     onChange={e => setFormData({ ...formData, max_tokens: parseInt(e.target.value) })}
                                     className="w-full accent-[#00d2ff] h-1.5 bg-white/5 rounded-full appearance-none cursor-pointer"
                                   />
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* ── Verbosidade / Comprimento de Resposta ── */}
+                            <div className={card}>
+                              <div>
+                                <label className={lClass}>
+                                  <span className="flex items-center gap-1.5">
+                                    <AlignLeft className="w-3 h-3 text-[#00d2ff]/50" />
+                                    Comprimento das Respostas
+                                  </span>
+                                </label>
+                                <p className="text-[11px] text-slate-500 mb-3">
+                                  Controla o tamanho padrão das mensagens da IA. "Concisa" reduz uso de tokens em até 40%.
+                                </p>
+                                <div className="grid grid-cols-3 gap-2">
+                                  {[
+                                    { id: "concisa",   icon: <AlignLeft className="w-4 h-4" />,    label: "Concisa",   desc: "2–3 frases · menos tokens",   badge: "⚡" },
+                                    { id: "normal",    icon: <AlignCenter className="w-4 h-4" />,  label: "Normal",    desc: "3–5 frases · equilibrado",    badge: "✅" },
+                                    { id: "detalhada", icon: <AlignJustify className="w-4 h-4" />, label: "Detalhada", desc: "Aprofunda quando necessário", badge: "📚" },
+                                  ].map(v => {
+                                    const active = (fd.comprimento_resposta || "normal") === v.id;
+                                    return (
+                                      <button
+                                        key={v.id}
+                                        type="button"
+                                        onClick={() => setFormData({ ...formData, comprimento_resposta: v.id })}
+                                        className={`flex flex-col items-center gap-1.5 p-3.5 rounded-xl border transition-all ${
+                                          active
+                                            ? "bg-[#00d2ff]/10 border-[#00d2ff]/40 text-[#00d2ff]"
+                                            : "bg-black/20 border-white/5 text-slate-400 hover:border-white/10 hover:text-white"
+                                        }`}
+                                      >
+                                        <span className="text-lg">{v.badge}</span>
+                                        {v.icon}
+                                        <p className="text-[10px] font-black">{v.label}</p>
+                                        <p className="text-[9px] opacity-60 text-center leading-tight">{v.desc}</p>
+                                        {active && <CheckCircle2 className="w-3 h-3 flex-shrink-0" />}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             </div>
@@ -1853,6 +1985,177 @@ export default function PersonalityPage() {
           </AnimatePresence>
         </div>
       </div>
+
+      {/* ══ MODAL: Preview Prompt ══════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {previewModal && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setPreviewModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }}
+              onClick={e => e.stopPropagation()}
+              className="w-full max-w-3xl max-h-[85vh] bg-[#06101f] border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/6 flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                    <Eye className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-white">Preview do System Prompt</h3>
+                    <p className="text-[10px] text-slate-500">Prompt completo gerado pela IA</p>
+                  </div>
+                </div>
+                <button onClick={() => setPreviewModal(false)} className="p-2 hover:bg-white/5 rounded-xl transition-all">
+                  <X className="w-4 h-4 text-slate-500" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                {previewLoading ? (
+                  <div className="flex flex-col items-center justify-center py-16 gap-3">
+                    <Loader2 className="w-8 h-8 text-[#00d2ff] animate-spin" />
+                    <p className="text-xs text-slate-500">Gerando preview...</p>
+                  </div>
+                ) : previewData ? (
+                  <div className="space-y-5">
+                    {/* Stats */}
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { label: "Caracteres", value: previewData.char_count.toLocaleString(), icon: "📝" },
+                        { label: "Tokens Est.", value: `~${previewData.estimated_tokens.toLocaleString()}`, icon: "🔢" },
+                        { label: "Seções", value: previewData.sections.length, icon: "📋" },
+                      ].map(s => (
+                        <div key={s.label} className="bg-black/30 border border-white/6 rounded-xl p-3 text-center">
+                          <p className="text-lg">{s.icon}</p>
+                          <p className="text-base font-black text-white mt-1">{s.value}</p>
+                          <p className="text-[10px] text-slate-500">{s.label}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Sections filled */}
+                    {previewData.sections.length > 0 && (
+                      <div className="bg-black/20 border border-white/5 rounded-xl p-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Seções incluídas</p>
+                        <div className="flex flex-wrap gap-2">
+                          {previewData.sections.map((s: string) => (
+                            <span key={s} className="text-[10px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-2 py-1 rounded-lg font-bold">
+                              ✓ {s}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Prompt text */}
+                    <div className="relative">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">System Prompt</p>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(previewData.system_prompt)}
+                          className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-[#00d2ff] transition-all"
+                        >
+                          <Copy className="w-3 h-3" /> Copiar
+                        </button>
+                      </div>
+                      <pre className="bg-black/40 border border-white/5 rounded-xl p-4 text-xs text-slate-300 font-mono whitespace-pre-wrap leading-relaxed overflow-x-auto">
+                        {previewData.system_prompt}
+                      </pre>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-16 gap-3">
+                    <AlertTriangle className="w-8 h-8 text-amber-400" />
+                    <p className="text-sm text-slate-400">Não foi possível gerar o preview. Salve a personalidade primeiro.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ══ MODAL: Templates ═══════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {templatesModal && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setTemplatesModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }}
+              onClick={e => e.stopPropagation()}
+              className="w-full max-w-2xl bg-[#06101f] border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/6">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center">
+                    <LayoutTemplate className="w-4 h-4 text-violet-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-white">Templates de Personalidade</h3>
+                    <p className="text-[10px] text-slate-500">Pré-configurações prontas para usar</p>
+                  </div>
+                </div>
+                <button onClick={() => setTemplatesModal(false)} className="p-2 hover:bg-white/5 rounded-xl transition-all">
+                  <X className="w-4 h-4 text-slate-500" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6">
+                {templatesLoading ? (
+                  <div className="flex items-center justify-center py-12 gap-3">
+                    <Loader2 className="w-6 h-6 text-violet-400 animate-spin" />
+                    <p className="text-xs text-slate-500">Carregando templates...</p>
+                  </div>
+                ) : templates.length > 0 ? (
+                  <>
+                    <p className="text-xs text-slate-500 mb-4">
+                      Selecione um template para preencher automaticamente os campos. Você pode editar depois de aplicar.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {templates.map(t => (
+                        <motion.button
+                          key={t.id}
+                          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+                          onClick={() => applyTemplate(t)}
+                          className="flex flex-col gap-3 p-4 bg-black/30 border border-white/6 rounded-xl text-left hover:border-violet-500/30 hover:bg-violet-500/5 transition-all group"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">{t.emoji}</span>
+                            <div>
+                              <p className="text-xs font-black text-white group-hover:text-violet-300 transition-colors">{t.nome}</p>
+                              <p className="text-[9px] text-slate-600">Template pré-configurado</p>
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">{t.descricao}</p>
+                          <div className="flex items-center gap-1 text-[10px] text-violet-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Sparkles className="w-3 h-3" /> Usar este template
+                          </div>
+                        </motion.button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 gap-3">
+                    <LayoutTemplate className="w-8 h-8 text-slate-600" />
+                    <p className="text-sm text-slate-500">Nenhum template disponível.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style jsx global>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
