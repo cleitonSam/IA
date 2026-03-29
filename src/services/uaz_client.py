@@ -89,7 +89,8 @@ class UazAPIClient:
         self.instance_name = instance_name
         self.headers = {
             "token": self.token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
@@ -192,9 +193,10 @@ class UazAPIClient:
         payload = {
             "number": clean_number,
             "type": media_type,
-            "file": file_url,
-            "delay": delay
+            "file": file_url
         }
+        if delay:
+            payload["delay"] = delay
         if caption:
             payload["text"] = caption
         logger.debug(f"📎 send_media payload: number={clean_number}, type={media_type}, file={file_url[:80]}...")
