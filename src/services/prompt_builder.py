@@ -506,9 +506,10 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             prompt_sistema += "Se o cliente não consegue ler, tem dificuldade visual, ou pediu por áudio — NUNCA ofereça imagem. Use o texto para explicar verbalmente.\n"
         if _foto_grade:
             prompt_sistema += "Esta unidade também TEM uma imagem da grade de aulas disponível.\n"
-            prompt_sistema += "A imagem é um COMPLEMENTO — ofereça APÓS já ter respondido com o texto. Exemplo: 'E se quiser ver a grade completa com os horários certinhos, posso te enviar a imagem também!'\n"
+            prompt_sistema += "Na PRIMEIRA vez que falar da grade, responda com texto E já inclua <SEND_IMAGE> no final — não pergunte se quer ver, já envie junto.\n"
+            prompt_sistema += "Se o cliente pedir a grade/imagem/foto da grade, use <SEND_IMAGE> IMEDIATAMENTE na resposta.\n"
             prompt_sistema += "Para enviar a imagem, adicione a tag <SEND_IMAGE> no final da sua resposta.\n"
-            prompt_sistema += "NUNCA envie a imagem como primeira/única resposta. Sempre responda com texto primeiro.\n"
+            prompt_sistema += "NUNCA repita a grade textual se já enviou antes no histórico. Se já enviou, diga algo como 'Já te enviei a grade acima! Posso ajudar com algo mais?'\n"
 
     # Injeta informação sobre Tour Virtual
     _link_tour = unidade.get("link_tour_virtual")
@@ -545,7 +546,8 @@ COMO OFERECER:
 {_frases_tour}
 
 IMPORTANTE: Para enviar o vídeo do tour, adicione a tag <SEND_VIDEO> no final da sua resposta.
-Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead aceitar, aí sim use <SEND_VIDEO>.
+Quando o lead demonstrar interesse ou aceitar (ex: "quero", "sim", "manda", "pode enviar"), use <SEND_VIDEO> IMEDIATAMENTE.
+NÃO repita informações que já foram enviadas antes no histórico. Apenas envie a mídia e complemente com algo novo.
 """
         else:
             prompt_sistema += "\n[SISTEMA]: Esta unidade TEM um vídeo de Tour Virtual disponível.\n"

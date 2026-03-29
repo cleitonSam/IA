@@ -128,7 +128,10 @@ async def enviar_mensagem_chatwoot(
                     logger.warning(f"⚠️ [UazAPI Media] send_media falhou, tentando como document...")
                     _media_ok = await client.send_media(fone, _media_url, media_type="document")
                 if not _media_ok:
-                    logger.error(f"❌ [UazAPI Media] Falha total ao enviar mídia: {_media_url[:80]}")
+                    # Último fallback: envia URL como texto clicável
+                    logger.warning(f"⚠️ [UazAPI Media] Fallback: enviando URL como texto: {_media_url[:80]}")
+                    _label = "o vídeo" if _mtype == "video" else "a imagem" if _mtype == "image" else "o arquivo"
+                    await client.send_text(fone, f"Segue {_label}: {_media_url}")
             else:
                 # Prefixo de nome apenas para texto
                 _prefixed_content = f"*{nome_ia}*\n{content}" if nome_ia else f"{content}"
