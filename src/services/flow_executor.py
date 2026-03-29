@@ -974,11 +974,7 @@ async def _execute_from(
             m_type = data.get("type", "image")
             caption = _render_vars(data.get("caption", ""), session_vars)
             await _bot_sent_marker(empresa_id, phone)
-            await uaz_client.send_media(phone, url, m_type, delay=1000)
-            # Legenda se houver e for imagem/video
-            if caption and m_type in ["image", "video"]:
-                 await _bot_sent_marker(empresa_id, phone)
-                 await uaz_client.send_text(phone, caption)
+            await uaz_client.send_media(phone, url, m_type, caption=caption, delay=1000)
         
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:

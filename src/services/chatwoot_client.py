@@ -116,7 +116,8 @@ async def enviar_mensagem_chatwoot(
             await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{fone}", 120, "1")
 
             if is_direct_url:
-                await client.send_media(fone, _prefixed_content, media_type="image")
+                # URL deve ser enviada limpa (sem prefixo de nome)
+                await client.send_media(fone, content.strip(), media_type="image")
             else:
                 await client.send_text(fone, _prefixed_content)
             return True
