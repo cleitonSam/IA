@@ -145,7 +145,7 @@ export default function SettingsPage() {
         axios.get("/api-backend/management/faq", getConfig()),
         axios.get("/api-backend/management/integrations", getConfig())
       ]);
-      setUnits(unitsRes.data);
+      setUnits(Array.isArray(unitsRes.data) ? unitsRes.data : unitsRes.data?.data || []);
       setPersonality(personalityRes.data);
       setFaqs(faqRes.data);
       

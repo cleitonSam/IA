@@ -36,7 +36,7 @@ export default function FAQPage() {
     Promise.all([
       axios.get("/api-backend/management/faq", getConfig()),
       axios.get("/api-backend/dashboard/unidades", getConfig())
-    ]).then(([faqRes, unitRes]) => { setFaqs(faqRes.data); setUnidades(unitRes.data); })
+    ]).then(([faqRes, unitRes]) => { setFaqs(faqRes.data); setUnidades(Array.isArray(unitRes.data) ? unitRes.data : unitRes.data?.data || []); })
       .catch(console.error).finally(() => setLoading(false));
   }, []);
 

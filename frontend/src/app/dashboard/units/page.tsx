@@ -73,7 +73,7 @@ export default function UnitsPage() {
     setLoading(true);
     try {
       const res = await axios.get("/api-backend/dashboard/unidades", getConfig());
-      setUnits(res.data);
+      setUnits(Array.isArray(res.data) ? res.data : res.data?.data || []);
     } catch (e) {
       console.error("Erro ao carregar unidades:", e);
     } finally {
