@@ -541,7 +541,7 @@ async def listar_unidades_ativas(empresa_id: int) -> List[Dict[str, Any]]:
         return []
 
 
-async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85) -> Optional[str]:
+async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshold: int = 85, retornar_score: bool = False):
     """
     Tenta identificar uma unidade mencionada na pergunta do cliente.
     Estratégia em 4 camadas:
@@ -549,21 +549,26 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
       2. Correspondência exata/parcial em nome, cidade, bairro e palavras-chave
       3. Correspondência por partes (tokens) — suporta nomes compostos e abreviações
       4. Fuzzy matching conservador (threshold ajustável)
+
+    Se retornar_score=True, retorna (slug, score) ao invés de apenas slug.
+    Score >= 90 = match explícito (nome, cidade, bairro); < 90 = match fraco (token, fuzzy).
     """
+    _none = (None, 0) if retornar_score else None
+
     if not _database.db_pool or not texto:
-        return None
+        return _none
 
     from src.utils.intent_helpers import eh_saudacao
     # Ignora saudações genéricas mas NÃO ignora nomes de bairros de 1 palavra (Itaquera, Paulista...)
     if eh_saudacao(texto):
-        return None
+        return _none
 
     # 1. Função SQL customizada (mais precisa, se disponível no banco)
     try:
         query = "SELECT unidade_slug FROM buscar_unidades_por_texto($1, $2) LIMIT 1"
         row = await _database.db_pool.fetchrow(query, empresa_id, texto)
         if row:
-            return row['unidade_slug']
+            return (row['unidade_slug'], 100) if retornar_score else row['unidade_slug']
     except asyncpg.UndefinedFunctionError:
         pass  # Função não existe no banco — usa fallback Python
     except asyncpg.PostgresError as e:
@@ -617,8 +622,9 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
     if candidatos:
         # Retorna o slug com maior pontuação
         candidatos.sort(key=lambda x: x[1], reverse=True)
+        _best_slug, _best_score = candidatos[0]
         logger.info(f"🔍 [UnitMatch] Candidatos: {[(s, p) for s, p in candidatos[:3]]} | texto='{texto_norm[:60]}'")
-        return candidatos[0][0]
+        return (_best_slug, _best_score) if retornar_score else _best_slug
 
     # 3. Fuzzy matching conservador — apenas nome de cidade/bairro com score muito alto
     melhor_slug = None
@@ -637,8 +643,8 @@ async def buscar_unidade_na_pergunta(texto: str, empresa_id: int, fuzzy_threshol
 
     if maior_score >= fuzzy_threshold:
         logger.info(f"🔍 [UnitMatch] Fuzzy match: '{melhor_campo}' → {melhor_slug} (score={maior_score})")
-        return melhor_slug
-    return None
+        return (melhor_slug, maior_score) if retornar_score else melhor_slug
+    return _none
 
 
 async def carregar_unidade(slug: str, empresa_id: int) -> Dict[str, Any]:

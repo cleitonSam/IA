@@ -69,18 +69,24 @@ async def resolver_contexto_unidade(
     slug_salvo = slug_redis or slug_atual
 
     # Sempre tenta detectar unidade na mensagem — buscar_unidade_na_pergunta
-    # já tem 4 camadas de detecção (SQL, exato, tokens, fuzzy) e retorna None se não achar.
-    slug_detectado = await buscar_unidade_na_pergunta(texto, empresa_id) if texto else None
+    # já tem 4 camadas de detecção (SQL, exato, tokens, fuzzy) e retorna (slug, score) ou (None, 0).
+    _det_result = await buscar_unidade_na_pergunta(texto, empresa_id, retornar_score=True) if texto else (None, 0)
+    slug_detectado, _det_score = _det_result
 
     if slug_detectado:
         if slug_salvo and slug_detectado == slug_salvo:
             # Mesma unidade — mantém sem alteração
             return {"slug": slug_salvo, "origem": "contexto", "mudou": "false"}
         if slug_salvo and slug_detectado != slug_salvo:
-            # Cliente mencionou OUTRA unidade explicitamente — troca o contexto
-            await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
-            logger.info(f"🔄 Unidade trocada: {slug_salvo} → {slug_detectado} (conv {conversation_id})")
-            return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true"}
+            # PROTEÇÃO: só troca se detecção for explícita (score >= 90)
+            # Score < 90 = match fraco (token genérico, fuzzy) — mantém unidade atual
+            if _det_score >= 90:
+                await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
+                logger.info(f"🔄 Unidade trocada: {slug_salvo} → {slug_detectado} (score={_det_score}, conv {conversation_id})")
+                return {"slug": slug_detectado, "origem": "mensagem", "mudou": "true"}
+            else:
+                logger.info(f"🛡️ Troca de unidade bloqueada: {slug_salvo} → {slug_detectado} score={_det_score} < 90 (conv {conversation_id})")
+                return {"slug": slug_salvo, "origem": "contexto", "mudou": "false"}
         # Primeira detecção de unidade — salva no Redis
         await set_tenant_cache(empresa_id, f"unidade_escolhida:{conversation_id}", slug_detectado, 86400)
         return {"slug": slug_detectado, "origem": "mensagem", "mudou": "false"}
