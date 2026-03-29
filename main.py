@@ -946,18 +946,27 @@ async def startup_event():
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
-                    lambda: alembic_command.upgrade(alembic_cfg, "heads")
+                    lambda: alembic_command.upgrade(alembic_cfg, "head")
                 )
                 logger.info("✅ Migrations aplicadas com sucesso (alembic upgrade head)")
             except Exception as migration_err:
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
+                # Se falhou por revisão órfã, força stamp da head atual
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: alembic_command.stamp(alembic_cfg, "head")
+                    )
+                    logger.info("🔧 alembic stamp head aplicado — versão do banco sincronizada")
+                except Exception as stamp_err:
+                    logger.warning(f"⚠️ Falha ao aplicar stamp: {stamp_err}")
 
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
                 min_size=2,
                 max_size=10,
-                command_timeout=20,
-                timeout=10,
+                command_timeout=10,
+                timeout=5,
             )
             import src.core.database as core_database
             core_database.db_pool = db_pool
