@@ -1250,15 +1250,8 @@ async def processar_ia_e_responder(
                             typing_time = min(len(_bloco) * 0.02, 4.0) + random.uniform(0.3, 0.8)
                             await simular_digitacao(account_id, conversation_id, integracao, typing_time)
                         elif _i > 0:
-                            # UazAPI: simula "digitando..." antes de cada mensagem
-                            _chat_id = contato_fone or str(conversation_id)
-                            _uaz_typing = UazAPIClient(
-                                integracao.get('url') or integracao.get('api_url'),
-                                integracao.get('token'),
-                                integracao.get('instance', 'default')
-                            )
+                            # UazAPI: pausa proporcional entre blocos (simula leitura)
                             _typing_ms = min(len(_bloco) * 15, 3000) + random.randint(300, 800)
-                            await _uaz_typing.set_presence(_chat_id, "composing", delay=_typing_ms)
                             await asyncio.sleep(_typing_ms / 1000)
 
                         # Áudio PTT apenas no último bloco
