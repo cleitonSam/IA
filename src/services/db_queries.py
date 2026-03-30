@@ -1565,9 +1565,11 @@ async def bd_limpar_historico_conversa(conversation_id: int, empresa_id: int) ->
         )
         if not conversa_id:
             return False
+        # mensagens não tem coluna empresa_id — a segurança é garantida pelo
+        # conversa_id que já foi buscado com filtro de empresa acima.
         await _database.db_pool.execute(
-            "DELETE FROM mensagens WHERE conversa_id = $1 AND empresa_id = $2",
-            conversa_id, empresa_id
+            "DELETE FROM mensagens WHERE conversa_id = $1",
+            conversa_id
         )
         await _database.db_pool.execute(
             "UPDATE conversas SET total_mensagens_cliente = 0, total_mensagens_ia = 0 WHERE id = $1",
