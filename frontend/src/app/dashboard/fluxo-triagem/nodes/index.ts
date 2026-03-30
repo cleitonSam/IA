@@ -27,6 +27,7 @@ import SourceFilterNode from "./SourceFilterNode";
 import MenuFixoIANode from "./MenuFixoIANode";
 import AIMenuDinamicoIANode from "./AIMenuDinamicoIANode";
 import BusinessHoursNode from "./BusinessHoursNode";
+import GoToMenuNode from "./GoToMenuNode";
 
 export const nodeTypes = {
   start:         StartNode,
@@ -58,4 +59,5 @@ export const nodeTypes = {
   menuFixoIA:       MenuFixoIANode,
   aiMenuDinamicoIA: AIMenuDinamicoIANode,
   businessHours:    BusinessHoursNode,
+  goToMenu:         GoToMenuNode,
 };
