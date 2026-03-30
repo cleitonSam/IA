@@ -2162,3 +2162,133 @@ async def finalizar_ab_test(
     if not ok:
         raise HTTPException(status_code=500, detail="Erro ao finalizar teste")
     return {"status": "success", "message": "Teste A/B finalizado"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLANOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PlanoCreate(BaseModel):
+    nome: str
+    valor: Optional[float] = None
+    valor_promocional: Optional[float] = None
+    meses_promocionais: Optional[int] = None
+    descricao: Optional[str] = None
+    diferenciais: Optional[str] = None  # texto livre separado por vírgula
+    link_venda: Optional[str] = None
+    unidade_id: Optional[int] = None
+    ativo: bool = True
+    ordem: int = 0
+
+
+@router.get("/planos")
+async def list_planos(token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    rows = await _database.db_pool.fetch(
+        """
+        SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
+               p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
+               p.ativo, p.ordem, p.id_externo,
+               u.nome AS unidade_nome
+        FROM planos p
+        LEFT JOIN unidades u ON u.id = p.unidade_id
+        WHERE p.empresa_id = $1
+        ORDER BY p.ordem, p.nome
+        """,
+        empresa_id
+    )
+    return [dict(r) for r in rows]
+
+
+@router.post("/planos", status_code=201)
+async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    await _database.db_pool.execute(
+        """
+        INSERT INTO planos
+            (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
+             descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+        """,
+        empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
+        body.meses_promocionais, body.descricao, body.diferenciais,
+        body.link_venda, body.ativo, body.ordem
+    )
+    # Invalida cache de planos
+    import redis.asyncio as aioredis
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if body.unidade_id:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.put("/planos/{plano_id}")
+async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    result = await _database.db_pool.execute(
+        """
+        UPDATE planos
+        SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
+            descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
+            ativo=$9, ordem=$10, updated_at=NOW()
+        WHERE id=$11 AND empresa_id=$12
+        """,
+        body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
+        body.descricao, body.diferenciais, body.link_venda, body.unidade_id,
+        body.ativo, body.ordem, plano_id, empresa_id
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(status_code=404, detail="Plano não encontrado")
+    # Invalida cache
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if body.unidade_id:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.delete("/planos/{plano_id}")
+async def delete_plano(plano_id: int, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    # Pega unidade_id antes de deletar para invalidar cache correto
+    row = await _database.db_pool.fetchrow(
+        "SELECT unidade_id FROM planos WHERE id=$1 AND empresa_id=$2", plano_id, empresa_id
+    )
+    await _database.db_pool.execute(
+        "DELETE FROM planos WHERE id=$1 AND empresa_id=$2", plano_id, empresa_id
+    )
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if row and row["unidade_id"]:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{row['unidade_id']}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.post("/planos/sync")
+async def sync_planos(token_payload: dict = Depends(get_current_user_token)):
+    """Sincroniza planos do Evo API para o banco de dados."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    from src.services.db_queries import sincronizar_planos_evo, redis_client as _rc
+    count = await sincronizar_planos_evo(empresa_id, bypass_cache=True)
+    await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+    return {"status": "success", "sincronizados": count}
