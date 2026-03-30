@@ -3,7 +3,7 @@ import React from "react";
 import { NodeProps } from "@xyflow/react";
 import BaseNode, { NodeInput, NodeTextarea } from "./BaseNode";
 
-interface MenuOpcao { id: string; titulo: string; descricao?: string }
+interface MenuOpcao { id: string; titulo: string }
 
 export default function SendMenuNode(props: NodeProps) {
   const data = (props.data || {}) as Record<string, unknown>;
@@ -18,7 +18,7 @@ export default function SendMenuNode(props: NodeProps) {
   };
 
   const addOpcao = () => {
-    onChange?.({ opcoes: [...opcoes, { id: String(Date.now()), titulo: "", descricao: "" }] });
+    onChange?.({ opcoes: [...opcoes, { id: String(Date.now()), titulo: "" }] });
   };
 
   const removeOpcao = (idx: number) => {
@@ -85,27 +85,17 @@ export default function SendMenuNode(props: NodeProps) {
             + Adicionar
           </button>
         </div>
-        <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1 nodrag">
+        <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1 nodrag">
           {opcoes.map((op, idx) => (
-            <div key={op.id} className="flex gap-1.5 items-start bg-black/30 rounded-lg p-1.5 border border-white/5">
-              <span className="text-[9px] text-blue-400 font-black w-4 mt-0.5">{idx + 1}</span>
-              <div className="flex-1 flex flex-col gap-1">
-                <input
-                  className="nodrag w-full bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
-                  value={op.titulo}
-                  onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
-                  placeholder="Título da opção"
-                />
-                {tipo === "list" && (
-                  <input
-                    className="nodrag w-full bg-transparent text-[10px] text-slate-400 placeholder-slate-700 focus:outline-none border-t border-white/5 pt-0.5"
-                    value={op.descricao || ""}
-                    onChange={(e) => setOpcao(idx, "descricao", e.target.value)}
-                    placeholder="Descrição (opcional)"
-                  />
-                )}
-              </div>
-              <button type="button" onClick={() => removeOpcao(idx)} className="nodrag text-slate-700 hover:text-red-400 text-[10px] transition-colors mt-0.5">✕</button>
+            <div key={op.id} className="flex gap-1.5 items-center bg-black/30 rounded-lg p-1.5 border border-white/5">
+              <span className="text-[9px] text-blue-400 font-black w-4">{idx + 1}</span>
+              <input
+                className="nodrag flex-1 bg-transparent text-[11px] text-white placeholder-slate-700 focus:outline-none"
+                value={op.titulo}
+                onChange={(e) => setOpcao(idx, "titulo", e.target.value)}
+                placeholder="Título da opção"
+              />
+              <button type="button" onClick={() => removeOpcao(idx)} className="nodrag text-slate-700 hover:text-red-400 text-[10px] transition-colors">✕</button>
             </div>
           ))}
         </div>
