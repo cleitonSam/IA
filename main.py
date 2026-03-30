@@ -5345,7 +5345,7 @@ async def chatwoot_webhook(
         return {"status": "ignorado"}
 
     message_type = payload.get("message_type")
-    sender_type = payload.get("sender", {}).get("type", "").lower()
+    sender_type = (payload.get("sender") or {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
     conteudo_texto = str(payload.get("content", "") or "")
     
@@ -5383,7 +5383,7 @@ async def chatwoot_webhook(
     if is_ai_message or sender_type == "bot":
         return {"status": "ignorado_msg_propria"}
 
-    contato = payload.get("sender", {})
+    contato = (payload.get("sender") or {})
     nome_contato_raw = contato.get("name")
     nome_contato_limpo = limpar_nome(nome_contato_raw)
     nome_contato_valido = nome_eh_valido(nome_contato_limpo)
@@ -5523,7 +5523,7 @@ async def chatwoot_webhook(
                     await redis_client.setex(f"unidade_escolhida:{id_conv}", 86400, slug)
                     await redis_client.delete(f"esperando_unidade:{id_conv}")
                     await redis_client.delete(prompt_unidade_key)
-                    contato = payload.get("sender", {})
+                    contato = (payload.get("sender") or {})
                     _nome_contato = limpar_nome(contato.get("name"))
                     _telefone_contato = contato.get("phone_number")
                     await bd_iniciar_conversa(
@@ -5602,7 +5602,7 @@ async def chatwoot_webhook(
     if message_type != "incoming":
         return {"status": "ignorado"}
 
-    contato = payload.get("sender", {})
+    contato = (payload.get("sender") or {})
     _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await redis_client.get(f"nome_cliente:{id_conv}")) or "Cliente"
     _telefone_para_bd = contato.get("phone_number")
     await bd_iniciar_conversa(
