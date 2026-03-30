@@ -5292,6 +5292,37 @@ async def chatwoot_webhook(
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
 
+    # ── Atendente assumiu a conversa → para fluxo de triagem ────────────────
+    # Chatwoot dispara "conversation_assigned" quando alguém assume manualmente,
+    # e também "conversation_updated" com assignee_id preenchido.
+    # Em ambos os casos: limpa o estado do fluxo e pausa a IA.
+    if event in ("conversation_assigned", "conversation_updated") and conv_obj.get("assignee_id") is not None:
+        _fone_fluxo = await redis_client.get(f"fone_cliente:{id_conv}")
+        if _fone_fluxo:
+            # Remove estado de fluxo (unidade 0 é o padrão quando não identificada)
+            _keys_fluxo = [
+                f"fluxo_state:{empresa_id}:0:{_fone_fluxo}",
+                f"fluxo_vars:{empresa_id}:0:{_fone_fluxo}",
+            ]
+            # Tenta também com unidades 1–20 caso o fluxo esteja vinculado a uma unidade
+            _keys_fluxo += [
+                k for u in range(1, 21)
+                for k in (
+                    f"fluxo_state:{empresa_id}:{u}:{_fone_fluxo}",
+                    f"fluxo_vars:{empresa_id}:{u}:{_fone_fluxo}",
+                )
+            ]
+            await redis_client.delete(*_keys_fluxo)
+            # Pausa IA para esta conversa e para este telefone
+            await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 86400, "1")
+            await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_fluxo}", 86400, "1")
+            logger.info(
+                f"🛑 [FluxoTriagem] Atendente assumiu conv {id_conv} "
+                f"(assignee={conv_obj['assignee_id']}) — fluxo parado e IA pausada para {_fone_fluxo}"
+            )
+        if event == "conversation_assigned":
+            return {"status": "atendente_assumiu"}
+
     if event == "conversation_updated":
         status_conv = conv_obj.get("status") or payload.get("status")
 
