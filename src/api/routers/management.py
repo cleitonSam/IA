@@ -1541,10 +1541,6 @@ async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
 @router.get("/integrations/chatwoot/ai-status")
 async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_token)):
     """Status global da IA para mensagens do Chatwoot (por empresa)."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1556,10 +1552,6 @@ async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_
 @router.put("/integrations/chatwoot/ai-status")
 async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_current_user_token)):
     """Ativa/pausa globalmente o atendimento da IA no canal Chatwoot."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1575,12 +1567,6 @@ async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_c
 
 @router.get("/integrations")
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
-    perfil = token_payload.get("perfil", "")
-
-    # admin_master não gerencia integrações de empresa específica
-    if perfil == "admin_master":
-        return []
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         return []
@@ -1608,11 +1594,6 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 @router.get("/integrations/evo/units")
 async def get_evo_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
-    perfil = token_payload.get("perfil", "")
-
-    if perfil == "admin_master":
-        return []  # admin_master não gerencia integrações de empresa
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1655,10 +1636,6 @@ async def update_evo_unit(
     token_payload: dict = Depends(get_current_user_token),
 ):
     """Salva a configuração EVO de uma unidade específica."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1687,10 +1664,6 @@ async def update_integration(
     body: IntegrationUpdate,
     token_payload: dict = Depends(get_current_user_token),
 ):
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
