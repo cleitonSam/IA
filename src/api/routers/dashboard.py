@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import httpx
+import asyncpg
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -675,7 +676,10 @@ async def get_metrics_empresa(
             WHERE {ia_empresa_cond}
               {where_ia}
         """
-        row_ia = await _database.db_pool.fetchrow(query_ia, *params)
+        try:
+            row_ia = await _database.db_pool.fetchrow(query_ia, *params)
+        except asyncpg.UndefinedTableError:
+            row_ia = None  # tabela uso_ia ainda não existe (migration pendente)
 
         # 3. Distribuição por Unidade
         query_units = f"""
@@ -1127,16 +1131,19 @@ async def get_metrics_timeseries(
         ia_where = " AND ".join(ia_conditions)
         ia_trunc = trunc.replace("c.", "ui.")
 
-        rows_ia = await _database.db_pool.fetch(f"""
-            SELECT
-                {ia_trunc} AS periodo,
-                COALESCE(SUM(ui.custo_usd), 0) AS custo_usd,
-                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS tokens
-            FROM uso_ia ui
-            WHERE {ia_where}
-            GROUP BY periodo
-            ORDER BY periodo ASC
-        """, *params)
+        try:
+            rows_ia = await _database.db_pool.fetch(f"""
+                SELECT
+                    {ia_trunc} AS periodo,
+                    COALESCE(SUM(ui.custo_usd), 0) AS custo_usd,
+                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS tokens
+                FROM uso_ia ui
+                WHERE {ia_where}
+                GROUP BY periodo
+                ORDER BY periodo ASC
+            """, *params)
+        except asyncpg.UndefinedTableError:
+            rows_ia = []  # tabela uso_ia ainda não existe (migration pendente)
 
         # Merge os dados por período
         ia_by_period = {}
@@ -1286,14 +1293,17 @@ async def get_metrics_ai_performance(
         where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
 
         # 1. Métricas de uso da IA (apenas colunas que existem na tabela)
-        row_ia = await _database.db_pool.fetchrow(f"""
-            SELECT
-                COUNT(*) AS total_chamadas,
-                COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
-                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens
-            FROM uso_ia ui
-            WHERE {where_ia}
-        """, *params)
+        try:
+            row_ia = await _database.db_pool.fetchrow(f"""
+                SELECT
+                    COUNT(*) AS total_chamadas,
+                    COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
+                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens
+                FROM uso_ia ui
+                WHERE {where_ia}
+            """, *params)
+        except asyncpg.UndefinedTableError:
+            row_ia = None  # tabela uso_ia ainda não existe (migration pendente)
 
         # 2. Métricas de conversas
         row_conv = await _database.db_pool.fetchrow(f"""
@@ -1321,15 +1331,18 @@ async def get_metrics_ai_performance(
         """, *params)
 
         # 4. Distribuição por hora (para gráfico de atividade)
-        rows_hora = await _database.db_pool.fetch(f"""
-            SELECT
-                EXTRACT(HOUR FROM ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
-                COUNT(*) AS chamadas
-            FROM uso_ia ui
-            WHERE {where_ia}
-            GROUP BY hora
-            ORDER BY hora
-        """, *params)
+        try:
+            rows_hora = await _database.db_pool.fetch(f"""
+                SELECT
+                    EXTRACT(HOUR FROM ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
+                    COUNT(*) AS chamadas
+                FROM uso_ia ui
+                WHERE {where_ia}
+                GROUP BY hora
+                ORDER BY hora
+            """, *params)
+        except asyncpg.UndefinedTableError:
+            rows_hora = []  # tabela uso_ia ainda não existe (migration pendente)
 
         ia = dict(row_ia) if row_ia else {}
         conv = dict(row_conv) if row_conv else {}
