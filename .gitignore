@@ -15,12 +15,13 @@ __pycache__/
 # .env.production.example← commitado ✅
 
 # ─── Python venv ─────────────────────────────────
-IA/
-bin/
-lib/
-lib64/
-include/
-pyvenv.cfg
+# Usa /prefixo para limitar ao root e não afetar frontend/src/lib/
+/IA/
+/bin/
+/lib/
+/lib64/
+/include/
+/pyvenv.cfg
 
 # ─── Frontend ────────────────────────────────────
 frontend/node_modules/
