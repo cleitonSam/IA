@@ -636,7 +636,6 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     start:         {},
     end:           {},
     loop:          { target_node_id: "" },
-    goToMenu:      {},
     sendText:      { texto: "" },
     sendMenu:      {
       tipo: "list", titulo: "Atendimento", texto: "Olá! Como posso ajudar?",
