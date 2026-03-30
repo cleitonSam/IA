@@ -521,20 +521,6 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] Fluxo encerrado para {phone} empresa {empresa_id}")
         return
 
-    # ── GoToMenu: reinicia o fluxo a partir do nó Start ──
-    if node_type == "goToMenu":
-        await _clear_state(empresa_id, phone, unidade_id)
-        logger.info(f"[FlowExecutor] Voltando ao menu inicial para {phone} empresa {empresa_id}")
-        start_node = _find_node_by_type(fluxo, "start")
-        if start_node:
-            first_next = _get_next_node_id(fluxo, start_node["id"])
-            if first_next:
-                await _execute_from(
-                    empresa_id, phone, mensagem, fluxo, first_next,
-                    uaz_client, session_vars, _depth + 1, unidade_id=unidade_id,
-                )
-        return
-
     # ── SendText ──
     if node_type == "sendText":
         texto = _render_vars(data.get("texto", ""), session_vars)
