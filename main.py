@@ -3848,6 +3848,22 @@ async def processar_ia_e_responder(
         _db_esta_no_horario = _pers_horario.get("esta_no_horario", True)
         _horario_config = _pers_horario.get("horario_atendimento_ia")
 
+        # ── Override: se horario_especifico mas TODOS os dias têm arrays vazios,
+        #    o usuário ainda não configurou horários → trata como sem restrição ──
+        if not _db_esta_no_horario and isinstance(_horario_config, dict):
+            _tipo_h = _horario_config.get("tipo", "")
+            _dias_h = _horario_config.get("dias", {})
+            if _tipo_h == "horario_especifico" and isinstance(_dias_h, dict):
+                _todos_vazios = all(
+                    (not v) for v in _dias_h.values()
+                ) if _dias_h else True
+                if _todos_vazios:
+                    _db_esta_no_horario = True
+                    logger.info(
+                        f"🕒 [Bot Core Monolith] horario_especifico com todos os dias vazios → "
+                        f"sem restrição de horário para empresa {empresa_id}"
+                    )
+
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZI
         _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
