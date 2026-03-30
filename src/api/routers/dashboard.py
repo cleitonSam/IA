@@ -751,7 +751,8 @@ async def criar_unidade(
                 foto_grade, link_tour_virtual, ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+                $14, $15, $16, $17, $18::jsonb, $19::jsonb, $20::jsonb,
+                $21::jsonb, $22::jsonb, $23::jsonb, $24, $25,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -759,9 +760,15 @@ async def criar_unidade(
             str(_uuid.uuid4()), empresa_id, slug, body.nome, body.nome_abreviado,
             body.cidade, body.bairro, body.estado, body.endereco, body.numero,
             body.telefone_principal, body.whatsapp, body.site, body.instagram,
-            body.link_matricula, body.horarios, body.modalidades,
-            body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
-            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or [],
+            body.link_matricula,
+            body.horarios or "",        # TEXT — texto livre de horários
+            body.modalidades or "",     # TEXT — texto livre de modalidades
+            json.dumps(body.planos or {}),
+            json.dumps(body.formas_pagamento or {}),
+            json.dumps(body.convenios or {}),
+            json.dumps(body.infraestrutura or {}),
+            json.dumps(body.servicos or {}),
+            json.dumps(body.palavras_chave or []),
             body.foto_grade, body.link_tour_virtual
         )
         from src.core.redis_client import redis_client
@@ -965,18 +972,26 @@ async def atualizar_unidade(
                 nome = $1, nome_abreviado = $2, cidade = $3, bairro = $4,
                 estado = $5, endereco = $6, numero = $7, telefone_principal = $8,
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
-                horarios = $13, modalidades = $14, planos = $15, 
-                formas_pagamento = $16, convenios = $17, infraestrutura = $18,
-                servicos = $19, palavras_chave = $20, foto_grade = $21, link_tour_virtual = $22,
+                horarios = $13, modalidades = $14,
+                planos = $15::jsonb,
+                formas_pagamento = $16::jsonb, convenios = $17::jsonb, infraestrutura = $18::jsonb,
+                servicos = $19::jsonb, palavras_chave = $20::jsonb,
+                foto_grade = $21, link_tour_virtual = $22,
                 updated_at = NOW()
             WHERE id = $23 AND empresa_id = $24
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
-            body.horarios, body.modalidades, body.planos or {}, 
-            body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
-            body.servicos or {}, body.palavras_chave or [], body.foto_grade, body.link_tour_virtual,
+            body.horarios or "",        # TEXT — texto livre de horários
+            body.modalidades or "",     # TEXT — texto livre de modalidades
+            json.dumps(body.planos or {}),
+            json.dumps(body.formas_pagamento or {}),
+            json.dumps(body.convenios or {}),
+            json.dumps(body.infraestrutura or {}),
+            json.dumps(body.servicos or {}),
+            json.dumps(body.palavras_chave or []),
+            body.foto_grade, body.link_tour_virtual,
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client
