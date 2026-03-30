@@ -5258,10 +5258,11 @@ async def chatwoot_webhook(
         return {"status": "conversa_criada"}
 
     # ── Atendente assumiu a conversa → para fluxo de triagem ────────────────
-    # Chatwoot dispara "conversation_assigned" quando alguém assume manualmente,
-    # e também "conversation_updated" com assignee_id preenchido.
-    # Em ambos os casos: limpa o estado do fluxo e pausa a IA.
-    if event in ("conversation_assigned", "conversation_updated") and conv_obj.get("assignee_id") is not None:
+    # IMPORTANTE: Usa APENAS "conversation_assigned" (evento pontual quando alguém
+    # clica "Atribuir a mim"). NÃO usar "conversation_updated" porque esse evento
+    # dispara a cada mudança — qualquer conversa já atribuída ficaria com IA pausada
+    # permanentemente, inclusive as que o próprio fluxo transferiu via transferTeam.
+    if event == "conversation_assigned":
         _fone_fluxo = await redis_client.get(f"fone_cliente:{id_conv}")
         if _fone_fluxo:
             # Remove estado de fluxo (unidade 0 é o padrão quando não identificada)
@@ -5283,10 +5284,9 @@ async def chatwoot_webhook(
             await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_fluxo}", 86400, "1")
             logger.info(
                 f"🛑 [FluxoTriagem] Atendente assumiu conv {id_conv} "
-                f"(assignee={conv_obj['assignee_id']}) — fluxo parado e IA pausada para {_fone_fluxo}"
+                f"(assignee={conv_obj.get('assignee_id')}) — fluxo parado e IA pausada para {_fone_fluxo}"
             )
-        if event == "conversation_assigned":
-            return {"status": "atendente_assumiu"}
+        return {"status": "atendente_assumiu"}
 
     if event == "conversation_updated":
         status_conv = conv_obj.get("status") or payload.get("status")
