@@ -1311,18 +1311,21 @@ async def get_metrics_ai_performance(
         where_c = " AND ".join(conditions_c) if conditions_c else "TRUE"
         where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
 
-        # 1. Métricas de uso da IA (apenas colunas que existem na tabela)
+        # 1. Métricas de uso da IA
         try:
             row_ia = await _database.db_pool.fetchrow(f"""
                 SELECT
-                    COUNT(*) AS total_chamadas,
-                    COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
-                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens
+                    COUNT(*)                                                          AS total_chamadas,
+                    COALESCE(SUM(ui.custo_usd), 0)                                   AS custo_total,
+                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0)         AS total_tokens,
+                    COALESCE(AVG(CASE WHEN ui.cache_hit THEN 1.0 ELSE 0.0 END)*100, 0) AS cache_hit_rate,
+                    COALESCE(AVG(CASE WHEN ui.fallback  THEN 1.0 ELSE 0.0 END)*100, 0) AS fallback_rate,
+                    COALESCE(AVG(ui.latencia_ms), 0)                                 AS latencia_media_ms
                 FROM uso_ia ui
                 WHERE {where_ia}
             """, *params)
-        except asyncpg.UndefinedTableError:
-            row_ia = None  # tabela uso_ia ainda não existe (migration pendente)
+        except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+            row_ia = None  # tabela/coluna uso_ia ainda não existe (migration pendente)
 
         # 2. Métricas de conversas
         row_conv = await _database.db_pool.fetchrow(f"""
@@ -1370,17 +1373,20 @@ async def get_metrics_ai_performance(
         total_chamadas = ia.get("total_chamadas", 0) or 1
         total_conversas = conv.get("total_conversas", 0) or 1
 
-        # Calcula tempo médio de resposta como proxy de latência
-        tempo_resp = float(conv.get("tempo_resp_medio", 0))
-        latencia_estimada = round(tempo_resp * 1000, 0) if tempo_resp > 0 and tempo_resp < 60 else 0
+        # Latência: usa média real da uso_ia (latencia_ms por chamada LLM).
+        # Fallback para tempo_resp_medio da conversas se uso_ia ainda não tiver dados.
+        _lat_ia = float(ia.get("latencia_media_ms", 0) or 0)
+        if _lat_ia == 0:
+            tempo_resp = float(conv.get("tempo_resp_medio", 0))
+            _lat_ia = round(tempo_resp * 1000, 0) if 0 < tempo_resp < 60 else 0
 
         return {
             "days": days,
             "ia": {
                 "total_chamadas": ia.get("total_chamadas", 0),
-                "latencia_media_ms": latencia_estimada,
-                "cache_hit_rate": 0.0,  # Requer coluna cache_hit na tabela uso_ia
-                "fallback_rate": 0.0,   # Requer coluna fallback na tabela uso_ia
+                "latencia_media_ms": round(_lat_ia, 0),
+                "cache_hit_rate": round(float(ia.get("cache_hit_rate", 0)), 1),
+                "fallback_rate":  round(float(ia.get("fallback_rate",  0)), 1),
                 "custo_total_usd": round(float(ia.get("custo_total", 0)), 4),
                 "custo_por_conversa": round(float(ia.get("custo_total", 0)) / total_conversas, 4),
                 "total_tokens": ia.get("total_tokens", 0),
