@@ -180,6 +180,18 @@ async def executar_fluxo(
     if not fluxo or not fluxo.get("ativo"):
         return False
 
+    # ── Normaliza mensagem: o buffer pode entregar JSON '{"text":"oi","files":[]}'
+    #    em vez do texto puro — extraímos só o campo "text" nesse caso ──────────
+    if isinstance(mensagem, str) and mensagem.strip().startswith("{"):
+        try:
+            _msg_obj = json.loads(mensagem)
+            if isinstance(_msg_obj, dict) and "text" in _msg_obj:
+                mensagem = str(_msg_obj["text"]).strip()
+        except (ValueError, TypeError):
+            pass
+    elif not isinstance(mensagem, str):
+        mensagem = str(mensagem)
+
     state = await _get_state(empresa_id, phone, unidade_id)
     session_vars = await _get_vars(empresa_id, phone, unidade_id)
 
@@ -343,7 +355,12 @@ async def _process_state(
         logger.info(f"[Switch] matched_handle={matched_handle}")
         if matched_handle:
             return _get_next_node_id(fluxo, node_id, matched_handle)
-        # Nenhum match: tenta a primeira saída padrão
+        # Nenhum match: volta ao nó de menu para repetir a mensagem
+        _menu_src = state.get("_menu_node_id")
+        if _menu_src:
+            logger.info(f"[Switch] Sem match → repetindo menu nó '{_menu_src}'")
+            return _menu_src
+        # Sem referência de menu: tenta a primeira saída padrão
         handles = _get_all_next_handles(fluxo, node_id)
         return handles[0][1] if handles else None
 
@@ -533,6 +550,7 @@ async def _execute_from(
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
                     "_menu_opcoes": _opcoes_titulos,
+                    "_menu_node_id": node_id,   # permite repetir o menu se o switch não bater
                 }, unidade_id=unidade_id)
         return
 
@@ -1278,6 +1296,7 @@ async def _execute_aimenu(
                 await _set_state(empresa_id, phone, {
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
+                    "_menu_node_id": node_id,   # permite repetir o menu se o switch não bater
                 }, unidade_id=unidade_id)
     except Exception as e:
         logger.error(f"[FlowExecutor] Erro ao gerar AI Menu: {e} | Resposta: {result_raw}")
