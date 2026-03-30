@@ -9,13 +9,27 @@ SMTP_HOST     = os.getenv("SMTP_ADDRESS", "smtp.hostinger.com")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER     = os.getenv("SMTP_USERNAME", "")
 SMTP_PASS     = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM     = os.getenv("MAILER_SENDER_EMAIL", "")
+_RAW_SENDER   = os.getenv("MAILER_SENDER_EMAIL", "")
 FRONTEND_URL  = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Identidade da plataforma — configurável por env var
 PLATFORM_NAME     = os.getenv("PLATFORM_NAME", "Fluxo Digital Tech")
 PLATFORM_LOGO_URL = os.getenv("PLATFORM_LOGO_URL", "")
-SUPPORT_EMAIL     = os.getenv("SUPPORT_EMAIL", SMTP_FROM or "")
+
+
+def _parse_sender_email(raw: str) -> str:
+    """Extrai apenas o endereço de email puro de formatos como 'Nome <email>' ou '"Nome <email>"'."""
+    import re
+    cleaned = raw.strip().strip('"').strip("'")
+    match = re.search(r'<([^>]+)>', cleaned)
+    if match:
+        return match.group(1).strip()
+    # Sem angle brackets — assume que é o email puro
+    return cleaned
+
+
+SMTP_FROM     = _parse_sender_email(_RAW_SENDER) or SMTP_USER
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", SMTP_FROM or "")
 
 
 def _smtp_from_display() -> str:
@@ -164,6 +178,14 @@ async def enviar_convite(email_destino: str, nome_empresa: str, token: str) -> b
     - Retry automático até 3 tentativas com backoff exponencial
     - Link expira em 48 horas
     """
+    logger.info(
+        f"📧 Preparando convite para {email_destino} | SMTP={SMTP_HOST}:{SMTP_PORT} "
+        f"user={SMTP_USER} from={SMTP_FROM} frontend={FRONTEND_URL}"
+    )
+    if not SMTP_USER or not SMTP_PASS:
+        logger.error("❌ SMTP_USERNAME ou SMTP_PASSWORD não configurado — email não será enviado")
+        return False
+
     link = f"{FRONTEND_URL}/register?token={token}"
 
     # ── Corpo do convite ──────────────────────────────────────────────────────
