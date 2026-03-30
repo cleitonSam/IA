@@ -2116,6 +2116,134 @@ def formatar_mensagem_saida(content: str) -> str:
     return txt.strip()
 
 
+def quebrar_em_blocos(texto: str, min_len: int = 30, max_len: int = 450) -> list:
+    """
+    Quebra uma resposta de IA em blocos para envio como mensagens separadas.
+    Totalmente heurístico — sem IA.
+
+    Regras (em ordem de prioridade):
+    1. Divide em \\n\\n (parágrafo duplo) — corte mais forte.
+    2. Divide em \\n simples quando a linha seguinte começa com:
+       - Emoji (U+1F000–U+1FFFF / símbolos comuns)
+       - Letra maiúscula + espaço (nova frase)
+       - Marcador de lista: "- ", "• ", "* ", "→ ", número + ". "
+    3. Agrupa sequências de bullets/numerados como UM bloco único.
+    4. Mescla fragmentos menores que min_len com o bloco seguinte.
+    5. Quebra blocos maiores que max_len em sentenças (". " / "? " / "! ").
+    """
+    import re as _re
+
+    if not texto or not texto.strip():
+        return []
+
+    texto = texto.strip()
+
+    # ── Passo 1: divide por parágrafo duplo ──────────────────────────────────
+    paragrafos = _re.split(r'\n{2,}', texto)
+
+    # ── Passo 2: dentro de cada parágrafo, divide em sub-blocos lógicos ──────
+    _BULLET  = _re.compile(r'^(?:[-•*→]|\d+[.)]) ')
+    _EMOJI_START = _re.compile(
+        r'^[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0001F900-\U0001F9FF'
+        r'\U00002702-\U000027B0\U0000231A-\U0000231B\U000025AA-\U000025FE]'
+    )
+    _NOVA_FRASE = _re.compile(r'^[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÀÈÌÒÙÇ]')
+
+    blocos_intermediarios: list = []
+    for paragrafo in paragrafos:
+        linhas = paragrafo.strip().split('\n')
+        if not linhas:
+            continue
+
+        # Agrupa bullets/numerados contíguos num único bloco
+        grupo_atual: list = []
+        tipo_atual = None  # 'bullet', 'texto'
+
+        def _flush_grupo():
+            nonlocal grupo_atual, tipo_atual
+            if grupo_atual:
+                blocos_intermediarios.append('\n'.join(grupo_atual))
+            grupo_atual = []
+            tipo_atual = None
+
+        for linha in linhas:
+            linha_strip = linha.strip()
+            if not linha_strip:
+                continue
+
+            eh_bullet = bool(_BULLET.match(linha_strip))
+
+            if eh_bullet:
+                # Bullets sempre agrupados juntos
+                if tipo_atual == 'texto':
+                    _flush_grupo()
+                grupo_atual.append(linha_strip)
+                tipo_atual = 'bullet'
+            else:
+                if tipo_atual == 'bullet':
+                    # Saiu dos bullets: flush e começa novo bloco
+                    _flush_grupo()
+
+                if tipo_atual == 'texto' and grupo_atual:
+                    ultima = grupo_atual[-1]
+                    # Quebra se nova linha começa com emoji ou nova frase
+                    começa_novo = (
+                        _EMOJI_START.match(linha_strip)
+                        or (_NOVA_FRASE.match(linha_strip) and ultima.rstrip().endswith(('.', '!', '?', ':')))
+                    )
+                    if começa_novo:
+                        _flush_grupo()
+
+                grupo_atual.append(linha_strip)
+                tipo_atual = 'texto'
+
+        _flush_grupo()
+
+    # ── Passo 3: mescla fragmentos muito curtos ───────────────────────────────
+    blocos_merged: list = []
+    pendente = ""
+    for bloco in blocos_intermediarios:
+        if not bloco.strip():
+            continue
+        if pendente:
+            bloco = pendente + "\n" + bloco
+            pendente = ""
+        if len(bloco) < min_len and blocos_intermediarios.index(bloco) < len(blocos_intermediarios) - 1:
+            pendente = bloco
+        else:
+            blocos_merged.append(bloco)
+    if pendente:
+        if blocos_merged:
+            blocos_merged[-1] = blocos_merged[-1] + "\n" + pendente
+        else:
+            blocos_merged.append(pendente)
+
+    # ── Passo 4: quebra blocos muito longos em sentenças ─────────────────────
+    _SENTENCA = _re.compile(r'(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÂÊÎÔÛÃÕ])')
+    resultado: list = []
+    for bloco in blocos_merged:
+        if len(bloco) <= max_len:
+            resultado.append(bloco)
+            continue
+        # Tenta quebrar por sentenças
+        sentencas = _SENTENCA.split(bloco)
+        acumulado = ""
+        for s in sentencas:
+            if acumulado:
+                teste = acumulado + " " + s
+            else:
+                teste = s
+            if len(teste) > max_len and acumulado:
+                resultado.append(acumulado.strip())
+                acumulado = s
+            else:
+                acumulado = teste
+        if acumulado:
+            resultado.append(acumulado.strip())
+
+    return [b.strip() for b in resultado if b.strip()]
+
+
 def suavizar_personalizacao_nome(content: str, nome: Optional[str]) -> str:
     """Evita vocativo artificial repetido e mantém menção natural ao nome."""
     txt = (content or "").strip()
@@ -4663,19 +4791,44 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await bd_registrar_primeira_resposta(conversation_id)
 
         else:
-            # ── Resposta da IA: envia INTEIRA como UMA mensagem ──────────────
+            # ── Resposta da IA: quebra em blocos e envia um por um ────────────
             if resposta_texto and resposta_texto.strip():
-                _texto_final = resposta_texto.strip()
+                _blocos_ia = quebrar_em_blocos(resposta_texto.strip())
+                if not _blocos_ia:
+                    _blocos_ia = [resposta_texto.strip()]
 
-                typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
-                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
-                _ptt_enviado = await _enviar_tts_ptt(_texto_final)
-                if not _ptt_enviado:
-                    await enviar_mensagem_chatwoot(
-                        account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
-                    )
-                await bd_atualizar_msg_ia(conversation_id)
-                await bd_registrar_primeira_resposta(conversation_id)
+                _total_blocos = len(_blocos_ia)
+                logger.info(f"📨 [Quebra Blocos] {_total_blocos} bloco(s) para conv {conversation_id}")
+
+                for _idx, _bloco in enumerate(_blocos_ia):
+                    if await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
+                        break
+                    if not _bloco.strip():
+                        continue
+
+                    await bd_salvar_mensagem_local(conversation_id, "assistant", _bloco)
+
+                    # Simula digitação proporcional ao tamanho do bloco
+                    _typing = min(len(_bloco) * 0.018, 3.5) + random.uniform(0.2, 0.6)
+                    await simular_digitacao(account_id, conversation_id, integracao_chatwoot, _typing, empresa_id)
+
+                    # TTS PTT apenas no último bloco
+                    _ptt_enviado = False
+                    if _idx == _total_blocos - 1:
+                        _ptt_enviado = await _enviar_tts_ptt(_bloco)
+
+                    if not _ptt_enviado:
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, _bloco, nome_ia, integracao_chatwoot, empresa_id
+                        )
+
+                    await bd_atualizar_msg_ia(conversation_id)
+                    if _idx == 0:
+                        await bd_registrar_primeira_resposta(conversation_id)
+
+                    # Pausa natural entre blocos (exceto após o último)
+                    if _idx < _total_blocos - 1:
+                        await asyncio.sleep(random.uniform(0.8, 1.5))
 
         # ── PÓS-PROCESSAMENTO: Mídia (Grade, etc.) ──
         if _quer_grade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
