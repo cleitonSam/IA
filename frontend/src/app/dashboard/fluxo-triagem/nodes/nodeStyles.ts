@@ -4,7 +4,7 @@
  */
 
 export type NodeTypeName =
-  | "start" | "end" | "loop" | "goToMenu"
+  | "start" | "end" | "loop"
   | "sendText" | "sendMenu" | "sendImage" | "sendAudio" | "sendMedia"
   | "aiRespond" | "aiClassify" | "aiSentiment" | "aiQualify" | "aiExtract" | "aiMenu"
   | "menuFixoIA" | "aiMenuDinamicoIA"
@@ -24,7 +24,6 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   start:         { label: "Início",          icon: "▶",  border: "#22c55e", headerBg: "#064e3b",  headerText: "#86efac", category: "control" },
   end:           { label: "Fim",             icon: "⏹",  border: "#ef4444", headerBg: "#450a0a",  headerText: "#fca5a5", category: "control" },
   loop:          { label: "Loop",            icon: "🔁", border: "#f97316", headerBg: "#431407",  headerText: "#fdba74", category: "control" },
-  goToMenu:      { label: "Voltar ao Menu",  icon: "↩",  border: "#34d399", headerBg: "#064e3b",  headerText: "#6ee7b7", category: "control" },
   sendText:      { label: "Enviar Texto",    icon: "💬", border: "#3b82f6", headerBg: "#172554",  headerText: "#93c5fd", category: "send"    },
   sendMenu:      { label: "Enviar Menu",     icon: "📋", border: "#0ea5e9", headerBg: "#082f49",  headerText: "#7dd3fc", category: "send"    },
   sendImage:     { label: "Enviar Imagem",   icon: "🖼", border: "#6366f1", headerBg: "#1e1b4b",  headerText: "#a5b4fc", category: "send"    },
