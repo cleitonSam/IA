@@ -420,14 +420,14 @@ async def get_budget_summary(
         rows = await _database.db_pool.fetch(
             """
             SELECT
-                to_char(data, 'YYYY-MM') AS mes,
-                SUM(tokens_in)::bigint   AS tokens_in,
-                SUM(tokens_out)::bigint  AS tokens_out,
-                SUM(custo_usd)           AS custo_usd,
-                SUM(req_count)::bigint   AS req_count
-            FROM token_usage
+                to_char(created_at, 'YYYY-MM')   AS mes,
+                SUM(tokens_prompt)::bigint        AS tokens_in,
+                SUM(tokens_completion)::bigint    AS tokens_out,
+                SUM(custo_usd)                    AS custo_usd,
+                COUNT(*)::bigint                  AS req_count
+            FROM uso_ia
             WHERE empresa_id = $1
-              AND data >= date_trunc('month', CURRENT_DATE - interval '1 month')
+              AND created_at >= date_trunc('month', CURRENT_DATE - interval '1 month')
             GROUP BY mes
             ORDER BY mes DESC
             """,
@@ -511,13 +511,13 @@ async def get_budget_breakdown(
             """
             SELECT
                 modelo,
-                SUM(tokens_in)::bigint  AS tokens_in,
-                SUM(tokens_out)::bigint AS tokens_out,
-                SUM(custo_usd)          AS custo_usd,
-                SUM(req_count)::bigint  AS req_count
-            FROM token_usage
+                SUM(tokens_prompt)::bigint      AS tokens_in,
+                SUM(tokens_completion)::bigint  AS tokens_out,
+                SUM(custo_usd)                  AS custo_usd,
+                COUNT(*)::bigint                AS req_count
+            FROM uso_ia
             WHERE empresa_id = $1
-              AND data >= CURRENT_DATE - ($2 * interval '1 day')
+              AND created_at >= CURRENT_DATE - ($2 * interval '1 day')
             GROUP BY modelo
             ORDER BY custo_usd DESC
             """,
@@ -527,15 +527,15 @@ async def get_budget_breakdown(
         by_day = await _database.db_pool.fetch(
             """
             SELECT
-                data::text,
-                SUM(tokens_in)::bigint  AS tokens_in,
-                SUM(tokens_out)::bigint AS tokens_out,
-                SUM(custo_usd)          AS custo_usd
-            FROM token_usage
+                created_at::date::text          AS data,
+                SUM(tokens_prompt)::bigint      AS tokens_in,
+                SUM(tokens_completion)::bigint  AS tokens_out,
+                SUM(custo_usd)                  AS custo_usd
+            FROM uso_ia
             WHERE empresa_id = $1
-              AND data >= CURRENT_DATE - ($2 * interval '1 day')
-            GROUP BY data
-            ORDER BY data ASC
+              AND created_at >= CURRENT_DATE - ($2 * interval '1 day')
+            GROUP BY created_at::date
+            ORDER BY created_at::date ASC
             """,
             empresa_id, days
         )
