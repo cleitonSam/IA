@@ -1,7 +1,7 @@
 """add csat sentiment and followup filters
 
-Revision ID: a1b2c3d4e5f6
-Revises: z9a0b1c2d3e4
+Revision ID: b2c3d4e5f6g7
+Revises: a0b1c2d3e4f5
 Create Date: 2026-03-30
 
 Adiciona campos de avaliação CSAT e sentimento IA na tabela conversas,
@@ -23,8 +23,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers
-revision = "a1b2c3d4e5f6"
-down_revision = "z9a0b1c2d3e4"
+revision = "b2c3d4e5f6g7"
+down_revision = "a0b1c2d3e4f5"
 branch_labels = None
 depends_on = None
 
