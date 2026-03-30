@@ -2341,3 +2341,54 @@ async def sync_planos(token_payload: dict = Depends(get_current_user_token)):
     count = await sincronizar_planos_evo(empresa_id, bypass_cache=True)
     await _rc.delete(f"planos:ativos:{empresa_id}:todos")
     return {"status": "success", "sincronizados": count}
+
+
+# ─── Chatwoot Teams ────────────────────────────────────────────────────────────
+
+@router.get("/chatwoot/teams")
+async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_token)):
+    """
+    Retorna a lista de times do Chatwoot para a empresa.
+    Usado pelo nó 'Transferir para Time' no editor de fluxo.
+    """
+    import httpx as _httpx
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.db_queries import carregar_integracao as _carregar_integracao
+    integracao = await _carregar_integracao(empresa_id, "chatwoot")
+    if not integracao:
+        raise HTTPException(status_code=404, detail="Integração Chatwoot não configurada")
+
+    url_base = integracao.get("url") or integracao.get("base_url") or ""
+    token = (
+        integracao.get("token")
+        or integracao.get("api_access_token")
+        or integracao.get("api_token")
+        or ""
+    )
+    account_id = integracao.get("account_id") or integracao.get("accountId")
+
+    if not url_base or not token or not account_id:
+        raise HTTPException(status_code=422, detail="Configuração Chatwoot incompleta (url/token/account_id)")
+
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{url_base.rstrip('/')}/api/v1/accounts/{account_id}/teams",
+                headers={"api_access_token": token},
+            )
+            r.raise_for_status()
+            teams = r.json()
+            # Normaliza para [{id, name}]
+            if isinstance(teams, list):
+                return [{"id": t.get("id"), "name": t.get("name", "")} for t in teams]
+            # Chatwoot às vezes envolve em {"payload": [...]}
+            payload = teams.get("payload") or teams.get("teams") or []
+            return [{"id": t.get("id"), "name": t.get("name", "")} for t in payload]
+    except _httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Chatwoot retornou {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao consultar times: {e}")

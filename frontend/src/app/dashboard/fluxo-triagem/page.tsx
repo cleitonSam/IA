@@ -737,6 +737,7 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     delay:         { seconds: 2 },
     waitInput:     { prompt: "", variavel: "resposta_usuario" },
     humanTransfer: { mensagem: "Transferindo para um atendente humano. Aguarde! 👤" },
+    transferTeam:  { team_id: undefined, team_name: "", mensagem: "" },
     webhook:       { url: "", method: "POST", body: { phone: "{{phone}}" } },
     aiMenu:        { instrucao: "Gere um menu com base na dúvida do cliente.", botao: "Ver opções", rodape: "Panobianco" },
     menuFixoIA:    {

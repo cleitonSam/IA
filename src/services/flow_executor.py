@@ -840,6 +840,72 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
         return
 
+    # ── TransferTeam — atribui conversa a um time do Chatwoot ──────────────
+    if node_type == "transferTeam":
+        team_id   = data.get("team_id")
+        team_name = data.get("team_name", "")
+        mensagem_transfer = _render_vars(
+            data.get("mensagem", ""),
+            session_vars
+        )
+
+        if team_id:
+            try:
+                from src.services.db_queries import carregar_integracao as _ci
+                from src.core.database import db_pool as _db_pool
+
+                integ = await _ci(empresa_id, "chatwoot")
+                if integ:
+                    _url  = (integ.get("url") or integ.get("base_url") or "").rstrip("/")
+                    _tok  = (integ.get("token") or integ.get("api_access_token") or "")
+                    _acc  = integ.get("account_id") or integ.get("accountId")
+
+                    if _url and _tok and _acc and _db_pool:
+                        # Busca o conversation_id ativo deste telefone no banco
+                        _conv_row = await _db_pool.fetchrow("""
+                            SELECT conversation_id
+                            FROM conversas
+                            WHERE empresa_id = $1
+                              AND (contato_fone = $2 OR contato_telefone = $2)
+                              AND status NOT IN ('encerrada', 'resolved', 'closed')
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                        """, empresa_id, phone)
+
+                        if _conv_row:
+                            _cid = _conv_row["conversation_id"]
+                            _headers = {"api_access_token": _tok}
+                            _conv_url = f"{_url}/api/v1/accounts/{_acc}/conversations/{_cid}/team_assignments"
+                            async with httpx.AsyncClient(timeout=8.0) as _hc:
+                                _r = await _hc.post(
+                                    _conv_url,
+                                    json={"team": {"id": int(team_id)}},
+                                    headers=_headers,
+                                )
+                            if _r.status_code < 400:
+                                logger.info(
+                                    f"[FlowExecutor] TransferTeam: conversa {_cid} → time {team_id} ({team_name}) "
+                                    f"empresa={empresa_id}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[FlowExecutor] TransferTeam: Chatwoot retornou {_r.status_code} "
+                                    f"para conversa {_cid}"
+                                )
+            except Exception as _e:
+                logger.error(f"[FlowExecutor] TransferTeam erro ao chamar Chatwoot: {_e}")
+
+        # Envia mensagem de aviso se configurada (opcional)
+        if mensagem_transfer.strip():
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
+            await uaz_client.send_text(phone, mensagem_transfer)
+
+        # Continua o fluxo (não pausa a IA — use humanTransfer para isso)
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
     # ── BusinessHours — suporta modo "global" (personalidade) e "custom" (inline no nó) ──
     if node_type == "businessHours":
         from src.utils.time_helpers import ia_esta_no_horario
