@@ -2363,22 +2363,39 @@ async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_toke
         raise HTTPException(status_code=404, detail="Integração Chatwoot não configurada")
 
     url_base = integracao.get("url") or integracao.get("base_url") or ""
-    token = (
-        integracao.get("token")
-        or integracao.get("api_access_token")
-        or integracao.get("api_token")
-        or ""
-    )
     account_id = integracao.get("account_id") or integracao.get("accountId")
 
+    # Extrai token — mesma lógica de extrair_token_chatwoot() de main.py
+    _raw_token = integracao.get("token")
+    if isinstance(_raw_token, dict):
+        token = (
+            _raw_token.get("api_access_token")
+            or _raw_token.get("api_token")
+            or _raw_token.get("access_token")
+            or _raw_token.get("token")
+            or ""
+        )
+    elif _raw_token:
+        token = str(_raw_token).strip()
+    else:
+        token = (
+            integracao.get("api_access_token")
+            or integracao.get("api_token")
+            or integracao.get("access_token")
+            or ""
+        )
+
     if not url_base or not token or not account_id:
-        raise HTTPException(status_code=422, detail="Configuração Chatwoot incompleta (url/token/account_id)")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Configuração Chatwoot incompleta — url={bool(url_base)} token={bool(token)} account_id={bool(account_id)}"
+        )
 
     try:
         async with _httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(
                 f"{url_base.rstrip('/')}/api/v1/accounts/{account_id}/teams",
-                headers={"api_access_token": token},
+                headers={"api_access_token": str(token)},
             )
             r.raise_for_status()
             teams = r.json()
