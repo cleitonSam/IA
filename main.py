@@ -4142,11 +4142,27 @@ NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo 
 "precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
 """
 
+            # Data/hora em tempo real para o prompt
+            _agora_prompt = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            _DIAS_PT = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+            _MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                         "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+            _dia_semana_pt  = _DIAS_PT[_agora_prompt.weekday()]
+            _dia_mes        = _agora_prompt.day
+            _mes_pt         = _MESES_PT[_agora_prompt.month - 1]
+            _ano            = _agora_prompt.year
+            _hora_atual     = _agora_prompt.strftime("%H:%M")
+
             prompt_sistema = f"""
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
 NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
 Você é um atendente — apenas responda o cliente diretamente.
+
+DATA E HORA ATUAL (use sempre que o cliente perguntar sobre dia, data, hora ou horário de funcionamento):
+- Hoje é {_dia_semana_pt}, {_dia_mes} de {_mes_pt} de {_ano}
+- Horário atual: {_hora_atual} (horário de Brasília)
+Use essas informações para responder perguntas como "que dia é hoje?", "que horas são?", "vocês estão abertos agora?", etc.
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
