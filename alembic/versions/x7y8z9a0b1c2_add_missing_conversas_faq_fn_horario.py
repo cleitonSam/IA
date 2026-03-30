@@ -66,6 +66,9 @@ def upgrade() -> None:
     #     ...
     #   }
     # }
+    # DROP antes de CREATE OR REPLACE pois o PostgreSQL não permite mudar o
+    # nome do parâmetro de uma função existente (erro InvalidFunctionDefinition)
+    op.execute("DROP FUNCTION IF EXISTS fn_ia_esta_no_horario_v2(JSONB)")
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_ia_esta_no_horario_v2(config JSONB)
         RETURNS BOOLEAN
