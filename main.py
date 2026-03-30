@@ -4472,6 +4472,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
+                # ── Variáveis para rastreamento de uso da IA (tabela uso_ia) ─────
+                _response_ok   = None          # objeto response bem-sucedido
+                _usou_fallback = False          # True se modelo de fallback foi acionado
+                _modelo_usado  = modelo_escolhido
+
                 async with llm_semaphore:
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
@@ -4479,6 +4484,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         # Resposta longa (length) agora é tratada deixando o texto fluir até o final natural dele (max_tokens generoso)
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         await cb_llm.record_success()
+                        _response_ok = response  # ✅ sucesso no modelo primário
 
                     except asyncio.TimeoutError:
                         logger.warning(f"⏱️ Timeout LLM (25s) — tentando fallback. Conv {conversation_id}")
@@ -4490,6 +4496,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                             resposta_bruta = response.choices[0].message.content
                             await cb_llm.record_success()
+                            _response_ok = response; _usou_fallback = True; _modelo_usado = modelo_fallback  # ✅ fallback OK
                         except asyncio.TimeoutError:
                             logger.error(f"❌ Timeout no fallback também. Conv {conversation_id}")
                             await cb_llm.record_failure()
@@ -4537,6 +4544,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                                 resposta_bruta = response.choices[0].message.content
                                 await cb_llm.record_success()
+                                _response_ok = response; _usou_fallback = True; _modelo_usado = modelo_fallback  # ✅ fallback OK
                             except Exception as e2:
                                 if _is_provider_unavailable_error(e2):
                                     logger.warning("⚠️ Fallback de IA indisponível temporariamente")
@@ -4553,6 +4561,45 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
                 if _PROMETHEUS_OK:
                     METRIC_IA_LATENCY.observe(_latencia)
+
+                # ── Registra uso da IA na tabela uso_ia (métricas do dashboard) ──
+                if _response_ok is not None and db_pool:
+                    try:
+                        _uso_in   = getattr(getattr(_response_ok, 'usage', None), 'prompt_tokens',     0) or 0
+                        _uso_out  = getattr(getattr(_response_ok, 'usage', None), 'completion_tokens', 0) or 0
+                        # Custo estimado: ~$2.50/1M input + ~$10/1M output (média OpenRouter)
+                        _uso_custo = round((_uso_in * 0.0000025) + (_uso_out * 0.000010), 6)
+                        _unid_db   = unidade.get('id') if unidade else None
+                        _lat_ms    = round(_latencia * 1000)
+                        try:
+                            await db_pool.execute("""
+                                INSERT INTO uso_ia
+                                    (empresa_id, unidade_id, conversa_id, modelo,
+                                     tokens_prompt, tokens_completion, custo_usd,
+                                     cache_hit, fallback, latencia_ms)
+                                VALUES (
+                                    $1, $2,
+                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                    $4, $5, $6, $7, false, $8, $9
+                                )
+                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
+                                 _uso_in, _uso_out, _uso_custo, _usou_fallback, _lat_ms)
+                        except Exception:
+                            # Migration a0b1c2d3e4f5 ainda não aplicada — insere sem latencia_ms
+                            await db_pool.execute("""
+                                INSERT INTO uso_ia
+                                    (empresa_id, unidade_id, conversa_id, modelo,
+                                     tokens_prompt, tokens_completion, custo_usd,
+                                     cache_hit, fallback)
+                                VALUES (
+                                    $1, $2,
+                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                    $4, $5, $6, $7, false, $8
+                                )
+                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
+                                 _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                    except Exception as _e_uso:
+                        logger.warning(f"⚠️ Falha ao registrar uso_ia conv {conversation_id}: {_e_uso}")
 
             if not goto_send:
                 # ── Garante que NENHUMA resposta saia com frase cortada ──────────
