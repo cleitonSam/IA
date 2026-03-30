@@ -20,9 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.drop_table('cache_respostas')
-    op.add_column('conversas', sa.Column('link_venda_enviado', sa.Boolean(), server_default='false', nullable=True))
-    op.add_column('conversas', sa.Column('intencao_de_compra', sa.Boolean(), server_default='false', nullable=True))
+    # IF EXISTS: a tabela pode não existir em bancos criados do zero via Alembic
+    op.execute("DROP TABLE IF EXISTS cache_respostas CASCADE")
+    op.execute("""
+        ALTER TABLE conversas
+            ADD COLUMN IF NOT EXISTS link_venda_enviado BOOLEAN DEFAULT false,
+            ADD COLUMN IF NOT EXISTS intencao_de_compra BOOLEAN DEFAULT false
+    """)
 
 def downgrade() -> None:
     """Downgrade schema."""

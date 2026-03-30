@@ -406,7 +406,7 @@ export default function IntegrationsPage() {
                             <p className="text-[10px] text-slate-500 mt-1 font-mono">
                               {activeTab === "chatwoot"
                                 ? `${currentConfig.config.url} — Account #${currentConfig.config.account_id}`
-                                : currentConfig.config.api_url
+                                : currentConfig.config.url || currentConfig.config.api_url
                               }
                             </p>
                           )}
@@ -608,6 +608,36 @@ export default function IntegrationsPage() {
                               <button type="button" onClick={() => toggleTokenVisibility("uzap_token")}
                                 className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
                                 {showTokens["uzap_token"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                              <Hash className="w-3 h-3 text-[#00d2ff]" />Nome da Instância
+                              {currentConfig.config.instance && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                            </label>
+                            <input type="text" value={currentConfig.config.instance || ""} onChange={e => updateField("instance", e.target.value)}
+                              className={`${inputClass} ${currentConfig.config.instance && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                              placeholder="ex: minha-instancia" />
+                            <p className="text-[9px] text-slate-600 pl-1 uppercase tracking-tight">Nome da instância na plataforma UazAPI. Necessário para multi-unidade.</p>
+                          </div>
+
+                          <div className="space-y-3">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                              <ShieldCheck className="w-3 h-3 text-amber-400" />Webhook Secret (Opcional)
+                              {currentConfig.config.webhook_secret && currentConfig.id && <span className="text-emerald-400/60 ml-auto">Salvo</span>}
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showTokens["uazapi_webhook_secret"] ? "text" : "password"}
+                                value={currentConfig.config.webhook_secret || ""}
+                                onChange={e => updateField("webhook_secret", e.target.value)}
+                                className={`${inputClass} font-mono pr-14 ${currentConfig.config.webhook_secret && currentConfig.id ? "border-emerald-500/15" : ""}`}
+                                placeholder="Chave secreta para validar webhooks" />
+                              <button type="button" onClick={() => toggleTokenVisibility("uazapi_webhook_secret")}
+                                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
+                                {showTokens["uazapi_webhook_secret"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                               </button>
                             </div>
                           </div>
