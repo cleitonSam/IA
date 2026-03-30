@@ -221,10 +221,13 @@ export default function UnitsPage() {
     formDataUpload.append("file", file);
 
     try {
+      // IMPORTANTE: NÃO definir Content-Type manualmente para multipart/form-data.
+      // O axios detecta FormData e adiciona automaticamente o header com o boundary correto.
+      // Definir manualmente remove o boundary e quebra o parse no backend.
       const res = await axios.post("/api-backend/dashboard/unidades/upload", formDataUpload, {
         headers: {
           ...getConfig().headers,
-          "Content-Type": "multipart/form-data"
+          // Content-Type é setado automaticamente pelo axios com o boundary correto
         },
         timeout: 300000, // 5 min para vídeos grandes
         onUploadProgress: (progressEvent) => {
