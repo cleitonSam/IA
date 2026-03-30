@@ -3,18 +3,22 @@ from typing import Optional, List, Dict, Any
 from src.utils.text_helpers import normalizar, limpar_nome
 
 SAUDACOES = {
-    # Abertura
+    # Abertura — cumprimentos de início de conversa
     "oi", "ola", "olá", "hey", "boa", "salve", "eai", "e ai",
     "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom",
     "como vai", "oi tudo", "ola tudo", "oii", "oiii", "opa",
-    # Follow-up de small talk (resposta à saudação da IA)
-    "tudo sim", "tudo certo", "tudo otimo", "tudo ótimo", "tudo ok",
+    # Follow-up imediato de small talk (resposta DIRETA à saudação da IA)
+    "tudo sim", "tudo otimo", "tudo ótimo", "tudo ok",
     "por ai", "por aí", "e por ai", "e por aí", "e voce", "e você", "e vc",
-    "bem obrigado", "bem sim", "tudo tranquilo", "tranquilo", "aqui tudo",
-    "muito bem", "que bom", "que otimo", "que ótimo", "que bom mesmo",
-    "obrigado", "obg", "valeu", "brigado", "grato",
-    "otimo", "ótimo", "perfeito", "maravilha", "show",
-    "ok ok", "beleza", "blz", "sim sim", "claro", "certo",
+    "bem sim", "tudo tranquilo", "tranquilo", "aqui tudo",
+    "muito bem",
+    # REMOVIDOS: palavras ambíguas que são usadas NO MEIO de conversas e causavam
+    # o bot a reiniciar o cumprimento quando o cliente dizia "obrigado", "claro", etc.
+    # "obrigado", "obg", "valeu", "brigado", "grato",  ← agradecimentos, não saudações
+    # "otimo", "ótimo", "perfeito", "maravilha", "show", ← aprovações/reações
+    # "ok ok", "beleza", "blz", "sim sim", "claro", "certo", ← afirmações
+    # "que bom", "que otimo", "que ótimo", "que bom mesmo", ← reações positivas
+    # "tudo certo", "bem obrigado", ← frases de transição
 }
 
 def eh_saudacao(texto: str) -> bool:

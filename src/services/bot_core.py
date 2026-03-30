@@ -1591,7 +1591,15 @@ REGRAS:
             despedida = pers.get('despedida_personalizada') or ""
             if despedida:
                 blocos_prompt.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
-            ctx_saudacao = f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]" if eh_saudacao(primeira_mensagem or "") else ""
+            # ctx_saudacao: só força modo-saudação se NÃO há histórico anterior.
+            # Se já existe histórico, o cliente pode estar dizendo "oi" no meio de uma
+            # conversa em andamento — o LLM deve continuar o contexto normalmente.
+            _tem_historico = historico and historico != "Sem histórico."
+            ctx_saudacao = (
+                f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]"
+                if eh_saudacao(primeira_mensagem or "") and not _tem_historico
+                else ""
+            )
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
