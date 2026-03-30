@@ -159,10 +159,13 @@ async def worker_followup():
 
                 pendentes = await _database.db_pool.fetch("""
                     SELECT f.*, c.conversation_id, c.account_id, c.empresa_id,
-                           u.slug, u.nome AS nome_unidade, c.contato_nome
+                           u.slug, u.nome AS nome_unidade, c.contato_nome,
+                           c.rating_csat, c.sentimento_ia, c.cancelamento_detectado,
+                           t.filtro_rating_min, t.filtro_sentimentos_excluir, t.bloquear_cancelamento
                     FROM followups f
                     JOIN conversas c ON c.id = f.conversa_id
                     LEFT JOIN unidades u ON u.id = f.unidade_id
+                    LEFT JOIN templates_followup t ON t.id = f.template_id
                     WHERE f.status = 'pendente' AND f.agendado_para <= $1
                 """, agora)
 
@@ -193,6 +196,41 @@ async def worker_followup():
                     if respondeu:
                         await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
                         continue
+
+                    # ── Filtros inteligentes: CSAT + sentimento ──────────────
+                    _filtro_rating_min = int(f.get('filtro_rating_min') or 0)
+                    _filtro_sentimentos_raw = f.get('filtro_sentimentos_excluir') or '[]'
+                    _bloquear_cancelamento = bool(f.get('bloquear_cancelamento') or False)
+                    _rating_csat = f.get('rating_csat')      # pode ser None
+                    _sentimento_ia = (f.get('sentimento_ia') or '').lower()
+                    _cancelamento = bool(f.get('cancelamento_detectado') or False)
+
+                    # Deserializa lista de sentimentos bloqueados
+                    import json as _json
+                    try:
+                        _sentimentos_excluir = _json.loads(_filtro_sentimentos_raw) if isinstance(_filtro_sentimentos_raw, str) else (_filtro_sentimentos_raw or [])
+                    except Exception:
+                        _sentimentos_excluir = []
+
+                    # Bloquear por cancelamento
+                    if _bloquear_cancelamento and _cancelamento:
+                        logger.info(f"🚫 Follow-up {f['id']} bloqueado: cancelamento detectado (conversa {conv_id})")
+                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
+                        continue
+
+                    # Bloquear por sentimento
+                    if _sentimentos_excluir and _sentimento_ia and _sentimento_ia in [s.lower() for s in _sentimentos_excluir]:
+                        logger.info(f"🚫 Follow-up {f['id']} bloqueado: sentimento '{_sentimento_ia}' na lista de exclusão (conversa {conv_id})")
+                        await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
+                        continue
+
+                    # Bloquear por nota CSAT abaixo do mínimo
+                    if _filtro_rating_min > 0 and _rating_csat is not None:
+                        if int(_rating_csat) < _filtro_rating_min:
+                            logger.info(f"🚫 Follow-up {f['id']} bloqueado: CSAT {_rating_csat} < mínimo {_filtro_rating_min} (conversa {conv_id})")
+                            await _database.db_pool.execute("UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE id = $1", f['id'])
+                            continue
+                    # ── Fim dos filtros ──────────────────────────────────────
 
                     integracao = await carregar_integracao(emp_id, 'chatwoot')
                     if not integracao:

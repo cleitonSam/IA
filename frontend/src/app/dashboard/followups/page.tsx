@@ -23,7 +23,18 @@ interface FollowupTemplate {
   ativo: boolean;
   unidade_id: number | null;
   unidade_nome: string | null;
+  // Filtros inteligentes
+  filtro_rating_min: number;
+  filtro_sentimentos_excluir: string[];
+  bloquear_cancelamento: boolean;
 }
+
+const SENTIMENTOS_OPCOES = [
+  { value: "irritado",     label: "😡 Irritado",     color: "text-red-400" },
+  { value: "negativo",     label: "😞 Negativo",     color: "text-orange-400" },
+  { value: "cancelamento", label: "🚫 Cancelamento", color: "text-rose-400" },
+  { value: "neutro",       label: "😐 Neutro",       color: "text-slate-400" },
+];
 
 interface FollowupHistoryItem {
   id: number;
@@ -117,6 +128,10 @@ function TemplateModal({ open, initial, unidades, onClose, onSave }: TemplateMod
   const [ativo, setAtivo] = useState(true);
   const [unidadeId, setUnidadeId] = useState<number | "">("");
   const [saving, setSaving] = useState(false);
+  // Filtros inteligentes
+  const [filtroRatingMin, setFiltroRatingMin] = useState(0);
+  const [filtroSentimentos, setFiltroSentimentos] = useState<string[]>([]);
+  const [bloquearCancelamento, setBloquearCancelamento] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -130,9 +145,13 @@ function TemplateModal({ open, initial, unidades, onClose, onSave }: TemplateMod
       setOrdem(initial.ordem || 1);
       setAtivo(initial.ativo ?? true);
       setUnidadeId(initial.unidade_id ?? "");
+      setFiltroRatingMin(initial.filtro_rating_min ?? 0);
+      setFiltroSentimentos(initial.filtro_sentimentos_excluir ?? []);
+      setBloquearCancelamento(initial.bloquear_cancelamento ?? false);
     } else {
       setNome(""); setMensagem(""); setDelayVal(2); setDelayUnit("horas");
       setOrdem(1); setAtivo(true); setUnidadeId("");
+      setFiltroRatingMin(0); setFiltroSentimentos([]); setBloquearCancelamento(false);
     }
   }, [open, initial]);
 
@@ -153,11 +172,20 @@ function TemplateModal({ open, initial, unidades, onClose, onSave }: TemplateMod
         ordem,
         ativo,
         unidade_id: unidadeId === "" ? null : Number(unidadeId),
+        filtro_rating_min: filtroRatingMin,
+        filtro_sentimentos_excluir: filtroSentimentos,
+        bloquear_cancelamento: bloquearCancelamento,
       });
       onClose();
     } finally {
       setSaving(false);
     }
+  }
+
+  function toggleSentimento(val: string) {
+    setFiltroSentimentos(prev =>
+      prev.includes(val) ? prev.filter(s => s !== val) : [...prev, val]
+    );
   }
 
   const temp = tempBadge(toMinutos());
@@ -267,6 +295,78 @@ function TemplateModal({ open, initial, unidades, onClose, onSave }: TemplateMod
                     ? <ToggleRight className="w-6 h-6 text-[#00d2ff]" />
                     : <ToggleLeft className="w-6 h-6 text-slate-600" />}
                 </button>
+              </div>
+
+              {/* ── Filtros inteligentes ── */}
+              <div className="border border-white/10 rounded-xl p-3.5 space-y-3 bg-slate-800/30">
+                <p className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
+                  🧠 Filtros inteligentes de envio
+                </p>
+
+                {/* Nota CSAT mínima */}
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1.5">
+                    Nota CSAT mínima para enviar
+                    <span className="ml-1 text-slate-600">(0 = sem filtro)</span>
+                  </label>
+                  <div className="flex gap-1.5">
+                    {[0, 1, 2, 3, 4, 5].map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setFiltroRatingMin(n)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                          filtroRatingMin === n
+                            ? "bg-amber-500/20 text-amber-300 border-amber-500/50"
+                            : "bg-black/20 text-slate-600 border-white/5 hover:text-slate-400"
+                        }`}
+                      >
+                        {n === 0 ? "—" : `${n}⭐`}
+                      </button>
+                    ))}
+                  </div>
+                  {filtroRatingMin > 0 && (
+                    <p className="text-[10px] text-amber-400/70 mt-1">
+                      Só envia se o cliente deu ≥ {filtroRatingMin} estrela{filtroRatingMin > 1 ? "s" : ""} no CSAT
+                    </p>
+                  )}
+                </div>
+
+                {/* Sentimentos bloqueados */}
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1.5">
+                    Bloquear envio se o cliente estiver assim:
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SENTIMENTOS_OPCOES.map(s => (
+                      <button
+                        key={s.value}
+                        type="button"
+                        onClick={() => toggleSentimento(s.value)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+                          filtroSentimentos.includes(s.value)
+                            ? "bg-red-500/20 text-red-300 border-red-500/40"
+                            : "bg-black/20 text-slate-500 border-white/5 hover:text-slate-300"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Bloquear cancelamento */}
+                <div className="flex items-center justify-between bg-black/20 rounded-lg px-3 py-2">
+                  <div>
+                    <p className="text-xs text-slate-300">Bloquear se detectou intenção de cancelar</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">IA detecta automático ao resolver a conversa</p>
+                  </div>
+                  <button onClick={() => setBloquearCancelamento(!bloquearCancelamento)} className="transition-colors ml-3 flex-shrink-0">
+                    {bloquearCancelamento
+                      ? <ToggleRight className="w-6 h-6 text-rose-400" />
+                      : <ToggleLeft className="w-6 h-6 text-slate-600" />}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -502,6 +602,26 @@ export default function FollowupsPage() {
                               <p className="text-sm text-slate-400 leading-relaxed line-clamp-2 font-mono bg-slate-800/40 rounded-lg px-3 py-2 border border-white/5">
                                 {t.mensagem}
                               </p>
+                              {/* Filtros ativos */}
+                              {(t.filtro_rating_min > 0 || t.filtro_sentimentos_excluir?.length > 0 || t.bloquear_cancelamento) && (
+                                <div className="flex flex-wrap gap-1.5 mt-2">
+                                  {t.filtro_rating_min > 0 && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                      ⭐ CSAT ≥ {t.filtro_rating_min}
+                                    </span>
+                                  )}
+                                  {t.bloquear_cancelamento && (
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                      🚫 Bloqueia cancelamento
+                                    </span>
+                                  )}
+                                  {t.filtro_sentimentos_excluir?.map(s => (
+                                    <span key={s} className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
+                                      ✕ {s}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
 
                             {/* Actions */}

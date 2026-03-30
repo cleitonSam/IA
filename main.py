@@ -3324,6 +3324,94 @@ async def bd_finalizar_conversa(conversation_id: int):
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
 
 
+async def _analisar_sentimento_conversa(conversation_id: int, empresa_id: int):
+    """
+    Executa análise de sentimento da IA sobre o histórico da conversa encerrada.
+    Armazena o resultado em conversas.sentimento_ia e cancelamento_detectado.
+
+    Sentimentos possíveis: positivo | neutro | negativo | irritado | cancelamento
+    """
+    if not db_pool or not cliente_ia:
+        return
+    try:
+        # Busca últimas 30 mensagens do usuário na conversa
+        msgs = await db_pool.fetch("""
+            SELECT role, content
+            FROM mensagens
+            WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2)
+              AND role = 'user'
+            ORDER BY created_at DESC
+            LIMIT 30
+        """, conversation_id, empresa_id)
+
+        if not msgs:
+            return
+
+        # Monta histórico em texto (mais recente primeiro → inverte para cronológico)
+        historico = "\n".join(
+            f"- {m['content']}" for m in reversed(msgs)
+            if m.get("content") and str(m["content"]).strip()
+        )
+        if not historico.strip():
+            return
+
+        prompt = (
+            "Você é um analista de sentimentos. Com base nas mensagens abaixo de um cliente com uma academia, "
+            "classifique o sentimento geral do cliente com UMA ÚNICA PALAVRA do seguinte vocabulário:\n"
+            "  positivo | neutro | negativo | irritado | cancelamento\n\n"
+            "Use 'cancelamento' se o cliente mencionou querer cancelar, pausar ou encerrar serviços.\n"
+            "Use 'irritado' se demonstrou raiva, frustração intensa ou reclamações graves.\n"
+            "Use 'negativo' para insatisfação sem raiva explícita.\n"
+            "Use 'neutro' para conversas informativas sem tom emocional claro.\n"
+            "Use 'positivo' para satisfação, elogios ou interesse genuíno.\n\n"
+            "Responda APENAS com a palavra classificadora, sem pontuação.\n\n"
+            f"Mensagens do cliente:\n{historico}"
+        )
+
+        pers = await carregar_personalidade_ia(empresa_id)
+        modelo = (pers or {}).get("modelo_preferido") or "openai/gpt-4o-mini"
+
+        resp = await cliente_ia.chat.completions.create(
+            model=modelo,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=10,
+        )
+        sentimento_raw = (resp.choices[0].message.content or "").strip().lower()
+        # Sanitiza para o vocabulário permitido
+        _vocab = {"positivo", "neutro", "negativo", "irritado", "cancelamento"}
+        sentimento = sentimento_raw if sentimento_raw in _vocab else "neutro"
+        cancelamento = sentimento == "cancelamento"
+
+        await db_pool.execute("""
+            UPDATE conversas
+            SET sentimento_ia = $1, cancelamento_detectado = $2
+            WHERE conversation_id = $3 AND empresa_id = $4
+        """, sentimento, cancelamento, conversation_id, empresa_id)
+
+        logger.info(
+            f"🧠 Sentimento da conversa {conversation_id}: {sentimento} "
+            f"(cancelamento={cancelamento}) empresa={empresa_id}"
+        )
+    except Exception as e:
+        logger.error(f"Erro ao analisar sentimento conversa {conversation_id}: {e}")
+
+
+async def _salvar_csat_conversa(conversation_id: int, empresa_id: int, rating: int):
+    """Persiste nota CSAT (1–5) recebida via webhook Chatwoot na tabela conversas."""
+    if not db_pool:
+        return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas
+            SET rating_csat = $1
+            WHERE conversation_id = $2 AND empresa_id = $3
+        """, rating, conversation_id, empresa_id)
+        logger.info(f"⭐ CSAT {rating} salvo para conversa {conversation_id} empresa={empresa_id}")
+    except Exception as e:
+        logger.error(f"Erro ao salvar CSAT conversa {conversation_id}: {e}")
+
+
 # --- WORKER DE MÉTRICAS DIÁRIAS ---
 
 async def _coletar_metricas_unidade(empresa_id: int, unidade_id: int, hoje) -> Dict:
@@ -5171,6 +5259,23 @@ async def chatwoot_webhook(
 
     if event == "conversation_updated":
         status_conv = conv_obj.get("status") or payload.get("status")
+
+        # ── Detecta nota CSAT submetida pelo cliente ─────────────────────
+        # Chatwoot armazena o rating em additional_attributes após o cliente responder
+        _add_attrs = conv_obj.get("additional_attributes") or {}
+        _csat_rating = (
+            _add_attrs.get("csat_rating")
+            or _add_attrs.get("rating")
+            or payload.get("csat_rating")
+        )
+        if _csat_rating is not None:
+            try:
+                _rating_int = int(_csat_rating)
+                if 1 <= _rating_int <= 5:
+                    background_tasks.add_task(_salvar_csat_conversa, id_conv, empresa_id, _rating_int)
+            except (ValueError, TypeError):
+                pass
+
         if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
@@ -5179,6 +5284,8 @@ async def chatwoot_webhook(
                 f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
                 f"atend_manual:{empresa_id}:{id_conv}"
             )
+            # ── Dispara análise de sentimento em background ───────────────
+            background_tasks.add_task(_analisar_sentimento_conversa, id_conv, empresa_id)
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
 

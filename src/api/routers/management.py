@@ -192,6 +192,10 @@ class FollowupTemplateCreate(BaseModel):
     tipo: str = "texto"
     ativo: bool = True
     unidade_id: Optional[int] = None
+    # Filtros inteligentes CSAT + sentimento
+    filtro_rating_min: int = 0          # 0 = sem filtro; 1–5 = nota mínima exigida
+    filtro_sentimentos_excluir: List[str] = []   # sentimentos que bloqueiam o envio
+    bloquear_cancelamento: bool = False  # TRUE = não envia se detectou intenção de cancelar
 
 class FollowupTemplateUpdate(BaseModel):
     nome: Optional[str] = None
@@ -201,6 +205,10 @@ class FollowupTemplateUpdate(BaseModel):
     tipo: Optional[str] = None
     ativo: Optional[bool] = None
     unidade_id: Optional[int] = None
+    # Filtros inteligentes CSAT + sentimento
+    filtro_rating_min: Optional[int] = None
+    filtro_sentimentos_excluir: Optional[List[str]] = None
+    bloquear_cancelamento: Optional[bool] = None
 
 # --- Personality Endpoints ---
 
@@ -1865,13 +1873,24 @@ async def list_followup_templates(token_payload: dict = Depends(get_current_user
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     rows = await _database.db_pool.fetch("""
         SELECT t.id, t.nome, t.mensagem, t.delay_minutos, t.ordem, t.tipo, t.ativo,
-               t.unidade_id, u.nome AS unidade_nome
+               t.unidade_id, u.nome AS unidade_nome,
+               t.filtro_rating_min, t.filtro_sentimentos_excluir, t.bloquear_cancelamento
         FROM templates_followup t
         LEFT JOIN unidades u ON u.id = t.unidade_id
         WHERE t.empresa_id = $1
         ORDER BY t.unidade_id NULLS LAST, t.ordem
     """, empresa_id)
-    return [dict(r) for r in rows]
+    import json as _json
+    result = []
+    for r in rows:
+        d = dict(r)
+        # filtro_sentimentos_excluir é armazenado como texto JSON → desserializa
+        try:
+            d["filtro_sentimentos_excluir"] = _json.loads(d.get("filtro_sentimentos_excluir") or "[]")
+        except Exception:
+            d["filtro_sentimentos_excluir"] = []
+        result.append(d)
+    return result
 
 
 @router.post("/followup/templates")
@@ -1882,11 +1901,16 @@ async def create_followup_template(body: FollowupTemplateCreate, token_payload: 
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    import json as _json
+    sentimentos_json = _json.dumps(body.filtro_sentimentos_excluir or [])
     row = await _database.db_pool.fetchrow("""
-        INSERT INTO templates_followup (empresa_id, nome, mensagem, delay_minutos, ordem, tipo, ativo, unidade_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO templates_followup
+            (empresa_id, nome, mensagem, delay_minutos, ordem, tipo, ativo, unidade_id,
+             filtro_rating_min, filtro_sentimentos_excluir, bloquear_cancelamento)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
-    """, empresa_id, body.nome, body.mensagem, body.delay_minutos, body.ordem, body.tipo, body.ativo, body.unidade_id)
+    """, empresa_id, body.nome, body.mensagem, body.delay_minutos, body.ordem, body.tipo, body.ativo, body.unidade_id,
+         body.filtro_rating_min, sentimentos_json, body.bloquear_cancelamento)
     return {"id": row["id"], "status": "created"}
 
 
@@ -1907,11 +1931,15 @@ async def update_followup_template(
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Template não encontrado")
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not updates:
+    import json as _json
+    raw = body.model_dump(exclude_none=True)
+    # Serializa lista de sentimentos para JSON texto
+    if "filtro_sentimentos_excluir" in raw:
+        raw["filtro_sentimentos_excluir"] = _json.dumps(raw["filtro_sentimentos_excluir"])
+    if not raw:
         return {"status": "no_changes"}
-    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates))
-    params = [template_id] + list(updates.values())
+    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(raw))
+    params = [template_id] + list(raw.values())
     await _database.db_pool.execute(
         f"UPDATE templates_followup SET {set_clause} WHERE id = $1", *params
     )
