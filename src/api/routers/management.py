@@ -1647,14 +1647,20 @@ async def update_evo_unit(
     config_json = json.dumps(body.config)
     if existing:
         await _database.db_pool.execute(
-            "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
             config_json, body.ativo, existing
         )
     else:
         await _database.db_pool.execute(
-            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2, $3, $4, NOW())",
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2::jsonb, $3, $4, NOW())",
             empresa_id, config_json, body.ativo, unidade_id
         )
+
+    # Invalida cache da integração EVO desta unidade
+    from src.core.redis_client import redis_client as _rc
+    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:{unidade_id}")
+    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:global")
+
     return {"status": "success"}
 
 
@@ -1678,14 +1684,23 @@ async def update_integration(
 
     if existing:
         await _database.db_pool.execute(
-            "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
             config_json, body.ativo, existing
         )
     else:
         await _database.db_pool.execute(
-            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, created_at) VALUES ($1, $2, $3, $4, NOW())",
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, created_at) VALUES ($1, $2, $3::jsonb, $4, NOW())",
             empresa_id, tipo, config_json, body.ativo
         )
+
+    # Invalida o cache do Redis para que a nova config seja lida imediatamente
+    from src.core.redis_client import redis_client as _rc
+    await _rc.delete(f"cfg:integracao:{empresa_id}:{tipo}:global")
+    # Também invalida o cache de mapeamento account_id → empresa (caso account_id tenha mudado)
+    _account_id = body.config.get("account_id")
+    if _account_id:
+        await _rc.delete(f"map:account:{_account_id}")
+
     return {"status": "success"}
 
 
