@@ -20,14 +20,31 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('integracoes', sa.Column('unidade_id', sa.Integer(), sa.ForeignKey('unidades.id', ondelete='CASCADE'), nullable=True))
-    op.drop_constraint('integracoes_empresa_id_tipo_key', 'integracoes', type_='unique')
-    
+    # ADD COLUMN IF NOT EXISTS — idempotente
+    op.execute("""
+        ALTER TABLE integracoes
+            ADD COLUMN IF NOT EXISTS unidade_id INTEGER REFERENCES unidades(id) ON DELETE CASCADE
+    """)
+
+    # Remove o constraint global (pode já ter sido removido em re-runs)
+    op.execute("""
+        ALTER TABLE integracoes
+            DROP CONSTRAINT IF EXISTS integracoes_empresa_id_tipo_key
+    """)
+
     # Índice único para integração por unidade
-    op.create_index('ix_integracoes_empresa_tipo_unidade', 'integracoes', ['empresa_id', 'tipo', 'unidade_id'], unique=True, postgresql_where=sa.text('unidade_id IS NOT NULL'))
-    
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_integracoes_empresa_tipo_unidade
+        ON integracoes (empresa_id, tipo, unidade_id)
+        WHERE unidade_id IS NOT NULL
+    """)
+
     # Índice único para integração global (unidade_id nulo)
-    op.create_index('ix_integracoes_empresa_tipo_global', 'integracoes', ['empresa_id', 'tipo'], unique=True, postgresql_where=sa.text('unidade_id IS NULL'))
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_integracoes_empresa_tipo_global
+        ON integracoes (empresa_id, tipo)
+        WHERE unidade_id IS NULL
+    """)
 
 
 def downgrade() -> None:

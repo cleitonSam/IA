@@ -9,7 +9,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = 'm6n7o8p9q0r1'
-down_revision: Union[str, Sequence[str], None] = 'l5m6n7o8p9q0'
+down_revision: Union[str, Sequence[str], None] = 'r2s3t4u5v6w7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

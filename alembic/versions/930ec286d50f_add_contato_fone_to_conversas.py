@@ -20,9 +20,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('conversas', sa.Column('contato_fone', sa.String(length=50), nullable=True))
+    op.execute("""
+        ALTER TABLE conversas
+            ADD COLUMN IF NOT EXISTS contato_fone VARCHAR(50)
+    """)
     # Criar um índice para buscas rápidas por telefone (UazAPI)
-    op.create_index('ix_conversas_contato_fone', 'conversas', ['contato_fone'])
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_conversas_contato_fone
+        ON conversas (contato_fone)
+    """)
 
 
 def downgrade() -> None:

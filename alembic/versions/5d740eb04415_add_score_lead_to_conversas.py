@@ -20,7 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('conversas', sa.Column('score_lead', sa.Integer(), server_default='0', nullable=True))
+    op.execute("""
+        ALTER TABLE conversas
+            ADD COLUMN IF NOT EXISTS score_lead INTEGER DEFAULT 0
+    """)
 
 
 def downgrade() -> None:

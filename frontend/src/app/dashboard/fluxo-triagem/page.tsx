@@ -21,7 +21,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, X, Copy, LayoutTemplate, BookOpen, Power
+  Save, Loader2, CheckCircle2, Trash2, GitBranch, AlertCircle, X, Copy, LayoutTemplate, BookOpen, Power, Download, Upload
 } from "lucide-react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { nodeTypes } from "./nodes";
@@ -161,6 +161,48 @@ export default function FluxoTriagemPage() {
     }
   };
 
+
+  // ─── Exportar fluxo como JSON ───
+  const handleExport = () => {
+    const cleanNodes = nodes.map((n) => {
+      const { onChange: _, ...rest } = n.data as Record<string, unknown>;
+      return { ...n, data: rest };
+    });
+    const payload = { ativo, nodes: cleanNodes, edges };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `fluxo-triagem-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ─── Importar fluxo de JSON ───
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleImportClick = () => fileInputRef.current?.click();
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string);
+        if (data.nodes && data.edges) {
+          setNodes((data.nodes as Node[]).map(attachOnChange));
+          setEdges((data.edges as Edge[]).map(attachEdgeDelete));
+          if (typeof data.ativo === "boolean") setAtivo(data.ativo);
+          setSaved(false);
+        } else {
+          setError("Arquivo inválido: faltam nodes ou edges.");
+        }
+      } catch {
+        setError("Erro ao ler o arquivo JSON.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
 
   // ─── Injetar onDelete nas edges ───
   const attachEdgeDelete = useCallback(
@@ -386,6 +428,37 @@ export default function FluxoTriagemPage() {
               <BookOpen className="w-3.5 h-3.5" />
               Tutorial
             </button>
+
+            <div className="w-px h-5 bg-white/8 mx-1" />
+
+            <button
+              type="button"
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold text-emerald-400/80 hover:text-emerald-300 border border-emerald-500/15 hover:bg-emerald-500/8 transition-all"
+              title="Baixar fluxo como arquivo JSON"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Exportar
+            </button>
+
+            <button
+              type="button"
+              onClick={handleImportClick}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold text-violet-400/80 hover:text-violet-300 border border-violet-500/15 hover:bg-violet-500/8 transition-all"
+              title="Carregar fluxo de arquivo JSON"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Importar
+            </button>
+
+            {/* input oculto para seleção de arquivo */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
 
             <button
               type="button"
@@ -636,6 +709,7 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     start:         {},
     end:           {},
     loop:          { target_node_id: "" },
+    goToMenu:      {},
     sendText:      { texto: "" },
     sendMenu:      {
       tipo: "list", titulo: "Atendimento", texto: "Olá! Como posso ajudar?",
@@ -663,6 +737,7 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     delay:         { seconds: 2 },
     waitInput:     { prompt: "", variavel: "resposta_usuario" },
     humanTransfer: { mensagem: "Transferindo para um atendente humano. Aguarde! 👤" },
+    transferTeam:  { team_id: undefined, team_name: "", mensagem: "" },
     webhook:       { url: "", method: "POST", body: { phone: "{{phone}}" } },
     aiMenu:        { instrucao: "Gere um menu com base na dúvida do cliente.", botao: "Ver opções", rodape: "Panobianco" },
     menuFixoIA:    {

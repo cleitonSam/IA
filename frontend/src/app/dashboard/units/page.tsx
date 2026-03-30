@@ -40,6 +40,39 @@ interface Unit {
 
 type TabType = "identity" | "location" | "contact" | "operation" | "extra";
 
+// ─── Componentes de UI definidos FORA do componente principal ──────────────
+// IMPORTANTE: definir dentro do componente causa remontagem a cada render,
+// fazendo o input perder o foco a cada tecla digitada.
+
+const Field = ({ label, icon: Icon, children }: { label: string; icon?: any; children: React.ReactNode }) => (
+  <div className="space-y-3">
+    <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">
+      {Icon && <Icon className="w-3.5 h-3.5 text-[#00d2ff]/50" />} {label}
+    </label>
+    {children}
+  </div>
+);
+
+const TabBtn = ({
+  id, label, icon: Icon, activeTab, setActiveTab
+}: {
+  id: TabType; label: string; icon: any;
+  activeTab: TabType; setActiveTab: (t: TabType) => void;
+}) => (
+  <button
+    type="button"
+    onClick={() => setActiveTab(id)}
+    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
+      activeTab === id
+        ? "bg-[#00d2ff]/15 text-[#00d2ff] border border-[#00d2ff]/25"
+        : "text-slate-500 hover:text-slate-300 hover:bg-white/5 border border-transparent"
+    }`}
+  >
+    <Icon className="w-4 h-4" />
+    {label}
+  </button>
+);
+
 const emptyForm = {
   nome: "", nome_abreviado: "", cidade: "", bairro: "", estado: "",
   endereco: "", numero: "", telefone_principal: "", whatsapp: "",
@@ -73,7 +106,7 @@ export default function UnitsPage() {
     setLoading(true);
     try {
       const res = await axios.get("/api-backend/dashboard/unidades", getConfig());
-      setUnits(res.data);
+      setUnits(Array.isArray(res.data) ? res.data : res.data?.data || []);
     } catch (e) {
       console.error("Erro ao carregar unidades:", e);
     } finally {
@@ -188,10 +221,13 @@ export default function UnitsPage() {
     formDataUpload.append("file", file);
 
     try {
+      // IMPORTANTE: NÃO definir Content-Type manualmente para multipart/form-data.
+      // O axios detecta FormData e adiciona automaticamente o header com o boundary correto.
+      // Definir manualmente remove o boundary e quebra o parse no backend.
       const res = await axios.post("/api-backend/dashboard/unidades/upload", formDataUpload, {
         headers: {
           ...getConfig().headers,
-          "Content-Type": "multipart/form-data"
+          // Content-Type é setado automaticamente pelo axios com o boundary correto
         },
         timeout: 300000, // 5 min para vídeos grandes
         onUploadProgress: (progressEvent) => {
@@ -201,7 +237,7 @@ export default function UnitsPage() {
           }
         }
       });
-      setFormData({ ...formData, [fieldName]: res.data.url });
+      setFormData((prev: any) => ({ ...prev, [fieldName]: res.data.url }));
     } catch (err: any) {
       console.error("Erro no upload:", err);
       const detail = err?.response?.data?.detail;
@@ -238,30 +274,6 @@ export default function UnitsPage() {
       setExtractingGrade(false);
     }
   };
-
-  const TabBtn = ({ id, label, icon: Icon }: { id: TabType; label: string; icon: any }) => (
-    <button
-      type="button"
-      onClick={() => setActiveTab(id)}
-      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap ${
-        activeTab === id
-          ? "bg-[#00d2ff]/15 text-[#00d2ff] border border-[#00d2ff]/25"
-          : "text-slate-500 hover:text-slate-300 hover:bg-white/5 border border-transparent"
-      }`}
-    >
-      <Icon className="w-4 h-4" />
-      {label}
-    </button>
-  );
-
-  const Field = ({ label, icon: Icon, children }: { label: string; icon?: any; children: React.ReactNode }) => (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">
-        {Icon && <Icon className="w-3.5 h-3.5 text-[#00d2ff]/50" />} {label}
-      </label>
-      {children}
-    </div>
-  );
 
   const inputClass = "w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 focus:bg-slate-900/80 transition-all font-medium text-sm";
   const textareaClass = `${inputClass} resize-none leading-relaxed`;
@@ -468,11 +480,11 @@ export default function UnitsPage() {
 
               {/* Tabs */}
               <div className="px-10 py-4 border-b border-white/5 bg-slate-900/10 flex gap-3 overflow-x-auto no-scrollbar flex-shrink-0">
-                <TabBtn id="identity" label="Identidade" icon={Building2} />
-                <TabBtn id="location" label="Localização" icon={MapPin} />
-                <TabBtn id="contact" label="Digital" icon={Globe} />
-                <TabBtn id="operation" label="Operação" icon={Clock} />
-                <TabBtn id="extra" label="Dados Ricos" icon={ListChecks} />
+                <TabBtn id="identity" label="Identidade" icon={Building2} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="location" label="Localização" icon={MapPin} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="contact" label="Digital" icon={Globe} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="operation" label="Operação" icon={Clock} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="extra" label="Dados Ricos" icon={ListChecks} activeTab={activeTab} setActiveTab={setActiveTab} />
               </div>
 
               {/* Modal Body */}
@@ -491,12 +503,12 @@ export default function UnitsPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <Field label="Nome Oficial *" icon={Info}>
                           <input required type="text" value={formData.nome}
-                            onChange={e => setFormData({ ...formData, nome: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, nome: e.target.value }))}
                             className={inputClass} placeholder="Ex: Red Fitness – Mandaqui" />
                         </Field>
                         <Field label="Nome Curto / Exibição" icon={Layers}>
                           <input type="text" value={formData.nome_abreviado}
-                            onChange={e => setFormData({ ...formData, nome_abreviado: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, nome_abreviado: e.target.value }))}
                             className={inputClass} placeholder="Ex: Mandaqui" />
                         </Field>
                       </div>
@@ -508,30 +520,30 @@ export default function UnitsPage() {
                         <div className="md:col-span-3">
                           <Field label="Logradouro / Rua">
                             <input type="text" value={formData.endereco}
-                              onChange={e => setFormData({ ...formData, endereco: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, endereco: e.target.value }))}
                               className={inputClass} />
                           </Field>
                         </div>
                         <Field label="Nº">
                           <input type="text" value={formData.numero}
-                            onChange={e => setFormData({ ...formData, numero: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, numero: e.target.value }))}
                             className={`${inputClass} text-center`} />
                         </Field>
                         <div className="md:col-span-2">
                           <Field label="Bairro">
                             <input type="text" value={formData.bairro}
-                              onChange={e => setFormData({ ...formData, bairro: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, bairro: e.target.value }))}
                               className={inputClass} />
                           </Field>
                         </div>
                         <Field label="Cidade">
                           <input type="text" value={formData.cidade}
-                            onChange={e => setFormData({ ...formData, cidade: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, cidade: e.target.value }))}
                             className={inputClass} />
                         </Field>
                         <Field label="UF">
                           <input type="text" maxLength={2} value={formData.estado}
-                            onChange={e => setFormData({ ...formData, estado: e.target.value.toUpperCase() })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, estado: e.target.value.toUpperCase() }))}
                             className={`${inputClass} text-center uppercase`} placeholder="SP" />
                         </Field>
                       </div>
@@ -544,7 +556,7 @@ export default function UnitsPage() {
                           <div className="relative">
                             <Phone className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                             <input type="text" value={formData.whatsapp}
-                              onChange={e => setFormData({ ...formData, whatsapp: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, whatsapp: e.target.value }))}
                               className={`${inputClass} pl-12`} placeholder="(11) 9..." />
                           </div>
                         </Field>
@@ -552,7 +564,7 @@ export default function UnitsPage() {
                           <div className="relative">
                             <Instagram className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                             <input type="text" value={formData.instagram}
-                              onChange={e => setFormData({ ...formData, instagram: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, instagram: e.target.value }))}
                               className={`${inputClass} pl-12`} placeholder="redfitness" />
                           </div>
                         </Field>
@@ -560,7 +572,7 @@ export default function UnitsPage() {
                           <div className="relative">
                             <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                             <input type="text" value={formData.site}
-                              onChange={e => setFormData({ ...formData, site: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, site: e.target.value }))}
                               className={`${inputClass} pl-12`} placeholder="https://..." />
                           </div>
                         </Field>
@@ -568,7 +580,7 @@ export default function UnitsPage() {
                           <div className="relative">
                             <Sparkles className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                             <input type="text" value={formData.link_matricula}
-                              onChange={e => setFormData({ ...formData, link_matricula: e.target.value })}
+                              onChange={e => setFormData((prev: any) => ({ ...prev, link_matricula: e.target.value }))}
                               className={`${inputClass} pl-12`} placeholder="https://..." />
                           </div>
                         </Field>
@@ -580,13 +592,13 @@ export default function UnitsPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <Field label="Horários de Funcionamento" icon={Clock}>
                           <textarea rows={7} value={formData.horarios}
-                            onChange={e => setFormData({ ...formData, horarios: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, horarios: e.target.value }))}
                             className={textareaClass}
                             placeholder={"Seg-Sex: 06h às 23h\nSáb: 09h às 17h\nDom: 09h às 13h"} />
                         </Field>
                         <Field label="Modalidades & Especialidades" icon={Dumbbell}>
                           <textarea id="modalidades-textarea" rows={7} value={formData.modalidades}
-                            onChange={e => setFormData({ ...formData, modalidades: e.target.value })}
+                            onChange={e => setFormData((prev: any) => ({ ...prev, modalidades: e.target.value }))}
                             className={textareaClass}
                             placeholder="Musculação, CrossFit, Pilates, Lutas..." />
                         </Field>
@@ -628,7 +640,7 @@ export default function UnitsPage() {
                                     />
                                     <button
                                       type="button"
-                                      onClick={() => setFormData({ ...formData, foto_grade: "" })}
+                                      onClick={() => setFormData((prev: any) => ({ ...prev, foto_grade: "" }))}
                                       className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
                                     >
                                       <Trash2 className="w-4 h-4" />
@@ -669,7 +681,7 @@ export default function UnitsPage() {
                                 <div className="relative">
                                   <Video className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                                   <input type="text" value={formData.link_tour_virtual}
-                                    onChange={e => setFormData({ ...formData, link_tour_virtual: e.target.value })}
+                                    onChange={e => setFormData((prev: any) => ({ ...prev, link_tour_virtual: e.target.value }))}
                                     className={`${inputClass} pl-12`} placeholder="Cole o link do vídeo (YouTube, Vimeo ou upload direto)" />
                                 </div>
                                 <label className={`flex flex-col items-center justify-center w-full ${uploadingField === "link_tour_virtual" ? "h-28" : "h-24"} bg-slate-900/40 border-2 border-dashed ${uploadingField === "link_tour_virtual" ? "border-[#00d2ff]/50 animate-pulse" : "border-white/5 hover:border-[#00d2ff]/30"} rounded-[1.5rem] ${uploadingField === "link_tour_virtual" ? "cursor-wait pointer-events-none" : "cursor-pointer"} transition-all hover:bg-slate-900/60 overflow-hidden group`}>
@@ -702,7 +714,7 @@ export default function UnitsPage() {
                                   </div>
                                   <button
                                     type="button"
-                                    onClick={() => setFormData({ ...formData, link_tour_virtual: "" })}
+                                    onClick={() => setFormData((prev: any) => ({ ...prev, link_tour_virtual: "" }))}
                                     className="absolute top-3 right-3 p-2 bg-black/60 backdrop-blur-md rounded-xl text-white opacity-0 group-hover/preview:opacity-100 transition-opacity border border-white/10 hover:bg-red-500/80"
                                   >
                                     <Trash2 className="w-4 h-4" />
@@ -726,21 +738,21 @@ export default function UnitsPage() {
                         <Field label="Planos & Preços (JSON)" icon={ListChecks}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
                             value={typeof formData.planos === "object" ? JSON.stringify(formData.planos, null, 2) : formData.planos}
-                            onChange={e => { try { setFormData({ ...formData, planos: JSON.parse(e.target.value) }); } catch { setFormData({ ...formData, planos: e.target.value }); } }}
+                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, planos: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, planos: e.target.value })); } }}
                             placeholder={'{"Basico": 99.90, "Premium": 159.90}'}
                           />
                         </Field>
                         <Field label="Formas de Pagamento" icon={CreditCard}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
                             value={typeof formData.formas_pagamento === "object" ? JSON.stringify(formData.formas_pagamento, null, 2) : formData.formas_pagamento}
-                            onChange={e => { try { setFormData({ ...formData, formas_pagamento: JSON.parse(e.target.value) }); } catch { setFormData({ ...formData, formas_pagamento: e.target.value }); } }}
+                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, formas_pagamento: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, formas_pagamento: e.target.value })); } }}
                             placeholder={'{"Cartão": true, "Pix": true}'}
                           />
                         </Field>
                         <Field label="Infraestrutura" icon={Shield}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
                             value={typeof formData.infraestrutura === "object" ? JSON.stringify(formData.infraestrutura, null, 2) : formData.infraestrutura}
-                            onChange={e => { try { setFormData({ ...formData, infraestrutura: JSON.parse(e.target.value) }); } catch { setFormData({ ...formData, infraestrutura: e.target.value }); } }}
+                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, infraestrutura: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, infraestrutura: e.target.value })); } }}
                           />
                         </Field>
                         <Field label="Convênios Parceiros" icon={HeartHandshake}>
@@ -749,10 +761,13 @@ export default function UnitsPage() {
                               <div className="space-y-2">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Gympass / Wellhub</label>
                                 <select
-                                  value={typeof formData.convenios === "object" ? (formData.convenios?.gympass_wellhub || "Não aceita") : "Não aceita"}
+                                  value={(formData.convenios as any)?.gympass_wellhub || "Não aceita"}
                                   onChange={e => {
-                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
-                                    setFormData({ ...formData, convenios: { ...prev, gympass_wellhub: e.target.value } });
+                                    const val = e.target.value;
+                                    setFormData((p: any) => ({
+                                      ...p,
+                                      convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), gympass_wellhub: val }
+                                    }));
                                   }}
                                   className={inputClass}
                                 >
@@ -764,10 +779,13 @@ export default function UnitsPage() {
                               <div className="space-y-2">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Totalpass</label>
                                 <select
-                                  value={typeof formData.convenios === "object" ? (formData.convenios?.totalpass || "Não aceita") : "Não aceita"}
+                                  value={(formData.convenios as any)?.totalpass || "Não aceita"}
                                   onChange={e => {
-                                    const prev = typeof formData.convenios === "object" ? formData.convenios : {};
-                                    setFormData({ ...formData, convenios: { ...prev, totalpass: e.target.value } });
+                                    const val = e.target.value;
+                                    setFormData((p: any) => ({
+                                      ...p,
+                                      convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), totalpass: val }
+                                    }));
                                   }}
                                   className={inputClass}
                                 >
@@ -782,10 +800,13 @@ export default function UnitsPage() {
                               <input
                                 type="text"
                                 placeholder="Ex: Sesc, Sesi, Convênio Empresa XYZ"
-                                value={typeof formData.convenios === "object" ? (formData.convenios?.outros || "") : ""}
+                                value={(formData.convenios as any)?.outros || ""}
                                 onChange={e => {
-                                  const prev = typeof formData.convenios === "object" ? formData.convenios : {};
-                                  setFormData({ ...formData, convenios: { ...prev, outros: e.target.value } });
+                                  const val = e.target.value;
+                                  setFormData((p: any) => ({
+                                    ...p,
+                                    convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), outros: val }
+                                  }));
                                 }}
                                 className={inputClass}
                               />

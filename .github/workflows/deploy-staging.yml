@@ -1,0 +1,40 @@
+name: Deploy — STAGING
+
+on:
+  push:
+    branches:
+      - staging
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔔 Notifica início do deploy
+        run: echo "🚀 Iniciando deploy STAGING — commit ${{ github.sha }}"
+
+      - name: 🛳️ Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key:      ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            echo "📦 Atualizando código STAGING..."
+            cd ${{ secrets.STAGING_PATH }}
+
+            git fetch origin staging
+            git checkout staging
+            git pull origin staging
+
+            echo "🐳 Rebuild e restart dos containers STAGING..."
+            docker compose -f docker-compose.staging.yml pull 2>/dev/null || true
+            docker compose -f docker-compose.staging.yml up --build -d
+
+            echo "🧹 Limpando imagens antigas..."
+            docker image prune -f
+
+            echo "✅ Deploy STAGING concluído!"
+            docker compose -f docker-compose.staging.yml ps

@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import httpx
+import asyncpg
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -43,6 +44,20 @@ class CriarUnidadeRequest(BaseModel):
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
+
+def _norm_jsonb(val, default):
+    """Normaliza campos JSONB antes de salvar: desencapsula strings duplo-codificadas
+    originadas de saves anteriores onde o frontend enviava a string em vez do objeto."""
+    for _ in range(2):
+        if not isinstance(val, str):
+            break
+        try:
+            val = json.loads(val)
+        except (json.JSONDecodeError, ValueError):
+            return default
+    return val if isinstance(val, (dict, list)) else default
+
+
 async def _get_empresa_id_da_unidade(unidade_id: int) -> Optional[int]:
     """Resolve o empresa_id a partir do unidade_id."""
     row = await _database.db_pool.fetchrow(
@@ -53,16 +68,28 @@ async def _get_empresa_id_da_unidade(unidade_id: int) -> Optional[int]:
 
 @router.get("/unidades")
 async def get_unidades(
+    page: int = Query(1, ge=1, description="Página (começa em 1)"),
+    limit: int = Query(20, ge=1, le=100, description="Registros por página (máx 100)"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
-    Lista unidades ativas. admin_master vê todas; outros veem só da sua empresa.
+    Lista unidades ativas com paginação.
+    admin_master vê todas; outros veem só da sua empresa.
+
+    Retorna: {data, meta:{total, page, per_page, total_pages}}
+    Compatibilidade retroativa: se page=1 e limit=100 é equivalente à resposta anterior.
     """
     empresa_id = token_payload.get("empresa_id")
     perfil = token_payload.get("perfil")
+    offset = (page - 1) * limit
+
     try:
         if perfil == "admin_master":
-            # Retorna todas as unidades ativas de todas as empresas (legítimo para admin_master)
+            total_row = await _database.db_pool.fetchrow(
+                "SELECT COUNT(*) AS total FROM unidades u WHERE u.ativa = true"
+            )
+            total = total_row["total"] if total_row else 0
+
             rows = await _database.db_pool.fetch(
                 """
                 SELECT u.id, u.nome, u.slug, e.nome as empresa_nome
@@ -70,26 +97,58 @@ async def get_unidades(
                 JOIN empresas e ON e.id = u.empresa_id
                 WHERE u.ativa = true
                 ORDER BY e.nome, u.nome
-                """
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
             )
-            return [dict(r) for r in rows]
+            data = [dict(r) for r in rows]
 
-        if not empresa_id:
-            raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+        else:
+            if not empresa_id:
+                raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
 
-        unidades = await listar_unidades_ativas(empresa_id)
-        return [{
-            "id": u["id"],
-            "nome": u["nome"],
-            "slug": u["slug"],
-            "nome_abreviado": u.get("nome_abreviado"),
-            "cidade": u.get("cidade"),
-            "bairro": u.get("bairro"),
-            "estado": u.get("estado"),
-            "whatsapp": u.get("whatsapp"),
-            "instagram": u.get("instagram"),
-            "convenios": u.get("convenios"),
-        } for u in unidades]
+            total_row = await _database.db_pool.fetchrow(
+                "SELECT COUNT(*) AS total FROM unidades WHERE empresa_id = $1 AND ativa = true",
+                empresa_id
+            )
+            total = total_row["total"] if total_row else 0
+
+            unidades = await _database.db_pool.fetch(
+                """
+                SELECT id, nome, slug, nome_abreviado, cidade, bairro, estado,
+                       whatsapp, instagram, convenios
+                FROM unidades
+                WHERE empresa_id = $1 AND ativa = true
+                ORDER BY nome
+                LIMIT $2 OFFSET $3
+                """,
+                empresa_id, limit, offset
+            )
+            data = [{
+                "id": u["id"],
+                "nome": u["nome"],
+                "slug": u["slug"],
+                "nome_abreviado": u.get("nome_abreviado"),
+                "cidade": u.get("cidade"),
+                "bairro": u.get("bairro"),
+                "estado": u.get("estado"),
+                "whatsapp": u.get("whatsapp"),
+                "instagram": u.get("instagram"),
+                "convenios": (json.loads(u["convenios"]) if isinstance(u.get("convenios"), str) else (u.get("convenios") or {})),
+            } for u in unidades]
+
+        import math
+        total_pages = math.ceil(total / limit) if limit > 0 else 1
+        return {
+            "data": data,
+            "meta": {
+                "total": total,
+                "page": page,
+                "per_page": limit,
+                "total_pages": max(1, total_pages),
+            }
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -343,13 +402,183 @@ async def limpar_memoria_conversa(
     return {"status": "ok", "mensagem": "Memória da IA limpa com sucesso"}
 
 
+# ══ BUDGET — consumo de tokens por empresa ════════════════════════════════════
+
+@router.get("/budget/summary")
+async def get_budget_summary(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna resumo de consumo de tokens e custo estimado.
+    Mês atual vs mês anterior, com variação percentual.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    try:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT
+                to_char(data, 'YYYY-MM') AS mes,
+                SUM(tokens_in)::bigint   AS tokens_in,
+                SUM(tokens_out)::bigint  AS tokens_out,
+                SUM(custo_usd)           AS custo_usd,
+                SUM(req_count)::bigint   AS req_count
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= date_trunc('month', CURRENT_DATE - interval '1 month')
+            GROUP BY mes
+            ORDER BY mes DESC
+            """,
+            empresa_id
+        )
+
+        from datetime import datetime as _dt
+        mes_atual = _dt.now().strftime("%Y-%m")
+        mes_ant = (_dt.now().replace(day=1) - __import__('datetime').timedelta(days=1)).strftime("%Y-%m")
+
+        def _find(mes: str):
+            for r in rows:
+                if r["mes"] == mes:
+                    return dict(r)
+            return {"tokens_in": 0, "tokens_out": 0, "custo_usd": 0.0, "req_count": 0}
+
+        atual = _find(mes_atual)
+        anterior = _find(mes_ant)
+
+        def _variacao(a, b):
+            if not b:
+                return None
+            return round((a - b) / b * 100, 1)
+
+        custo_atual = float(atual["custo_usd"] or 0)
+        custo_ant = float(anterior["custo_usd"] or 0)
+        total_tokens_atual = (atual["tokens_in"] or 0) + (atual["tokens_out"] or 0)
+        total_tokens_ant = (anterior["tokens_in"] or 0) + (anterior["tokens_out"] or 0)
+
+        # Estimativa em BRL (taxa aproximada — usuário pode sobrescrever via env)
+        import os
+        brl_rate = float(os.getenv("USD_TO_BRL", "5.70"))
+
+        return {
+            "mes_atual": {
+                "mes": mes_atual,
+                "tokens_in": atual["tokens_in"] or 0,
+                "tokens_out": atual["tokens_out"] or 0,
+                "tokens_total": total_tokens_atual,
+                "custo_usd": round(custo_atual, 4),
+                "custo_brl": round(custo_atual * brl_rate, 2),
+                "req_count": atual["req_count"] or 0,
+            },
+            "mes_anterior": {
+                "mes": mes_ant,
+                "tokens_total": total_tokens_ant,
+                "custo_usd": round(custo_ant, 4),
+                "custo_brl": round(custo_ant * brl_rate, 2),
+            },
+            "variacao": {
+                "tokens_pct": _variacao(total_tokens_atual, total_tokens_ant),
+                "custo_pct": _variacao(custo_atual, custo_ant),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar budget summary empresa={empresa_id}: {e}")
+        # Tabela pode não existir ainda — retorna zeros sem erro 500
+        return {
+            "mes_atual": {"tokens_in": 0, "tokens_out": 0, "tokens_total": 0,
+                          "custo_usd": 0.0, "custo_brl": 0.0, "req_count": 0},
+            "mes_anterior": {"tokens_total": 0, "custo_usd": 0.0, "custo_brl": 0.0},
+            "variacao": {"tokens_pct": None, "custo_pct": None},
+        }
+
+
+@router.get("/budget/breakdown")
+async def get_budget_breakdown(
+    days: int = Query(30, ge=7, le=90, description="Dias para retroagir (7-90)"),
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Detalhamento de consumo por modelo e por dia (últimos N dias).
+    Útil para gráficos no dashboard.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não identificada")
+
+    try:
+        by_model = await _database.db_pool.fetch(
+            """
+            SELECT
+                modelo,
+                SUM(tokens_in)::bigint  AS tokens_in,
+                SUM(tokens_out)::bigint AS tokens_out,
+                SUM(custo_usd)          AS custo_usd,
+                SUM(req_count)::bigint  AS req_count
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= CURRENT_DATE - ($2 * interval '1 day')
+            GROUP BY modelo
+            ORDER BY custo_usd DESC
+            """,
+            empresa_id, days
+        )
+
+        by_day = await _database.db_pool.fetch(
+            """
+            SELECT
+                data::text,
+                SUM(tokens_in)::bigint  AS tokens_in,
+                SUM(tokens_out)::bigint AS tokens_out,
+                SUM(custo_usd)          AS custo_usd
+            FROM token_usage
+            WHERE empresa_id = $1
+              AND data >= CURRENT_DATE - ($2 * interval '1 day')
+            GROUP BY data
+            ORDER BY data ASC
+            """,
+            empresa_id, days
+        )
+
+        return {
+            "days": days,
+            "by_model": [
+                {
+                    "modelo": r["modelo"],
+                    "tokens_in": r["tokens_in"] or 0,
+                    "tokens_out": r["tokens_out"] or 0,
+                    "tokens_total": (r["tokens_in"] or 0) + (r["tokens_out"] or 0),
+                    "custo_usd": round(float(r["custo_usd"] or 0), 4),
+                    "req_count": r["req_count"] or 0,
+                }
+                for r in by_model
+            ],
+            "by_day": [
+                {
+                    "data": r["data"],
+                    "tokens_total": (r["tokens_in"] or 0) + (r["tokens_out"] or 0),
+                    "custo_usd": round(float(r["custo_usd"] or 0), 4),
+                }
+                for r in by_day
+            ],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar budget breakdown empresa={empresa_id}: {e}")
+        return {"days": days, "by_model": [], "by_day": []}
+
+
 @router.get("/conversations/{conversation_id}/eventos")
 async def get_eventos_funil(
     conversation_id: int,
+    limit: int = Query(50, ge=1, le=200, description="Máximo de eventos por página"),
+    offset: int = Query(0, ge=0, description="Offset para paginação"),
     token_payload: dict = Depends(get_current_user_token)
 ):
     """
     Retorna o histórico de eventos de pontuação (funil) de uma conversa específica.
+    Suporta paginação via limit/offset (padrão: 50 eventos por vez).
+
+    Retorna: {data, meta:{total, offset, limit}}
     """
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
@@ -362,13 +591,26 @@ async def get_eventos_funil(
     if not row:
         raise HTTPException(status_code=404, detail="Conversa não encontrada")
 
+    conversa_id = row["id"]
     try:
+        total_row = await _database.db_pool.fetchrow(
+            "SELECT COUNT(*) AS total FROM eventos_funil WHERE conversa_id = $1",
+            conversa_id
+        )
+        total = total_row["total"] if total_row else 0
+
         eventos = await _database.db_pool.fetch(
             """SELECT tipo_evento, descricao, score_incremento, created_at
-               FROM eventos_funil WHERE conversa_id = $1 ORDER BY created_at ASC""",
-            row["id"]
+               FROM eventos_funil
+               WHERE conversa_id = $1
+               ORDER BY created_at ASC
+               LIMIT $2 OFFSET $3""",
+            conversa_id, limit, offset
         )
-        return [dict(e) for e in eventos]
+        return {
+            "data": [dict(e) for e in eventos],
+            "meta": {"total": total, "offset": offset, "limit": limit}
+        }
     except Exception as e:
         logger.error(f"Erro ao buscar eventos funil para conversa {conversation_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar eventos de pontuação")
@@ -448,7 +690,10 @@ async def get_metrics_empresa(
             WHERE {ia_empresa_cond}
               {where_ia}
         """
-        row_ia = await _database.db_pool.fetchrow(query_ia, *params)
+        try:
+            row_ia = await _database.db_pool.fetchrow(query_ia, *params)
+        except asyncpg.UndefinedTableError:
+            row_ia = None  # tabela uso_ia ainda não existe (migration pendente)
 
         # 3. Distribuição por Unidade
         query_units = f"""
@@ -524,7 +769,8 @@ async def criar_unidade(
                 foto_grade, link_tour_virtual, ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+                $14, $15, $16, $17, $18::jsonb, $19::jsonb, $20::jsonb,
+                $21::jsonb, $22::jsonb, $23::jsonb, $24, $25,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -532,9 +778,15 @@ async def criar_unidade(
             str(_uuid.uuid4()), empresa_id, slug, body.nome, body.nome_abreviado,
             body.cidade, body.bairro, body.estado, body.endereco, body.numero,
             body.telefone_principal, body.whatsapp, body.site, body.instagram,
-            body.link_matricula, body.horarios, body.modalidades,
-            body.planos or {}, body.formas_pagamento or {}, body.convenios or {},
-            body.infraestrutura or {}, body.servicos or {}, body.palavras_chave or [],
+            body.link_matricula,
+            body.horarios or "",        # TEXT — texto livre de horários
+            body.modalidades or "",     # TEXT — texto livre de modalidades
+            json.dumps(_norm_jsonb(body.planos, {})),
+            json.dumps(_norm_jsonb(body.formas_pagamento, {})),
+            json.dumps(_norm_jsonb(body.convenios, {})),
+            json.dumps(_norm_jsonb(body.infraestrutura, {})),
+            json.dumps(_norm_jsonb(body.servicos, {})),
+            json.dumps(_norm_jsonb(body.palavras_chave, [])),
             body.foto_grade, body.link_tour_virtual
         )
         from src.core.redis_client import redis_client
@@ -701,7 +953,27 @@ async def get_unidade(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Unidade não encontrada")
-    return dict(row)
+    result = dict(row)
+    # asyncpg retorna JSONB como string; saves anteriores podem ter dupla-codificado.
+    # Faz json.loads até obter dict/list (máximo 2 passos para cobrir double-encode).
+    _jsonb_defaults: dict = {
+        "planos": {}, "formas_pagamento": {}, "convenios": {},
+        "infraestrutura": {}, "servicos": {}, "palavras_chave": [],
+    }
+    for _field, _default in _jsonb_defaults.items():
+        _val = result.get(_field)
+        for _ in range(2):  # no máximo 2 passes para desencapsular double-encode
+            if not isinstance(_val, str):
+                break
+            try:
+                _val = json.loads(_val)
+            except (json.JSONDecodeError, ValueError):
+                _val = _default
+                break
+        if _val is None or isinstance(_val, str):
+            _val = _default
+        result[_field] = _val
+    return result
 
 
 @router.put("/unidades/{unidade_id}")
@@ -738,18 +1010,26 @@ async def atualizar_unidade(
                 nome = $1, nome_abreviado = $2, cidade = $3, bairro = $4,
                 estado = $5, endereco = $6, numero = $7, telefone_principal = $8,
                 whatsapp = $9, site = $10, instagram = $11, link_matricula = $12,
-                horarios = $13, modalidades = $14, planos = $15, 
-                formas_pagamento = $16, convenios = $17, infraestrutura = $18,
-                servicos = $19, palavras_chave = $20, foto_grade = $21, link_tour_virtual = $22,
+                horarios = $13, modalidades = $14,
+                planos = $15::jsonb,
+                formas_pagamento = $16::jsonb, convenios = $17::jsonb, infraestrutura = $18::jsonb,
+                servicos = $19::jsonb, palavras_chave = $20::jsonb,
+                foto_grade = $21, link_tour_virtual = $22,
                 updated_at = NOW()
             WHERE id = $23 AND empresa_id = $24
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
             body.whatsapp, body.site, body.instagram, body.link_matricula,
-            body.horarios, body.modalidades, body.planos or {}, 
-            body.formas_pagamento or {}, body.convenios or {}, body.infraestrutura or {},
-            body.servicos or {}, body.palavras_chave or [], body.foto_grade, body.link_tour_virtual,
+            body.horarios or "",        # TEXT — texto livre de horários
+            body.modalidades or "",     # TEXT — texto livre de modalidades
+            json.dumps(_norm_jsonb(body.planos, {})),
+            json.dumps(_norm_jsonb(body.formas_pagamento, {})),
+            json.dumps(_norm_jsonb(body.convenios, {})),
+            json.dumps(_norm_jsonb(body.infraestrutura, {})),
+            json.dumps(_norm_jsonb(body.servicos, {})),
+            json.dumps(_norm_jsonb(body.palavras_chave, [])),
+            body.foto_grade, body.link_tour_virtual,
             unidade_id, empresa_id
         )
         from src.core.redis_client import redis_client
@@ -870,16 +1150,19 @@ async def get_metrics_timeseries(
         ia_where = " AND ".join(ia_conditions)
         ia_trunc = trunc.replace("c.", "ui.")
 
-        rows_ia = await _database.db_pool.fetch(f"""
-            SELECT
-                {ia_trunc} AS periodo,
-                COALESCE(SUM(ui.custo_usd), 0) AS custo_usd,
-                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS tokens
-            FROM uso_ia ui
-            WHERE {ia_where}
-            GROUP BY periodo
-            ORDER BY periodo ASC
-        """, *params)
+        try:
+            rows_ia = await _database.db_pool.fetch(f"""
+                SELECT
+                    {ia_trunc} AS periodo,
+                    COALESCE(SUM(ui.custo_usd), 0) AS custo_usd,
+                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS tokens
+                FROM uso_ia ui
+                WHERE {ia_where}
+                GROUP BY periodo
+                ORDER BY periodo ASC
+            """, *params)
+        except asyncpg.UndefinedTableError:
+            rows_ia = []  # tabela uso_ia ainda não existe (migration pendente)
 
         # Merge os dados por período
         ia_by_period = {}
@@ -1028,15 +1311,21 @@ async def get_metrics_ai_performance(
         where_c = " AND ".join(conditions_c) if conditions_c else "TRUE"
         where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
 
-        # 1. Métricas de uso da IA (apenas colunas que existem na tabela)
-        row_ia = await _database.db_pool.fetchrow(f"""
-            SELECT
-                COUNT(*) AS total_chamadas,
-                COALESCE(SUM(ui.custo_usd), 0) AS custo_total,
-                COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0) AS total_tokens
-            FROM uso_ia ui
-            WHERE {where_ia}
-        """, *params)
+        # 1. Métricas de uso da IA
+        try:
+            row_ia = await _database.db_pool.fetchrow(f"""
+                SELECT
+                    COUNT(*)                                                          AS total_chamadas,
+                    COALESCE(SUM(ui.custo_usd), 0)                                   AS custo_total,
+                    COALESCE(SUM(ui.tokens_prompt + ui.tokens_completion), 0)         AS total_tokens,
+                    COALESCE(AVG(CASE WHEN ui.cache_hit THEN 1.0 ELSE 0.0 END)*100, 0) AS cache_hit_rate,
+                    COALESCE(AVG(CASE WHEN ui.fallback  THEN 1.0 ELSE 0.0 END)*100, 0) AS fallback_rate,
+                    COALESCE(AVG(ui.latencia_ms), 0)                                 AS latencia_media_ms
+                FROM uso_ia ui
+                WHERE {where_ia}
+            """, *params)
+        except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+            row_ia = None  # tabela/coluna uso_ia ainda não existe (migration pendente)
 
         # 2. Métricas de conversas
         row_conv = await _database.db_pool.fetchrow(f"""
@@ -1064,15 +1353,18 @@ async def get_metrics_ai_performance(
         """, *params)
 
         # 4. Distribuição por hora (para gráfico de atividade)
-        rows_hora = await _database.db_pool.fetch(f"""
-            SELECT
-                EXTRACT(HOUR FROM ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
-                COUNT(*) AS chamadas
-            FROM uso_ia ui
-            WHERE {where_ia}
-            GROUP BY hora
-            ORDER BY hora
-        """, *params)
+        try:
+            rows_hora = await _database.db_pool.fetch(f"""
+                SELECT
+                    EXTRACT(HOUR FROM ui.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hora,
+                    COUNT(*) AS chamadas
+                FROM uso_ia ui
+                WHERE {where_ia}
+                GROUP BY hora
+                ORDER BY hora
+            """, *params)
+        except asyncpg.UndefinedTableError:
+            rows_hora = []  # tabela uso_ia ainda não existe (migration pendente)
 
         ia = dict(row_ia) if row_ia else {}
         conv = dict(row_conv) if row_conv else {}
@@ -1081,17 +1373,20 @@ async def get_metrics_ai_performance(
         total_chamadas = ia.get("total_chamadas", 0) or 1
         total_conversas = conv.get("total_conversas", 0) or 1
 
-        # Calcula tempo médio de resposta como proxy de latência
-        tempo_resp = float(conv.get("tempo_resp_medio", 0))
-        latencia_estimada = round(tempo_resp * 1000, 0) if tempo_resp > 0 and tempo_resp < 60 else 0
+        # Latência: usa média real da uso_ia (latencia_ms por chamada LLM).
+        # Fallback para tempo_resp_medio da conversas se uso_ia ainda não tiver dados.
+        _lat_ia = float(ia.get("latencia_media_ms", 0) or 0)
+        if _lat_ia == 0:
+            tempo_resp = float(conv.get("tempo_resp_medio", 0))
+            _lat_ia = round(tempo_resp * 1000, 0) if 0 < tempo_resp < 60 else 0
 
         return {
             "days": days,
             "ia": {
                 "total_chamadas": ia.get("total_chamadas", 0),
-                "latencia_media_ms": latencia_estimada,
-                "cache_hit_rate": 0.0,  # Requer coluna cache_hit na tabela uso_ia
-                "fallback_rate": 0.0,   # Requer coluna fallback na tabela uso_ia
+                "latencia_media_ms": round(_lat_ia, 0),
+                "cache_hit_rate": round(float(ia.get("cache_hit_rate", 0)), 1),
+                "fallback_rate":  round(float(ia.get("fallback_rate",  0)), 1),
                 "custo_total_usd": round(float(ia.get("custo_total", 0)), 4),
                 "custo_por_conversa": round(float(ia.get("custo_total", 0)) / total_conversas, 4),
                 "total_tokens": ia.get("total_tokens", 0),

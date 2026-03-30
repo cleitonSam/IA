@@ -100,7 +100,7 @@ SMTP_ADDRESS = os.getenv("SMTP_ADDRESS", "smtp.hostinger.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Antigravity IA <ti@fluxodigitaltech.com.br>")
+MAILER_SENDER_EMAIL = os.getenv("MAILER_SENDER_EMAIL", "Fluxo <ti@fluxodigitaltech.com.br>")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 APP_MODE = os.getenv("APP_MODE", "both").lower()  # api, worker, both
 

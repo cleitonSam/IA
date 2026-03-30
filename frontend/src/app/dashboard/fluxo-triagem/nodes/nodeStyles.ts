@@ -4,13 +4,13 @@
  */
 
 export type NodeTypeName =
-  | "start" | "end" | "loop"
+  | "start" | "end" | "loop" | "goToMenu"
   | "sendText" | "sendMenu" | "sendImage" | "sendAudio" | "sendMedia"
   | "aiRespond" | "aiClassify" | "aiSentiment" | "aiQualify" | "aiExtract" | "aiMenu"
   | "menuFixoIA" | "aiMenuDinamicoIA"
   | "switch" | "condition" | "delay" | "waitInput" | "setVariable" | "getVariable"
   | "businessHours"
-  | "humanTransfer" | "webhook" | "generateProtocol"
+  | "humanTransfer" | "transferTeam" | "webhook" | "generateProtocol"
   | "search" | "redis" | "sourceFilter";
 
 export const NODE_CONFIG: Record<NodeTypeName, {
@@ -24,6 +24,7 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   start:         { label: "Início",          icon: "▶",  border: "#22c55e", headerBg: "#064e3b",  headerText: "#86efac", category: "control" },
   end:           { label: "Fim",             icon: "⏹",  border: "#ef4444", headerBg: "#450a0a",  headerText: "#fca5a5", category: "control" },
   loop:          { label: "Loop",            icon: "🔁", border: "#f97316", headerBg: "#431407",  headerText: "#fdba74", category: "control" },
+  goToMenu:      { label: "Voltar ao Menu",  icon: "↩",  border: "#34d399", headerBg: "#064e3b",  headerText: "#6ee7b7", category: "control" },
   sendText:      { label: "Enviar Texto",    icon: "💬", border: "#3b82f6", headerBg: "#172554",  headerText: "#93c5fd", category: "send"    },
   sendMenu:      { label: "Enviar Menu",     icon: "📋", border: "#0ea5e9", headerBg: "#082f49",  headerText: "#7dd3fc", category: "send"    },
   sendImage:     { label: "Enviar Imagem",   icon: "🖼", border: "#6366f1", headerBg: "#1e1b4b",  headerText: "#a5b4fc", category: "send"    },
@@ -47,7 +48,8 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   businessHours: { label: "Horário Comercial", icon: "🕐", border: "#0ea5e9", headerBg: "#082f49",  headerText: "#7dd3fc", category: "logic"   },
   redis:         { label: "Redis (DB)",      icon: "💾", border: "#ef4444", headerBg: "#7f1d1d",  headerText: "#fecaca", category: "system"  },
   sourceFilter:  { label: "Filtro Origem",   icon: "🛂", border: "#84cc16", headerBg: "#365314",  headerText: "#d9f99d", category: "system"  },
-  humanTransfer: { label: "Transferir",      icon: "👤", border: "#f97316", headerBg: "#7c2d12",  headerText: "#ffedd5", category: "system"  },
+  humanTransfer: { label: "Transferir Humano", icon: "👤", border: "#f97316", headerBg: "#7c2d12",  headerText: "#ffedd5", category: "system"  },
+  transferTeam:  { label: "Transferir Time",  icon: "🏢", border: "#38bdf8", headerBg: "#0c4a6e",  headerText: "#7dd3fc", category: "system"  },
   webhook:       { label: "Webhook",         icon: "🌐", border: "#10b981", headerBg: "#064e3b",  headerText: "#d1fae5", category: "system"  },
   generateProtocol: { label: "Protocolo",    icon: "🔢", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
 };

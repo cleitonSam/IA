@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
 import src.core.database as _database
@@ -10,6 +10,7 @@ from src.core.redis_client import redis_client
 import json
 import asyncio
 from src.services.db_queries import listar_unidades_ativas, buscar_planos_ativos, formatar_planos_para_prompt
+from src.utils.rate_limit import rate_limit_empresa
 
 router = APIRouter(prefix="/management", tags=["management"])
 
@@ -58,6 +59,7 @@ class PersonalityUpdate(BaseModel):
     estrategia_tour: Optional[str] = None
     tour_perguntar_primeira_visita: Optional[bool] = None
     tour_mensagem_custom: Optional[str] = None
+    comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -118,6 +120,7 @@ class PersonalityCreate(BaseModel):
     estrategia_tour: Optional[str] = "smart"
     tour_perguntar_primeira_visita: Optional[bool] = True
     tour_mensagem_custom: Optional[str] = None
+    comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
 
     model_config = {"extra": "allow"}
 
@@ -153,20 +156,26 @@ class FAQCreate(BaseModel):
 
 
 async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
-    """Resolve empresa_id do token; fallback para lookup por e-mail em tokens legados."""
+    """
+    Resolve empresa_id do JWT.
+    - Primeiro tenta o claim empresa_id direto no token (caminho rápido).
+    - Fallback: busca pelo e-mail do usuário na tabela usuarios (tokens legados).
+    - Garante retorno int() para consistência de tipo.
+    """
     empresa_id = token_payload.get("empresa_id")
     if empresa_id:
-        return empresa_id
+        return int(empresa_id)
 
     email = token_payload.get("sub")
     if not email:
         return None
 
     try:
-        return await _database.db_pool.fetchval(
-            "SELECT empresa_id FROM usuarios WHERE email = $1",
+        row = await _database.db_pool.fetchval(
+            "SELECT empresa_id FROM usuarios WHERE email = $1 AND ativo = true",
             email
         )
+        return int(row) if row else None
     except Exception as e:
         logger.warning(f"Não foi possível resolver empresa_id para {email}: {e}")
         return None
@@ -183,6 +192,10 @@ class FollowupTemplateCreate(BaseModel):
     tipo: str = "texto"
     ativo: bool = True
     unidade_id: Optional[int] = None
+    # Filtros inteligentes CSAT + sentimento
+    filtro_rating_min: int = 0          # 0 = sem filtro; 1–5 = nota mínima exigida
+    filtro_sentimentos_excluir: List[str] = []   # sentimentos que bloqueiam o envio
+    bloquear_cancelamento: bool = False  # TRUE = não envia se detectou intenção de cancelar
 
 class FollowupTemplateUpdate(BaseModel):
     nome: Optional[str] = None
@@ -192,6 +205,10 @@ class FollowupTemplateUpdate(BaseModel):
     tipo: Optional[str] = None
     ativo: Optional[bool] = None
     unidade_id: Optional[int] = None
+    # Filtros inteligentes CSAT + sentimento
+    filtro_rating_min: Optional[int] = None
+    filtro_sentimentos_excluir: Optional[List[str]] = None
+    bloquear_cancelamento: Optional[bool] = None
 
 # --- Personality Endpoints ---
 
@@ -414,14 +431,26 @@ async def create_personality(
             data.oferecer_tour if data.oferecer_tour is not None else True
         )
         new_id = row["id"]
-        
+
+        # Salva comprimento_resposta separadamente (resiliência se migration pendente)
+        try:
+            comprimento = data.comprimento_resposta or "normal"
+            if comprimento not in ("concisa", "normal", "detalhada"):
+                comprimento = "normal"
+            await _database.db_pool.execute(
+                "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2",
+                comprimento, new_id
+            )
+        except Exception:
+            pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
         # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
         if data.ativo:
             await _database.db_pool.execute(
                 "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
                 empresa_id, new_id
             )
-        
+
         return {"id": new_id, "status": "success"}
     except Exception as e:
         logger.error(f"Erro ao criar personalidade: {e}")
@@ -528,6 +557,18 @@ async def update_personality_by_id(
             logger.error(f"Erro ao atualizar personalidade {pid}: {e2}")
             raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e2)}")
 
+    # Salva comprimento_resposta separadamente (resiliência se migration pendente)
+    try:
+        comprimento = data.comprimento_resposta or "normal"
+        if comprimento not in ("concisa", "normal", "detalhada"):
+            comprimento = "normal"
+        await _database.db_pool.execute(
+            "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2 AND empresa_id=$3",
+            comprimento, pid, empresa_id
+        )
+    except Exception:
+        pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
     # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
     if data.ativo:
         await _database.db_pool.execute(
@@ -563,6 +604,120 @@ async def delete_personality(
         "DELETE FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
     )
     return {"status": "success"}
+
+
+# --- Preview de Prompt e Templates ---
+
+@router.post("/personalities/{pid}/preview-prompt")
+@rate_limit_empresa(max_calls=20, window=60, tag="preview_prompt")
+async def preview_personality_prompt(
+    pid: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Retorna o system prompt completo que seria enviado ao LLM para esta personalidade.
+    Inclui contagem de caracteres e estimativa de tokens.
+    Útil para o cliente entender exatamente como a IA está configurada.
+    """
+    empresa_id = token_payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    p, _model, _temp, _max_tokens, faq_text, unidades, planos = await _load_playground_context(pid, empresa_id)
+    prompt = _build_playground_prompt(p, faq_text=faq_text, unidades=unidades, planos=planos)
+
+    # Extrai os títulos das seções para exibição na UI
+    sections = [line.strip("[]") for line in prompt.splitlines() if line.startswith("[") and line.endswith("]")]
+
+    char_count = len(prompt)
+    # Estimativa de tokens: ~4 chars por token (regra geral para português)
+    estimated_tokens = max(1, char_count // 4)
+
+    return {
+        "system_prompt": prompt,
+        "char_count": char_count,
+        "estimated_tokens": estimated_tokens,
+        "sections": sections,
+        "model": _model,
+        "nome_ia": p.get("nome_ia") or "Assistente",
+    }
+
+
+@router.get("/personality-templates")
+async def list_personality_templates(
+    token_payload: dict = Depends(get_current_user_token)
+):
+    """
+    Lista templates pré-prontos de personalidade.
+    Permitem ao cliente começar com uma configuração de qualidade ao invés de campos em branco.
+    """
+    templates = [
+        {
+            "id": "academia_vendas_ativa",
+            "nome": "Academia — Vendas Ativas 💪",
+            "descricao": "Consultora de vendas animada, proativa, foca em converter leads em alunos.",
+            "tom_voz": "Entusiasta",
+            "fields": {
+                "nome_ia": "Ana",
+                "personalidade": "Sou Ana, consultora de vendas da academia. Sou animada, proativa e apaixonada por ajudar pessoas a transformarem suas vidas através do exercício. Celebro cada decisão de começar a treinar!",
+                "instrucoes_base": "Seu objetivo principal é converter cada contato em uma matrícula. Identifique o objetivo do cliente (emagrecer, ganhar músculo, saúde, etc.), mostre o plano ideal e crie urgência para fechar.",
+                "tom_voz": "Entusiasta",
+                "objetivos_venda": "Converter leads em alunos matriculados. Meta: 1 matrícula por cada 3 atendimentos.",
+                "script_vendas": "1. Pergunte o objetivo (emagrecer, ganhar músculo, saúde)\n2. Mostre como a academia ajuda nesse objetivo\n3. Apresente o plano mais adequado\n4. Crie urgência (promoção, vaga, etc.)\n5. Direcione para matrícula",
+                "frases_fechamento": "Que tal começar hoje mesmo? • Temos uma condição especial para novos alunos! • Sua transformação começa agora!",
+                "comprimento_resposta": "concisa",
+                "restricoes": "Não falar mal de outras academias. Não prometer resultados físicos específicos.",
+            }
+        },
+        {
+            "id": "academia_receptiva",
+            "nome": "Academia — Atendente Receptivo 😊",
+            "descricao": "Atendente simpático e prestativo, foca em esclarecer dúvidas com clareza.",
+            "tom_voz": "Amigável",
+            "fields": {
+                "nome_ia": "Carol",
+                "personalidade": "Sou Carol, atendente virtual da academia. Sou simpática, paciente e sempre disposta a ajudar. Me preocupo em entender o que cada pessoa precisa e oferecer a melhor solução.",
+                "instrucoes_base": "Priorize clareza e simpatia. Responda as dúvidas completamente, sugira a melhor opção para o perfil do cliente e sempre convide para uma visita ou agende uma conversa.",
+                "tom_voz": "Amigável",
+                "objetivos_venda": "Gerar visitas presenciais e conversas com a equipe comercial.",
+                "script_vendas": "1. Cumprimente e pergunte como pode ajudar\n2. Esclareça todas as dúvidas com detalhes\n3. Pergunte o objetivo e perfil\n4. Sugira visita ou agendamento",
+                "comprimento_resposta": "normal",
+                "restricoes": "Não pressionar para matrícula imediata. Sempre dar espaço para o cliente decidir.",
+            }
+        },
+        {
+            "id": "academia_premium",
+            "nome": "Academia Premium 💎",
+            "descricao": "Atendimento exclusivo para academias premium. Tom refinado, foco em experiência.",
+            "tom_voz": "Profissional",
+            "fields": {
+                "nome_ia": "Sofia",
+                "personalidade": "Sou Sofia, consultora de bem-estar. Ofereço um atendimento personalizado e exclusivo, focado na experiência completa do membro. Valorizo cada detalhe da jornada de saúde dos nossos clientes.",
+                "instrucoes_base": "Tom refinado e profissional. Destaque os diferenciais exclusivos da academia (equipamentos, metodologia, personalização). Foque na experiência e não apenas no preço.",
+                "tom_voz": "Profissional",
+                "posicionamento": "Academia premium com foco em resultados personalizados e experiência de alto padrão.",
+                "diferenciais": "Equipamentos importados, personal trainers certificados internacionalmente, aulas exclusivas, ambiente climatizado.",
+                "comprimento_resposta": "normal",
+                "restricoes": "Não mencionar preços sem antes apresentar os diferenciais. Nunca comparar com academias populares.",
+            }
+        },
+        {
+            "id": "consultora_vendas_generica",
+            "nome": "Consultora de Vendas Genérica 📈",
+            "descricao": "Template universal para qualquer negócio focado em vendas e conversão.",
+            "tom_voz": "Profissional",
+            "fields": {
+                "nome_ia": "Lia",
+                "personalidade": "Sou Lia, consultora especializada em entender as necessidades dos clientes e encontrar a solução ideal para cada um. Sou objetiva, confiante e focada em resultados.",
+                "instrucoes_base": "Identifique o problema ou necessidade do cliente, apresente a solução mais adequada, destaque os benefícios e direcione para a conversão.",
+                "tom_voz": "Profissional",
+                "objetivos_venda": "Converter contatos em clientes através de atendimento consultivo.",
+                "script_vendas": "1. Entenda o problema\n2. Apresente a solução\n3. Destaque benefícios\n4. Trate objeções\n5. Direcione para conversão",
+                "comprimento_resposta": "concisa",
+            }
+        },
+    ]
+    return templates
 
 
 # --- Fluxo de Triagem Visual (n8n-style) ---
@@ -955,10 +1110,35 @@ REGRAS:
     if despedida.strip():
         blocos.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
 
+    # 18. Controle de verbosidade (comprimento das respostas)
+    _VERBOSIDADE_MAP = {
+        "concisa":   (
+            "[TAMANHO DE RESPOSTA — OBRIGATÓRIO]\n"
+            "- Responda em no máximo 2–3 frases por mensagem.\n"
+            "- Seja direto e objetivo. Elimine qualquer texto desnecessário.\n"
+            "- NUNCA use listas, enumerações ou parágrafos longos.\n"
+            "- Uma ideia por mensagem. Se precisar de mais, faça em mensagens separadas."
+        ),
+        "normal":    (
+            "[TAMANHO DE RESPOSTA]\n"
+            "- Respostas entre 3–5 frases. Balance completude e concisão.\n"
+            "- Use listas apenas quando a comparação de opções for essencial."
+        ),
+        "detalhada": (
+            "[TAMANHO DE RESPOSTA]\n"
+            "- Pode detalhar quando o cliente demonstrar interesse ou pedir mais informações.\n"
+            "- Use listas e estrutura quando ajudar a clareza da resposta."
+        ),
+    }
+    verbosidade = p.get("comprimento_resposta") or "normal"
+    if verbosidade in _VERBOSIDADE_MAP:
+        blocos.append(_VERBOSIDADE_MAP[verbosidade])
+
     return "\n\n".join(blocos)
 
 
 @router.post("/personalities/playground")
+@rate_limit_empresa(max_calls=10, window=60, tag="playground")
 async def personality_playground(
     body: PlaygroundRequest,
     token_payload: dict = Depends(get_current_user_token)
@@ -1067,6 +1247,7 @@ async def _load_playground_context(personality_id: Optional[int], empresa_id: in
 
 
 @router.post("/personalities/playground/stream")
+@rate_limit_empresa(max_calls=5, window=60, tag="playground_stream")
 async def personality_playground_stream(
     body: PlaygroundRequest,
     token_payload: dict = Depends(get_current_user_token)
@@ -1199,6 +1380,7 @@ async def list_tts_voices(token_payload: dict = Depends(get_current_user_token))
 
 
 @router.post("/tts/preview")
+@rate_limit_empresa(max_calls=15, window=60, tag="tts_preview")
 async def preview_tts_voice(
     body: dict,
     token_payload: dict = Depends(get_current_user_token)
@@ -1283,11 +1465,15 @@ async def create_faq(body: FAQCreate, token_payload: dict = Depends(get_current_
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute(
-        """INSERT INTO faq (empresa_id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, true, NOW())""",
-        empresa_id, body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade
-    )
+    try:
+        await _database.db_pool.execute(
+            """INSERT INTO faq (empresa_id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, true, NOW())""",
+            empresa_id, body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade
+        )
+    except Exception as e:
+        logger.error(f"Erro ao criar FAQ para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao salvar pergunta. Tente novamente.")
     return {"status": "success"}
 
 @router.put("/faq/{faq_id}")
@@ -1295,11 +1481,19 @@ async def update_faq(faq_id: int, body: FAQCreate, token_payload: dict = Depends
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute(
-        """UPDATE faq SET pergunta=$1, resposta=$2, unidade_id=$3, todas_unidades=$4, prioridade=$5, updated_at=NOW()
-           WHERE id=$6 AND empresa_id=$7""",
-        body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade, faq_id, empresa_id
-    )
+    try:
+        result = await _database.db_pool.execute(
+            """UPDATE faq SET pergunta=$1, resposta=$2, unidade_id=$3, todas_unidades=$4, prioridade=$5, updated_at=NOW()
+               WHERE id=$6 AND empresa_id=$7""",
+            body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade, faq_id, empresa_id
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Pergunta não encontrada.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar FAQ {faq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao atualizar pergunta. Tente novamente.")
     return {"status": "success"}
 
 @router.delete("/faq/{faq_id}")
@@ -1307,7 +1501,11 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
+    try:
+        await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
+    except Exception as e:
+        logger.error(f"Erro ao excluir FAQ {faq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao excluir pergunta. Tente novamente.")
     return {"status": "success"}
 
 # --- Debug Endpoint (temporário) ---
@@ -1352,20 +1550,7 @@ async def debug_me(token_payload: dict = Depends(get_current_user_token)):
 
 
 # --- Integrations Endpoints ---
-
-async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
-    """Resolve empresa_id do JWT; se nulo, busca no banco pelo email do usuário."""
-    empresa_id = token_payload.get("empresa_id")
-    if empresa_id:
-        return int(empresa_id)
-    email = token_payload.get("sub")
-    if email:
-        empresa_id = await _database.db_pool.fetchval(
-            "SELECT empresa_id FROM usuarios WHERE email = $1 AND ativo = true", email
-        )
-        if empresa_id:
-            return int(empresa_id)
-    return None
+# _resolve_empresa_id está definida acima (linha ~158) — não duplicar aqui.
 
 
 
@@ -1373,10 +1558,6 @@ async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
 @router.get("/integrations/chatwoot/ai-status")
 async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_token)):
     """Status global da IA para mensagens do Chatwoot (por empresa)."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1388,10 +1569,6 @@ async def get_chatwoot_ai_status(token_payload: dict = Depends(get_current_user_
 @router.put("/integrations/chatwoot/ai-status")
 async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_current_user_token)):
     """Ativa/pausa globalmente o atendimento da IA no canal Chatwoot."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1407,12 +1584,6 @@ async def set_chatwoot_ai_status(body: dict, token_payload: dict = Depends(get_c
 
 @router.get("/integrations")
 async def get_integrations(token_payload: dict = Depends(get_current_user_token)):
-    perfil = token_payload.get("perfil", "")
-
-    # admin_master não gerencia integrações de empresa específica
-    if perfil == "admin_master":
-        return []
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         return []
@@ -1440,11 +1611,6 @@ async def get_integrations(token_payload: dict = Depends(get_current_user_token)
 @router.get("/integrations/evo/units")
 async def get_evo_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
     """Retorna a configuração EVO para cada unidade ativa da empresa."""
-    perfil = token_payload.get("perfil", "")
-
-    if perfil == "admin_master":
-        return []  # admin_master não gerencia integrações de empresa
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1487,10 +1653,6 @@ async def update_evo_unit(
     token_payload: dict = Depends(get_current_user_token),
 ):
     """Salva a configuração EVO de uma unidade específica."""
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1502,14 +1664,20 @@ async def update_evo_unit(
     config_json = json.dumps(body.config)
     if existing:
         await _database.db_pool.execute(
-            "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
             config_json, body.ativo, existing
         )
     else:
         await _database.db_pool.execute(
-            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2, $3, $4, NOW())",
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo', $2::jsonb, $3, $4, NOW())",
             empresa_id, config_json, body.ativo, unidade_id
         )
+
+    # Invalida cache da integração EVO desta unidade
+    from src.core.redis_client import redis_client as _rc
+    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:{unidade_id}")
+    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:global")
+
     return {"status": "success"}
 
 
@@ -1519,10 +1687,6 @@ async def update_integration(
     body: IntegrationUpdate,
     token_payload: dict = Depends(get_current_user_token),
 ):
-    perfil = token_payload.get("perfil", "")
-    if perfil == "admin_master":
-        raise HTTPException(status_code=403, detail="admin_master não gerencia integrações de empresa")
-
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -1537,14 +1701,23 @@ async def update_integration(
 
     if existing:
         await _database.db_pool.execute(
-            "UPDATE integracoes SET config = $1, ativo = $2, updated_at = NOW() WHERE id = $3",
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
             config_json, body.ativo, existing
         )
     else:
         await _database.db_pool.execute(
-            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, created_at) VALUES ($1, $2, $3, $4, NOW())",
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, created_at) VALUES ($1, $2, $3::jsonb, $4, NOW())",
             empresa_id, tipo, config_json, body.ativo
         )
+
+    # Invalida o cache do Redis para que a nova config seja lida imediatamente
+    from src.core.redis_client import redis_client as _rc
+    await _rc.delete(f"cfg:integracao:{empresa_id}:{tipo}:global")
+    # Também invalida o cache de mapeamento account_id → empresa (caso account_id tenha mudado)
+    _account_id = body.config.get("account_id")
+    if _account_id:
+        await _rc.delete(f"map:account:{_account_id}")
+
     return {"status": "success"}
 
 
@@ -1593,8 +1766,8 @@ async def test_integration_connection(
                     return {"ok": True, "message": "Conexão com Chatwoot OK"}
                 return {"ok": False, "message": f"Chatwoot retornou status {resp.status_code}"}
 
-            elif tipo == "uzap":
-                api_url = (config.get("api_url") or "").rstrip("/")
+            elif tipo == "uazapi":
+                api_url = (config.get("url") or config.get("api_url") or "").rstrip("/")
                 token = config.get("token") or ""
                 if not api_url or not token:
                     return {"ok": False, "message": "URL ou token não configurados"}
@@ -1700,13 +1873,24 @@ async def list_followup_templates(token_payload: dict = Depends(get_current_user
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     rows = await _database.db_pool.fetch("""
         SELECT t.id, t.nome, t.mensagem, t.delay_minutos, t.ordem, t.tipo, t.ativo,
-               t.unidade_id, u.nome AS unidade_nome
+               t.unidade_id, u.nome AS unidade_nome,
+               t.filtro_rating_min, t.filtro_sentimentos_excluir, t.bloquear_cancelamento
         FROM templates_followup t
         LEFT JOIN unidades u ON u.id = t.unidade_id
         WHERE t.empresa_id = $1
         ORDER BY t.unidade_id NULLS LAST, t.ordem
     """, empresa_id)
-    return [dict(r) for r in rows]
+    import json as _json
+    result = []
+    for r in rows:
+        d = dict(r)
+        # filtro_sentimentos_excluir é armazenado como texto JSON → desserializa
+        try:
+            d["filtro_sentimentos_excluir"] = _json.loads(d.get("filtro_sentimentos_excluir") or "[]")
+        except Exception:
+            d["filtro_sentimentos_excluir"] = []
+        result.append(d)
+    return result
 
 
 @router.post("/followup/templates")
@@ -1717,11 +1901,16 @@ async def create_followup_template(body: FollowupTemplateCreate, token_payload: 
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    import json as _json
+    sentimentos_json = _json.dumps(body.filtro_sentimentos_excluir or [])
     row = await _database.db_pool.fetchrow("""
-        INSERT INTO templates_followup (empresa_id, nome, mensagem, delay_minutos, ordem, tipo, ativo, unidade_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO templates_followup
+            (empresa_id, nome, mensagem, delay_minutos, ordem, tipo, ativo, unidade_id,
+             filtro_rating_min, filtro_sentimentos_excluir, bloquear_cancelamento)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
-    """, empresa_id, body.nome, body.mensagem, body.delay_minutos, body.ordem, body.tipo, body.ativo, body.unidade_id)
+    """, empresa_id, body.nome, body.mensagem, body.delay_minutos, body.ordem, body.tipo, body.ativo, body.unidade_id,
+         body.filtro_rating_min, sentimentos_json, body.bloquear_cancelamento)
     return {"id": row["id"], "status": "created"}
 
 
@@ -1742,11 +1931,15 @@ async def update_followup_template(
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Template não encontrado")
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not updates:
+    import json as _json
+    raw = body.model_dump(exclude_none=True)
+    # Serializa lista de sentimentos para JSON texto
+    if "filtro_sentimentos_excluir" in raw:
+        raw["filtro_sentimentos_excluir"] = _json.dumps(raw["filtro_sentimentos_excluir"])
+    if not raw:
         return {"status": "no_changes"}
-    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates))
-    params = [template_id] + list(updates.values())
+    set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(raw))
+    params = [template_id] + list(raw.values())
     await _database.db_pool.execute(
         f"UPDATE templates_followup SET {set_clause} WHERE id = $1", *params
     )
@@ -2006,3 +2199,213 @@ async def finalizar_ab_test(
     if not ok:
         raise HTTPException(status_code=500, detail="Erro ao finalizar teste")
     return {"status": "success", "message": "Teste A/B finalizado"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLANOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PlanoCreate(BaseModel):
+    nome: str
+    valor: Optional[float] = None
+    valor_promocional: Optional[float] = None
+    meses_promocionais: Optional[int] = None
+    descricao: Optional[str] = None
+    diferenciais: Optional[str] = None  # texto livre separado por vírgula
+    link_venda: Optional[str] = None
+    unidade_id: Optional[int] = None
+    ativo: bool = True
+    ordem: int = 0
+
+
+@router.get("/planos")
+async def list_planos(token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    try:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
+                   p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
+                   p.ativo, p.ordem, p.id_externo,
+                   u.nome AS unidade_nome
+            FROM planos p
+            LEFT JOIN unidades u ON u.id = p.unidade_id
+            WHERE p.empresa_id = $1
+            ORDER BY p.ordem, p.nome
+            LIMIT 500
+            """,
+            empresa_id
+        )
+    except Exception as e:
+        logger.error(f"Erro ao listar planos para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao carregar planos.")
+    return [dict(r) for r in rows]
+
+
+@router.post("/planos", status_code=201)
+async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    try:
+        await _database.db_pool.execute(
+            """
+            INSERT INTO planos
+                (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
+                 descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+            """,
+            empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
+            body.meses_promocionais, body.descricao, body.diferenciais,
+            body.link_venda, body.ativo, body.ordem
+        )
+    except Exception as e:
+        logger.error(f"Erro ao criar plano para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao salvar plano. Tente novamente.")
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if body.unidade_id:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.put("/planos/{plano_id}")
+async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    try:
+        result = await _database.db_pool.execute(
+            """
+            UPDATE planos
+            SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
+                descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
+                ativo=$9, ordem=$10, updated_at=NOW()
+            WHERE id=$11 AND empresa_id=$12
+            """,
+            body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
+            body.descricao, body.diferenciais, body.link_venda, body.unidade_id,
+            body.ativo, body.ordem, plano_id, empresa_id
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Plano não encontrado")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar plano {plano_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao atualizar plano. Tente novamente.")
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if body.unidade_id:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.delete("/planos/{plano_id}")
+async def delete_plano(plano_id: int, token_payload: dict = Depends(get_current_user_token)):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    # Pega unidade_id antes de deletar para invalidar cache correto
+    row = await _database.db_pool.fetchrow(
+        "SELECT unidade_id FROM planos WHERE id=$1 AND empresa_id=$2", plano_id, empresa_id
+    )
+    await _database.db_pool.execute(
+        "DELETE FROM planos WHERE id=$1 AND empresa_id=$2", plano_id, empresa_id
+    )
+    try:
+        from src.services.db_queries import redis_client as _rc
+        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+        if row and row["unidade_id"]:
+            await _rc.delete(f"planos:ativos:{empresa_id}:{row['unidade_id']}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.post("/planos/sync")
+async def sync_planos(token_payload: dict = Depends(get_current_user_token)):
+    """Sincroniza planos do Evo API para o banco de dados."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    from src.services.db_queries import sincronizar_planos_evo, redis_client as _rc
+    count = await sincronizar_planos_evo(empresa_id, bypass_cache=True)
+    await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+    return {"status": "success", "sincronizados": count}
+
+
+# ─── Chatwoot Teams ────────────────────────────────────────────────────────────
+
+@router.get("/chatwoot/teams")
+async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_token)):
+    """
+    Retorna a lista de times do Chatwoot para a empresa.
+    Usado pelo nó 'Transferir para Time' no editor de fluxo.
+    """
+    import httpx as _httpx
+
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.db_queries import carregar_integracao as _carregar_integracao
+    integracao = await _carregar_integracao(empresa_id, "chatwoot")
+    if not integracao:
+        raise HTTPException(status_code=404, detail="Integração Chatwoot não configurada")
+
+    url_base = integracao.get("url") or integracao.get("base_url") or ""
+    account_id = integracao.get("account_id") or integracao.get("accountId")
+
+    # Extrai token — mesma lógica de extrair_token_chatwoot() de main.py
+    _raw_token = integracao.get("token")
+    if isinstance(_raw_token, dict):
+        token = (
+            _raw_token.get("api_access_token")
+            or _raw_token.get("api_token")
+            or _raw_token.get("access_token")
+            or _raw_token.get("token")
+            or ""
+        )
+    elif _raw_token:
+        token = str(_raw_token).strip()
+    else:
+        token = (
+            integracao.get("api_access_token")
+            or integracao.get("api_token")
+            or integracao.get("access_token")
+            or ""
+        )
+
+    if not url_base or not token or not account_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Configuração Chatwoot incompleta — url={bool(url_base)} token={bool(token)} account_id={bool(account_id)}"
+        )
+
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{url_base.rstrip('/')}/api/v1/accounts/{account_id}/teams",
+                headers={"api_access_token": str(token)},
+            )
+            r.raise_for_status()
+            teams = r.json()
+            # Normaliza para [{id, name}]
+            if isinstance(teams, list):
+                return [{"id": t.get("id"), "name": t.get("name", "")} for t in teams]
+            # Chatwoot às vezes envolve em {"payload": [...]}
+            payload = teams.get("payload") or teams.get("teams") or []
+            return [{"id": t.get("id"), "name": t.get("name", "")} for t in payload]
+    except _httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Chatwoot retornou {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao consultar times: {e}")

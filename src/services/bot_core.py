@@ -1599,7 +1599,15 @@ REGRAS:
             despedida = pers.get('despedida_personalizada') or ""
             if despedida:
                 blocos_prompt.append(f"[DESPEDIDA PADRÃO]\n{despedida}")
-            ctx_saudacao = f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]" if eh_saudacao(primeira_mensagem or "") else ""
+            # ctx_saudacao: só força modo-saudação se NÃO há histórico anterior.
+            # Se já existe histórico, o cliente pode estar dizendo "oi" no meio de uma
+            # conversa em andamento — o LLM deve continuar o contexto normalmente.
+            _tem_historico = historico and historico != "Sem histórico."
+            ctx_saudacao = (
+                f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]"
+                if eh_saudacao(primeira_mensagem or "") and not _tem_historico
+                else ""
+            )
             
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
@@ -1786,6 +1794,19 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_bruta = response.choices[0].message.content
                         if resposta_bruta:
                             logger.info(f"✅ LLM: Resposta recebida ({len(resposta_bruta)} chars). Final: '{resposta_bruta[-20:]}'")
+                        # ── Budget Tracker: captura uso de tokens (fire-and-forget) ──
+                        try:
+                            _usage = getattr(response, "usage", None)
+                            if _usage and empresa_id:
+                                from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                asyncio.create_task(_reg_tokens(
+                                    empresa_id=empresa_id,
+                                    modelo=modelo_escolhido,
+                                    tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                    tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                ))
+                        except Exception:
+                            pass  # token tracking nunca deve quebrar o fluxo principal
                         await cb_llm.record_success()
 
                     except asyncio.TimeoutError:
@@ -1797,6 +1818,18 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                             modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                             response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                             resposta_bruta = response.choices[0].message.content
+                            try:
+                                _usage = getattr(response, "usage", None)
+                                if _usage and empresa_id:
+                                    from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                    asyncio.create_task(_reg_tokens(
+                                        empresa_id=empresa_id,
+                                        modelo=modelo_fallback,
+                                        tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                        tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                    ))
+                            except Exception:
+                                pass
                             await cb_llm.record_success()
                         except asyncio.TimeoutError:
                             logger.error(f"❌ Timeout no fallback também. Conv {conversation_id}")
@@ -1842,6 +1875,18 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 modelo_fallback = "google/gemini-2.5-flash" if imagens_urls else "google/gemini-2.5-flash-lite"
                                 response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                                 resposta_bruta = response.choices[0].message.content
+                                try:
+                                    _usage = getattr(response, "usage", None)
+                                    if _usage and empresa_id:
+                                        from src.services.db_queries import registrar_token_usage as _reg_tokens
+                                        asyncio.create_task(_reg_tokens(
+                                            empresa_id=empresa_id,
+                                            modelo=modelo_fallback,
+                                            tokens_in=getattr(_usage, "prompt_tokens", 0) or 0,
+                                            tokens_out=getattr(_usage, "completion_tokens", 0) or 0,
+                                        ))
+                                except Exception:
+                                    pass
                                 await cb_llm.record_success()
                             except Exception as e2:
                                 if is_provider_unavailable_error(e2):
@@ -1912,7 +1957,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id,
                                 f"Enviando a grade da unidade *{_target_unit.get('nome')}*... 🖼️",
-                                integracao, nome_ia=nome_ia,
+                                integracao, empresa_id, nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(1.5, 3.5))
@@ -1923,7 +1968,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 except Exception: pass
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id, _cross_foto, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                empresa_id, nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
                                 is_direct_url=True
                             )
                         except Exception as e:
@@ -1941,7 +1986,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id,
                                 f"Vou te enviar um vídeo da unidade *{_target_unit_v.get('nome')}* por dentro! 🎥",
-                                integracao, nome_ia=nome_ia,
+                                integracao, empresa_id, nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
                             await asyncio.sleep(random.uniform(2.0, 4.5))
@@ -1952,7 +1997,7 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 except Exception: pass
                             await enviar_mensagem_chatwoot(
                                 account_id, conversation_id, _cross_tour, integracao,
-                                nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
+                                empresa_id, nome_ia=nome_ia, contact_id=contact_id, source=source, fone=contato_fone,
                                 is_direct_url=True
                             )
                         except Exception as e:
@@ -1965,9 +2010,9 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_texto = resposta_texto.replace("<SEND_IMAGE>", "").strip()
                         try:
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 f"Enviando a grade da unidade *{unidade.get('nome')}*... 🖼️",
-                                integracao, 
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
@@ -1977,14 +2022,14 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                     uaz = UazAPIClient(integracao.get('url') or integracao.get('api_url'), integracao.get('token'), integracao.get('instance', 'default'))
                                     await uaz.set_presence(contato_fone, presence="composing", delay=1500)
                                 except Exception: pass
-                            
+
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 _foto_grade,
-                                integracao,
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
+                                is_direct_url=True
                             )
                         except Exception as e:
                             logger.error(f"Erro ao enviar imagem da grade: {e}")
@@ -1998,9 +2043,9 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_texto = resposta_texto.replace("<SEND_VIDEO>", "").strip()
                         try:
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 f"Vou te enviar um vídeo mostrando nossa unidade por dentro! 🎥",
-                                integracao, 
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone
                             )
@@ -2012,12 +2057,12 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                 except Exception: pass
 
                             await enviar_mensagem_chatwoot(
-                                account_id, conversation_id, 
+                                account_id, conversation_id,
                                 _link_tour,
-                                integracao,
+                                integracao, empresa_id,
                                 nome_ia=nome_ia,
                                 contact_id=contact_id, source=source, fone=contato_fone,
-                                is_direct_url=True 
+                                is_direct_url=True
                             )
                         except Exception as e:
                             logger.error(f"Erro ao enviar vídeo do tour: {e}")
@@ -2559,7 +2604,7 @@ async def chatwoot_webhook(
                         f"\n\nComo posso te ajudar? 😊"
                     )
                     await enviar_mensagem_chatwoot(
-                        account_id, id_conv, _msg_confirmacao, integracao, nome_ia=_nome_ia_temp
+                        account_id, id_conv, _msg_confirmacao, integracao, empresa_id, nome_ia=_nome_ia_temp
                     )
 
                     lock_key = f"agendar_lock:{empresa_id}:{id_conv}"
@@ -2593,7 +2638,7 @@ async def chatwoot_webhook(
                                 )
                                 _pers_retry = await carregar_personalidade(empresa_id) or {}
                                 _nome_ia_retry = _pers_retry.get('nome_ia') or 'Assistente'
-                                await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, nome_ia=_nome_ia_retry)
+                                await enviar_mensagem_chatwoot(account_id, id_conv, msg_retry, integracao, empresa_id, nome_ia=_nome_ia_retry)
                                 await redis_client.setex(throttle_key, 30, "1")
                             logger.info(f"⏭️ Aguardando unidade para conv {id_conv}, mantendo fluxo ativo")
                             return {"status": "aguardando_escolha_unidade"}

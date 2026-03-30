@@ -95,7 +95,7 @@ export default function ConversasPage() {
   }, [offset, filterUnidade, filterStatus, busca]);
 
   useEffect(() => {
-    axios.get("/api-backend/dashboard/unidades", config).then(r => setUnidades(r.data)).catch(() => {});
+    axios.get("/api-backend/dashboard/unidades", config).then(r => setUnidades(Array.isArray(r.data) ? r.data : r.data?.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
@@ -104,7 +104,7 @@ export default function ConversasPage() {
     if (!selected) { setEventos([]); return; }
     setLoadingEventos(true);
     axios.get(`/api-backend/dashboard/conversations/${selected.conversation_id}/eventos`, config)
-      .then(r => setEventos(r.data || []))
+      .then(r => setEventos(Array.isArray(r.data) ? r.data : r.data?.data || []))
       .catch(() => setEventos([]))
       .finally(() => setLoadingEventos(false));
   }, [selected?.conversation_id]);

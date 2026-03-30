@@ -180,6 +180,18 @@ async def executar_fluxo(
     if not fluxo or not fluxo.get("ativo"):
         return False
 
+    # ── Normaliza mensagem: o buffer pode entregar JSON '{"text":"oi","files":[]}'
+    #    em vez do texto puro — extraímos só o campo "text" nesse caso ──────────
+    if isinstance(mensagem, str) and mensagem.strip().startswith("{"):
+        try:
+            _msg_obj = json.loads(mensagem)
+            if isinstance(_msg_obj, dict) and "text" in _msg_obj:
+                mensagem = str(_msg_obj["text"]).strip()
+        except (ValueError, TypeError):
+            pass
+    elif not isinstance(mensagem, str):
+        mensagem = str(mensagem)
+
     state = await _get_state(empresa_id, phone, unidade_id)
     session_vars = await _get_vars(empresa_id, phone, unidade_id)
 
@@ -342,7 +354,12 @@ async def _process_state(
         logger.info(f"[Switch] matched_handle={matched_handle}")
         if matched_handle:
             return _get_next_node_id(fluxo, node_id, matched_handle)
-        # Nenhum match: tenta a primeira saída padrão
+        # Nenhum match: volta ao nó de menu para repetir a mensagem
+        _menu_src = state.get("_menu_node_id")
+        if _menu_src:
+            logger.info(f"[Switch] Sem match → repetindo menu nó '{_menu_src}'")
+            return _menu_src
+        # Sem referência de menu: tenta a primeira saída padrão
         handles = _get_all_next_handles(fluxo, node_id)
         return handles[0][1] if handles else None
 
@@ -503,6 +520,20 @@ async def _execute_from(
         logger.info(f"[FlowExecutor] Fluxo encerrado para {phone} empresa {empresa_id}")
         return
 
+    # ── GoToMenu: reinicia o fluxo a partir do nó Start ──
+    if node_type == "goToMenu":
+        await _clear_state(empresa_id, phone, unidade_id)
+        logger.info(f"[FlowExecutor] Voltando ao menu inicial para {phone} empresa {empresa_id}")
+        start_node = _find_node_by_type(fluxo, "start")
+        if start_node:
+            first_next = _get_next_node_id(fluxo, start_node["id"])
+            if first_next:
+                await _execute_from(
+                    empresa_id, phone, mensagem, fluxo, first_next,
+                    uaz_client, session_vars, _depth + 1, unidade_id=unidade_id,
+                )
+        return
+
     # ── SendText ──
     if node_type == "sendText":
         texto = _render_vars(data.get("texto", ""), session_vars)
@@ -532,6 +563,7 @@ async def _execute_from(
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
                     "_menu_opcoes": _opcoes_titulos,
+                    "_menu_node_id": node_id,   # permite repetir o menu se o switch não bater
                 }, unidade_id=unidade_id)
         return
 
@@ -804,6 +836,92 @@ async def _execute_from(
         await redis_client.setex(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone}", 86400, "1")
         await _clear_state(empresa_id, phone, unidade_id)
         logger.info(f"[FlowExecutor] HumanTransfer: IA pausada para {phone} empresa {empresa_id} (Team {team_id})")
+        return
+
+    # ── TransferTeam — atribui conversa a um time do Chatwoot ──────────────
+    if node_type == "transferTeam":
+        team_id   = data.get("team_id")
+        team_name = data.get("team_name", "")
+        mensagem_transfer = _render_vars(
+            data.get("mensagem", ""),
+            session_vars
+        )
+
+        if team_id:
+            try:
+                from src.services.db_queries import carregar_integracao as _ci
+                from src.core.database import db_pool as _db_pool
+
+                integ = await _ci(empresa_id, "chatwoot")
+                if integ:
+                    _url  = (integ.get("url") or integ.get("base_url") or "").rstrip("/")
+                    _acc  = integ.get("account_id") or integ.get("accountId")
+
+                    # Extrai token — mesma lógica de extrair_token_chatwoot()
+                    _raw_tok = integ.get("token")
+                    if isinstance(_raw_tok, dict):
+                        _tok = (
+                            _raw_tok.get("api_access_token")
+                            or _raw_tok.get("api_token")
+                            or _raw_tok.get("access_token")
+                            or _raw_tok.get("token")
+                            or ""
+                        )
+                    elif _raw_tok:
+                        _tok = str(_raw_tok).strip()
+                    else:
+                        _tok = (
+                            integ.get("api_access_token")
+                            or integ.get("api_token")
+                            or integ.get("access_token")
+                            or ""
+                        )
+
+                    if _url and _tok and _acc and _db_pool:
+                        # Busca o conversation_id ativo deste telefone no banco
+                        _conv_row = await _db_pool.fetchrow("""
+                            SELECT conversation_id, account_id
+                            FROM conversas
+                            WHERE empresa_id = $1
+                              AND (contato_fone = $2 OR contato_telefone = $2)
+                              AND status NOT IN ('encerrada', 'resolved', 'closed')
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                        """, empresa_id, phone)
+
+                        if _conv_row:
+                            _cid = _conv_row["conversation_id"]
+                            _headers = {"api_access_token": str(_tok)}
+                            # Endpoint correto: /assignments com team_id no body
+                            _conv_url = f"{_url}/api/v1/accounts/{_acc}/conversations/{_cid}/assignments"
+                            async with httpx.AsyncClient(timeout=8.0) as _hc:
+                                _r = await _hc.post(
+                                    _conv_url,
+                                    json={"team_id": int(team_id)},
+                                    headers=_headers,
+                                )
+                            if _r.status_code < 400:
+                                logger.info(
+                                    f"[FlowExecutor] TransferTeam: conversa {_cid} → time {team_id} ({team_name}) "
+                                    f"empresa={empresa_id}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[FlowExecutor] TransferTeam: Chatwoot retornou {_r.status_code} "
+                                    f"body={_r.text} para conversa {_cid}"
+                                )
+            except Exception as _e:
+                logger.error(f"[FlowExecutor] TransferTeam erro ao chamar Chatwoot: {_e}")
+
+        # Envia mensagem de aviso se configurada (opcional)
+        if mensagem_transfer.strip():
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
+            await uaz_client.send_text(phone, mensagem_transfer)
+
+        # Continua o fluxo (não pausa a IA — use humanTransfer para isso)
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
     # ── BusinessHours — suporta modo "global" (personalidade) e "custom" (inline no nó) ──
@@ -1275,6 +1393,7 @@ async def _execute_aimenu(
                 await _set_state(empresa_id, phone, {
                     "node_id": next_id,
                     "step": "awaiting_menu_reply",
+                    "_menu_node_id": node_id,   # permite repetir o menu se o switch não bater
                 }, unidade_id=unidade_id)
     except Exception as e:
         logger.error(f"[FlowExecutor] Erro ao gerar AI Menu: {e} | Resposta: {result_raw}")

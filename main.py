@@ -88,12 +88,19 @@ app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import FRONTEND_URL
 
-_cors_origins = [
-    FRONTEND_URL,
-    "http://localhost:3000",
-]
-# Remove duplicatas e vazios
-_cors_origins = list({o for o in _cors_origins if o})
+def _build_cors_origins() -> list:
+    """
+    Constrói lista de origens CORS permitidas de forma dinâmica.
+    Suporta múltiplos domínios via env var CORS_ORIGINS (separados por vírgula).
+    Exemplo: CORS_ORIGINS=https://app.meudominio.com,https://admin.meudominio.com
+    """
+    base = [FRONTEND_URL, "http://localhost:3000"]
+    extras_raw = os.getenv("CORS_ORIGINS", "")
+    extras = [o.strip() for o in extras_raw.split(",") if o.strip().startswith("http")]
+    return list({o for o in base + extras if o})
+
+_cors_origins = _build_cors_origins()
+logger.info(f"🌐 CORS origins configuradas: {_cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -177,6 +184,44 @@ async def rate_limit_middleware(request: Request, call_next):
         pass
 
     return await call_next(request)
+
+# ── Middleware de Erros Centralizado ─────────────────────────────────────────
+# Captura exceções não tratadas em qualquer endpoint e retorna resposta
+# padronizada com log detalhado (método, path, IP, traceback).
+import traceback as _traceback
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.middleware("http")
+async def error_handler_middleware(request: Request, call_next):
+    """
+    Middleware global de tratamento de erros.
+    - Captura qualquer exceção não tratada em endpoints
+    - Loga com contexto completo (método, path, IP, traceback)
+    - Retorna JSON padronizado {detail, request_id} com status 500
+    - Evita vazar stack traces para o cliente
+    """
+    request_id = str(uuid.uuid4())[:8]  # ID curto para correlação em logs
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as exc:
+        client_ip = request.client.host if request.client else "unknown"
+        tb = _traceback.format_exc()
+        logger.error(
+            f"❌ [{request_id}] Exceção não tratada — "
+            f"{request.method} {request.url.path} | IP: {client_ip}\n"
+            f"{tb}"
+        )
+        if _PROMETHEUS_OK:
+            METRIC_ERROS_TOTAL.labels(tipo="unhandled_exception").inc()
+        return _JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Erro interno no servidor. Tente novamente em instantes.",
+                "request_id": request_id,
+            },
+        )
+
 
 # ============================================================
 # ⚡ CIRCUIT BREAKER — protege contra queda do OpenRouter/LLM
@@ -298,20 +343,25 @@ EMPRESA_ID_PADRAO = 1
 APP_VERSION = "2.5.0"
 
 # 👋 SAUDAÇÕES — usadas para detectar mensagens de abertura OU small talk sem intenção real
-# Inclui respostas de follow-up ("tudo sim", "por aí?") para não disparar vendas acidentalmente
+# ATENÇÃO: manter APENAS cumprimentos genuínos. Palavras como "obrigado", "claro", "beleza"
+# foram removidas pois são usadas NO MEIO de conversas e causavam o bot a reiniciar o
+# cumprimento, perdendo contexto e ignorando FAQ.
 SAUDACOES = {
-    # Abertura
+    # Abertura — cumprimentos de início de conversa
     "oi", "ola", "olá", "hey", "boa", "salve", "eai", "e ai",
     "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom",
     "como vai", "oi tudo", "ola tudo", "oii", "oiii", "opa",
-    # Follow-up de small talk (resposta à saudação da IA)
-    "tudo sim", "tudo certo", "tudo otimo", "tudo ótimo", "tudo ok",
+    # Follow-up imediato de small talk (resposta DIRETA à saudação da IA)
+    "tudo sim", "tudo otimo", "tudo ótimo", "tudo ok",
     "por ai", "por aí", "e por ai", "e por aí", "e voce", "e você", "e vc",
-    "bem obrigado", "bem sim", "tudo tranquilo", "tranquilo", "aqui tudo",
-    "muito bem", "que bom", "que otimo", "que ótimo", "que bom mesmo",
-    "obrigado", "obg", "valeu", "brigado", "grato",
-    "otimo", "ótimo", "perfeito", "maravilha", "show",
-    "ok ok", "beleza", "blz", "sim sim", "claro", "certo",
+    "bem sim", "tudo tranquilo", "tranquilo", "aqui tudo",
+    "muito bem",
+    # REMOVIDOS: palavras ambíguas que são usadas NO MEIO de conversas:
+    # "obrigado", "obg", "valeu", "brigado", "grato",  ← agradecimentos, não saudações
+    # "otimo", "ótimo", "perfeito", "maravilha", "show", ← aprovações/reações
+    # "ok ok", "beleza", "blz", "sim sim", "claro", "certo", ← afirmações
+    # "que bom", "que otimo", "que ótimo", "que bom mesmo", ← reações positivas
+    # "tudo certo", "bem obrigado", ← frases de transição
 }
 
 def eh_saudacao(texto: str) -> bool:
@@ -983,7 +1033,7 @@ async def startup_event():
             import src.core.database as core_database
             core_database.db_pool = db_pool
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
-        except asyncpg.PostgresConnectionStatusError as e:
+        except asyncpg.PostgresError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
             raise e
         except asyncpg.CannotConnectNowError as e:
@@ -2071,6 +2121,134 @@ def formatar_mensagem_saida(content: str) -> str:
     return txt.strip()
 
 
+def quebrar_em_blocos(texto: str, min_len: int = 30, max_len: int = 450) -> list:
+    """
+    Quebra uma resposta de IA em blocos para envio como mensagens separadas.
+    Totalmente heurístico — sem IA.
+
+    Regras (em ordem de prioridade):
+    1. Divide em \\n\\n (parágrafo duplo) — corte mais forte.
+    2. Divide em \\n simples quando a linha seguinte começa com:
+       - Emoji (U+1F000–U+1FFFF / símbolos comuns)
+       - Letra maiúscula + espaço (nova frase)
+       - Marcador de lista: "- ", "• ", "* ", "→ ", número + ". "
+    3. Agrupa sequências de bullets/numerados como UM bloco único.
+    4. Mescla fragmentos menores que min_len com o bloco seguinte.
+    5. Quebra blocos maiores que max_len em sentenças (". " / "? " / "! ").
+    """
+    import re as _re
+
+    if not texto or not texto.strip():
+        return []
+
+    texto = texto.strip()
+
+    # ── Passo 1: divide por parágrafo duplo ──────────────────────────────────
+    paragrafos = _re.split(r'\n{2,}', texto)
+
+    # ── Passo 2: dentro de cada parágrafo, divide em sub-blocos lógicos ──────
+    _BULLET  = _re.compile(r'^(?:[-•*→]|\d+[.)]) ')
+    _EMOJI_START = _re.compile(
+        r'^[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0001F900-\U0001F9FF'
+        r'\U00002702-\U000027B0\U0000231A-\U0000231B\U000025AA-\U000025FE]'
+    )
+    _NOVA_FRASE = _re.compile(r'^[A-ZÁÉÍÓÚÂÊÎÔÛÃÕÀÈÌÒÙÇ]')
+
+    blocos_intermediarios: list = []
+    for paragrafo in paragrafos:
+        linhas = paragrafo.strip().split('\n')
+        if not linhas:
+            continue
+
+        # Agrupa bullets/numerados contíguos num único bloco
+        grupo_atual: list = []
+        tipo_atual = None  # 'bullet', 'texto'
+
+        def _flush_grupo():
+            nonlocal grupo_atual, tipo_atual
+            if grupo_atual:
+                blocos_intermediarios.append('\n'.join(grupo_atual))
+            grupo_atual = []
+            tipo_atual = None
+
+        for linha in linhas:
+            linha_strip = linha.strip()
+            if not linha_strip:
+                continue
+
+            eh_bullet = bool(_BULLET.match(linha_strip))
+
+            if eh_bullet:
+                # Bullets sempre agrupados juntos
+                if tipo_atual == 'texto':
+                    _flush_grupo()
+                grupo_atual.append(linha_strip)
+                tipo_atual = 'bullet'
+            else:
+                if tipo_atual == 'bullet':
+                    # Saiu dos bullets: flush e começa novo bloco
+                    _flush_grupo()
+
+                if tipo_atual == 'texto' and grupo_atual:
+                    ultima = grupo_atual[-1]
+                    # Quebra se nova linha começa com emoji ou nova frase
+                    começa_novo = (
+                        _EMOJI_START.match(linha_strip)
+                        or (_NOVA_FRASE.match(linha_strip) and ultima.rstrip().endswith(('.', '!', '?', ':')))
+                    )
+                    if começa_novo:
+                        _flush_grupo()
+
+                grupo_atual.append(linha_strip)
+                tipo_atual = 'texto'
+
+        _flush_grupo()
+
+    # ── Passo 3: mescla fragmentos muito curtos ───────────────────────────────
+    blocos_merged: list = []
+    pendente = ""
+    for bloco in blocos_intermediarios:
+        if not bloco.strip():
+            continue
+        if pendente:
+            bloco = pendente + "\n" + bloco
+            pendente = ""
+        if len(bloco) < min_len and blocos_intermediarios.index(bloco) < len(blocos_intermediarios) - 1:
+            pendente = bloco
+        else:
+            blocos_merged.append(bloco)
+    if pendente:
+        if blocos_merged:
+            blocos_merged[-1] = blocos_merged[-1] + "\n" + pendente
+        else:
+            blocos_merged.append(pendente)
+
+    # ── Passo 4: quebra blocos muito longos em sentenças ─────────────────────
+    _SENTENCA = _re.compile(r'(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÂÊÎÔÛÃÕ])')
+    resultado: list = []
+    for bloco in blocos_merged:
+        if len(bloco) <= max_len:
+            resultado.append(bloco)
+            continue
+        # Tenta quebrar por sentenças
+        sentencas = _SENTENCA.split(bloco)
+        acumulado = ""
+        for s in sentencas:
+            if acumulado:
+                teste = acumulado + " " + s
+            else:
+                teste = s
+            if len(teste) > max_len and acumulado:
+                resultado.append(acumulado.strip())
+                acumulado = s
+            else:
+                acumulado = teste
+        if acumulado:
+            resultado.append(acumulado.strip())
+
+    return [b.strip() for b in resultado if b.strip()]
+
+
 def suavizar_personalizacao_nome(content: str, nome: Optional[str]) -> str:
     """Evita vocativo artificial repetido e mantém menção natural ao nome."""
     txt = (content or "").strip()
@@ -2801,6 +2979,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
     cache_key = f"cfg:faq:{empresa_id}:{slug}:v4"
     cache = await redis_client.get(cache_key)
     if cache:
+        logger.info(f"✅ FAQ (cache) para {slug}: {len(cache)} chars")
         return cache
 
     rows = []
@@ -3091,11 +3270,12 @@ async def bd_registrar_evento_funil(
         return
     try:
         conversa = await db_pool.fetchrow(
-            "SELECT id FROM conversas WHERE conversation_id = $1", conversation_id
+            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
         )
         if not conversa:
             return
         conversa_id = conversa['id']
+        _empresa_id = conversa['empresa_id']
 
         if tipo_evento == "interesse_detectado":
             existe = await db_pool.fetchval("""
@@ -3106,9 +3286,9 @@ async def bd_registrar_evento_funil(
                 return
 
         await db_pool.execute("""
-            INSERT INTO eventos_funil (conversa_id, tipo_evento, descricao, score_incremento, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
-        """, conversa_id, tipo_evento, descricao, score_incremento)
+            INSERT INTO eventos_funil (conversa_id, empresa_id, tipo_evento, descricao, score_incremento, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+        """, conversa_id, _empresa_id, tipo_evento, descricao, score_incremento)
 
         await db_pool.execute("""
             UPDATE conversas
@@ -3142,6 +3322,94 @@ async def bd_finalizar_conversa(conversation_id: int):
         logger.info(f"✅ Conversa {conversation_id} finalizada")
     except Exception as e:
         logger.error(f"Erro ao finalizar conversa {conversation_id}: {e}")
+
+
+async def _analisar_sentimento_conversa(conversation_id: int, empresa_id: int):
+    """
+    Executa análise de sentimento da IA sobre o histórico da conversa encerrada.
+    Armazena o resultado em conversas.sentimento_ia e cancelamento_detectado.
+
+    Sentimentos possíveis: positivo | neutro | negativo | irritado | cancelamento
+    """
+    if not db_pool or not cliente_ia:
+        return
+    try:
+        # Busca últimas 30 mensagens do usuário na conversa
+        msgs = await db_pool.fetch("""
+            SELECT role, content
+            FROM mensagens
+            WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2)
+              AND role = 'user'
+            ORDER BY created_at DESC
+            LIMIT 30
+        """, conversation_id, empresa_id)
+
+        if not msgs:
+            return
+
+        # Monta histórico em texto (mais recente primeiro → inverte para cronológico)
+        historico = "\n".join(
+            f"- {m['content']}" for m in reversed(msgs)
+            if m.get("content") and str(m["content"]).strip()
+        )
+        if not historico.strip():
+            return
+
+        prompt = (
+            "Você é um analista de sentimentos. Com base nas mensagens abaixo de um cliente com uma academia, "
+            "classifique o sentimento geral do cliente com UMA ÚNICA PALAVRA do seguinte vocabulário:\n"
+            "  positivo | neutro | negativo | irritado | cancelamento\n\n"
+            "Use 'cancelamento' se o cliente mencionou querer cancelar, pausar ou encerrar serviços.\n"
+            "Use 'irritado' se demonstrou raiva, frustração intensa ou reclamações graves.\n"
+            "Use 'negativo' para insatisfação sem raiva explícita.\n"
+            "Use 'neutro' para conversas informativas sem tom emocional claro.\n"
+            "Use 'positivo' para satisfação, elogios ou interesse genuíno.\n\n"
+            "Responda APENAS com a palavra classificadora, sem pontuação.\n\n"
+            f"Mensagens do cliente:\n{historico}"
+        )
+
+        pers = await carregar_personalidade_ia(empresa_id)
+        modelo = (pers or {}).get("modelo_preferido") or "openai/gpt-4o-mini"
+
+        resp = await cliente_ia.chat.completions.create(
+            model=modelo,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=10,
+        )
+        sentimento_raw = (resp.choices[0].message.content or "").strip().lower()
+        # Sanitiza para o vocabulário permitido
+        _vocab = {"positivo", "neutro", "negativo", "irritado", "cancelamento"}
+        sentimento = sentimento_raw if sentimento_raw in _vocab else "neutro"
+        cancelamento = sentimento == "cancelamento"
+
+        await db_pool.execute("""
+            UPDATE conversas
+            SET sentimento_ia = $1, cancelamento_detectado = $2
+            WHERE conversation_id = $3 AND empresa_id = $4
+        """, sentimento, cancelamento, conversation_id, empresa_id)
+
+        logger.info(
+            f"🧠 Sentimento da conversa {conversation_id}: {sentimento} "
+            f"(cancelamento={cancelamento}) empresa={empresa_id}"
+        )
+    except Exception as e:
+        logger.error(f"Erro ao analisar sentimento conversa {conversation_id}: {e}")
+
+
+async def _salvar_csat_conversa(conversation_id: int, empresa_id: int, rating: int):
+    """Persiste nota CSAT (1–5) recebida via webhook Chatwoot na tabela conversas."""
+    if not db_pool:
+        return
+    try:
+        await db_pool.execute("""
+            UPDATE conversas
+            SET rating_csat = $1
+            WHERE conversation_id = $2 AND empresa_id = $3
+        """, rating, conversation_id, empresa_id)
+        logger.info(f"⭐ CSAT {rating} salvo para conversa {conversation_id} empresa={empresa_id}")
+    except Exception as e:
+        logger.error(f"Erro ao salvar CSAT conversa {conversation_id}: {e}")
 
 
 # --- WORKER DE MÉTRICAS DIÁRIAS ---
@@ -3703,6 +3971,22 @@ async def processar_ia_e_responder(
         _db_esta_no_horario = _pers_horario.get("esta_no_horario", True)
         _horario_config = _pers_horario.get("horario_atendimento_ia")
 
+        # ── Override: se horario_especifico mas TODOS os dias têm arrays vazios,
+        #    o usuário ainda não configurou horários → trata como sem restrição ──
+        if not _db_esta_no_horario and isinstance(_horario_config, dict):
+            _tipo_h = _horario_config.get("tipo", "")
+            _dias_h = _horario_config.get("dias", {})
+            if _tipo_h == "horario_especifico" and isinstance(_dias_h, dict):
+                _todos_vazios = all(
+                    (not v) for v in _dias_h.values()
+                ) if _dias_h else True
+                if _todos_vazios:
+                    _db_esta_no_horario = True
+                    logger.info(
+                        f"🕒 [Bot Core Monolith] horario_especifico com todos os dias vazios → "
+                        f"sem restrição de horário para empresa {empresa_id}"
+                    )
+
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZI
         _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
@@ -3878,6 +4162,7 @@ async def processar_ia_e_responder(
             # --- FLUXO IA ---
             faq = await carregar_faq_unidade(slug, empresa_id) or ""
             historico = await bd_obter_historico_local(conversation_id, limit=12) or "Sem histórico."
+            logger.info(f"📚 [Prompt] conv={conversation_id} | faq={'SIM ('+str(len(faq))+' chars)' if faq else 'NÃO (vazio)'} | historico={'SIM ('+str(len(historico))+' chars)' if historico != 'Sem histórico.' else 'SEM HISTÓRICO'}")
 
             todas_unidades = await listar_unidades_ativas(empresa_id)
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
@@ -3996,11 +4281,27 @@ NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo 
 "precisa de indicações para chegar" ou similares — apenas informe o endereço/dado solicitado.
 """
 
+            # Data/hora em tempo real para o prompt
+            _agora_prompt = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            _DIAS_PT = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+            _MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                         "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+            _dia_semana_pt  = _DIAS_PT[_agora_prompt.weekday()]
+            _dia_mes        = _agora_prompt.day
+            _mes_pt         = _MESES_PT[_agora_prompt.month - 1]
+            _ano            = _agora_prompt.year
+            _hora_atual     = _agora_prompt.strftime("%H:%M")
+
             prompt_sistema = f"""
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
 NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
 Você é um atendente — apenas responda o cliente diretamente.
+
+DATA E HORA ATUAL (use sempre que o cliente perguntar sobre dia, data, hora ou horário de funcionamento):
+- Hoje é {_dia_semana_pt}, {_dia_mes} de {_mes_pt} de {_ano}
+- Horário atual: {_hora_atual} (horário de Brasília)
+Use essas informações para responder perguntas como "que dia é hoje?", "que horas são?", "vocês estão abertos agora?", etc.
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
@@ -4116,8 +4417,9 @@ ESTILO DE COMUNICAÇÃO
 Tom de voz: {tom_voz}
 Estilo: {estilo}
 
-SAUDAÇÃO PADRÃO
+SAUDAÇÃO PADRÃO (use SOMENTE na PRIMEIRA mensagem — quando NÃO há histórico anterior):
 {saudacao}
+{f"[AVISO CRÍTICO: Esta é uma conversa EM ANDAMENTO — há histórico abaixo. NÃO use a Saudação Padrão acima. Continue a conversa naturalmente, responda o cliente diretamente sem se apresentar de novo.]" if historico and historico != "Sem histórico." else ""}
 
 INSTRUÇÕES BASE
 {instrucoes_base}
@@ -4309,6 +4611,11 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         timeout=extra_timeout
                     )
 
+                # ── Variáveis para rastreamento de uso da IA (tabela uso_ia) ─────
+                _response_ok   = None          # objeto response bem-sucedido
+                _usou_fallback = False          # True se modelo de fallback foi acionado
+                _modelo_usado  = modelo_escolhido
+
                 async with llm_semaphore:
                     try:
                         response = await _chamar_llm(modelo_escolhido, extra_timeout=25)
@@ -4316,6 +4623,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         # Resposta longa (length) agora é tratada deixando o texto fluir até o final natural dele (max_tokens generoso)
                         _finish = getattr(response.choices[0], 'finish_reason', None)
                         await cb_llm.record_success()
+                        _response_ok = response  # ✅ sucesso no modelo primário
 
                     except asyncio.TimeoutError:
                         logger.warning(f"⏱️ Timeout LLM (25s) — tentando fallback. Conv {conversation_id}")
@@ -4327,6 +4635,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                             resposta_bruta = response.choices[0].message.content
                             await cb_llm.record_success()
+                            _response_ok = response; _usou_fallback = True; _modelo_usado = modelo_fallback  # ✅ fallback OK
                         except asyncio.TimeoutError:
                             logger.error(f"❌ Timeout no fallback também. Conv {conversation_id}")
                             await cb_llm.record_failure()
@@ -4374,6 +4683,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                                 response = await _chamar_llm(modelo_fallback, extra_timeout=20)
                                 resposta_bruta = response.choices[0].message.content
                                 await cb_llm.record_success()
+                                _response_ok = response; _usou_fallback = True; _modelo_usado = modelo_fallback  # ✅ fallback OK
                             except Exception as e2:
                                 if _is_provider_unavailable_error(e2):
                                     logger.warning("⚠️ Fallback de IA indisponível temporariamente")
@@ -4390,6 +4700,45 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                 logger.info(f"⏱️ LLM Latency: {_latencia:.2f}s")
                 if _PROMETHEUS_OK:
                     METRIC_IA_LATENCY.observe(_latencia)
+
+                # ── Registra uso da IA na tabela uso_ia (métricas do dashboard) ──
+                if _response_ok is not None and db_pool:
+                    try:
+                        _uso_in   = getattr(getattr(_response_ok, 'usage', None), 'prompt_tokens',     0) or 0
+                        _uso_out  = getattr(getattr(_response_ok, 'usage', None), 'completion_tokens', 0) or 0
+                        # Custo estimado: ~$2.50/1M input + ~$10/1M output (média OpenRouter)
+                        _uso_custo = round((_uso_in * 0.0000025) + (_uso_out * 0.000010), 6)
+                        _unid_db   = unidade.get('id') if unidade else None
+                        _lat_ms    = round(_latencia * 1000)
+                        try:
+                            await db_pool.execute("""
+                                INSERT INTO uso_ia
+                                    (empresa_id, unidade_id, conversa_id, modelo,
+                                     tokens_prompt, tokens_completion, custo_usd,
+                                     cache_hit, fallback, latencia_ms)
+                                VALUES (
+                                    $1, $2,
+                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                    $4, $5, $6, $7, false, $8, $9
+                                )
+                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
+                                 _uso_in, _uso_out, _uso_custo, _usou_fallback, _lat_ms)
+                        except Exception:
+                            # Migration a0b1c2d3e4f5 ainda não aplicada — insere sem latencia_ms
+                            await db_pool.execute("""
+                                INSERT INTO uso_ia
+                                    (empresa_id, unidade_id, conversa_id, modelo,
+                                     tokens_prompt, tokens_completion, custo_usd,
+                                     cache_hit, fallback)
+                                VALUES (
+                                    $1, $2,
+                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                    $4, $5, $6, $7, false, $8
+                                )
+                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
+                                 _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                    except Exception as _e_uso:
+                        logger.warning(f"⚠️ Falha ao registrar uso_ia conv {conversation_id}: {_e_uso}")
 
             if not goto_send:
                 # ── Garante que NENHUMA resposta saia com frase cortada ──────────
@@ -4652,19 +5001,44 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
             await bd_registrar_primeira_resposta(conversation_id)
 
         else:
-            # ── Resposta da IA: envia INTEIRA como UMA mensagem ──────────────
+            # ── Resposta da IA: quebra em blocos e envia um por um ────────────
             if resposta_texto and resposta_texto.strip():
-                _texto_final = resposta_texto.strip()
+                _blocos_ia = quebrar_em_blocos(resposta_texto.strip())
+                if not _blocos_ia:
+                    _blocos_ia = [resposta_texto.strip()]
 
-                typing_time = min(len(_texto_final) * 0.02, 4.0) + random.uniform(0.3, 0.8)
-                await simular_digitacao(account_id, conversation_id, integracao_chatwoot, typing_time, empresa_id)
-                _ptt_enviado = await _enviar_tts_ptt(_texto_final)
-                if not _ptt_enviado:
-                    await enviar_mensagem_chatwoot(
-                        account_id, conversation_id, _texto_final, nome_ia, integracao_chatwoot, empresa_id
-                    )
-                await bd_atualizar_msg_ia(conversation_id)
-                await bd_registrar_primeira_resposta(conversation_id)
+                _total_blocos = len(_blocos_ia)
+                logger.info(f"📨 [Quebra Blocos] {_total_blocos} bloco(s) para conv {conversation_id}")
+
+                for _idx, _bloco in enumerate(_blocos_ia):
+                    if await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"):
+                        break
+                    if not _bloco.strip():
+                        continue
+
+                    await bd_salvar_mensagem_local(conversation_id, "assistant", _bloco)
+
+                    # Simula digitação proporcional ao tamanho do bloco
+                    _typing = min(len(_bloco) * 0.018, 3.5) + random.uniform(0.2, 0.6)
+                    await simular_digitacao(account_id, conversation_id, integracao_chatwoot, _typing, empresa_id)
+
+                    # TTS PTT apenas no último bloco
+                    _ptt_enviado = False
+                    if _idx == _total_blocos - 1:
+                        _ptt_enviado = await _enviar_tts_ptt(_bloco)
+
+                    if not _ptt_enviado:
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, _bloco, nome_ia, integracao_chatwoot, empresa_id
+                        )
+
+                    await bd_atualizar_msg_ia(conversation_id)
+                    if _idx == 0:
+                        await bd_registrar_primeira_resposta(conversation_id)
+
+                    # Pausa natural entre blocos (exceto após o último)
+                    if _idx < _total_blocos - 1:
+                        await asyncio.sleep(random.uniform(0.8, 1.5))
 
         # ── PÓS-PROCESSAMENTO: Mídia (Grade, etc.) ──
         if _quer_grade and not (is_manual or await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")):
@@ -4920,6 +5294,23 @@ async def chatwoot_webhook(
 
     if event == "conversation_updated":
         status_conv = conv_obj.get("status") or payload.get("status")
+
+        # ── Detecta nota CSAT submetida pelo cliente ─────────────────────
+        # Chatwoot armazena o rating em additional_attributes após o cliente responder
+        _add_attrs = conv_obj.get("additional_attributes") or {}
+        _csat_rating = (
+            _add_attrs.get("csat_rating")
+            or _add_attrs.get("rating")
+            or payload.get("csat_rating")
+        )
+        if _csat_rating is not None:
+            try:
+                _rating_int = int(_csat_rating)
+                if 1 <= _rating_int <= 5:
+                    background_tasks.add_task(_salvar_csat_conversa, id_conv, empresa_id, _rating_int)
+            except (ValueError, TypeError):
+                pass
+
         if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
             await redis_client.delete(
@@ -4928,6 +5319,8 @@ async def chatwoot_webhook(
                 f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
                 f"atend_manual:{empresa_id}:{id_conv}"
             )
+            # ── Dispara análise de sentimento em background ───────────────
+            background_tasks.add_task(_analisar_sentimento_conversa, id_conv, empresa_id)
             return {"status": "conversa_encerrada"}
         return {"status": "conversa_atualizada"}
 

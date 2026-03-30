@@ -84,6 +84,56 @@ async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome
             return False
 
 
+# ── Extensões de arquivo por tipo de mídia ──────────────────────────────────
+_EXT_VIDEO    = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
+_EXT_AUDIO    = {".ogg", ".mp3", ".wav", ".aac", ".m4a", ".flac", ".opus"}
+_EXT_IMAGE    = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"}
+_EXT_DOCUMENT = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".txt", ".csv"}
+# Plataformas de vídeo que devem ser enviadas como link (não como arquivo direto)
+_LINK_DOMAINS = ("youtube.com", "youtu.be", "vimeo.com", "instagram.com", "tiktok.com")
+
+
+def _detectar_tipo_midia(url: str) -> tuple:
+    """
+    Detecta o tipo de mídia a partir da URL.
+    Retorna (media_type, caption) onde media_type pode ser:
+      "image"    → imagem direta
+      "video"    → vídeo direto (arquivo .mp4 etc.)
+      "audio"    → áudio direto
+      "document" → documento (pdf, docx etc.)
+      "link"     → URL de plataforma de vídeo/streaming — enviar como texto
+    """
+    url_lower = url.lower().split("?")[0]  # ignora query string para detectar extensão
+
+    # Verifica domínios de streaming — devem ir como link preview
+    for domain in _LINK_DOMAINS:
+        if domain in url_lower:
+            return "link", ""
+
+    # Detecta extensão
+    for ext in _EXT_VIDEO:
+        if url_lower.endswith(ext):
+            return "video", ""
+    for ext in _EXT_AUDIO:
+        if url_lower.endswith(ext):
+            return "audio", ""
+    for ext in _EXT_IMAGE:
+        if url_lower.endswith(ext):
+            return "image", ""
+    for ext in _EXT_DOCUMENT:
+        if url_lower.endswith(ext):
+            return "document", ""
+
+    # Heurísticas adicionais por padrão de URL
+    if "/tts/" in url_lower or "audio" in url_lower:
+        return "audio", ""
+    if "/video/" in url_lower or "video" in url_lower:
+        return "video", ""
+
+    # Fallback seguro: imagem (maioria dos is_direct_url são fotos de unidade)
+    return "image", ""
+
+
 async def enviar_mensagem_chatwoot(
     account_id: int,
     conversation_id: int,
@@ -116,8 +166,14 @@ async def enviar_mensagem_chatwoot(
             await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{fone}", 120, "1")
 
             if is_direct_url:
-                # URL deve ser enviada limpa (sem prefixo de nome)
-                await client.send_media(fone, content.strip(), media_type="image")
+                # Detecta o tipo de mídia pela URL antes de enviar
+                url_clean = content.strip()
+                _media_type, _caption = _detectar_tipo_midia(url_clean)
+                if _media_type == "link":
+                    # YouTube, Vimeo, etc. — envia como texto com link preview
+                    await client.send_text(fone, url_clean, link_preview=True)
+                else:
+                    await client.send_media(fone, url_clean, media_type=_media_type)
             else:
                 await client.send_text(fone, _prefixed_content)
             return True

@@ -28,10 +28,12 @@ async def init_db_pool():
 
             db_pool = await asyncpg.create_pool(
                 dsn,
-                min_size=2,
-                max_size=10,
-                command_timeout=10,
-                timeout=5,       # timeout para adquirir conexão do pool
+                min_size=5,                          # 5 conexões sempre abertas (evita reconexão frequente)
+                max_size=30,                         # até 30 conexões sob pico de tráfego
+                max_inactive_connection_lifetime=300, # fecha conexões idle após 5 minutos
+                command_timeout=15,                  # timeout por query individual
+                timeout=10,                          # timeout para adquirir conexão do pool
+                statement_cache_size=100,            # cache de prepared statements (performance)
             )
             logger.info("✅ Conectado ao PostgreSQL com sucesso!")
         except Exception as e:
