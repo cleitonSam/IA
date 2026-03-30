@@ -8,10 +8,11 @@ Adiciona colunas que faltavam na tabela unidades:
   - uuid, nome_abreviado, numero, telefone_principal
   - horarios, modalidades, planos, formas_pagamento, convenios, infraestrutura
 
-Também converte servicos e palavras_chave de TEXT → JSONB
-(o código envia dicts/lists; TEXT rejeitaria esses valores no asyncpg).
+Também converte servicos e palavras_chave de TEXT → JSONB.
+Antes de converter, normaliza os valores que não são JSON válido
+(ex: "Consultoria" → '"Consultoria"') para que o cast não falhe.
 
-Usa ADD COLUMN IF NOT EXISTS / DO $$ ... $$ para ser idempotente.
+Usa ADD COLUMN IF NOT EXISTS e blocos DO $$ para ser idempotente.
 """
 from typing import Sequence, Union
 from alembic import op
@@ -37,7 +38,9 @@ def upgrade() -> None:
     op.execute("ALTER TABLE unidades ADD COLUMN IF NOT EXISTS convenios JSONB")
     op.execute("ALTER TABLE unidades ADD COLUMN IF NOT EXISTS infraestrutura JSONB")
 
-    # 3. Converte servicos TEXT → JSONB (o código envia dicts)
+    # 3. Converte servicos TEXT → JSONB
+    #    Valores como "Consultoria" (texto simples) são convertidos em
+    #    JSON strings  ("Consultoria") antes do ALTER para evitar erro de cast.
     op.execute("""
         DO $$
         BEGIN
@@ -47,6 +50,14 @@ def upgrade() -> None:
                   AND column_name = 'servicos'
                   AND data_type = 'text'
             ) THEN
+                -- Normaliza linhas com texto simples (não começa com [ { ou ")
+                UPDATE unidades
+                SET servicos = to_json(servicos)::text
+                WHERE servicos IS NOT NULL
+                  AND servicos <> ''
+                  AND servicos NOT SIMILAR TO '\s*[\[{"]%';
+
+                -- Agora todos os valores são JSON válido; faz o cast
                 ALTER TABLE unidades
                     ALTER COLUMN servicos
                     TYPE JSONB
@@ -58,7 +69,7 @@ def upgrade() -> None:
         END $$;
     """)
 
-    # 4. Converte palavras_chave TEXT → JSONB (o código envia listas)
+    # 4. Converte palavras_chave TEXT → JSONB
     op.execute("""
         DO $$
         BEGIN
@@ -68,6 +79,13 @@ def upgrade() -> None:
                   AND column_name = 'palavras_chave'
                   AND data_type = 'text'
             ) THEN
+                -- Normaliza linhas com texto simples
+                UPDATE unidades
+                SET palavras_chave = to_json(palavras_chave)::text
+                WHERE palavras_chave IS NOT NULL
+                  AND palavras_chave <> ''
+                  AND palavras_chave NOT SIMILAR TO '\s*[\[{"]%';
+
                 ALTER TABLE unidades
                     ALTER COLUMN palavras_chave
                     TYPE JSONB
@@ -86,8 +104,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Remove apenas as colunas novas; não reverte a conversão TEXT→JSONB
-    # pois seria arriscado sem dados de backup
+    # Remove apenas as colunas novas; não reverte TEXT→JSONB (risco de perda)
     for col in [
         'infraestrutura', 'convenios', 'formas_pagamento', 'planos',
         'modalidades', 'horarios', 'telefone_principal', 'numero',
