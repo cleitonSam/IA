@@ -5309,12 +5309,33 @@ async def chatwoot_webhook(
 
         if status_conv in {"resolved", "closed"}:
             await bd_finalizar_conversa(id_conv)
-            await redis_client.delete(
+            # Limpa todas as chaves Redis desta conversa
+            _keys_base = [
                 f"pause_ia:{empresa_id}:{id_conv}", f"estado:{id_conv}",
                 f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
                 f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
                 f"atend_manual:{empresa_id}:{id_conv}"
-            )
+            ]
+            # Também libera bloqueio por telefone e fluxo — para que o próximo contato
+            # do mesmo cliente inicie o fluxo novamente sem nenhum bloqueio residual
+            _fone_resolved = await redis_client.get(f"fone_cliente:{id_conv}")
+            if _fone_resolved:
+                _keys_base += [
+                    f"pause_ia_phone:{empresa_id}:0:{_fone_resolved}",
+                    f"fluxo_state:{empresa_id}:0:{_fone_resolved}",
+                    f"fluxo_vars:{empresa_id}:0:{_fone_resolved}",
+                ]
+                # Limpa também fluxo de unidades específicas (1-20)
+                _keys_base += [
+                    k for u in range(1, 21)
+                    for k in (
+                        f"pause_ia_phone:{empresa_id}:{u}:{_fone_resolved}",
+                        f"fluxo_state:{empresa_id}:{u}:{_fone_resolved}",
+                        f"fluxo_vars:{empresa_id}:{u}:{_fone_resolved}",
+                    )
+                ]
+                logger.info(f"🧹 [FluxoTriagem] Conversa {id_conv} encerrada — Redis limpo para {_fone_resolved}")
+            await redis_client.delete(*_keys_base)
             # ── Dispara análise de sentimento em background ───────────────
             background_tasks.add_task(_analisar_sentimento_conversa, id_conv, empresa_id)
             return {"status": "conversa_encerrada"}
