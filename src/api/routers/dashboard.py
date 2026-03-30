@@ -119,7 +119,7 @@ async def get_unidades(
                 "estado": u.get("estado"),
                 "whatsapp": u.get("whatsapp"),
                 "instagram": u.get("instagram"),
-                "convenios": u.get("convenios"),
+                "convenios": (json.loads(u["convenios"]) if isinstance(u.get("convenios"), str) else (u.get("convenios") or {})),
             } for u in unidades]
 
         import math
@@ -935,7 +935,22 @@ async def get_unidade(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Unidade não encontrada")
-    return dict(row)
+    result = dict(row)
+    # asyncpg retorna colunas JSONB como string — desserializar antes de enviar ao frontend
+    _jsonb_defaults: dict = {
+        "planos": {}, "formas_pagamento": {}, "convenios": {},
+        "infraestrutura": {}, "servicos": {}, "palavras_chave": [],
+    }
+    for _field, _default in _jsonb_defaults.items():
+        _val = result.get(_field)
+        if isinstance(_val, str):
+            try:
+                result[_field] = json.loads(_val)
+            except (json.JSONDecodeError, ValueError):
+                result[_field] = _default
+        elif _val is None:
+            result[_field] = _default
+    return result
 
 
 @router.put("/unidades/{unidade_id}")

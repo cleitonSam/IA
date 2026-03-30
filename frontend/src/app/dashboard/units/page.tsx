@@ -761,10 +761,13 @@ export default function UnitsPage() {
                               <div className="space-y-2">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Gympass / Wellhub</label>
                                 <select
-                                  value={typeof formData.convenios === "object" ? (formData.convenios?.gympass_wellhub || "Não aceita") : "Não aceita"}
+                                  value={(formData.convenios as any)?.gympass_wellhub || "Não aceita"}
                                   onChange={e => {
-                                    const prevConv = typeof formData.convenios === "object" ? formData.convenios : {};
-                                    setFormData((p: any) => ({ ...p, convenios: { ...prevConv, gympass_wellhub: e.target.value } }));
+                                    const val = e.target.value;
+                                    setFormData((p: any) => ({
+                                      ...p,
+                                      convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), gympass_wellhub: val }
+                                    }));
                                   }}
                                   className={inputClass}
                                 >
@@ -776,10 +779,13 @@ export default function UnitsPage() {
                               <div className="space-y-2">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Totalpass</label>
                                 <select
-                                  value={typeof formData.convenios === "object" ? (formData.convenios?.totalpass || "Não aceita") : "Não aceita"}
+                                  value={(formData.convenios as any)?.totalpass || "Não aceita"}
                                   onChange={e => {
-                                    const prevConv = typeof formData.convenios === "object" ? formData.convenios : {};
-                                    setFormData((p: any) => ({ ...p, convenios: { ...prevConv, totalpass: e.target.value } }));
+                                    const val = e.target.value;
+                                    setFormData((p: any) => ({
+                                      ...p,
+                                      convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), totalpass: val }
+                                    }));
                                   }}
                                   className={inputClass}
                                 >
@@ -794,10 +800,13 @@ export default function UnitsPage() {
                               <input
                                 type="text"
                                 placeholder="Ex: Sesc, Sesi, Convênio Empresa XYZ"
-                                value={typeof formData.convenios === "object" ? (formData.convenios?.outros || "") : ""}
+                                value={(formData.convenios as any)?.outros || ""}
                                 onChange={e => {
-                                  const prevConv = typeof formData.convenios === "object" ? formData.convenios : {};
-                                  setFormData((p: any) => ({ ...p, convenios: { ...prevConv, outros: e.target.value } }));
+                                  const val = e.target.value;
+                                  setFormData((p: any) => ({
+                                    ...p,
+                                    convenios: { ...(typeof p.convenios === "object" && p.convenios !== null ? p.convenios : {}), outros: val }
+                                  }));
                                 }}
                                 className={inputClass}
                               />
