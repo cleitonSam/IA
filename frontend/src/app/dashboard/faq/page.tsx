@@ -1,22 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import axios from "axios";
 import { HelpCircle, Plus, Trash2, Edit2, Loader2, Save, X, CheckCircle2, Globe, Building2, Brain } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
-
-interface FAQItem {
-  id?: number;
-  pergunta: string;
-  resposta: string;
-  unidade_id: number | null;
-  todas_unidades: boolean;
-  prioridade: number;
-  ativo: boolean;
-}
-
-interface Unidade { id: number; nome: string; }
+import { apiGet, apiPost, apiPut, apiDelete, ApiException } from "@/lib/api";
+import type { FAQItem, Unidade } from "@/types";
 
 const emptyFaq: FAQItem = { pergunta: "", resposta: "", unidade_id: null, todas_unidades: true, prioridade: 0, ativo: true };
 
@@ -24,52 +13,67 @@ export default function FAQPage() {
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
   const [unidades, setUnidades] = useState<Unidade[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingFaq, setEditingFaq] = useState<FAQItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [formData, setFormData] = useState<FAQItem>(emptyFaq);
-
-  const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 
   useEffect(() => {
     Promise.all([
-      axios.get("/api-backend/management/faq", getConfig()),
-      axios.get("/api-backend/dashboard/unidades", getConfig())
-    ]).then(([faqRes, unitRes]) => { setFaqs(faqRes.data); setUnidades(Array.isArray(unitRes.data) ? unitRes.data : unitRes.data?.data || []); })
-      .catch(console.error).finally(() => setLoading(false));
+      apiGet<FAQItem[]>("/management/faq"),
+      apiGet<Unidade[] | { data: Unidade[] }>("/dashboard/unidades"),
+    ])
+      .then(([faqData, unitData]) => {
+        setFaqs(faqData);
+        setUnidades(Array.isArray(unitData) ? unitData : (unitData as { data: Unidade[] }).data ?? []);
+      })
+      .catch((e: ApiException) => setError(e.message))
+      .finally(() => setLoading(false));
   }, []);
 
-  const fetchData = async () => {
-    const [faqRes] = await Promise.all([axios.get("/api-backend/management/faq", getConfig())]);
-    setFaqs(faqRes.data);
+  const fetchFaqs = async () => {
+    const data = await apiGet<FAQItem[]>("/management/faq");
+    setFaqs(data);
   };
 
   const handleOpenModal = (faq: FAQItem | null = null) => {
     setEditingFaq(faq);
     setFormData(faq ? { ...faq } : emptyFaq);
+    setSaveError(null);
+    setSuccess(false);
     setIsModalOpen(true);
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSaveError(null);
     try {
       if (editingFaq?.id) {
-        await axios.put(`/api-backend/management/faq/${editingFaq.id}`, formData, getConfig());
+        await apiPut(`/management/faq/${editingFaq.id}`, formData);
       } else {
-        await axios.post("/api-backend/management/faq", formData, getConfig());
+        await apiPost("/management/faq", formData);
       }
       setSuccess(true);
-      setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchData(); }, 1000);
-    } catch { alert("Erro ao salvar FAQ."); }
-    finally { setSaving(false); }
+      setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchFaqs(); }, 900);
+    } catch (e) {
+      setSaveError(e instanceof ApiException ? e.message : "Erro ao salvar FAQ.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm("Excluir esta pergunta?")) return;
-    await axios.delete(`/api-backend/management/faq/${id}`, getConfig()).catch(() => alert("Erro ao excluir."));
-    fetchData();
+    try {
+      await apiDelete(`/management/faq/${id}`);
+      fetchFaqs();
+    } catch (e) {
+      alert(e instanceof ApiException ? e.message : "Erro ao excluir.");
+    }
   };
 
   const inputClass = "w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-[#00d2ff]/40 transition-all font-medium text-sm";
@@ -244,6 +248,11 @@ export default function FAQPage() {
                       <option value="">Selecione...</option>
                       {unidades.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
                     </select>
+                  </div>
+                )}
+                {saveError && (
+                  <div className="px-4 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                    {saveError}
                   </div>
                 )}
                 <div className="flex gap-4 pt-2">

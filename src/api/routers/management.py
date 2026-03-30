@@ -156,20 +156,26 @@ class FAQCreate(BaseModel):
 
 
 async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
-    """Resolve empresa_id do token; fallback para lookup por e-mail em tokens legados."""
+    """
+    Resolve empresa_id do JWT.
+    - Primeiro tenta o claim empresa_id direto no token (caminho rápido).
+    - Fallback: busca pelo e-mail do usuário na tabela usuarios (tokens legados).
+    - Garante retorno int() para consistência de tipo.
+    """
     empresa_id = token_payload.get("empresa_id")
     if empresa_id:
-        return empresa_id
+        return int(empresa_id)
 
     email = token_payload.get("sub")
     if not email:
         return None
 
     try:
-        return await _database.db_pool.fetchval(
-            "SELECT empresa_id FROM usuarios WHERE email = $1",
+        row = await _database.db_pool.fetchval(
+            "SELECT empresa_id FROM usuarios WHERE email = $1 AND ativo = true",
             email
         )
+        return int(row) if row else None
     except Exception as e:
         logger.warning(f"Não foi possível resolver empresa_id para {email}: {e}")
         return None
@@ -1451,11 +1457,15 @@ async def create_faq(body: FAQCreate, token_payload: dict = Depends(get_current_
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute(
-        """INSERT INTO faq (empresa_id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, true, NOW())""",
-        empresa_id, body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade
-    )
+    try:
+        await _database.db_pool.execute(
+            """INSERT INTO faq (empresa_id, pergunta, resposta, unidade_id, todas_unidades, prioridade, ativo, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, true, NOW())""",
+            empresa_id, body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade
+        )
+    except Exception as e:
+        logger.error(f"Erro ao criar FAQ para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao salvar pergunta. Tente novamente.")
     return {"status": "success"}
 
 @router.put("/faq/{faq_id}")
@@ -1463,11 +1473,19 @@ async def update_faq(faq_id: int, body: FAQCreate, token_payload: dict = Depends
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute(
-        """UPDATE faq SET pergunta=$1, resposta=$2, unidade_id=$3, todas_unidades=$4, prioridade=$5, updated_at=NOW()
-           WHERE id=$6 AND empresa_id=$7""",
-        body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade, faq_id, empresa_id
-    )
+    try:
+        result = await _database.db_pool.execute(
+            """UPDATE faq SET pergunta=$1, resposta=$2, unidade_id=$3, todas_unidades=$4, prioridade=$5, updated_at=NOW()
+               WHERE id=$6 AND empresa_id=$7""",
+            body.pergunta, body.resposta, body.unidade_id, body.todas_unidades, body.prioridade, faq_id, empresa_id
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Pergunta não encontrada.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar FAQ {faq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao atualizar pergunta. Tente novamente.")
     return {"status": "success"}
 
 @router.delete("/faq/{faq_id}")
@@ -1475,7 +1493,11 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
+    try:
+        await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
+    except Exception as e:
+        logger.error(f"Erro ao excluir FAQ {faq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao excluir pergunta. Tente novamente.")
     return {"status": "success"}
 
 # --- Debug Endpoint (temporário) ---
@@ -1520,20 +1542,7 @@ async def debug_me(token_payload: dict = Depends(get_current_user_token)):
 
 
 # --- Integrations Endpoints ---
-
-async def _resolve_empresa_id(token_payload: dict) -> Optional[int]:
-    """Resolve empresa_id do JWT; se nulo, busca no banco pelo email do usuário."""
-    empresa_id = token_payload.get("empresa_id")
-    if empresa_id:
-        return int(empresa_id)
-    email = token_payload.get("sub")
-    if email:
-        empresa_id = await _database.db_pool.fetchval(
-            "SELECT empresa_id FROM usuarios WHERE email = $1 AND ativo = true", email
-        )
-        if empresa_id:
-            return int(empresa_id)
-    return None
+# _resolve_empresa_id está definida acima (linha ~158) — não duplicar aqui.
 
 
 
@@ -2186,19 +2195,24 @@ async def list_planos(token_payload: dict = Depends(get_current_user_token)):
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    rows = await _database.db_pool.fetch(
-        """
-        SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
-               p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
-               p.ativo, p.ordem, p.id_externo,
-               u.nome AS unidade_nome
-        FROM planos p
-        LEFT JOIN unidades u ON u.id = p.unidade_id
-        WHERE p.empresa_id = $1
-        ORDER BY p.ordem, p.nome
-        """,
-        empresa_id
-    )
+    try:
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
+                   p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
+                   p.ativo, p.ordem, p.id_externo,
+                   u.nome AS unidade_nome
+            FROM planos p
+            LEFT JOIN unidades u ON u.id = p.unidade_id
+            WHERE p.empresa_id = $1
+            ORDER BY p.ordem, p.nome
+            LIMIT 500
+            """,
+            empresa_id
+        )
+    except Exception as e:
+        logger.error(f"Erro ao listar planos para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao carregar planos.")
     return [dict(r) for r in rows]
 
 
@@ -2207,19 +2221,21 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    await _database.db_pool.execute(
-        """
-        INSERT INTO planos
-            (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
-             descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
-        """,
-        empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
-        body.meses_promocionais, body.descricao, body.diferenciais,
-        body.link_venda, body.ativo, body.ordem
-    )
-    # Invalida cache de planos
-    import redis.asyncio as aioredis
+    try:
+        await _database.db_pool.execute(
+            """
+            INSERT INTO planos
+                (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
+                 descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+            """,
+            empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
+            body.meses_promocionais, body.descricao, body.diferenciais,
+            body.link_venda, body.ativo, body.ordem
+        )
+    except Exception as e:
+        logger.error(f"Erro ao criar plano para empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao salvar plano. Tente novamente.")
     try:
         from src.services.db_queries import redis_client as _rc
         await _rc.delete(f"planos:ativos:{empresa_id}:todos")
@@ -2235,21 +2251,26 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    result = await _database.db_pool.execute(
-        """
-        UPDATE planos
-        SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
-            descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
-            ativo=$9, ordem=$10, updated_at=NOW()
-        WHERE id=$11 AND empresa_id=$12
-        """,
-        body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
-        body.descricao, body.diferenciais, body.link_venda, body.unidade_id,
-        body.ativo, body.ordem, plano_id, empresa_id
-    )
-    if result == "UPDATE 0":
-        raise HTTPException(status_code=404, detail="Plano não encontrado")
-    # Invalida cache
+    try:
+        result = await _database.db_pool.execute(
+            """
+            UPDATE planos
+            SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
+                descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
+                ativo=$9, ordem=$10, updated_at=NOW()
+            WHERE id=$11 AND empresa_id=$12
+            """,
+            body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
+            body.descricao, body.diferenciais, body.link_venda, body.unidade_id,
+            body.ativo, body.ordem, plano_id, empresa_id
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Plano não encontrado")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar plano {plano_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao atualizar plano. Tente novamente.")
     try:
         from src.services.db_queries import redis_client as _rc
         await _rc.delete(f"planos:ativos:{empresa_id}:todos")

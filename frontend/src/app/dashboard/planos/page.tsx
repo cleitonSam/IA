@@ -1,32 +1,14 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import axios from "axios";
 import {
   CreditCard, Plus, Trash2, Edit2, Loader2, Save, X,
-  CheckCircle2, RefreshCw, Building2, ToggleLeft, ToggleRight,
-  DollarSign, Link, ArrowUpDown, Tag
+  CheckCircle2, RefreshCw, ToggleLeft, ToggleRight, Link
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
-
-interface Plano {
-  id?: number;
-  nome: string;
-  valor: number | null;
-  valor_promocional: number | null;
-  meses_promocionais: number | null;
-  descricao: string;
-  diferenciais: string;
-  link_venda: string;
-  unidade_id: number | null;
-  unidade_nome?: string;
-  ativo: boolean;
-  ordem: number;
-  id_externo?: string;
-}
-
-interface Unidade { id: number; nome: string; }
+import { apiGet, apiPost, apiPut, apiDelete, ApiException } from "@/lib/api";
+import type { Plano, Unidade } from "@/types";
 
 const emptyPlano: Plano = {
   nome: "", valor: null, valor_promocional: null, meses_promocionais: null,
@@ -43,19 +25,18 @@ export default function PlanosPage() {
   const [editingPlano, setEditingPlano] = useState<Plano | null>(null);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncMsg, setSyncMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [formData, setFormData] = useState<Plano>(emptyPlano);
   const [filterUnidade, setFilterUnidade] = useState<number | "all">("all");
 
-  const getConfig = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
-
   const fetchData = async () => {
-    const [planosRes, unitRes] = await Promise.all([
-      axios.get("/api-backend/management/planos", getConfig()),
-      axios.get("/api-backend/dashboard/unidades", getConfig()),
+    const [planosData, unitData] = await Promise.all([
+      apiGet<Plano[]>("/management/planos"),
+      apiGet<Unidade[] | { data: Unidade[] }>("/dashboard/unidades"),
     ]);
-    setPlanos(planosRes.data);
-    setUnidades(Array.isArray(unitRes.data) ? unitRes.data : unitRes.data?.data || []);
+    setPlanos(planosData);
+    setUnidades(Array.isArray(unitData) ? unitData : (unitData as { data: Unidade[] }).data ?? []);
   };
 
   useEffect(() => {
@@ -65,6 +46,7 @@ export default function PlanosPage() {
   const handleOpenModal = (plano: Plano | null = null) => {
     setEditingPlano(plano);
     setFormData(plano ? { ...plano } : emptyPlano);
+    setSaveError(null);
     setSuccess(false);
     setIsModalOpen(true);
   };
@@ -72,33 +54,45 @@ export default function PlanosPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSaveError(null);
     try {
       if (editingPlano?.id) {
-        await axios.put(`/api-backend/management/planos/${editingPlano.id}`, formData, getConfig());
+        await apiPut(`/management/planos/${editingPlano.id}`, formData);
       } else {
-        await axios.post("/api-backend/management/planos", formData, getConfig());
+        await apiPost("/management/planos", formData);
       }
       setSuccess(true);
       setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchData(); }, 900);
-    } catch { alert("Erro ao salvar plano."); }
-    finally { setSaving(false); }
+    } catch (e) {
+      setSaveError(e instanceof ApiException ? e.message : "Erro ao salvar plano.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm("Excluir este plano?")) return;
-    await axios.delete(`/api-backend/management/planos/${id}`, getConfig()).catch(() => alert("Erro ao excluir."));
-    fetchData();
+    try {
+      await apiDelete(`/management/planos/${id}`);
+      fetchData();
+    } catch (e) {
+      alert(e instanceof ApiException ? e.message : "Erro ao excluir.");
+    }
   };
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await axios.post("/api-backend/management/planos/sync", {}, getConfig());
-      setSyncMsg(`✅ ${res.data.sincronizados} plano(s) sincronizado(s) do Evo`);
+      const res = await apiPost<{ sincronizados: number }>("/management/planos/sync");
+      setSyncMsg({ text: `✅ ${res.sincronizados} plano(s) sincronizado(s) do Evo`, type: "success" });
       fetchData();
-    } catch { setSyncMsg("❌ Erro ao sincronizar. Verifique integração Evo."); }
-    finally { setSyncing(false); setTimeout(() => setSyncMsg(null), 4000); }
+    } catch (e) {
+      setSyncMsg({ text: e instanceof ApiException ? e.message : "Erro ao sincronizar.", type: "error" });
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMsg(null), 4000);
+    }
   };
 
   const filteredPlanos = filterUnidade === "all"
@@ -153,9 +147,9 @@ export default function PlanosPage() {
             {syncMsg && (
               <motion.div
                 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                className="px-5 py-3 rounded-2xl bg-slate-800 border border-white/8 text-sm text-slate-300"
+                className={`px-5 py-3 rounded-2xl border text-sm ${syncMsg.type === "error" ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"}`}
               >
-                {syncMsg}
+                {syncMsg.text}
               </motion.div>
             )}
           </AnimatePresence>
@@ -424,6 +418,11 @@ export default function PlanosPage() {
                   </button>
                 </div>
 
+                {saveError && (
+                  <div className="px-4 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                    {saveError}
+                  </div>
+                )}
                 {/* Botão salvar */}
                 <button
                   type="submit"
