@@ -151,12 +151,12 @@ class UazAPIClient:
                 else:
                     body = ""
                     try:
-                        body = e.response.text[:300]
+                        body = e.response.text[:500]
                     except Exception:
                         pass
                     logger.error(
                         f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): "
-                        f"{e} | body={body}"
+                        f"body={body}"
                     )
                     if PROMETHEUS_OK:
                         METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
@@ -334,24 +334,57 @@ class UazAPIClient:
             )
             media_type = "document"
 
-        # Auto-detecta mimetype quando não fornecido explicitamente
-        # Evita erro "invalid MP4 file format" na UazAPI ao processar vídeos
+        # Auto-detecta mimetype quando não fornecido explicitamente.
+        # Ignora query string (?updatedAt=...) para detectar extensão real.
+        # Evita erro "invalid MP4 file format" na UazAPI ao processar vídeos.
         if not mimetype:
-            url_lower = file_url.lower()
-            if media_type == "video" or ".mp4" in url_lower:
-                mimetype = "video/mp4"
-            elif media_type == "audio" or ".ogg" in url_lower:
-                mimetype = "audio/ogg"
-            elif media_type == "ptt":
+            url_path = file_url.lower().split("?")[0]  # ex: /path/video.mp4
+
+            if media_type == "video" or any(url_path.endswith(e) for e in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v")):
+                if url_path.endswith(".mov"):
+                    mimetype = "video/quicktime"
+                elif url_path.endswith(".webm"):
+                    mimetype = "video/webm"
+                elif url_path.endswith(".3gp"):
+                    mimetype = "video/3gpp"
+                else:
+                    mimetype = "video/mp4"
+                media_type = "video"  # garante tipo correto
+
+            elif media_type == "ptt" or (media_type == "audio" and url_path.endswith(".ogg")):
                 mimetype = "audio/ogg; codecs=opus"
-            elif ".jpg" in url_lower or ".jpeg" in url_lower:
+
+            elif media_type == "audio" or any(url_path.endswith(e) for e in (".ogg", ".mp3", ".wav", ".aac", ".m4a", ".opus")):
+                if url_path.endswith(".mp3"):
+                    mimetype = "audio/mpeg"
+                elif url_path.endswith(".wav"):
+                    mimetype = "audio/wav"
+                elif url_path.endswith(".aac"):
+                    mimetype = "audio/aac"
+                elif url_path.endswith(".m4a"):
+                    mimetype = "audio/mp4"
+                else:
+                    mimetype = "audio/ogg"
+
+            elif url_path.endswith(".jpg") or url_path.endswith(".jpeg"):
                 mimetype = "image/jpeg"
-            elif ".png" in url_lower:
+            elif url_path.endswith(".png"):
                 mimetype = "image/png"
-            elif ".pdf" in url_lower:
+            elif url_path.endswith(".gif"):
+                mimetype = "image/gif"
+            elif url_path.endswith(".webp"):
+                mimetype = "image/webp"
+
+            elif url_path.endswith(".pdf"):
                 mimetype = "application/pdf"
+                media_type = "document"
                 if not doc_name:
                     doc_name = file_url.split("/")[-1].split("?")[0] or "documento.pdf"
+            elif url_path.endswith(".docx"):
+                mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                media_type = "document"
+                if not doc_name:
+                    doc_name = file_url.split("/")[-1].split("?")[0] or "arquivo.docx"
 
         payload: Dict[str, Any] = {
             "number": clean_number,
@@ -410,8 +443,48 @@ class UazAPIClient:
         number: str,
         file_url: str,
     ) -> bool:
-        """Envia uma figurinha (sticker) via WhatsApp."""
-        return await self.send_media(number, file_url, media_type="sticker")
+        """Envia uma figurinha (sticker) via WhatsApp. Suporta .webp e .png."""
+        return await self.send_media(
+            number, file_url,
+            media_type="sticker",
+            mimetype="image/webp" if file_url.lower().split("?")[0].endswith(".webp") else None,
+        )
+
+    async def send_contact(
+        self,
+        number: str,
+        contact_name: str,
+        contact_phone: str,
+        *,
+        delay: int = 0,
+    ) -> bool:
+        """
+        Envia um cartão de contato (vCard) via WhatsApp.
+
+        Args:
+            contact_name: Nome exibido no contato
+            contact_phone: Telefone do contato (somente dígitos, com DDI)
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        clean_phone = "".join(filter(str.isdigit, contact_phone))
+        # vCard mínimo reconhecido pelo WhatsApp
+        vcard = (
+            "BEGIN:VCARD\n"
+            "VERSION:3.0\n"
+            f"FN:{contact_name}\n"
+            f"TEL;type=CELL;type=VOICE;waid={clean_phone}:+{clean_phone}\n"
+            "END:VCARD"
+        )
+        payload: Dict[str, Any] = {
+            "number": clean_number,
+            "vcard": vcard,
+            "fullName": contact_name,
+            "track_source": "chatbot",
+        }
+        if delay:
+            payload["delay"] = delay
+        res = await self._request("POST", "/send/contact", json=payload)
+        return res is not None
 
     # ─────────────────────────────────────────────────────────────────
     # MENUS INTERATIVOS (botão, lista, enquete, carrossel)
