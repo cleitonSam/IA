@@ -44,6 +44,20 @@ class CriarUnidadeRequest(BaseModel):
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
+
+def _norm_jsonb(val, default):
+    """Normaliza campos JSONB antes de salvar: desencapsula strings duplo-codificadas
+    originadas de saves anteriores onde o frontend enviava a string em vez do objeto."""
+    for _ in range(2):
+        if not isinstance(val, str):
+            break
+        try:
+            val = json.loads(val)
+        except (json.JSONDecodeError, ValueError):
+            return default
+    return val if isinstance(val, (dict, list)) else default
+
+
 async def _get_empresa_id_da_unidade(unidade_id: int) -> Optional[int]:
     """Resolve o empresa_id a partir do unidade_id."""
     row = await _database.db_pool.fetchrow(
@@ -767,12 +781,12 @@ async def criar_unidade(
             body.link_matricula,
             body.horarios or "",        # TEXT — texto livre de horários
             body.modalidades or "",     # TEXT — texto livre de modalidades
-            json.dumps(body.planos or {}),
-            json.dumps(body.formas_pagamento or {}),
-            json.dumps(body.convenios or {}),
-            json.dumps(body.infraestrutura or {}),
-            json.dumps(body.servicos or {}),
-            json.dumps(body.palavras_chave or []),
+            json.dumps(_norm_jsonb(body.planos, {})),
+            json.dumps(_norm_jsonb(body.formas_pagamento, {})),
+            json.dumps(_norm_jsonb(body.convenios, {})),
+            json.dumps(_norm_jsonb(body.infraestrutura, {})),
+            json.dumps(_norm_jsonb(body.servicos, {})),
+            json.dumps(_norm_jsonb(body.palavras_chave, [])),
             body.foto_grade, body.link_tour_virtual
         )
         from src.core.redis_client import redis_client
@@ -940,20 +954,25 @@ async def get_unidade(
     if not row:
         raise HTTPException(status_code=404, detail="Unidade não encontrada")
     result = dict(row)
-    # asyncpg retorna colunas JSONB como string — desserializar antes de enviar ao frontend
+    # asyncpg retorna JSONB como string; saves anteriores podem ter dupla-codificado.
+    # Faz json.loads até obter dict/list (máximo 2 passos para cobrir double-encode).
     _jsonb_defaults: dict = {
         "planos": {}, "formas_pagamento": {}, "convenios": {},
         "infraestrutura": {}, "servicos": {}, "palavras_chave": [],
     }
     for _field, _default in _jsonb_defaults.items():
         _val = result.get(_field)
-        if isinstance(_val, str):
+        for _ in range(2):  # no máximo 2 passes para desencapsular double-encode
+            if not isinstance(_val, str):
+                break
             try:
-                result[_field] = json.loads(_val)
+                _val = json.loads(_val)
             except (json.JSONDecodeError, ValueError):
-                result[_field] = _default
-        elif _val is None:
-            result[_field] = _default
+                _val = _default
+                break
+        if _val is None or isinstance(_val, str):
+            _val = _default
+        result[_field] = _val
     return result
 
 
@@ -1004,12 +1023,12 @@ async def atualizar_unidade(
             body.whatsapp, body.site, body.instagram, body.link_matricula,
             body.horarios or "",        # TEXT — texto livre de horários
             body.modalidades or "",     # TEXT — texto livre de modalidades
-            json.dumps(body.planos or {}),
-            json.dumps(body.formas_pagamento or {}),
-            json.dumps(body.convenios or {}),
-            json.dumps(body.infraestrutura or {}),
-            json.dumps(body.servicos or {}),
-            json.dumps(body.palavras_chave or []),
+            json.dumps(_norm_jsonb(body.planos, {})),
+            json.dumps(_norm_jsonb(body.formas_pagamento, {})),
+            json.dumps(_norm_jsonb(body.convenios, {})),
+            json.dumps(_norm_jsonb(body.infraestrutura, {})),
+            json.dumps(_norm_jsonb(body.servicos, {})),
+            json.dumps(_norm_jsonb(body.palavras_chave, [])),
             body.foto_grade, body.link_tour_virtual,
             unidade_id, empresa_id
         )
