@@ -857,13 +857,32 @@ async def _execute_from(
                 integ = await _ci(empresa_id, "chatwoot")
                 if integ:
                     _url  = (integ.get("url") or integ.get("base_url") or "").rstrip("/")
-                    _tok  = (integ.get("token") or integ.get("api_access_token") or "")
                     _acc  = integ.get("account_id") or integ.get("accountId")
+
+                    # Extrai token — mesma lógica de extrair_token_chatwoot()
+                    _raw_tok = integ.get("token")
+                    if isinstance(_raw_tok, dict):
+                        _tok = (
+                            _raw_tok.get("api_access_token")
+                            or _raw_tok.get("api_token")
+                            or _raw_tok.get("access_token")
+                            or _raw_tok.get("token")
+                            or ""
+                        )
+                    elif _raw_tok:
+                        _tok = str(_raw_tok).strip()
+                    else:
+                        _tok = (
+                            integ.get("api_access_token")
+                            or integ.get("api_token")
+                            or integ.get("access_token")
+                            or ""
+                        )
 
                     if _url and _tok and _acc and _db_pool:
                         # Busca o conversation_id ativo deste telefone no banco
                         _conv_row = await _db_pool.fetchrow("""
-                            SELECT conversation_id
+                            SELECT conversation_id, account_id
                             FROM conversas
                             WHERE empresa_id = $1
                               AND (contato_fone = $2 OR contato_telefone = $2)
@@ -874,12 +893,13 @@ async def _execute_from(
 
                         if _conv_row:
                             _cid = _conv_row["conversation_id"]
-                            _headers = {"api_access_token": _tok}
-                            _conv_url = f"{_url}/api/v1/accounts/{_acc}/conversations/{_cid}/team_assignments"
+                            _headers = {"api_access_token": str(_tok)}
+                            # Endpoint correto: /assignments com team_id no body
+                            _conv_url = f"{_url}/api/v1/accounts/{_acc}/conversations/{_cid}/assignments"
                             async with httpx.AsyncClient(timeout=8.0) as _hc:
                                 _r = await _hc.post(
                                     _conv_url,
-                                    json={"team": {"id": int(team_id)}},
+                                    json={"team_id": int(team_id)},
                                     headers=_headers,
                                 )
                             if _r.status_code < 400:
@@ -890,7 +910,7 @@ async def _execute_from(
                             else:
                                 logger.warning(
                                     f"[FlowExecutor] TransferTeam: Chatwoot retornou {_r.status_code} "
-                                    f"para conversa {_cid}"
+                                    f"body={_r.text} para conversa {_cid}"
                                 )
             except Exception as _e:
                 logger.error(f"[FlowExecutor] TransferTeam erro ao chamar Chatwoot: {_e}")
