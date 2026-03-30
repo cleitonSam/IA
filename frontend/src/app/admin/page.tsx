@@ -177,7 +177,7 @@ export default function AdminPage() {
           <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-neon-primary">
             <Building2 className="w-6 h-6 text-white" />
           </div>
-          <span className="font-bold text-xl tracking-tight">Antigravity IA</span>
+          <span className="font-bold text-xl tracking-tight">Fluxo</span>
         </div>
         <nav className="flex-1 space-y-2">
           <a href="/dashboard" className="flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:bg-white/5 transition-all">

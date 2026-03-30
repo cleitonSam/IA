@@ -113,7 +113,7 @@ function RegisterForm() {
           <div className="absolute -top-24 -right-24 w-48 h-48 bg-primary opacity-10 rounded-full blur-3xl animate-pulse" />
 
           <div className="mb-6 text-center">
-            <h1 className="text-3xl font-bold text-gradient mb-1 tracking-tight">Antigravity IA</h1>
+            <h1 className="text-3xl font-bold text-gradient mb-1 tracking-tight">Fluxo</h1>
             <p className="text-gray-400 text-sm">
               Criar conta para{" "}
               <span className="text-primary font-semibold">{invite?.empresa_nome}</span>
