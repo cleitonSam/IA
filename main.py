@@ -2611,6 +2611,27 @@ async def worker_followup():
                         await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
 
+                    # ── Anti-bloqueio: verificações de frequência de follow-up ────────
+                    # 1) Opt-out: se o cliente solicitou opt-out, cancela
+                    _fone_fu = await redis_client.get(f"fone_cliente:{f['empresa_id']}:{f['conversation_id']}")
+                    if not _fone_fu:
+                        # Busca pelo conversation_id direto (chave usada pelo webhook)
+                        _fone_fu = await redis_client.get(f"fone_cliente:{f['conversation_id']}")
+                    if _fone_fu and await redis_client.exists(f"optout_whatsapp:{f['empresa_id']}:{_fone_fu}"):
+                        logger.info(f"🚫 [FollowUp] Cancelado — opt-out ativo para {_fone_fu}")
+                        await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                        continue
+
+                    # 2) Limite de 1 follow-up por telefone por dia (evita múltiplos follow-ups no mesmo dia)
+                    if _fone_fu:
+                        _fu_rate_key = f"followup_sent_today:{f['empresa_id']}:{_fone_fu}"
+                        _fu_hoje = await redis_client.get(_fu_rate_key)
+                        if _fu_hoje and int(_fu_hoje) >= 1:
+                            logger.info(f"🛡️ [FollowUp] Cancelado — limite diário atingido para {_fone_fu}")
+                            await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
+                            continue
+                    # ── Fim verificações de frequência ───────────────────────────────
+
                     integracao = await carregar_integracao(f['empresa_id'], 'chatwoot')
                     if not integracao:
                         await db_pool.execute(
@@ -2634,6 +2655,11 @@ async def worker_followup():
                     await db_pool.execute(
                         "UPDATE followups SET status = 'enviado', enviado_em = NOW() WHERE id = $1", f['id']
                     )
+                    # Registra envio no Redis para controle de frequência diária (TTL 24h)
+                    if _fone_fu:
+                        _fu_rate_key = f"followup_sent_today:{f['empresa_id']}:{_fone_fu}"
+                        await redis_client.incr(_fu_rate_key)
+                        await redis_client.expire(_fu_rate_key, 86400)
 
             except Exception as e:
                 logger.error(f"Erro no worker de follow-up: {e}")
@@ -3904,6 +3930,33 @@ async def processar_ia_e_responder(
                 _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis}"))
                 
                 if not _ia_pausada and not _phone_paused:
+                    # ── Anti-bloqueio: verifica limite de mensagens bot por conversa ───
+                    # Máx 30 msgs do bot em 1h por conversa. Evita burst que parece spam.
+                    _burst_key = f"bot_msg_count:{empresa_id}:{conversation_id}"
+                    _burst_count = await redis_client.incr(_burst_key)
+                    if _burst_count == 1:
+                        await redis_client.expire(_burst_key, 3600)
+                    if _burst_count > 30:
+                        logger.warning(
+                            f"🛡️ [AntiBurst] Conversa {conversation_id} atingiu limite de 30 msgs/h — "
+                            f"transferindo para atendente humano"
+                        )
+                        _pers_burst = await carregar_personalidade(empresa_id) or {}
+                        _nome_ia_burst = _pers_burst.get("nome_ia") or "Atendente"
+                        _integr_burst = await carregar_integracao(empresa_id, 'chatwoot')
+                        if _integr_burst:
+                            await enviar_mensagem_chatwoot(
+                                account_id, conversation_id,
+                                "Estou transferindo você para um de nossos atendentes para continuar o atendimento. Em breve entrarão em contato! 😊",
+                                _nome_ia_burst, _integr_burst, empresa_id
+                            )
+                        await redis_client.setex(f"pause_ia:{empresa_id}:{conversation_id}", 3600, "1")
+                        try:
+                            await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
+                        except Exception: pass
+                        return True
+                    # ── Fim anti-burst ───────────────────────────────────────────────
+
                     # Carrega integração para envio
                     _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
                     if _integr_uaz:
@@ -3916,6 +3969,40 @@ async def processar_ia_e_responder(
                         _mensagens_pool = await coletar_mensagens_buffer(conversation_id)
                         if _mensagens_pool:
                             _ultima_msg = _mensagens_pool[-1]
+
+                            # ── Anti-bloqueio: cooldown entre reinicializações do fluxo ──
+                            # Conta quantas vezes o fluxo reiniciou em 24h. Na 4ª vez
+                            # (fluxo não encontrou state = novo início), oferece atendente.
+                            _state_exists = await redis_client.exists(
+                                f"fluxo_state:{empresa_id}:0:{_fone_redis}"
+                            )
+                            if not _state_exists:
+                                _restart_key = f"fluxo_restarts:{empresa_id}:{_fone_redis}"
+                                _restarts = await redis_client.incr(_restart_key)
+                                if _restarts == 1:
+                                    await redis_client.expire(_restart_key, 86400)
+                                if _restarts >= 4:
+                                    logger.info(
+                                        f"🔁 [FluxoTriagem] {_fone_redis} reiniciou o fluxo {_restarts}x em 24h — "
+                                        f"oferecendo atendente humano"
+                                    )
+                                    _pers_restart = await carregar_personalidade(empresa_id) or {}
+                                    _nome_ia_restart = _pers_restart.get("nome_ia") or "Atendente"
+                                    _integr_restart = await carregar_integracao(empresa_id, 'chatwoot')
+                                    if _integr_restart:
+                                        await enviar_mensagem_chatwoot(
+                                            account_id, conversation_id,
+                                            "Olá! 😊 Percebi que você entrou em contato algumas vezes. "
+                                            "Posso te conectar direto com um de nossos atendentes agora. "
+                                            "Prefere isso ou posso continuar te ajudando aqui?",
+                                            _nome_ia_restart, _integr_restart, empresa_id
+                                        )
+                                    try:
+                                        await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
+                                    except Exception: pass
+                                    return True
+                            # ── Fim cooldown reinicializações ────────────────────────────
+
                             _tratou = await executar_fluxo(empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli)
                             if _tratou:
                                 logger.info(f"✅ [FluxoTriagem Monolith] Mensagem tratada pelo fluxo visual para {_fone_redis}")
@@ -4505,6 +4592,13 @@ REGRAS DE TOM:
 - NUNCA se apresente novamente se já houver histórico
 - NUNCA repita o nome do cliente na mesma resposta — use no máximo 1 vez, na saudação
 - NUNCA comece com "Olá" se a conversa já começou — vá direto ao ponto
+
+GUARDRAIL DE ESCOPO (POLÍTICA META — OBRIGATÓRIO):
+- Você é um assistente EXCLUSIVO desta empresa. NUNCA responda sobre temas fora do negócio.
+- Se o cliente perguntar sobre política, religião, saúde pessoal, receitas, notícias, outros negócios, tecnologia em geral, ou qualquer tema não relacionado à empresa, responda: "Posso ajudar apenas com dúvidas sobre [nome da empresa]. Tem alguma pergunta sobre nossos serviços?"
+- NUNCA escreva código, poemas, histórias, ensaios, análises ou qualquer conteúdo criativo não relacionado ao negócio.
+- NUNCA forneça conselhos médicos, jurídicos, financeiros pessoais ou psicológicos.
+- Em caso de dúvida sobre o escopo, prefira transferir para atendente humano a responder algo fora do escopo.
 
 EXEMPLO DE MENSAGEM BEM FORMATADA:
 "Temos sim! A diária custa *R$40* 💪
@@ -5287,7 +5381,8 @@ async def chatwoot_webhook(
             f"pause_ia:{empresa_id}:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
             f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}"
+            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}",
+            f"bot_msg_count:{empresa_id}:{id_conv}",  # Anti-bloqueio: zera contador de msgs do bot
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
         return {"status": "conversa_criada"}
@@ -5359,6 +5454,9 @@ async def chatwoot_webhook(
                     f"pause_ia_phone:{empresa_id}:0:{_fone_resolved}",
                     f"fluxo_state:{empresa_id}:0:{_fone_resolved}",
                     f"fluxo_vars:{empresa_id}:0:{_fone_resolved}",
+                    # Anti-bloqueio: limpa contadores ao encerrar conversa
+                    f"bot_msg_count:{empresa_id}:{id_conv}",
+                    f"fluxo_restarts:{empresa_id}:{_fone_resolved}",
                 ]
                 # Limpa também fluxo de unidades específicas (1-20)
                 _keys_base += [
@@ -5454,6 +5552,74 @@ async def chatwoot_webhook(
                     await redis_client.setex(f"aguardando_nome:{id_conv}", 900, "1")
                     logger.info(f"🏷️ Nome inválido '{nome_contato_raw}' detectado — pedindo nome real (conv={id_conv})")
                     return {"status": "aguardando_nome"}
+
+    # ── Anti-bloqueio WhatsApp: Opt-out automático ────────────────────────────────
+    # Se o cliente enviar PARAR / STOP / SAIR / NÃO QUERO / CANCELAR MENSAGENS,
+    # pausamos TODA automação para ele (fluxo + IA + follow-ups) e confirmamos.
+    if message_type == "incoming" and conteudo_texto:
+        _optout_words = {
+            "parar", "para", "stop", "sair", "cancelar mensagens", "cancelar mensagem",
+            "nao quero mais mensagens", "não quero mais mensagens",
+            "nao me mande mais", "não me mande mais",
+            "remover", "remova meu numero", "remova meu número",
+            "descadastrar", "descadastro", "unsubscribe",
+        }
+        _msg_lower = conteudo_texto.lower().strip()
+        _is_optout = (
+            _msg_lower in _optout_words
+            or any(_msg_lower == w for w in _optout_words)
+        )
+        if _is_optout:
+            _fone_optout = await redis_client.get(f"fone_cliente:{id_conv}")
+            # Pausa IA para esta conversa e por telefone (24h)
+            await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 86400, "1")
+            if _fone_optout:
+                await redis_client.setex(f"optout_whatsapp:{empresa_id}:{_fone_optout}", 86400 * 365, "1")
+                await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_optout}", 86400, "1")
+                # Cancela todos os follow-ups pendentes deste telefone
+                if db_pool:
+                    try:
+                        await db_pool.execute("""
+                            UPDATE followups f SET status = 'cancelado'
+                            FROM conversas c
+                            WHERE f.conversa_id = c.id
+                              AND c.conversation_id = $1
+                              AND f.status = 'pendente'
+                        """, id_conv)
+                    except Exception:
+                        pass
+                # Limpa estado do fluxo
+                _optout_keys = [
+                    f"fluxo_state:{empresa_id}:0:{_fone_optout}",
+                    f"fluxo_vars:{empresa_id}:0:{_fone_optout}",
+                ]
+                _optout_keys += [
+                    k for u in range(1, 21)
+                    for k in (
+                        f"fluxo_state:{empresa_id}:{u}:{_fone_optout}",
+                        f"fluxo_vars:{empresa_id}:{u}:{_fone_optout}",
+                    )
+                ]
+                await redis_client.delete(*_optout_keys)
+            # Envia mensagem de confirmação de opt-out
+            _pers_optout = await carregar_personalidade(empresa_id) or {}
+            _nome_ia_optout = _pers_optout.get("nome_ia") or "Atendente"
+            _msg_optout = (
+                "Tudo bem! ✅ Você não receberá mais mensagens automáticas.\n\n"
+                "Se quiser voltar a ser atendido, é só nos enviar uma mensagem. "
+                "Estaremos aqui! 😊"
+            )
+            await enviar_mensagem_chatwoot(account_id, id_conv, _msg_optout, _nome_ia_optout, integracao, empresa_id)
+            logger.info(f"🚫 [OptOut] Cliente {_fone_optout or id_conv} solicitou opt-out — automação pausada")
+            return {"status": "optout_registrado"}
+
+    # ── Anti-bloqueio: verifica opt-out persistente por telefone ─────────────────
+    if message_type == "incoming":
+        _fone_check_optout = await redis_client.get(f"fone_cliente:{id_conv}")
+        if _fone_check_optout:
+            if await redis_client.exists(f"optout_whatsapp:{empresa_id}:{_fone_check_optout}"):
+                logger.info(f"🚫 [OptOut] Mensagem de {_fone_check_optout} ignorada — opt-out ativo")
+                return {"status": "optout_ativo"}
 
     # Idempotência básica: evita reprocessar o mesmo message_created em retries do webhook
     mensagem_id = payload.get("id")
