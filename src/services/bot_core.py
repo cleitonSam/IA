@@ -2411,8 +2411,8 @@ async def chatwoot_webhook(
     # Vamos mover a busca do empresa_id para antes.
     empresa_id = await buscar_empresa_por_account_id(account_id)
     if not empresa_id:
-        logger.error(f"Account {account_id} sem empresa associada")
-        return {"status": "erro_sem_empresa"}
+        logger.warning(f"Account {account_id} sem empresa associada (webhook ignorado)")
+        return {"status": "ignorado_sem_empresa"}
 
     rate_key = get_tenant_key(empresa_id, f"rl:conv:{id_conv}")
     contador = await redis_client.incr(rate_key)

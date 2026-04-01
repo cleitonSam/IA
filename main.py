@@ -4818,36 +4818,43 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                         _uso_custo = round((_uso_in * 0.0000025) + (_uso_out * 0.000010), 6)
                         _unid_db   = unidade.get('id') if unidade else None
                         _lat_ms    = round(_latencia * 1000)
-                        try:
-                            await db_pool.execute("""
-                                INSERT INTO uso_ia
-                                    (empresa_id, unidade_id, conversa_id, modelo,
-                                     tokens_prompt, tokens_completion, custo_usd,
-                                     cache_hit, fallback, latencia_ms)
-                                VALUES (
-                                    $1, $2,
-                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
-                                    $4, $5, $6, $7, false, $8, $9
-                                )
-                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
-                                 _uso_in, _uso_out, _uso_custo, _usou_fallback, _lat_ms)
-                        except Exception:
+                        # Tenta INSERT com todas as colunas; se falhar, usa fallback sem modelo/latencia
+                        _uso_ok = False
+                        async with db_pool.acquire() as _conn_uso:
                             try:
-                                # Fallback: coluna modelo ou latencia_ms pode não existir ainda
-                                await db_pool.execute("""
-                                    INSERT INTO uso_ia
-                                        (empresa_id, unidade_id, conversa_id,
-                                         tokens_prompt, tokens_completion, custo_usd,
-                                         cache_hit, fallback)
-                                    VALUES (
-                                        $1, $2,
-                                        (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
-                                        $4, $5, $6, false, $7
-                                    )
-                                """, empresa_id, _unid_db, conversation_id,
-                                     _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                                async with _conn_uso.transaction():
+                                    await _conn_uso.execute("""
+                                        INSERT INTO uso_ia
+                                            (empresa_id, unidade_id, conversa_id, modelo,
+                                             tokens_prompt, tokens_completion, custo_usd,
+                                             cache_hit, fallback, latencia_ms)
+                                        VALUES (
+                                            $1, $2,
+                                            (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                            $4, $5, $6, $7, false, $8, $9
+                                        )
+                                    """, empresa_id, _unid_db, conversation_id, _modelo_usado,
+                                         _uso_in, _uso_out, _uso_custo, _usou_fallback, _lat_ms)
+                                _uso_ok = True
                             except Exception:
-                                pass  # tabela incompatível — ignora silenciosamente
+                                pass
+                            if not _uso_ok:
+                                try:
+                                    async with _conn_uso.transaction():
+                                        await _conn_uso.execute("""
+                                            INSERT INTO uso_ia
+                                                (empresa_id, unidade_id, conversa_id,
+                                                 tokens_prompt, tokens_completion, custo_usd,
+                                                 cache_hit, fallback)
+                                            VALUES (
+                                                $1, $2,
+                                                (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                                $4, $5, $6, false, $7
+                                            )
+                                        """, empresa_id, _unid_db, conversation_id,
+                                             _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                                except Exception:
+                                    pass  # tabela incompatível — ignora silenciosamente
                     except Exception as _e_uso:
                         logger.warning(f"⚠️ Falha ao registrar uso_ia conv {conversation_id}: {_e_uso}")
 
@@ -5353,8 +5360,8 @@ async def chatwoot_webhook(
     # Busca empresa pelo account_id
     empresa_id = await buscar_empresa_por_account_id(account_id)
     if not empresa_id:
-        logger.error(f"Account {account_id} sem empresa associada")
-        return {"status": "erro_sem_empresa"}
+        logger.warning(f"Account {account_id} sem empresa associada (webhook ignorado)")
+        return {"status": "ignorado_sem_empresa"}
 
     # Carrega integração Chatwoot da empresa
     integracao = await carregar_integracao(empresa_id, 'chatwoot')
