@@ -1056,15 +1056,7 @@ async def processar_ia_e_responder(
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
             return
 
-        # --- Preparação de Headers para Áudio (Chatwoot Auth) ---
-        headers_audio = None
-        _integ_cw_para_audio = integracao if source == 'chatwoot' else await carregar_integracao(empresa_id, 'chatwoot')
-        if _integ_cw_para_audio:
-            _token_cw = _integ_cw_para_audio.get('access_token') or _integ_cw_para_audio.get('token')
-            if _token_cw:
-                headers_audio = {"api_access_token": str(_token_cw)}
-
-        anexos = await processar_anexos_mensagens(mensagens_acumuladas, headers_audio=headers_audio)
+        anexos = await processar_anexos_mensagens(mensagens_acumuladas)
         textos = anexos["textos"]
         transcricoes = anexos["transcricoes"]
         imagens_urls = anexos["imagens_urls"]
