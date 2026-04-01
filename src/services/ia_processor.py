@@ -1186,7 +1186,7 @@ async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa
     return True
 
 
-async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[str, Any]:
+async def processar_anexos_mensagens(mensagens_acumuladas: List[str], headers_audio: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Extrai textos, transcrições e imagens a partir das mensagens acumuladas."""
     textos, tasks_audio, imagens_urls = [], [], []
     for m_json in mensagens_acumuladas:
@@ -1195,7 +1195,7 @@ async def processar_anexos_mensagens(mensagens_acumuladas: List[str]) -> Dict[st
             textos.append(m["text"])
         for f in m.get("files", []):
             if f["type"] == "audio":
-                tasks_audio.append(transcrever_audio(f["url"]))
+                tasks_audio.append(transcrever_audio(f["url"], headers=headers_audio))
             elif f["type"] == "image":
                 imagens_urls.append(f["url"])
 
@@ -1277,26 +1277,58 @@ def corrigir_json(texto: str) -> str:
 # NOTA: As funções principais de transcrição estão em bot_core.py.
 # Esta versão é mantida como fallback caso algum módulo importe daqui.
 
-async def transcrever_audio(url: str):
-    """Delega para bot_core.transcrever_audio (versão com fallback Gemini)."""
-    try:
-        from src.services.bot_core import transcrever_audio as _transcrever
-        return await _transcrever(url)
-    except ImportError:
-        if not cliente_whisper:
-            return "[Áudio recebido, mas transcrição indisponível]"
-        async with whisper_semaphore:
-            try:
-                resp = await baixar_midia_com_retry(url, timeout=15.0)
-                audio_file = io.BytesIO(resp.content)
-                audio_file.name = "audio.ogg"
-                transcription = await cliente_whisper.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file
-                )
-                return transcription.text
-            except Exception as e:
-                logger.error(f"Erro Whisper: {e}")
-                return "[Erro ao transcrever áudio]"
+async def transcrever_audio(url: str, headers: Optional[Dict[str, str]] = None):
+    """
+    Transcreve áudio com duplo fallback:
+    1. OpenAI Whisper (melhor qualidade, requer OPENAI_API_KEY)
+    2. Gemini via OpenRouter (funciona sem chave extra)
+    """
+    if not cliente_whisper and not cliente_ia:
+        return "[Áudio recebido, mas transcrição indisponível]"
+
+    async with whisper_semaphore:
+        try:
+            # --- Passo 1: Baixa o áudio ---
+            resp = await baixar_midia_com_retry(url, timeout=15.0, headers=headers)
+            audio_bytes = resp.content
+            
+            # --- Passo 2: Tenta Whisper ---
+            if cliente_whisper:
+                try:
+                    audio_file = io.BytesIO(audio_bytes)
+                    audio_file.name = "audio.ogg"
+                    transcription = await cliente_whisper.audio.transcriptions.create(
+                        model="whisper-1", file=audio_file
+                    )
+                    return transcription.text
+                except Exception as e:
+                    logger.warning(f"⚠️ Falha no Whisper, tentando Gemini fallback: {e}")
+                    if PROMETHEUS_OK:
+                        METRIC_ERROS_TOTAL.labels(tipo="whisper_fail").inc()
+
+            # --- Passo 3: Fallback Gemini ---
+            if cliente_ia:
+                res = await _transcrever_via_gemini(audio_bytes)
+                if res:
+                    return res
+
+            return "[Erro ao transcrever áudio]"
+
+        except httpx.TimeoutException as e:
+            logger.error(f"⏱️ Timeout ao baixar áudio: {e}")
+            if PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_timeout").inc()
+            return "[Erro ao baixar áudio: timeout]"
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP {e.response.status_code} ao baixar áudio: {e}")
+            if PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_http").inc()
+            return "[Erro ao baixar áudio]"
+        except Exception as e:
+            logger.error(f"Erro Transcrição: {e}")
+            if PROMETHEUS_OK:
+                METRIC_ERROS_TOTAL.labels(tipo="whisper_unknown").inc()
+            return "[Erro ao transcrever áudio]"
 
 
 @retry(
