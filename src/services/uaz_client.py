@@ -421,6 +421,12 @@ class UazAPIClient:
                 f"⚠️ send_media fallback: tentando como 'document' para {file_url[:80]}"
             )
             payload["type"] = "document"
+            # Remove mimetype de vídeo/imagem — UazAPI rejeita document com mimetype incompatível
+            payload.pop("mimetype", None)
+            # Adiciona docName para que o arquivo tenha nome legível no WhatsApp
+            if not payload.get("docName"):
+                _fallback_name = file_url.split("/")[-1].split("?")[0] or "arquivo"
+                payload["docName"] = _fallback_name
             res = await self._request("POST", "/send/media", json=payload)
 
         return res is not None

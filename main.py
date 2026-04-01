@@ -4790,19 +4790,22 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                             """, empresa_id, _unid_db, conversation_id, _modelo_usado,
                                  _uso_in, _uso_out, _uso_custo, _usou_fallback, _lat_ms)
                         except Exception:
-                            # Migration a0b1c2d3e4f5 ainda não aplicada — insere sem latencia_ms
-                            await db_pool.execute("""
-                                INSERT INTO uso_ia
-                                    (empresa_id, unidade_id, conversa_id, modelo,
-                                     tokens_prompt, tokens_completion, custo_usd,
-                                     cache_hit, fallback)
-                                VALUES (
-                                    $1, $2,
-                                    (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
-                                    $4, $5, $6, $7, false, $8
-                                )
-                            """, empresa_id, _unid_db, conversation_id, _modelo_usado,
-                                 _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                            try:
+                                # Fallback: coluna modelo ou latencia_ms pode não existir ainda
+                                await db_pool.execute("""
+                                    INSERT INTO uso_ia
+                                        (empresa_id, unidade_id, conversa_id,
+                                         tokens_prompt, tokens_completion, custo_usd,
+                                         cache_hit, fallback)
+                                    VALUES (
+                                        $1, $2,
+                                        (SELECT id FROM conversas WHERE conversation_id = $3 LIMIT 1),
+                                        $4, $5, $6, false, $7
+                                    )
+                                """, empresa_id, _unid_db, conversation_id,
+                                     _uso_in, _uso_out, _uso_custo, _usou_fallback)
+                            except Exception:
+                                pass  # tabela incompatível — ignora silenciosamente
                     except Exception as _e_uso:
                         logger.warning(f"⚠️ Falha ao registrar uso_ia conv {conversation_id}: {_e_uso}")
 
@@ -5497,20 +5500,27 @@ async def chatwoot_webhook(
         _telefone = contato.get("phone_number")
         if _telefone:
             await redis_client.setex(f"fone_cliente:{id_conv}", 86400, str(_telefone))
-            
+
         if nome_contato_valido:
             await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
         else:
-            _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
-            if _nome_informado:
-                await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
-                await redis_client.delete(f"aguardando_nome:{id_conv}")
-                await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
-                logger.info(f"✅ Nome '{_nome_informado}' extraído da mensagem e atualizado no Chatwoot (conv={id_conv})")
+            # Verifica se já temos nome válido salvo no Redis (evita loop quando
+            # Chatwoot ainda não propagou o nome atualizado no webhook)
+            _nome_redis = await redis_client.get(f"nome_cliente:{id_conv}")
+            if _nome_redis and nome_eh_valido(str(_nome_redis)):
+                # Já temos nome válido — não perguntar de novo
+                pass
             else:
-                # Nome do contato é inválido e mensagem não contém nome — pedir
+                # Tenta extrair nome do texto da mensagem atual
                 _aguardando = await redis_client.get(f"aguardando_nome:{id_conv}")
-                if not _aguardando:
+                _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
+                if _nome_informado:
+                    await redis_client.setex(f"nome_cliente:{id_conv}", 86400, _nome_informado)
+                    await redis_client.delete(f"aguardando_nome:{id_conv}")
+                    await atualizar_nome_contato_chatwoot(account_id, contato.get("id"), _nome_informado, integracao)
+                    logger.info(f"✅ Nome '{_nome_informado}' extraído da mensagem e atualizado no Chatwoot (conv={id_conv})")
+                elif not _aguardando:
+                    # Nome do contato é inválido, mensagem não contém nome, e ainda não perguntamos
                     _pers_nome = await carregar_personalidade(empresa_id) or {}
                     _nome_ia_nome = _pers_nome.get('nome_ia') or 'Atendente'
                     msg_nome = (
