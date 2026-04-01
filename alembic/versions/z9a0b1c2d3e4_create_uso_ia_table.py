@@ -36,10 +36,12 @@ def upgrade() -> None:
 
     # Garante que colunas adicionadas após a criação inicial existam
     # (caso a tabela tenha sido criada por um deploy anterior sem elas)
+    op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS modelo       VARCHAR(100)")
     op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS unidade_id  INTEGER REFERENCES unidades(id)  ON DELETE SET NULL")
     op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS conversa_id INTEGER REFERENCES conversas(id) ON DELETE SET NULL")
     op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS cache_hit   BOOLEAN NOT NULL DEFAULT false")
     op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS fallback     BOOLEAN NOT NULL DEFAULT false")
+    op.execute("ALTER TABLE uso_ia ADD COLUMN IF NOT EXISTS latencia_ms  INTEGER")
 
     # Índices para as queries de dashboard (filtragem por empresa + data)
     op.execute("""
