@@ -2459,6 +2459,13 @@ async def enviar_mensagem_chatwoot(
 
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
+                    # ImageKit transforma vídeos e corrompe MP4 — forçar original
+                    if "imagekit.io" in attachment_url.lower():
+                        _url_lower_ik = attachment_url.lower().split('?')[0]
+                        if any(_url_lower_ik.endswith(e) for e in ('.mp4', '.mov', '.avi', '.mkv', '.webm')):
+                            _sep = "&" if "?" in attachment_url else "?"
+                            if "tr=orig" not in attachment_url:
+                                attachment_url = f"{attachment_url}{_sep}tr=orig-true"
                     # Detecta tipo de mídia e mimetype pela extensão da URL (ignora query string)
                     _url_lower = attachment_url.lower().split('?')[0]
                     if any(_url_lower.endswith(ext) for ext in ('.mp4', '.mov', '.avi', '.mkv', '.webm')):

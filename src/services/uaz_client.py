@@ -334,6 +334,14 @@ class UazAPIClient:
             )
             media_type = "document"
 
+        # ImageKit transforma vídeos automaticamente, gerando MP4 inválido para
+        # whatsmeow/UazAPI. Forçar ?tr=orig-true para servir o arquivo original.
+        if "imagekit.io" in file_url and media_type in ("video", "ptv"):
+            sep = "&" if "?" in file_url else "?"
+            if "tr=orig" not in file_url:
+                file_url = f"{file_url}{sep}tr=orig-true"
+                logger.debug(f"📎 ImageKit video: forçando original → {file_url[:100]}")
+
         # Auto-detecta mimetype quando não fornecido explicitamente.
         # Ignora query string (?updatedAt=...) para detectar extensão real.
         # Evita erro "invalid MP4 file format" na UazAPI ao processar vídeos.
