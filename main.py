@@ -2459,26 +2459,33 @@ async def enviar_mensagem_chatwoot(
 
                 if attachment_url:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/media"
-                    # Detecta tipo de mídia pela extensão da URL
+                    # Detecta tipo de mídia e mimetype pela extensão da URL (ignora query string)
                     _url_lower = attachment_url.lower().split('?')[0]
                     if any(_url_lower.endswith(ext) for ext in ('.mp4', '.mov', '.avi', '.mkv', '.webm')):
                         _media_type = "video"
+                        _mimetype = "video/quicktime" if _url_lower.endswith('.mov') else "video/webm" if _url_lower.endswith('.webm') else "video/mp4"
                     elif any(_url_lower.endswith(ext) for ext in ('.mp3', '.wav', '.ogg', '.aac')):
                         _media_type = "audio"
+                        _mimetype = "audio/mpeg" if _url_lower.endswith('.mp3') else "audio/wav" if _url_lower.endswith('.wav') else "audio/ogg"
+                    elif _url_lower.endswith('.pdf'):
+                        _media_type = "document"
+                        _mimetype = "application/pdf"
                     else:
                         _media_type = "image"
+                        _mimetype = "image/jpeg" if any(_url_lower.endswith(e) for e in ('.jpg', '.jpeg')) else "image/png" if _url_lower.endswith('.png') else "image/webp" if _url_lower.endswith('.webp') else "image/jpeg"
                     uaz_payload = {
                         "number": _fone_clean,
                         "type": _media_type,
                         "file": attachment_url,
-                        "caption": f"{_header}{content}" if (content or _header) else ""
+                        "mimetype": _mimetype,
+                        "text": f"{_header}{content}" if (content or _header) else ""
                     }
                 else:
                     uaz_url = f"{str(uaz_base).rstrip('/')}/send/text"
                     uaz_payload = {
                         "number": _fone_clean,
                         "text": f"{_header}{content}",
-                        "delay": "1000"
+                        "delay": 1000
                     }
 
                 uaz_headers = {"token": uaz_token, "Content-Type": "application/json", "Accept": "application/json"}
