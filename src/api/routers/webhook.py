@@ -61,8 +61,8 @@ async def chatwoot_webhook(
     # Busca empresa pelo account_id para prefixar chaves
     empresa_id = await buscar_empresa_por_account_id(account_id)
     if not empresa_id:
-        logger.error(f"Account {account_id} sem empresa associada")
-        return {"status": "erro_sem_empresa"}
+        logger.warning(f"Account {account_id} sem empresa associada (webhook ignorado)")
+        return {"status": "ignorado_sem_empresa"}
 
     rate_key = f"rl:conv:{id_conv}"
     # O rate limit pode continuar usando o redis_client diretamente ou via help
