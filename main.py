@@ -21,7 +21,7 @@ _root = os.path.dirname(os.path.abspath(__file__))
 if _root not in sys.path:
     sys.path.append(_root)
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
@@ -464,6 +464,114 @@ def horario_hoje_formatado(horarios: Any) -> Optional[str]:
     return None
 
 
+def calcular_status_aberto_fechado(horarios: Any) -> dict:
+    """
+    Analisa os horários de funcionamento e o horário ATUAL (São Paulo)
+    para determinar se a unidade está ABERTA ou FECHADA agora.
+
+    Retorna dict com:
+      - aberto: bool
+      - horario_hoje: str ou None (ex: "06:00 às 23:00")
+      - status_texto: str descritivo para injetar no prompt
+      - hora_abertura: str ou None (ex: "06:00")
+      - hora_fechamento: str ou None (ex: "23:00")
+    """
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    hora_atual = agora.strftime("%H:%M")
+
+    # Pega horário de hoje usando a função existente
+    horario_hoje = horario_hoje_formatado(horarios)
+
+    if not horario_hoje:
+        return {
+            "aberto": None,  # incerto — sem dados
+            "horario_hoje": None,
+            "status_texto": "Não há informação de horário de funcionamento para hoje.",
+            "hora_abertura": None,
+            "hora_fechamento": None,
+        }
+
+    # Normaliza o texto do horário para extrair horas
+    h_norm = horario_hoje.lower().strip()
+
+    # Detecta se está fechado hoje
+    if any(p in h_norm for p in ["fechado", "não abre", "nao abre", "não funciona", "nao funciona", "encerrado", "indisponível", "indisponivel"]):
+        return {
+            "aberto": False,
+            "horario_hoje": horario_hoje,
+            "status_texto": f"HOJE a unidade está FECHADA ({horario_hoje}).",
+            "hora_abertura": None,
+            "hora_fechamento": None,
+        }
+
+    # Detecta 24h
+    if "24" in h_norm and ("hora" in h_norm or "h" in h_norm):
+        return {
+            "aberto": True,
+            "horario_hoje": horario_hoje,
+            "status_texto": f"HOJE a unidade funciona 24 HORAS — está ABERTA agora ({hora_atual}).",
+            "hora_abertura": "00:00",
+            "hora_fechamento": "23:59",
+        }
+
+    # Tenta extrair horários no formato HH:MM ou HHh ou HH:MM-HH:MM
+    # Padrões comuns: "06:00 às 23:00", "6h-23h", "06:00-23:00", "das 9h às 13h"
+    padrao = re.findall(r'(\d{1,2})[h:](\d{0,2})', h_norm)
+    if len(padrao) >= 2:
+        h_abre = int(padrao[0][0])
+        m_abre = int(padrao[0][1]) if padrao[0][1] else 0
+        h_fecha = int(padrao[1][0])
+        m_fecha = int(padrao[1][1]) if padrao[1][1] else 0
+
+        abertura_str = f"{h_abre:02d}:{m_abre:02d}"
+        fechamento_str = f"{h_fecha:02d}:{m_fecha:02d}"
+
+        # Compara com horário atual
+        hora_agora_obj = agora.time()
+        hora_abre_obj = dt_time(h_abre, m_abre)
+        hora_fecha_obj = dt_time(h_fecha, m_fecha)
+
+        if hora_abre_obj <= hora_agora_obj <= hora_fecha_obj:
+            # Calcula quanto falta para fechar
+            min_faltam = (h_fecha * 60 + m_fecha) - (hora_agora_obj.hour * 60 + hora_agora_obj.minute)
+            if min_faltam <= 60:
+                aviso_fecha = f" ATENÇÃO: faltam apenas {min_faltam} minutos para fechar!"
+            else:
+                aviso_fecha = f" Fecha às {fechamento_str}."
+            return {
+                "aberto": True,
+                "horario_hoje": horario_hoje,
+                "status_texto": f"AGORA ({hora_atual}) a unidade está ABERTA. Horário de hoje: {abertura_str} às {fechamento_str}.{aviso_fecha}",
+                "hora_abertura": abertura_str,
+                "hora_fechamento": fechamento_str,
+            }
+        elif hora_agora_obj < hora_abre_obj:
+            return {
+                "aberto": False,
+                "horario_hoje": horario_hoje,
+                "status_texto": f"AGORA ({hora_atual}) a unidade AINDA NÃO ABRIU. Abre hoje às {abertura_str}. Horário de hoje: {abertura_str} às {fechamento_str}.",
+                "hora_abertura": abertura_str,
+                "hora_fechamento": fechamento_str,
+            }
+        else:
+            return {
+                "aberto": False,
+                "horario_hoje": horario_hoje,
+                "status_texto": f"AGORA ({hora_atual}) a unidade JÁ FECHOU. O horário de hoje era {abertura_str} às {fechamento_str} e já encerrou.",
+                "hora_abertura": abertura_str,
+                "hora_fechamento": fechamento_str,
+            }
+
+    # Se não conseguiu parsear os horários, retorna o texto bruto sem status
+    return {
+        "aberto": None,
+        "horario_hoje": horario_hoje,
+        "status_texto": f"Horário de hoje: {horario_hoje}. Horário atual: {hora_atual}. Compare para informar se está aberto ou fechado.",
+        "hora_abertura": None,
+        "hora_fechamento": None,
+    }
+
+
 def formatar_horarios_funcionamento(horarios: Any) -> str:
     """Converte horários da unidade em texto amigável para resposta direta ao cliente."""
     if not horarios:
@@ -598,9 +706,24 @@ async def resolver_contexto_unidade(
 def responder_horario(unidade: dict) -> str:
     nome = unidade.get("nome") or "da unidade"
     horarios = formatar_horarios_funcionamento(unidade.get("horarios"))
+    status = calcular_status_aberto_fechado(unidade.get("horarios"))
+    status_linha = ""
+    if status.get("aberto") is True:
+        status_linha = f"\n✅ Estamos ABERTOS agora! Hoje funciona até às {status.get('hora_fechamento', '')}."
+    elif status.get("aberto") is False:
+        if status.get("hora_abertura"):
+            agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            hora_abre = dt_time(int(status['hora_abertura'].split(':')[0]), int(status['hora_abertura'].split(':')[1]))
+            if agora.time() < hora_abre:
+                status_linha = f"\n⏰ Ainda não abrimos hoje — abrimos às {status['hora_abertura']}."
+            else:
+                status_linha = f"\n⚠️ Já encerramos o expediente de hoje (era até {status.get('hora_fechamento', '')})."
+        else:
+            status_linha = "\n⚠️ Hoje estamos fechados."
     return (
         f"🕒 O horário da unidade *{nome}* é:\n"
-        f"{horarios}\n\n"
+        f"{horarios}"
+        f"{status_linha}\n\n"
         "Se quiser, também posso te passar o endereço 😊"
     )
 
@@ -807,13 +930,21 @@ def montar_saudacao_humanizada(
     # Apresentação do assistente
     linha2 = f"Eu sou {'a' if nome_ia and nome_ia[-1].lower() == 'a' else 'o'} {nome_ia}, tudo bem?"
 
-    # Horário de hoje (se disponível no banco)
+    # Horário de hoje (se disponível no banco) — com verificação de status
     horario_hoje = horario_hoje_formatado(hor_banco)
     if horario_hoje:
         agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
         NOMES_DIA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
         nome_dia = NOMES_DIA[agora.weekday()]
-        linha3 = f"Hoje ({nome_dia}) estamos funcionando das {horario_hoje} 💪"
+        _st = calcular_status_aberto_fechado(hor_banco)
+        if _st.get("aberto") is True:
+            linha3 = f"Hoje ({nome_dia}) estamos funcionando das {horario_hoje} 💪"
+        elif _st.get("aberto") is False and _st.get("hora_fechamento"):
+            linha3 = f"Hoje ({nome_dia}) nosso horário era das {horario_hoje}, mas já encerramos por hoje."
+        elif _st.get("aberto") is False and _st.get("hora_abertura"):
+            linha3 = f"Hoje ({nome_dia}) abrimos às {_st['hora_abertura']}! Nosso horário é das {horario_hoje}."
+        else:
+            linha3 = f"Hoje ({nome_dia}) nosso horário é das {horario_hoje}"
     else:
         linha3 = ""
 
@@ -4147,6 +4278,7 @@ async def processar_ia_e_responder(
         # Campos da unidade
         end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
+        _status_horario = calcular_status_aberto_fechado(hor_banco)
         _raw_link = unidade.get('link_matricula') or ''
         link_mat = _raw_link if _raw_link.startswith('http') else (unidade.get('site') if (unidade.get('site') or '').startswith('http') else '')
         tel_banco = extrair_telefone_unidade(unidade)
@@ -4351,10 +4483,16 @@ Tour Virtual: {'vídeo disponível' if unidade.get('link_tour_virtual') else 'n�
                 _label = _LABEL_MAP.get(_campo, _campo.upper().replace('_', ' '))
                 _extras_prompt += f"\n{_label}\n{_valor_str}\n"
 
-            aviso_mudanca = (
-                f"\n[AVISO]: O cliente perguntou sobre a unidade {nome_unidade}. "
-                "Use os dados abaixo para responder."
-            ) if mudou_unidade else ""
+            aviso_mudanca = ""
+            if mudou_unidade:
+                aviso_mudanca = (
+                    f"\n[AVISO IMPORTANTE]: O cliente escolheu/mencionou a unidade {nome_unidade}. "
+                    "Use os dados dessa unidade para responder. "
+                    "MAS ATENÇÃO: verifique no HISTÓRICO DA CONVERSA se o cliente fez alguma PERGUNTA ANTES "
+                    "(ex: horário, preço, planos, endereço). Se sim, RESPONDA ESSA PERGUNTA PRIMEIRO "
+                    "usando os dados da unidade selecionada. NÃO faça apenas saudação/apresentação — "
+                    "o cliente já estava perguntando algo e espera a resposta."
+                )
 
             contexto_precarregado_bloco = ""
             if contexto_precarregado:
@@ -4388,7 +4526,15 @@ Você é um atendente — apenas responda o cliente diretamente.
 DATA E HORA ATUAL (use sempre que o cliente perguntar sobre dia, data, hora ou horário de funcionamento):
 - Hoje é {_dia_semana_pt}, {_dia_mes} de {_mes_pt} de {_ano}
 - Horário atual: {_hora_atual} (horário de Brasília)
+- STATUS DA UNIDADE AGORA: {_status_horario['status_texto']}
 Use essas informações para responder perguntas como "que dia é hoje?", "que horas são?", "vocês estão abertos agora?", etc.
+
+REGRA CRÍTICA SOBRE HORÁRIO DE FUNCIONAMENTO:
+- SEMPRE compare o HORÁRIO ATUAL ({_hora_atual}) com o horário de funcionamento antes de responder.
+- Se o STATUS acima diz "JÁ FECHOU", NUNCA diga "estamos abertos" — diga que já encerraram e informe o horário de amanhã se possível.
+- Se o STATUS diz "AINDA NÃO ABRIU", informe a que horas abre.
+- Se o STATUS diz "ABERTA", pode dizer que está aberto e informar até que horas.
+- NUNCA ignore o STATUS — ele é calculado em tempo real e é a verdade absoluta sobre se está aberto ou fechado AGORA.
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
@@ -4605,7 +4751,7 @@ GUARDRAIL DE ESCOPO (POLÍTICA META — OBRIGATÓRIO):
 EXEMPLO DE MENSAGEM BEM FORMATADA:
 "Temos sim! A diária custa *R$40* 💪
 
-Se quiser, pode vir treinar hoje mesmo — estamos abertos até as 23h.
+{'Se quiser, pode vir treinar hoje mesmo — estamos abertos até às ' + (_status_horario.get("hora_fechamento") or "23h") + '.' if _status_horario.get("aberto") else 'Hoje já encerramos, mas amanhã você pode vir treinar!'}
 
 Você pretende treinar só hoje ou está pensando em começar academia?"
 {aviso_mudanca}
@@ -5830,7 +5976,16 @@ async def chatwoot_webhook(
                     _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
                     _horario_hoje = horario_hoje_formatado(_hor_unid)
-                    _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                    _status_unid = calcular_status_aberto_fechado(_hor_unid)
+                    if _horario_hoje:
+                        if _status_unid.get("aberto") is True:
+                            _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje} — aberto agora!"
+                        elif _status_unid.get("aberto") is False and _status_unid.get("hora_fechamento"):
+                            _linha_horario = f"\n🕒 Horário de hoje: {_horario_hoje} (já encerramos por hoje)"
+                        else:
+                            _linha_horario = f"\n🕒 Horário de hoje: {_horario_hoje}"
+                    else:
+                        _linha_horario = ""
                     _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
 
                     _msg_confirmacao = (
