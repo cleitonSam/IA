@@ -2271,23 +2271,33 @@ def suavizar_personalizacao_nome(content: str, nome: Optional[str]) -> str:
 
 
 def extrair_token_chatwoot(integracao: dict) -> str:
-    """Normaliza token da integração Chatwoot mesmo quando vier em formatos legados."""
+    """Normaliza token da integração Chatwoot mesmo quando vier em formatos legados.
+
+    Prioridade: access_token > api_access_token > api_token > token
+    (access_token é o campo padrão do Chatwoot v4+; 'token' pode ser legado/inválido)
+    """
     if not isinstance(integracao, dict):
         return ""
-    token = integracao.get('token')
-    if isinstance(token, dict):
+
+    # Se 'token' for um dict aninhado (formato legado), extrai de dentro dele
+    nested = integracao.get('token')
+    if isinstance(nested, dict):
         token = (
-            token.get('api_access_token')
-            or token.get('api_token')
-            or token.get('access_token')
-            or token.get('token')
+            nested.get('access_token')
+            or nested.get('api_access_token')
+            or nested.get('api_token')
+            or nested.get('token')
         )
-    if not token:
-        token = (
-            integracao.get('api_access_token')
-            or integracao.get('api_token')
-            or integracao.get('access_token')
-        )
+        if token:
+            return str(token).strip()
+
+    # Prioriza access_token (campo válido do Chatwoot) antes de 'token' (pode ser legado)
+    token = (
+        integracao.get('access_token')
+        or integracao.get('api_access_token')
+        or integracao.get('api_token')
+        or integracao.get('token')
+    )
     return str(token).strip() if token else ""
 
 
@@ -2743,7 +2753,7 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     try:
         await http_client.put(
             url_c, json={"status": "resolved"},
-            headers={"api_access_token": integracao['token']}
+            headers={"api_access_token": extrair_token_chatwoot(integracao)}
         )
     except Exception as e:
         logger.warning(f"Erro ao encerrar conversa {conversation_id}: {e}")
@@ -4605,7 +4615,7 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
                     resp = await baixar_midia_com_retry(
                         img_url,
                         timeout=12.0,
-                        headers={"api_access_token": integracao_chatwoot['token']},
+                        headers={"api_access_token": extrair_token_chatwoot(integracao_chatwoot)},
                     )
                     img_b64 = base64.b64encode(resp.content).decode("utf-8")
                     conteudo_usuario.append({
