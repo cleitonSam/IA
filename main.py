@@ -3942,10 +3942,40 @@ async def processar_ia_e_responder(
         # Janela de 4s: captura rajadas típicas de WhatsApp (2-4 msgs em sequência)
         await asyncio.sleep(4.0)
 
+        # ── Carrega personalidade + horário ANTES do fluxo (necessário para decidir se fluxo roda) ──
+        _pers_horario = await carregar_personalidade(empresa_id) or {}
+        _db_esta_no_horario = _pers_horario.get("esta_no_horario", True)
+        _horario_config = _pers_horario.get("horario_atendimento_ia")
+
+        # Override: se horario_especifico mas TODOS os dias têm arrays vazios → sem restrição
+        if not _db_esta_no_horario and isinstance(_horario_config, dict):
+            _tipo_h = _horario_config.get("tipo", "")
+            _dias_h = _horario_config.get("dias", {})
+            if _tipo_h == "horario_especifico" and isinstance(_dias_h, dict):
+                _todos_vazios = all(
+                    (not v) for v in _dias_h.values()
+                ) if _dias_h else True
+                if _todos_vazios:
+                    _db_esta_no_horario = True
+                    logger.info(
+                        f"🕒 [Bot Core Monolith] horario_especifico com todos os dias vazios → "
+                        f"sem restrição de horário para empresa {empresa_id}"
+                    )
+
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
+        logger.info(
+            f"🕒 [Bot Core Monolith] Horário SP={_agora_sp.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+            f"DB_Check={_db_esta_no_horario} | Config: {_horario_config}"
+        )
+
         # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
         # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
+        # O fluxo SÓ roda dentro do horário de atendimento configurado.
+        # Fora do horário, o fluxo é ignorado e a IA responde normalmente.
         _fluxo_config = await carregar_fluxo_triagem(empresa_id)
-        if _fluxo_config and _fluxo_config.get("ativo"):
+        if _fluxo_config and _fluxo_config.get("ativo") and _db_esta_no_horario:
             # Recupera o telefone do Redis (armazenado pelo webhook)
             _fone_redis = await redis_client.get(f"fone_cliente:{conversation_id}")
             if _fone_redis:
@@ -4042,38 +4072,13 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
-        # Verifica horário de atendimento da IA via Banco de Dados
-        _pers_horario = await carregar_personalidade(empresa_id) or {}
-        _db_esta_no_horario = _pers_horario.get("esta_no_horario", True)
-        _horario_config = _pers_horario.get("horario_atendimento_ia")
-
-        # ── Override: se horario_especifico mas TODOS os dias têm arrays vazios,
-        #    o usuário ainda não configurou horários → trata como sem restrição ──
-        if not _db_esta_no_horario and isinstance(_horario_config, dict):
-            _tipo_h = _horario_config.get("tipo", "")
-            _dias_h = _horario_config.get("dias", {})
-            if _tipo_h == "horario_especifico" and isinstance(_dias_h, dict):
-                _todos_vazios = all(
-                    (not v) for v in _dias_h.values()
-                ) if _dias_h else True
-                if _todos_vazios:
-                    _db_esta_no_horario = True
-                    logger.info(
-                        f"🕒 [Bot Core Monolith] horario_especifico com todos os dias vazios → "
-                        f"sem restrição de horário para empresa {empresa_id}"
-                    )
-
-        from datetime import datetime as _dt
-        from zoneinfo import ZoneInfo as _ZI
-        _agora_sp = _dt.now(_ZI("America/Sao_Paulo"))
-        logger.info(
-            f"🕒 [Bot Core Monolith] Horário SP={_agora_sp.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
-            f"DB_Check={_db_esta_no_horario} | Config: {_horario_config}"
-        )
-
+        # 🕒 Horário: apenas informativo — a IA NUNCA é bloqueada por horário.
+        # O horário já foi carregado antes do fluxo. Aqui só logamos se estamos fora.
         if not _db_esta_no_horario:
-            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada (silencioso)")
-            return
+            logger.info(
+                f"🕒 [Bot Core Monolith] IA fora do horário de atendimento para empresa {empresa_id}, "
+                f"conv {conversation_id} — IA continua respondendo normalmente (horário é apenas informativo)"
+            )
 
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)
         textos = anexos["textos"]
@@ -5482,6 +5487,64 @@ async def chatwoot_webhook(
     sender_type = (payload.get("sender") or {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
     conteudo_texto = str(payload.get("content", "") or "")
+
+    # ── Detecção de canal Instagram ──────────────────────────────────────────
+    _conv_inbox_id = conv_obj.get("inbox_id") or payload.get("inbox_id")
+    _conv_channel = conv_obj.get("channel") or ""
+    _is_instagram = (
+        str(_conv_channel).lower() == "channel::instagram"
+        or "instagram" in str(_conv_channel).lower()
+    )
+    # Fallback: detecta Instagram pelo inbox_id se channel não veio no payload
+    # Consulta a API do Chatwoot para descobrir o channel_type do inbox (com cache)
+    if not _is_instagram and _conv_inbox_id:
+        _inbox_cache_key = f"inbox_channel:{account_id}:{_conv_inbox_id}"
+        _cached_channel = await redis_client.get(_inbox_cache_key)
+        if _cached_channel:
+            _is_instagram = "instagram" in _cached_channel.lower()
+        else:
+            try:
+                _token_inbox = extrair_token_chatwoot(integracao)
+                _inbox_url = f"{integracao.get('url')}/api/v1/accounts/{account_id}/inboxes/{_conv_inbox_id}"
+                _inbox_resp = await http_client.get(_inbox_url, headers={"api_access_token": _token_inbox}, timeout=5.0)
+                if _inbox_resp.status_code == 200:
+                    _inbox_data = _inbox_resp.json()
+                    _inbox_channel_type = _inbox_data.get("channel_type", "")
+                    await redis_client.setex(_inbox_cache_key, 86400, _inbox_channel_type)
+                    _is_instagram = "instagram" in _inbox_channel_type.lower()
+            except Exception:
+                pass
+
+    # ── Instagram Story: auto-resolver ───────────────────────────────────────
+    # Story mentions e story replies têm story_id/story_sender nos content_attributes
+    # ou attachments do tipo ig_story/story_mention
+    if _is_instagram and message_type == "incoming":
+        _is_story = bool(
+            content_attrs.get("story_id")
+            or content_attrs.get("story_sender")
+            or content_attrs.get("image_type") in ("story_mention",)
+        )
+        # Verifica também nos attachments
+        if not _is_story:
+            _attachments_check = payload.get("attachments") or []
+            _is_story = any(
+                str(a.get("file_type", "")).lower() in ("ig_story",)
+                for a in _attachments_check
+            )
+        if _is_story:
+            logger.info(f"📸 [Instagram Story] conv={id_conv} — auto-resolvendo conversa de Story")
+            try:
+                _token_resolve = extrair_token_chatwoot(integracao)
+                _url_resolve = f"{integracao.get('url')}/api/v1/accounts/{account_id}/conversations/{id_conv}/toggle_status"
+                await http_client.post(
+                    _url_resolve,
+                    json={"status": "resolved"},
+                    headers={"api_access_token": _token_resolve},
+                    timeout=10.0
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao auto-resolver Story conv={id_conv}: {e}")
+            return {"status": "story_auto_resolvida"}
     
     # Identificação robusta de mensagens da IA (Sync ou Direta)
     # Verifica atributos no nível raiz do payload e também dentro do objeto message (comum em anexos)
@@ -5527,7 +5590,11 @@ async def chatwoot_webhook(
         if _telefone:
             await redis_client.setex(f"fone_cliente:{id_conv}", 86400, str(_telefone))
 
-        if nome_contato_valido:
+        # No Instagram, o nome do contato é o perfil (não o nome real).
+        # Tratamos como inválido para forçar o bot a perguntar o nome real.
+        _nome_valido_final = nome_contato_valido and not _is_instagram
+
+        if _nome_valido_final:
             await redis_client.setex(f"nome_cliente:{id_conv}", 86400, nome_contato_limpo)
         else:
             # Verifica se já temos nome válido salvo no Redis (evita loop quando
