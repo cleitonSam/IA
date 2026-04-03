@@ -25,7 +25,7 @@ from src.services.bot_core import (
 )
 from src.services.ia_processor import montar_saudacao_humanizada, extrair_endereco_unidade
 from src.utils.redis_helper import (
-    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache
+    get_tenant_cache, set_tenant_cache, delete_tenant_cache, exists_tenant_cache, get_tenant_key
 )
 from src.utils.text_helpers import (
     normalizar, limpar_nome, nome_eh_valido, extrair_nome_do_texto,
@@ -122,6 +122,10 @@ async def chatwoot_webhook(
     sender_type = payload.get("sender", {}).get("type", "").lower()
     content_attrs = payload.get("content_attributes") or {}
     conteudo_texto = str(payload.get("content", "") or "")
+
+    # Detecta canal de origem (Instagram, WhatsApp, Email, etc.)
+    channel_type = payload.get("conversation", {}).get("channel", "") or ""
+    is_instagram_channel = "instagram" in channel_type.lower()
     
     # Identificação robusta de mensagens da IA (Sync ou Direta)
     msg_obj = payload.get("message") or {}
@@ -192,6 +196,11 @@ async def chatwoot_webhook(
 
         if nome_contato_valido:
             await set_tenant_cache(empresa_id, f"nome_cliente:{id_conv}", nome_contato_limpo, 86400)
+        elif is_instagram_channel:
+            # Instagram: usa o nome do perfil como está (pode ter @, números) ou "Cliente"
+            _nome_instagram = nome_contato_limpo if nome_contato_limpo and nome_contato_limpo != "Cliente" else "Cliente"
+            await set_tenant_cache(empresa_id, f"nome_cliente:{id_conv}", _nome_instagram, 86400)
+            logger.info(f"📸 Instagram: usando nome do perfil '{_nome_instagram}' para conv {id_conv}")
         else:
             _nome_informado = extrair_nome_do_texto(conteudo_texto or "")
             if _nome_informado:
