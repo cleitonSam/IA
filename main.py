@@ -2942,10 +2942,11 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
     cliente e as perguntas cadastradas no FAQ.
     Retorna a resposta do FAQ se similaridade >= threshold, senão None.
     """
-    if not db_pool or not slug or not pergunta:
+    if not db_pool or not pergunta:
         return None
 
-    cache_key = f"cfg:faq_raw:v2:{empresa_id}:{slug}"
+    _slug_safe = slug or ""
+    cache_key = f"cfg:faq_raw:v2:{empresa_id}:{_slug_safe}"
     raw = await redis_client.get(cache_key)
     if raw:
         try:
@@ -2968,12 +2969,13 @@ async def buscar_resposta_faq(pergunta: str, slug: str, empresa_id: int) -> Opti
                   AND f.ativo = true
                   AND (
                       f.todas_unidades = true
+                      OR f.unidade_id IS NULL
                       OR (u.id IS NOT NULL AND f.unidade_id = u.id)
                       OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
                   )
                 ORDER BY f.prioridade DESC NULLS LAST
                 LIMIT 50
-            """, slug, empresa_id)
+            """, _slug_safe, empresa_id)
             faq_rows = [{"pergunta": r["pergunta"], "resposta": r["resposta"]} for r in faq_rows_db]
             await redis_client.setex(cache_key, 300, json.dumps(faq_rows, ensure_ascii=False))
         except Exception:
@@ -3034,7 +3036,9 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
 
     rows = []
     try:
-        # Query principal — unidade específica, múltiplas unidades ou todas
+        # Query principal — unidade específica, múltiplas unidades, todas, ou global (sem unidade)
+        # IMPORTANTE: FAQ global (unidade_id IS NULL e todas_unidades=false) sempre é incluído
+        # para garantir que empresas sem unidade definida recebam o FAQ neural.
         rows = await db_pool.fetch("""
             WITH unidade AS (
                 SELECT id
@@ -3049,6 +3053,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
               AND f.ativo = true
               AND (
                   f.todas_unidades = true
+                  OR f.unidade_id IS NULL
                   OR (u.id IS NOT NULL AND f.unidade_id = u.id)
                   OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
               )
@@ -3072,6 +3077,7 @@ async def carregar_faq_unidade(slug: str, empresa_id: int) -> str:
                   AND f.ativo = true
                   AND (
                       f.todas_unidades = true
+                      OR f.unidade_id IS NULL
                       OR (u.id IS NOT NULL AND f.unidade_id = u.id)
                       OR (u.id IS NOT NULL AND u.id = ANY(COALESCE(f.unidades_ids, '{}'::int[])))
                   )
