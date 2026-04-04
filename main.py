@@ -6018,14 +6018,29 @@ async def chatwoot_webhook(
 
     # Se chegamos aqui sem slug, a IA responderá como Consultor Global
 
-    # Pausa IA se for mensagem de atendente humano
-    if message_type == "outgoing" and sender_type == "user":
+    # Pausa IA se for mensagem de atendente humano (outgoing que não é da IA/bot)
+    if message_type == "outgoing":
+        logger.info(
+            f"📤 [Outgoing Debug] conv={id_conv} sender_type='{sender_type}' "
+            f"is_ai={is_ai_message} is_uaz_echo={is_uaz_echo} "
+            f"origin={content_attrs.get('origin')} msg_origin={msg_attrs.get('origin')} "
+            f"ai_redis={is_ai_in_redis} sender_raw={payload.get('sender')}"
+        )
+
+        # Se é mensagem da própria IA ou echo do UazAPI, ignora (não pausa)
         if is_ai_message or is_uaz_echo:
             logger.info(f"🦾 Mensagem reconhecida como IA/bot (marker/echo) — mantendo fluxo ativo para conv {id_conv}")
             return {"status": "ignorado"}
 
-        # Log de segurança para debugar se for uma mensagem da IA que escapou da detecção
-        logger.warning(f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing sem marcador detectada (sender={sender_type}, origin={content_attrs.get('origin')}, msg_origin={msg_attrs.get('origin')}, ai_redis={is_ai_in_redis}, uaz_echo={is_uaz_echo})")
+        # Qualquer outra mensagem outgoing = atendente humano respondendo → pausa IA
+        # Antes checávamos sender_type == "user", mas o Chatwoot nem sempre
+        # envia sender.type nos webhooks outgoing. Agora pausamos para QUALQUER
+        # outgoing não-IA, que é o comportamento correto.
+        logger.warning(
+            f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing de atendente humano "
+            f"(sender={sender_type}, origin={content_attrs.get('origin')}, "
+            f"msg_origin={msg_attrs.get('origin')}, ai_redis={is_ai_in_redis}, uaz_echo={is_uaz_echo})"
+        )
 
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
         if db_pool:
