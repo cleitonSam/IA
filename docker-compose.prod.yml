@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────
 #  Ambiente: PRODUCTION
-#  URL:      https://ia.fluxodigitaltech.com.br  (porta 80)
+#  URL:      https://ia.fluxodigitaltech.com.br
 #  Branch:   main
 #  .env:     .env.production
 # ─────────────────────────────────────────────
@@ -11,6 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - GIT_SHA=${GIT_SHA:-unknown}
+        - BUILD_DATE=${BUILD_DATE:-unknown}
     container_name: ia-prod-api
     expose:
       - "8000"
@@ -18,29 +21,60 @@ services:
       - .env.production
     environment:
       - APP_MODE=api
+      - DB_POOL_MIN=15
+      - DB_POOL_MAX=60
     restart: always
     networks:
       - ia-prod-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    # [INF-06] Limites de recurso — evita que um runaway derrube o host
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - GIT_SHA=${GIT_SHA:-unknown}
+        - BUILD_DATE=${BUILD_DATE:-unknown}
     container_name: ia-prod-worker
     env_file:
       - .env.production
     environment:
       - APP_MODE=worker
+      - DB_POOL_MIN=15
+      - DB_POOL_MAX=60
     restart: always
     networks:
       - ia-prod-net
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    # [INF-07] Healthcheck do worker via heartbeat em Redis (gravado pelo proprio worker)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis, os, time, sys; r=redis.from_url(os.environ['REDIS_URL']); hb=r.get('worker:heartbeat'); sys.exit(0 if hb and time.time()-float(hb)<120 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+          cpus: "1.5"
+        reservations:
+          memory: 768M
 
   frontend:
     build:
@@ -58,21 +92,42 @@ services:
     networks:
       - ia-prod-net
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.75"
 
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     container_name: ia-prod-nginx
     ports:
       - "80:80"
+      - "443:443"  # [INF-01] HTTPS
     volumes:
       - ./nginx/prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro       # [INF-01] TLS certs (fullchain.pem + privkey.pem)
+      - ./nginx/www/certbot:/var/www/certbot:ro # Let's Encrypt challenge (opcional)
     depends_on:
-      - api
-      - frontend
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
     restart: always
     networks:
       - ia-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
 
 networks:
   ia-prod-net:

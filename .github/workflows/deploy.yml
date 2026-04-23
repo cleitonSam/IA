@@ -1,23 +1,17 @@
-name: Deploy AI Bot
+# [INF-04] Workflow legado — desativado.
+# Os deploys reais estao em deploy-dev.yml, deploy-staging.yml e deploy-prod.yml,
+# que usam ${{ secrets.PROD_PATH }}/${{ secrets.STAGING_PATH }}/${{ secrets.DEV_PATH }}
+# para evitar paths hardcoded.
+# Este arquivo e mantido apenas como historico e sera removido em seguida.
+name: Deploy (DEPRECATED — ver deploy-prod.yml)
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
-  deploy:
+  deprecated:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to Server via SSH
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            cd /Users/macbook/Projetos/IA  # AJUSTE ESTE CAMINHO PARA O DIRETÓRIO NO SEU SERVIDOR
-            git pull origin main
-            docker-compose down
-            docker-compose up --build -d
-            docker image prune -f
+      - run: |
+          echo "Este workflow foi substituido por deploy-prod.yml, deploy-staging.yml e deploy-dev.yml."
+          exit 1

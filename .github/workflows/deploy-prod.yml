@@ -1,9 +1,13 @@
-name: Deploy — PRODUCTION
+name: Deploy - PRODUCTION
 
 on:
   push:
     branches:
       - main
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -11,30 +15,75 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🔔 Notifica início do deploy
-        run: echo "🚀 Iniciando deploy PRODUCTION — commit ${{ github.sha }}"
+      - name: Notifica inicio do deploy
+        run: echo "Iniciando deploy PRODUCTION - commit ${{ github.sha }}"
 
-      - name: 🛳️ Deploy via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@master
         with:
           host:     ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key:      ${{ secrets.SSH_KEY }}
+          envs: GITHUB_SHA
+          script_stop: true
           script: |
-            set -e
-            echo "📦 Atualizando código PRODUCTION..."
+            set -euo pipefail
+            SHA="${GITHUB_SHA:0:12}"
+            echo "[prod] deploy commit=${SHA}"
             cd ${{ secrets.PROD_PATH }}
 
+            # [INF-03] Captura a imagem atual para possivel rollback
+            PREV_IMG=$(docker inspect --format='{{.Image}}' ia-prod-api 2>/dev/null || echo "")
+            echo "[prod] imagem anterior: ${PREV_IMG:-nenhuma}"
+
+            echo "[prod] atualizando codigo..."
             git fetch origin main
             git checkout main
             git pull origin main
 
-            echo "🐳 Rebuild e restart dos containers PRODUCTION..."
-            docker compose -f docker-compose.prod.yml pull 2>/dev/null || true
-            docker compose -f docker-compose.prod.yml up --build -d
+            # [ARQ-01] Roda migrations como job isolado com lock distribuido ANTES de subir a app
+            echo "[prod] rodando migrations em container descartavel..."
+            docker compose -f docker-compose.prod.yml run --rm \
+              -e ALEMBIC_LOCK_TTL=300 \
+              api sh scripts/migrate.sh
 
-            echo "🧹 Limpando imagens antigas..."
-            docker image prune -f
+            echo "[prod] buildando novas imagens (tag=${SHA})..."
+            GIT_SHA="${SHA}" BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)" \
+              docker compose -f docker-compose.prod.yml build \
+                --build-arg GIT_SHA="${SHA}" \
+                --build-arg BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)"
 
-            echo "✅ Deploy PRODUCTION concluído!"
+            echo "[prod] recriando containers..."
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            echo "[prod] aguardando healthcheck (ate 120s)..."
+            HEALTHY=0
+            for i in $(seq 1 24); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' ia-prod-api 2>/dev/null || echo "starting")
+              echo "[prod]   tentativa ${i}/24: ${STATUS}"
+              if [ "${STATUS}" = "healthy" ]; then
+                HEALTHY=1; break
+              fi
+              sleep 5
+            done
+
+            if [ "${HEALTHY}" != "1" ]; then
+              echo "[prod] ERRO: healthcheck nao passou em 120s. Iniciando rollback..."
+              if [ -n "${PREV_IMG}" ]; then
+                docker tag "${PREV_IMG}" ia-prod-api:rollback
+                docker compose -f docker-compose.prod.yml stop api
+                docker run -d --name ia-prod-api-rollback --network ia-prod-net ia-prod-api:rollback
+                echo "[prod] rollback para imagem anterior feito. Verifique manualmente."
+              fi
+              exit 1
+            fi
+
+            # [INF-03] NAO faz mais 'docker image prune -f' imediato.
+            # Mantem as 3 ultimas imagens (tag=sha) para rollback rapido.
+            echo "[prod] limpando imagens antigas (mantendo 3 ultimas)..."
+            docker image ls --filter "reference=ia-prod-*" --format "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" \
+              | sort -k2 -r | awk 'NR>3 {print $1}' \
+              | xargs -r docker image rm 2>/dev/null || true
+
+            echo "[prod] Deploy concluido com sucesso."
             docker compose -f docker-compose.prod.yml ps

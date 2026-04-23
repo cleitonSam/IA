@@ -89,11 +89,30 @@ if not REDIS_URL:
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not JWT_SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY não definido — defina uma chave secreta segura como variável de ambiente")
+
+# [SEC-01] Valida força do JWT_SECRET — deve ter >= 32 bytes de entropia real.
+# Gere com: openssl rand -hex 32  (produz 64 chars hex).
+if len(JWT_SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET_KEY muito curto (< 32 chars). "
+        "Gere um novo com: openssl rand -hex 32"
+    )
+if JWT_SECRET_KEY.lower() in {"change-me", "secret", "changeme", "jwt-secret"}:
+    raise RuntimeError("JWT_SECRET_KEY é um valor placeholder. Gere um real com openssl rand -hex 32.")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440)) # 24h
 
-EMPRESA_ID_PADRAO = 1
-APP_VERSION = "2.5.0"
+# [SEC-11] EMPRESA_ID_PADRAO e DEPRECATED — nao deve ser usado como fallback.
+# Webhooks sem empresa resolvivel devem retornar erro, nao rotular como empresa 1.
+# Mantido apenas por compatibilidade de imports ate que os usos sejam migrados.
+EMPRESA_ID_PADRAO = 1  # DEPRECATED — ver SEC-11
+APP_VERSION = "2.6.0"  # bump: auditoria multi-tenant
+
+# --- SENTRY (error tracking) ---
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", os.getenv("APP_MODE", "dev"))
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
 
 # --- EMAIL / SMTP ---
 SMTP_ADDRESS = os.getenv("SMTP_ADDRESS", "smtp.hostinger.com")

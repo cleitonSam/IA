@@ -2,17 +2,23 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 *.log
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # ─── Environments (NUNCA commite arquivos .env com dados reais) ──────────────
 .env
-.env.dev
-.env.staging
-.env.production
+.env.*
 # Os arquivos .example SÃO commitados (templates sem credenciais reais)
-# .env.dev.example       ← commitado ✅
-# .env.staging.example   ← commitado ✅
-# .env.production.example← commitado ✅
+!.env.dev.example
+!.env.staging.example
+!.env.production.example
 
 # ─── Python venv ─────────────────────────────────
 # Usa /prefixo para limitar ao root e não afetar frontend/src/lib/
@@ -22,11 +28,40 @@ __pycache__/
 /lib64/
 /include/
 /pyvenv.cfg
+.venv/
+venv/
+ENV/
+env/
+
+# ─── Arquivos estranhos (ex: '=1.0.0' — stdout de pip install) ──────────────
+=*
 
 # ─── Frontend ────────────────────────────────────
 frontend/node_modules/
 frontend/.next/
 frontend/dist/
+frontend/out/
+frontend/.turbo/
 
 # ─── Claude / Ferramentas ────────────────────────
 .claude/
+.cursor/
+.idea/
+.vscode/settings.json
+
+# ─── OS ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Secrets leakage guard ────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+!nginx/**/*.pem
+!nginx/**/*.crt
+
+# ─── Alembic (cache local) ────────────────────────
+alembic/__pycache__/

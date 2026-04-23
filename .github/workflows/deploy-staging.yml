@@ -1,9 +1,13 @@
-name: Deploy — STAGING
+name: Deploy - STAGING
 
 on:
   push:
     branches:
       - staging
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -11,30 +15,47 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🔔 Notifica início do deploy
-        run: echo "🚀 Iniciando deploy STAGING — commit ${{ github.sha }}"
+      - name: Notifica inicio do deploy
+        run: echo "Iniciando deploy STAGING - commit ${{ github.sha }}"
 
-      - name: 🛳️ Deploy via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@master
         with:
           host:     ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key:      ${{ secrets.SSH_KEY }}
+          envs: GITHUB_SHA
+          script_stop: true
           script: |
-            set -e
-            echo "📦 Atualizando código STAGING..."
+            set -euo pipefail
+            SHA="${GITHUB_SHA:0:12}"
+            echo "[staging] deploy commit=${SHA}"
             cd ${{ secrets.STAGING_PATH }}
 
             git fetch origin staging
             git checkout staging
             git pull origin staging
 
-            echo "🐳 Rebuild e restart dos containers STAGING..."
-            docker compose -f docker-compose.staging.yml pull 2>/dev/null || true
-            docker compose -f docker-compose.staging.yml up --build -d
+            echo "[staging] rodando migrations..."
+            docker compose -f docker-compose.staging.yml run --rm api sh scripts/migrate.sh
 
-            echo "🧹 Limpando imagens antigas..."
-            docker image prune -f
+            echo "[staging] buildando..."
+            docker compose -f docker-compose.staging.yml build \
+              --build-arg GIT_SHA="${SHA}" \
+              --build-arg BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)"
 
-            echo "✅ Deploy STAGING concluído!"
+            docker compose -f docker-compose.staging.yml up -d --remove-orphans
+
+            echo "[staging] aguardando healthcheck (ate 90s)..."
+            for i in $(seq 1 18); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' ia-staging-api 2>/dev/null || echo "starting")
+              if [ "${STATUS}" = "healthy" ]; then break; fi
+              sleep 5
+            done
+
+            docker image ls --filter "reference=ia-staging-*" --format "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" \
+              | sort -k2 -r | awk 'NR>3 {print $1}' \
+              | xargs -r docker image rm 2>/dev/null || true
+
+            echo "[staging] Deploy concluido."
             docker compose -f docker-compose.staging.yml ps

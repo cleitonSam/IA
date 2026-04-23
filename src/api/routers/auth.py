@@ -4,17 +4,19 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 
-from src.core.config import logger, ACCESS_TOKEN_EXPIRE_MINUTES
+from src.core.config import logger, ACCESS_TOKEN_EXPIRE_MINUTES, FRONTEND_URL
 from src.core.security import verify_password, get_password_hash, create_access_token, get_current_user_token
 from src.core.redis_client import redis_client
+from src.core.tenant import require_admin_master
+from src.middleware.rate_limit import rate_limit
 from src.services.db_queries import buscar_usuario_por_email, criar_usuario
 from src.services.email_service import enviar_convite
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Rate limit para login: máx 5 tentativas por IP por minuto
+# [SEC-05] Rate limits por endpoint (todos por IP)
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_WINDOW = 60  # segundos
 
@@ -42,14 +44,15 @@ class AtualizarEmpresaRequest(BaseModel):
     status: Optional[str] = None
 
 class ConviteRequest(BaseModel):
-    email: str
-    empresa_id: int
+    email: EmailStr
+    empresa_id: int = Field(..., gt=0)
 
 class RegisterRequest(BaseModel):
-    token: str
-    nome: str
-    email: str
-    senha: str
+    # [SEC-07] Limites explicitos para evitar payloads abusivos.
+    token: str = Field(..., min_length=10, max_length=128)
+    nome: str = Field(..., min_length=2, max_length=120)
+    email: EmailStr
+    senha: str = Field(..., min_length=8, max_length=128)
 
 
 # ---------- helpers ----------
@@ -107,42 +110,31 @@ async def _marcar_convite_usado(token: str):
 
 # ---------- endpoints ----------
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limit(key="login", max_calls=5, window=60))])
 async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
-    # Rate limiting por IP
-    client_ip = request.client.host if request.client else "unknown"
-    rate_key = f"login_rate:{client_ip}"
-    try:
-        attempts = await redis_client.incr(rate_key)
-        if attempts == 1:
-            await redis_client.expire(rate_key, _LOGIN_RATE_WINDOW)
-        if attempts > _LOGIN_RATE_LIMIT:
-            logger.warning(f"🚫 Rate limit login excedido para IP {client_ip}")
-            raise HTTPException(
-                status_code=429,
-                detail=f"Muitas tentativas de login. Aguarde {_LOGIN_RATE_WINDOW}s.",
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # Se Redis falhar, permite login normalmente
-
+    # [SEC-05] Rate-limit agora e aplicado pela dependencia (com fallback in-memory).
+    # A comparacao constant-time de senha fica no verify_password (bcrypt).
     email_login = (form_data.username or "").strip().lower()
     senha_login = form_data.password or ""
 
     user = await buscar_usuario_por_email(email_login)
     if not user or not verify_password(senha_login, user['senha_hash']):
-        logger.warning(f"⚠️ Login falhou: {email_login}")
+        logger.warning(f"login_failed email={email_login} ip={request.client.host if request.client else 'unknown'}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="E-mail ou senha incorretos",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # [SEC-13] Verifica se usuario esta ativo
+    if user.get("ativo") is False:
+        logger.warning(f"login_blocked email={email_login} reason=inactive")
+        raise HTTPException(status_code=403, detail="Usuário inativo. Contate o administrador.")
+
     access_token = create_access_token(
         data={"sub": user['email'], "perfil": user['perfil'], "empresa_id": user['empresa_id']},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    logger.info(f"✅ Login: {user['email']}")
+    logger.info(f"login_success email={user['email']} empresa_id={user['empresa_id']}")
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -233,15 +225,16 @@ async def excluir_empresa(
         raise HTTPException(status_code=400, detail="Não é possível excluir esta empresa pois ela possui dados vinculados.")
 
 
-@router.post("/invite", status_code=201)
+@router.post(
+    "/invite",
+    status_code=201,
+    dependencies=[Depends(rate_limit(key="invite", max_calls=20, window=3600))],
+)
 async def send_invite(
     body: ConviteRequest,
-    token_payload: dict = Depends(get_current_user_token),
+    tenant: dict = Depends(require_admin_master),
 ):
     """Envia convite por e-mail para uma empresa existente. Apenas admin_master."""
-    if token_payload.get("perfil") != "admin_master":
-        raise HTTPException(status_code=403, detail="Apenas admin_master pode enviar convites")
-
     empresa = await _buscar_empresa(body.empresa_id)
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa não encontrada. Crie a empresa antes de enviar o convite.")
@@ -251,11 +244,13 @@ async def send_invite(
     token = await _criar_convite(empresa_id, body.email)
     enviado = await enviar_convite(body.email, empresa["nome"], token)
 
-    import os
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-    link = f"{frontend_url}/register?token={token}"
+    link = f"{FRONTEND_URL}/register?token={token}"
 
-    logger.info(f"📨 Convite criado para {body.email} (empresa_id={empresa_id}, email_enviado={enviado}) link={link}")
+    # [SEC-14] Nao logar o token completo por questoes de auditoria.
+    logger.info(
+        f"invite_created email={body.email} empresa_id={empresa_id} "
+        f"email_enviado={enviado} token_prefix={token[:8]}..."
+    )
     return {
         "message": f"Convite criado para {body.email}",
         "email_enviado": enviado,
@@ -263,9 +258,16 @@ async def send_invite(
     }
 
 
-@router.get("/invite/{token}")
+@router.get(
+    "/invite/{token}",
+    dependencies=[Depends(rate_limit(key="check_invite", max_calls=30, window=60))],
+)
 async def check_invite(token: str):
     """Verifica se um token de convite é válido e retorna a empresa associada."""
+    # [SEC-06] Validacao de formato antes de consultar banco (evita DB lookup para garbage).
+    if not token or len(token) < 10 or len(token) > 128:
+        raise HTTPException(status_code=404, detail="Convite inválido ou expirado")
+
     convite = await _buscar_convite(token)
     if not convite:
         raise HTTPException(status_code=404, detail="Convite inválido ou expirado")
@@ -278,36 +280,48 @@ async def check_invite(token: str):
     }
 
 
-@router.post("/register", status_code=201)
+@router.post(
+    "/register",
+    status_code=201,
+    dependencies=[Depends(rate_limit(key="register", max_calls=10, window=3600))],
+)
 async def register(body: RegisterRequest):
     """Cadastra novo usuário via token de convite."""
-    convite = await _buscar_convite(body.token)
-    if not convite:
-        raise HTTPException(status_code=400, detail="Convite inválido ou expirado")
+    import src.core.database as _database
 
-    # Verifica e-mail: deve bater com o do convite
-    if convite["email"].lower() != body.email.lower():
-        raise HTTPException(status_code=400, detail="E-mail não corresponde ao convite")
+    # [SEC-06] Fluxo atomico: valida convite, cria usuario e marca token usado
+    # numa unica transacao (evita race condition onde o mesmo token e usado duas vezes).
+    async with _database.db_pool.acquire() as conn:
+        async with conn.transaction():
+            convite = await conn.fetchrow(
+                "SELECT * FROM convites WHERE token = $1 AND usado = false AND expires_at > NOW() FOR UPDATE",
+                body.token,
+            )
+            if not convite:
+                raise HTTPException(status_code=400, detail="Convite inválido ou expirado")
 
-    # Verifica se já existe usuário com esse e-mail
-    existente = await buscar_usuario_por_email(body.email)
-    if existente:
-        raise HTTPException(status_code=409, detail="E-mail já cadastrado")
+            if convite["email"].lower() != body.email.lower():
+                raise HTTPException(status_code=400, detail="E-mail não corresponde ao convite")
 
-    senha_hash = get_password_hash(body.senha)
-    ok = await criar_usuario(
-        nome=body.nome,
-        email=body.email,
-        senha_hash=senha_hash,
-        empresa_id=convite["empresa_id"],
-        perfil="admin",
-    )
-    if not ok:
-        raise HTTPException(status_code=500, detail="Erro ao criar usuário")
+            existente = await conn.fetchrow(
+                "SELECT id FROM usuarios WHERE lower(email) = lower($1)",
+                body.email,
+            )
+            if existente:
+                raise HTTPException(status_code=409, detail="E-mail já cadastrado")
 
-    await _marcar_convite_usado(body.token)
+            senha_hash = get_password_hash(body.senha)
+            await conn.execute(
+                """
+                INSERT INTO usuarios (nome, email, senha_hash, empresa_id, perfil, ativo, created_at)
+                VALUES ($1, $2, $3, $4, 'admin', true, NOW())
+                """,
+                body.nome, body.email, senha_hash, convite["empresa_id"],
+            )
 
-    logger.info(f"✅ Usuário registrado: {body.email} (empresa_id={convite['empresa_id']})")
+            await conn.execute("UPDATE convites SET usado = true WHERE token = $1", body.token)
+
+    logger.info(f"user_registered email={body.email} empresa_id={convite['empresa_id']}")
     return {"message": "Conta criada com sucesso. Faça login."}
 
 

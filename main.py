@@ -1154,15 +1154,21 @@ async def startup_event():
             except Exception as migration_err:
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
 
+            # [ARQ-02] Pool dimensionado para multi-tenant (50+ empresas).
+            # Valores podem ser ajustados via env vars DB_POOL_MIN / DB_POOL_MAX.
+            _pool_min = int(os.getenv("DB_POOL_MIN", "15"))
+            _pool_max = int(os.getenv("DB_POOL_MAX", "60"))
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
-                min_size=2,
-                max_size=10,
-                command_timeout=10,
-                timeout=5,
+                min_size=_pool_min,
+                max_size=_pool_max,
+                command_timeout=15,
+                timeout=10,
+                max_inactive_connection_lifetime=300,
             )
             import src.core.database as core_database
             core_database.db_pool = db_pool
+            logger.info(f"[ARQ-02] Pool Postgres inicializado min={_pool_min} max={_pool_max}")
             logger.info("🐘 Conexão com PostgreSQL estabelecida com sucesso!")
         except asyncpg.PostgresError as e:
             logger.error(f"❌ Falha de autenticação no PostgreSQL: {e}")
@@ -5504,24 +5510,37 @@ async def chatwoot_webhook(
         return {"status": "erro_sem_integracao"}
 
     # Valida assinatura HMAC — Chatwoot v4+ usa formato: sha256=HMAC(secret, "{timestamp}.{body}")
+    # FAIL-CLOSED: se webhook_secret não estiver configurado, rejeita (nunca aceita sem validação)
     webhook_secret = integracao.get("webhook_secret") or CHATWOOT_WEBHOOK_SECRET
-    if webhook_secret and x_chatwoot_signature:
-        sig = x_chatwoot_signature
-        # Chatwoot v4+ envia "sha256={hex}" com message = "{timestamp}.{body}"
-        if x_chatwoot_timestamp:
-            message = f"{x_chatwoot_timestamp}.{body.decode()}"
-            expected_hex = hmac.new(webhook_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
-            expected_sig = f"sha256={expected_hex}"
-            if not hmac.compare_digest(sig, expected_sig):
-                logger.warning(f"Assinatura invalida para account={account_id} (formato timestamp.body)")
-                raise HTTPException(status_code=401, detail="Assinatura inválida")
-        else:
-            # Fallback: formato legado (body puro, sem timestamp, sem prefixo sha256=)
-            raw_sig = sig.removeprefix("sha256=") if sig.startswith("sha256=") else sig
-            expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(raw_sig, expected):
-                logger.warning(f"Assinatura invalida para account={account_id} (formato legado)")
-                raise HTTPException(status_code=401, detail="Assinatura inválida")
+    if not webhook_secret:
+        logger.error(
+            f"[SEC-03] Webhook secret AUSENTE para empresa={empresa_id} account={account_id} — "
+            f"rejeitando webhook. Configure integracao.webhook_secret ou CHATWOOT_WEBHOOK_SECRET."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook secret não configurado. Contate o administrador.",
+        )
+    if not x_chatwoot_signature:
+        logger.warning(f"Webhook sem header x-chatwoot-signature (empresa={empresa_id} account={account_id})")
+        raise HTTPException(status_code=401, detail="Assinatura ausente")
+
+    sig = x_chatwoot_signature
+    # Chatwoot v4+ envia "sha256={hex}" com message = "{timestamp}.{body}"
+    if x_chatwoot_timestamp:
+        message = f"{x_chatwoot_timestamp}.{body.decode()}"
+        expected_hex = hmac.new(webhook_secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+        expected_sig = f"sha256={expected_hex}"
+        if not hmac.compare_digest(sig, expected_sig):
+            logger.warning(f"Assinatura invalida para account={account_id} (formato timestamp.body)")
+            raise HTTPException(status_code=401, detail="Assinatura inválida")
+    else:
+        # Fallback: formato legado (body puro, sem timestamp, sem prefixo sha256=)
+        raw_sig = sig.removeprefix("sha256=") if sig.startswith("sha256=") else sig
+        expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(raw_sig, expected):
+            logger.warning(f"Assinatura invalida para account={account_id} (formato legado)")
+            raise HTTPException(status_code=401, detail="Assinatura inválida")
 
     logger.info(f"Webhook validado: empresa={empresa_id} event={event}")
 

@@ -1,0 +1,37 @@
+# [QLD-09] Pre-commit hooks. Instale com: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: "Bloqueia commit de secrets"
+
+  # [QLD-02] Bloqueia novos 'except Exception: pass' sem log
+  - repo: local
+    hooks:
+      - id: no-bare-except-pass
+        name: "Proibe 'except Exception: pass' sem log"
+        entry: bash -c 'if grep -rn --include="*.py" -A1 "except Exception" src/ main.py | grep -B1 -E "^\s*pass\s*$" | grep "except Exception"; then echo "ERRO: use logger.error() antes de suprimir excecoes"; exit 1; fi'
+        language: system
+        pass_filenames: false

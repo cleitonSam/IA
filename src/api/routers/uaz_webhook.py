@@ -1,5 +1,6 @@
 import uuid
 import json
+import hmac
 import asyncio
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
@@ -54,13 +55,27 @@ async def uazapi_webhook(
         )
         return {"status": "ignored", "reason": "integration_not_active"}
 
-    # Validação opcional de webhook secret (suporta X-Api-Key, X-Webhook-Token e Authorization)
+    # [SEC-03] Validação de webhook secret — FAIL-CLOSED com comparação constant-time.
+    # Suporta X-Api-Key, X-Webhook-Token e Authorization: Bearer <token>.
     _expected_secret = integracao.get("webhook_secret") or integracao.get("webhook_token")
-    if _expected_secret:
-        _received = x_api_key or x_webhook_token or (authorization.replace("Bearer ", "") if authorization else None)
-        if not _received or _received != _expected_secret:
-            logger.warning(f"🔐 Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id})")
-            raise HTTPException(status_code=401, detail="Webhook secret inválido")
+    if not _expected_secret:
+        logger.error(
+            f"[SEC-03] UazAPI webhook_secret AUSENTE para empresa={empresa_id} unidade={unidade_id} — "
+            f"rejeitando webhook. Configure integracao.webhook_secret."
+        )
+        raise HTTPException(status_code=400, detail="Webhook secret não configurado")
+
+    _received_raw = (
+        x_api_key
+        or x_webhook_token
+        or (authorization.replace("Bearer ", "").strip() if authorization else None)
+    )
+    _received = (_received_raw or "").strip()
+    if not _received or not hmac.compare_digest(_received, str(_expected_secret).strip()):
+        logger.warning(
+            f"[SEC-03] Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id} unidade={unidade_id})"
+        )
+        raise HTTPException(status_code=401, detail="Webhook secret inválido")
 
     try:
         event = body.get("event")

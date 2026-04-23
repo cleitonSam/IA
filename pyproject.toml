@@ -1,0 +1,79 @@
+[project]
+name = "motor-saas-ia"
+version = "2.6.0"
+description = "Motor SaaS IA — FastAPI + workers + IA conversacional multi-tenant"
+requires-python = ">=3.11"
+
+[tool.ruff]
+# [QLD-09] Linter / formatter
+line-length = 110
+target-version = "py311"
+exclude = [
+    "lib",
+    "lib64",
+    ".venv",
+    "alembic/versions",
+    "frontend",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "S",   # bandit — security
+    "N",   # pep8-naming
+    "SIM", # simplify
+    "RUF", # ruff
+]
+ignore = [
+    "E501",   # linha longa — line-length ja cobre
+    "B008",   # Depends() em default — padrao FastAPI
+    "S101",   # assert — OK em testes
+    "N802",   # nome de funcao lowercase — projeto usa portugues (carregar_integracao)
+    "N803",   # argumentos idem
+    "S608",   # SQL em f-string — revisamos manualmente
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/tests/**" = ["S"]
+"tests/**" = ["S"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+# [QLD-03] Config pytest — testes em src/tests e tests/
+testpaths = ["src/tests", "tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --tb=short"
+markers = [
+    "slow: testes lentos (marcar para excluir em CI rapido)",
+    "integration: testes que dependem de Postgres/Redis reais",
+    "security: testes focados em seguranca / multi-tenant",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src", "main"]
+omit = [
+    "lib/*",
+    "alembic/*",
+    "src/tests/*",
+    "tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

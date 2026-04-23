@@ -1,9 +1,13 @@
-name: Deploy — DEV
+name: Deploy - DEV
 
 on:
   push:
     branches:
       - dev
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true  # dev pode cancelar builds em andamento
 
 jobs:
   deploy:
@@ -11,30 +15,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🔔 Notifica início do deploy
-        run: echo "🚀 Iniciando deploy DEV — commit ${{ github.sha }}"
+      - name: Notifica inicio do deploy
+        run: echo "Iniciando deploy DEV - commit ${{ github.sha }}"
 
-      - name: 🛳️ Deploy via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@master
         with:
           host:     ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key:      ${{ secrets.SSH_KEY }}
+          envs: GITHUB_SHA
+          script_stop: true
           script: |
-            set -e
-            echo "📦 Atualizando código DEV..."
+            set -euo pipefail
+            SHA="${GITHUB_SHA:0:12}"
             cd ${{ secrets.DEV_PATH }}
 
             git fetch origin dev
             git checkout dev
             git pull origin dev
 
-            echo "🐳 Rebuild e restart dos containers DEV..."
-            docker compose -f docker-compose.dev.yml pull 2>/dev/null || true
-            docker compose -f docker-compose.dev.yml up --build -d
+            docker compose -f docker-compose.dev.yml run --rm api sh scripts/migrate.sh
+            docker compose -f docker-compose.dev.yml build \
+              --build-arg GIT_SHA="${SHA}" \
+              --build-arg BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)"
+            docker compose -f docker-compose.dev.yml up -d --remove-orphans
 
-            echo "🧹 Limpando imagens antigas..."
-            docker image prune -f
+            docker image ls --filter "reference=ia-dev-*" --format "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" \
+              | sort -k2 -r | awk 'NR>3 {print $1}' \
+              | xargs -r docker image rm 2>/dev/null || true
 
-            echo "✅ Deploy DEV concluído!"
+            echo "[dev] Deploy concluido."
             docker compose -f docker-compose.dev.yml ps

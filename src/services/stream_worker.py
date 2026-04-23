@@ -13,12 +13,85 @@ from src.services.db_queries import carregar_integracao, buscar_conversa_por_fon
 from src.services.bot_core import processar_ia_e_responder
 
 STREAM_NAME = "ia:webhook:stream"
+DEADLETTER_STREAM = "ia:webhook:deadletter"
 CONSUMER_GROUP = "ia_workers_group"
 CONSUMER_NAME = f"worker-{uuid.uuid4().hex[:8]}"
 
 MAX_CONCURRENT = 10  # Máximo de conversas simultâneas
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _active_tasks: set = set()
+
+# [ARQ-06] Trim do stream a cada N mensagens processadas (evita crescimento ilimitado).
+STREAM_MAX_LEN = 10000
+_trim_counter = 0
+
+# [ARQ-05] Idempotencia: keys Redis de mensagens ja processadas (TTL 24h)
+IDEMPOTENCY_TTL = 86400
+
+# [ARQ-05] Limite de retries antes de mandar pro deadletter
+MAX_DELIVERY_COUNT = 5
+
+# [INF-07] Heartbeat — worker grava timestamp periodicamente; healthcheck le
+HEARTBEAT_KEY = "worker:heartbeat"
+HEARTBEAT_TTL = 180  # segundos
+
+
+async def _write_heartbeat() -> None:
+    try:
+        await redis_client.setex(HEARTBEAT_KEY, HEARTBEAT_TTL, str(time.time()))
+    except Exception as e:
+        logger.warning(f"[heartbeat] falha ao gravar: {e}")
+
+
+async def _already_processed(msg_id: str, idempotency_key: str) -> bool:
+    """[ARQ-05] Retorna True se msg_id ja foi processado com sucesso."""
+    key = f"stream:processed:{idempotency_key}"
+    try:
+        return bool(await redis_client.exists(key))
+    except Exception as e:
+        logger.warning(f"[idempotency] redis falhou para {key}: {e}; seguindo sem idempotencia")
+        return False
+
+
+async def _mark_processed(idempotency_key: str) -> None:
+    key = f"stream:processed:{idempotency_key}"
+    try:
+        await redis_client.setex(key, IDEMPOTENCY_TTL, "1")
+    except Exception as e:
+        logger.warning(f"[idempotency] falha ao marcar {key}: {e}")
+
+
+def _build_idempotency_key(payload: dict) -> str:
+    """Gera uma chave determinística para dedup baseada no payload lógico do job."""
+    source = payload.get("source", "chatwoot")
+    empresa_id = payload.get("empresa_id", "0")
+    if source == "uazapi":
+        phone = payload.get("phone", "")
+        uaz_msg_id = payload.get("msg_id", "")
+        return f"{source}:{empresa_id}:{phone}:{uaz_msg_id}"
+    conv_id = payload.get("conversation_id", "")
+    msg_id_cw = payload.get("message_id", payload.get("id", ""))
+    return f"{source}:{empresa_id}:{conv_id}:{msg_id_cw}"
+
+
+async def _move_to_deadletter(msg_id: str, payload: dict, reason: str) -> None:
+    """[ARQ-05] Move mensagem envenenada para deadletter stream."""
+    try:
+        await redis_client.xadd(
+            DEADLETTER_STREAM,
+            {
+                "original_msg_id": msg_id,
+                "reason": reason,
+                "payload_json": json.dumps(payload),
+                "moved_at": str(time.time()),
+            },
+            maxlen=5000,
+        )
+        await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+        await redis_client.xdel(STREAM_NAME, msg_id)
+        logger.error(f"[ARQ-05] msg {msg_id} movida para deadletter: {reason}")
+    except Exception as e:
+        logger.error(f"[ARQ-05] falha ao mover para deadletter: {e}")
 
 async def init_stream():
     """Inicializa o Consumer Group no Redis se não existir."""
@@ -35,11 +108,25 @@ async def init_stream():
 async def _process_job(msg_id: str, payload: dict):
     """Processa um job individual do stream de forma isolada."""
     _start = time.time()
+
+    # [ARQ-05] Idempotencia: se ja processamos este msg_id, ack e sai.
+    idempotency_key = _build_idempotency_key(payload)
+    if await _already_processed(msg_id, idempotency_key):
+        logger.info(f"[ARQ-05] msg ja processada (idempotent): {idempotency_key}")
+        try:
+            await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+            await redis_client.xdel(STREAM_NAME, msg_id)
+        except Exception:
+            pass
+        if PROMETHEUS_OK and METRIC_WORKER_PROCESSED:
+            METRIC_WORKER_PROCESSED.labels(status="duplicate").inc()
+        return
+
     try:
         try:
             await asyncio.wait_for(_semaphore.acquire(), timeout=30)
         except asyncio.TimeoutError:
-            logger.warning(f"⚠️ Semaphore timeout (30s) para job {msg_id} — descartando")
+            logger.warning(f"semaphore_timeout msg_id={msg_id} job descartado apos 30s")
             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
             if PROMETHEUS_OK and METRIC_WORKER_PROCESSED:
                 METRIC_WORKER_PROCESSED.labels(status="semaphore_timeout").inc()
@@ -286,6 +373,8 @@ async def _process_job(msg_id: str, payload: dict):
                     except Exception as _lock_err:
                         logger.warning(f"⚠️ Erro ao liberar lock para conv {conversation_id}: {_lock_err}")
 
+            # [ARQ-05] Marca como processado ANTES do xack (evita janela de duplicacao)
+            await _mark_processed(idempotency_key)
             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
             await redis_client.xdel(STREAM_NAME, msg_id)
 
@@ -296,32 +385,94 @@ async def _process_job(msg_id: str, payload: dict):
             _semaphore.release()
 
     except Exception as e:
-        logger.error(f"❌ Erro ao processar mensagem do stream {msg_id}: {e}", exc_info=True)
+        logger.error(f"stream_worker error msg_id={msg_id}: {type(e).__name__}: {e}", exc_info=True)
         if PROMETHEUS_OK:
             METRIC_WORKER_PROCESSED.labels(status="error").inc()
-        # ACK mesmo com erro para não bloquear a fila
+        # [ARQ-05] Em caso de erro, checa contagem de entregas (XPENDING).
+        # Se ja passou do limite, move pra deadletter. Se nao, deixa sem ack para retry.
         try:
-            await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
-        except Exception:
-            pass
+            pending_info = await redis_client.xpending_range(
+                STREAM_NAME, CONSUMER_GROUP, min=msg_id, max=msg_id, count=1
+            )
+            delivery_count = pending_info[0]["times_delivered"] if pending_info else 1
+            if delivery_count >= MAX_DELIVERY_COUNT:
+                await _move_to_deadletter(msg_id, payload, f"max_retries_exceeded: {type(e).__name__}: {e}")
+            else:
+                logger.warning(f"[ARQ-05] msg {msg_id} sera re-entregue (tentativa {delivery_count}/{MAX_DELIVERY_COUNT})")
+                # NAO da ack — o XPENDING garantira reentrega via XAUTOCLAIM
+        except Exception as _pend_err:
+            logger.error(f"[ARQ-05] erro ao consultar XPENDING: {_pend_err}")
+            # Fallback conservador: ack para evitar loop infinito
+            try:
+                await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
+            except Exception:
+                pass
+
+
+async def _claim_stale_messages() -> None:
+    """[ARQ-06] Reclaim de mensagens 'pending' paradas em workers que cairam.
+    Usa XAUTOCLAIM com min-idle-time de 2 minutos."""
+    try:
+        # XAUTOCLAIM foi adicionado em Redis 6.2. Retorna (next_cursor, claimed_msgs, deleted_ids)
+        result = await redis_client.xautoclaim(
+            name=STREAM_NAME,
+            groupname=CONSUMER_GROUP,
+            consumername=CONSUMER_NAME,
+            min_idle_time=120_000,  # 2 minutos em ms
+            count=10,
+        )
+        # Redis-py retorna tupla de (cursor, [claimed], [deleted])
+        if isinstance(result, tuple) and len(result) >= 2:
+            claimed = result[1]
+            if claimed:
+                logger.info(f"[ARQ-06] XAUTOCLAIM: reclaimed {len(claimed)} mensagens stuck")
+                for item in claimed:
+                    # item = (msg_id, payload_dict) dependendo da versao do redis-py
+                    try:
+                        msg_id_c, payload_c = item[0], item[1]
+                        task = asyncio.create_task(_process_job(msg_id_c, payload_c))
+                        _active_tasks.add(task)
+                        task.add_done_callback(_active_tasks.discard)
+                    except Exception as _ce:
+                        logger.warning(f"[ARQ-06] falha ao processar claimed: {_ce}")
+    except Exception as e:
+        # Redis antigo pode nao ter XAUTOCLAIM — so logar
+        if "unknown command" not in str(e).lower():
+            logger.warning(f"[ARQ-06] xautoclaim falhou: {e}")
 
 
 async def run_stream_worker():
     """Loop principal do worker que consome do Redis Streams com processamento concorrente."""
+    global _trim_counter
     await init_stream()
-    logger.info(f"🚀 Stream Worker '{CONSUMER_NAME}' iniciado (max {MAX_CONCURRENT} conversas simultâneas)")
+    logger.info(f"stream_worker start consumer={CONSUMER_NAME} max_concurrent={MAX_CONCURRENT}")
+
+    _last_claim = 0.0
+    _last_heartbeat = 0.0
 
     while True:
         try:
+            _now = time.time()
+
+            # [INF-07] Heartbeat a cada 30s
+            if _now - _last_heartbeat > 30:
+                await _write_heartbeat()
+                _last_heartbeat = _now
+
             if PROMETHEUS_OK:
                 _size = await redis_client.xlen(STREAM_NAME)
                 METRIC_QUEUE_SIZE.set(_size)
+
+            # [ARQ-06] XAUTOCLAIM a cada 60s para mensagens paradas
+            if _now - _last_claim > 60:
+                await _claim_stale_messages()
+                _last_claim = _now
 
             # Limpa tasks finalizadas
             _done = {t for t in _active_tasks if t.done()}
             for t in _done:
                 try:
-                    t.result()  # Propaga exceções para logging
+                    t.result()
                 except Exception:
                     pass
             _active_tasks.difference_update(_done)
@@ -340,14 +491,22 @@ async def run_stream_worker():
                     _active_tasks.add(task)
                     task.add_done_callback(_active_tasks.discard)
 
+                    # [ARQ-06] Trim do stream a cada 100 msgs
+                    _trim_counter += 1
+                    if _trim_counter >= 100:
+                        _trim_counter = 0
+                        try:
+                            await redis_client.xtrim(STREAM_NAME, maxlen=STREAM_MAX_LEN, approximate=True)
+                        except Exception as _te:
+                            logger.warning(f"[ARQ-06] xtrim falhou: {_te}")
+
         except asyncio.CancelledError:
-            # Aguarda tasks em andamento finalizarem
             if _active_tasks:
-                logger.info(f"⏳ Aguardando {len(_active_tasks)} tasks finalizarem...")
+                logger.info(f"stream_worker shutdown aguardando {len(_active_tasks)} tasks...")
                 await asyncio.gather(*_active_tasks, return_exceptions=True)
             break
         except Exception as e:
-            logger.error(f"❌ Erro no loop do Stream Worker: {e}")
+            logger.error(f"stream_worker loop_error: {type(e).__name__}: {e}")
             await asyncio.sleep(2)
 
 if __name__ == "__main__":
