@@ -45,14 +45,18 @@ jobs:
               -e ALEMBIC_LOCK_TTL=300 \
               api sh scripts/migrate.sh
 
-            echo "[prod] buildando novas imagens (tag=${SHA})..."
+            echo "[prod] parando containers antigos..."
+            docker compose -f docker-compose.prod.yml stop api worker 2>/dev/null || true
+
+            echo "[prod] buildando novas imagens (tag=${SHA}) SEM cache..."
             GIT_SHA="${SHA}" BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)" \
               docker compose -f docker-compose.prod.yml build \
+                --no-cache \
                 --build-arg GIT_SHA="${SHA}" \
                 --build-arg BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)"
 
-            echo "[prod] recriando containers..."
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            echo "[prod] recriando containers (force-recreate)..."
+            docker compose -f docker-compose.prod.yml up -d --force-recreate --remove-orphans
 
             echo "[prod] aguardando healthcheck (ate 120s)..."
             HEALTHY=0

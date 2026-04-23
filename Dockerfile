@@ -28,6 +28,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Cache bust: hash do git SHA garante que este passo NAO usa cache quando o codigo muda
+ARG GIT_SHA=unknown
+RUN echo "cache_bust_${GIT_SHA}" > /tmp/cachebust
+
 # Copia codigo da aplicacao
 COPY . .
 
