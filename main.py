@@ -1730,13 +1730,16 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
-async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
     Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
     em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
+
+    [FIX] Chave Redis inclui empresa_id para isolamento multi-tenant
+    (evita colisão entre empresas que tem mesmo conversation_id).
     """
-    chave_buffet = f"buffet:{conversation_id}"
+    chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
 
     mensagens_acumuladas: List[str] = []
     deadline = time.time() + 3.0  # janela de 3s para juntar rajada WhatsApp
@@ -1768,15 +1771,16 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     return mensagens_acumuladas
 
 
-async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, empresa_id: int, mensagens_acumuladas: List[str]) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
     if not await redis_client.exists(f"esperando_unidade:{conversation_id}"):
         return False
 
     logger.info(f"⏳ Conv {conversation_id} aguardando escolha de unidade — IA pausada")
+    _chave = f"{empresa_id}:buffet:{conversation_id}"
     for m_json in mensagens_acumuladas:
-        await redis_client.rpush(f"buffet:{conversation_id}", m_json)
-    await redis_client.expire(f"buffet:{conversation_id}", 300)
+        await redis_client.rpush(_chave, m_json)
+    await redis_client.expire(_chave, 300)
     return True
 
 
@@ -4113,7 +4117,7 @@ async def processar_ia_e_responder(
     integracao_chatwoot: dict
 ):
     chave_lock = f"lock:{conversation_id}"
-    chave_buffet = f"buffet:{conversation_id}"
+    chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
@@ -4199,7 +4203,7 @@ async def processar_ia_e_responder(
                             instance_name=_integr_uaz.get("instance", "default")
                         )
                         # Pega a última mensagem do buffer para o fluxo
-                        _mensagens_pool = await coletar_mensagens_buffer(conversation_id)
+                        _mensagens_pool = await coletar_mensagens_buffer(conversation_id, empresa_id)
                         if _mensagens_pool:
                             _ultima_msg = _mensagens_pool[-1]
 
@@ -4247,7 +4251,7 @@ async def processar_ia_e_responder(
 
         # --- FIM Fluxo Visual ---
 
-        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
+        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id, empresa_id)
         if not mensagens_acumuladas:
             return
 
@@ -4269,7 +4273,7 @@ async def processar_ia_e_responder(
         _texto_unificado_p = " ".join([t for t in (textos + transcricoes) if t]).lower()
         _bypass_pause = any(x in _texto_unificado_p for x in ["preço", "preco", "valor", "grade", "horario", "horário", "endereço", "endereco", "unidades", "grade de aula"])
 
-        if not _bypass_pause and await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, mensagens_acumuladas):
+        if not _bypass_pause and await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
             return
 
         # ── Anti-duplicata: bloqueia reprocessamento do mesmo conteúdo ──────────
@@ -5594,7 +5598,7 @@ async def chatwoot_webhook(
             f"pause_ia:{empresa_id}:{id_conv}", f"estado:{id_conv}",
             f"unidade_escolhida:{id_conv}", f"esperando_unidade:{id_conv}",
             f"prompt_unidade_enviado:{id_conv}", f"nome_cliente:{id_conv}", f"aguardando_nome:{id_conv}",
-            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{id_conv}", f"buffet:{id_conv}",
+            f"atend_manual:{empresa_id}:{id_conv}", f"lock:{id_conv}", f"{empresa_id}:buffet:{id_conv}",
             f"bot_msg_count:{empresa_id}:{id_conv}",  # Anti-bloqueio: zera contador de msgs do bot
         )
         logger.info(f"🆕 Nova conversa {id_conv} — Redis limpo")
@@ -6143,10 +6147,10 @@ async def chatwoot_webhook(
         arquivos.append({"url": a.get("data_url"), "type": tipo})
 
     await redis_client.rpush(
-        f"buffet:{id_conv}",
+        f"{empresa_id}:buffet:{id_conv}",
         json.dumps({"text": conteudo_texto, "files": arquivos})
     )
-    await redis_client.expire(f"buffet:{id_conv}", 60)
+    await redis_client.expire(f"{empresa_id}:buffet:{id_conv}", 60)
 
     lock_val = str(uuid.uuid4())
     if await redis_client.set(f"lock:{id_conv}", lock_val, nx=True, ex=180):
