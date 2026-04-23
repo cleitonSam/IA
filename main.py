@@ -1893,10 +1893,13 @@ async def carregar_integracao(empresa_id: int, tipo: str = 'chatwoot') -> Option
         return cache
 
     try:
+        # Ordena por id DESC para sempre pegar a integracao mais recente
+        # caso existam multiplas linhas ativas (evita usar config antiga apos update).
         query = """
             SELECT config
             FROM integracoes
             WHERE empresa_id = $1 AND tipo = $2 AND ativo = true
+            ORDER BY id DESC
             LIMIT 1
         """
         row = await db_pool.fetchrow(query, empresa_id, tipo)

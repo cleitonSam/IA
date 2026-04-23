@@ -123,11 +123,21 @@ async def invalidate_fluxo_triagem(empresa_id: int) -> int:
 
 
 async def invalidate_integracao(empresa_id: int, tipo: Optional[str] = None) -> int:
-    """Limpa cache de integração. Se tipo não for dado, limpa todas (chatwoot + uazapi + evo)."""
+    """Limpa cache de integração. Se tipo não for dado, limpa todas (chatwoot + uazapi + evo).
+
+    IMPORTANTE: o codebase usa DOIS formatos de key:
+      - cfg:integracao:{empresa_id}:{tipo}             (global, main.py carregar_integracao)
+      - cfg:integracao:{empresa_id}:{tipo}:{unidade}   (por unidade, quando aplicavel)
+    Precisamos limpar AMBOS os formatos, senao o token antigo fica ate o TTL expirar.
+    """
+    n = 0
     if tipo:
-        n = await _delete_by_pattern(f"cfg:integracao:{empresa_id}:{tipo}:*")
+        # Deleta a key global exata (sem sufixo) e tambem as por-unidade (com sufixo)
+        n += await _delete_keys([f"cfg:integracao:{empresa_id}:{tipo}"])
+        n += await _delete_by_pattern(f"cfg:integracao:{empresa_id}:{tipo}:*")
     else:
-        n = await _delete_by_pattern(f"cfg:integracao:{empresa_id}:*")
+        # Sem tipo: limpa tudo de integracao da empresa (pattern pega ambos formatos)
+        n += await _delete_by_pattern(f"cfg:integracao:{empresa_id}:*")
     logger.info(f"[CACHE-01] integracao empresa={empresa_id} tipo={tipo or '*'} invalidada ({n} keys)")
     return n
 
