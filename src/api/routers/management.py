@@ -76,6 +76,7 @@ class PersonalityUpdate(BaseModel):
     tour_perguntar_primeira_visita: Optional[bool] = None
     tour_mensagem_custom: Optional[str] = None
     comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
+    mensagem_fora_horario: Optional[str] = None  # [HORA-01] mensagem custom fora do horario
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -137,6 +138,7 @@ class PersonalityCreate(BaseModel):
     tour_perguntar_primeira_visita: Optional[bool] = True
     tour_mensagem_custom: Optional[str] = None
     comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
+    mensagem_fora_horario: Optional[str] = None  # [HORA-01] mensagem custom fora do horario
 
     model_config = {"extra": "allow"}
 
