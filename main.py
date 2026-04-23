@@ -1190,10 +1190,13 @@ async def startup_event():
             except Exception as migration_err:
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
 
-            # [ARQ-02] Pool dimensionado para multi-tenant (50+ empresas).
-            # Valores podem ser ajustados via env vars DB_POOL_MIN / DB_POOL_MAX.
-            _pool_min = int(os.getenv("DB_POOL_MIN", "15"))
-            _pool_max = int(os.getenv("DB_POOL_MAX", "60"))
+            # [ARQ-02] Pool dimensionado para multi-tenant.
+            # Conservador por default (min=3, max=15) para caber em Postgres
+            # compartilhado com outras apps (limite padrao 100 conexoes).
+            # Quando escalar: aumentar MAX_CONNECTIONS no postgresql.conf primeiro.
+            # Total estimado: api(15) + worker(15) = 30 conexoes em producao.
+            _pool_min = int(os.getenv("DB_POOL_MIN", "3"))
+            _pool_max = int(os.getenv("DB_POOL_MAX", "15"))
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
                 min_size=_pool_min,
