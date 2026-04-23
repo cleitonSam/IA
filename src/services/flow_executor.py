@@ -956,6 +956,13 @@ async def _execute_from(
         next_id = _get_next_node_id(fluxo, node_id, source_handle=handle)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        else:
+            # [HORA-01] Handle sem conexao — loga WARNING pra admin saber, mas NAO envia
+            # mensagem automatica (nao interfere no atendimento humano fora do horario).
+            logger.warning(
+                f"[FlowExecutor] BusinessHours handle='{handle}' SEM conexao proxima empresa={empresa_id}. "
+                f"Se quer comportamento especifico, conecte o handle '{handle}' a um no no editor."
+            )
         return
 
     # ── code (Python Snippet) ──

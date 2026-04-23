@@ -112,6 +112,7 @@ _CAMPOS_CRITICOS_PERSONALIDADE = [
     ("tom_voz", "Tom de voz (ex: formal, casual, entusiasmado)"),
     ("instrucoes_base", "Instrucoes base de como responder"),
     ("saudacao_personalizada", "Saudacao de abertura (ex: Oi! Eu sou a Laura...)"),
+    ("mensagem_fora_horario", "Mensagem quando fora do horario (ex: Volto a falar com voce as 8h)"),
     ("objetivos_venda", "Objetivos comerciais (ex: qualificar lead, agendar avaliacao)"),
     ("publico_alvo", "Publico-alvo (ex: mulheres 25-45, iniciantes, praticantes)"),
     ("diferenciais", "Diferenciais da academia (ex: sala climatizada, aulas coletivas)"),
@@ -210,4 +211,167 @@ async def api_config_status(tenant: dict = Depends(require_tenant)):
             "unidades_ativas": int(n_unidades),
         },
         "alertas": alertas,
+    }
+
+
+# ============================================================
+# [HORA-01] Diagnostico de horario — mostra EXATAMENTE por que a IA esta
+# ou nao dentro do horario de atendimento neste momento.
+# ============================================================
+
+@router.get("/horario-status")
+async def api_horario_status(tenant: dict = Depends(require_tenant)):
+    """
+    Diagnostico completo e cruzado de horario:
+
+    1. Estado da IA (bot_core / horario_atendimento_ia)
+    2. Estado do FLUXO de triagem + no BusinessHours dentro dele
+    3. Simulacao do que vai acontecer AGORA se uma mensagem chegar
+    4. Deteccao de conflitos: gap (horas sem ninguem) ou sobreposicao (dois atendendo)
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import json as _json
+    import src.core.database as _database
+    from src.utils.time_helpers import ia_esta_no_horario
+
+    empresa_id = tenant["empresa_id"]
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="tenant sem empresa_id")
+    if not _database.db_pool:
+        raise HTTPException(status_code=503, detail="Banco indisponivel")
+
+    agora_brt = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    dia_semana_num = agora_brt.weekday()
+    hora_atual_str = agora_brt.strftime("%H:%M")
+
+    # ── 1. Config da IA (personalidade_ia) ──────────────────────────────
+    pers_row = await _database.db_pool.fetchrow(
+        """
+        SELECT id, ativo, horario_atendimento_ia, horario_comercial, fluxo_triagem,
+               fn_ia_esta_no_horario_v2(horario_atendimento_ia) AS db_esta_no_horario
+        FROM personalidade_ia
+        WHERE empresa_id = $1 AND ativo = true
+        ORDER BY updated_at DESC LIMIT 1
+        """,
+        empresa_id,
+    )
+
+    if not pers_row:
+        return {
+            "empresa_id": empresa_id,
+            "agora_brt": agora_brt.strftime("%Y-%m-%d %H:%M:%S (%A)"),
+            "erro": "Nenhuma personalidade ativa — crie uma e ative no dashboard",
+        }
+
+    horario_ia = pers_row["horario_atendimento_ia"]
+    if isinstance(horario_ia, str):
+        try: horario_ia = _json.loads(horario_ia)
+        except Exception: horario_ia = None
+
+    try:
+        py_result = ia_esta_no_horario(horario_ia)
+    except Exception as e:
+        py_result = f"ERRO: {e}"
+
+    db_result = pers_row["db_esta_no_horario"]
+    ia_dentro_horario = bool(db_result) if db_result is not None else bool(py_result)
+
+    # ── 2. Config do fluxo triagem (busca no fluxo_triagem da personalidade) ──
+    fluxo_raw = pers_row["fluxo_triagem"]
+    if isinstance(fluxo_raw, str):
+        try: fluxo_raw = _json.loads(fluxo_raw)
+        except Exception: fluxo_raw = None
+
+    fluxo_ativo = bool(fluxo_raw and fluxo_raw.get("ativo"))
+
+    # Acha o primeiro no BusinessHours do fluxo (se houver)
+    business_hours_node = None
+    if fluxo_raw and isinstance(fluxo_raw.get("nodes"), list):
+        for node in fluxo_raw["nodes"]:
+            if node.get("type") == "businessHours":
+                business_hours_node = node.get("data") or {}
+                break
+
+    fluxo_is_open_agora = None  # None = nao tem nó
+    fluxo_modo = None
+    fluxo_horarios_visiveis = None
+    if business_hours_node:
+        fluxo_modo = business_hours_node.get("modo", "global")
+        if fluxo_modo == "custom" and business_hours_node.get("horarios"):
+            horarios = business_hours_node["horarios"]
+            horario_dia = horarios.get(str(dia_semana_num), {})
+            fluxo_horarios_visiveis = horarios
+            if horario_dia.get("ativo"):
+                inicio = horario_dia.get("inicio", "00:00")
+                fim = horario_dia.get("fim", "23:59")
+                fluxo_is_open_agora = inicio <= hora_atual_str <= fim
+            else:
+                fluxo_is_open_agora = False
+        else:
+            # modo=global — usa horario_comercial da personalidade
+            horario_com = pers_row["horario_comercial"]
+            if isinstance(horario_com, str):
+                try: horario_com = _json.loads(horario_com)
+                except Exception: horario_com = None
+            fluxo_horarios_visiveis = horario_com
+            try:
+                fluxo_is_open_agora = ia_esta_no_horario(horario_com) if horario_com else None
+            except Exception:
+                fluxo_is_open_agora = None
+
+    # ── 3. Simulacao: o que acontece se uma mensagem chegar AGORA? ──
+    cenario = []
+    if fluxo_ativo and business_hours_node:
+        if fluxo_is_open_agora is True:
+            cenario.append("Fluxo triagem ATIVO → nó BusinessHours → 'aberto' → roda o fluxo estruturado (menu)")
+        elif fluxo_is_open_agora is False:
+            cenario.append("Fluxo triagem ATIVO → nó BusinessHours → 'fechado' → o que tiver conectado no handle 'fechado' (geralmente IA livre)")
+        else:
+            cenario.append("Fluxo triagem ATIVO → nó BusinessHours → sem config de horário do dia → rota 'fechado'")
+    elif fluxo_ativo:
+        cenario.append("Fluxo triagem ATIVO mas SEM nó BusinessHours → segue o fluxo inteiro sem checar horário")
+    else:
+        cenario.append("Fluxo triagem NÃO ATIVO → mensagem cai direto no bot_core / IA livre")
+
+    if not fluxo_ativo or (fluxo_ativo and fluxo_is_open_agora is False and not business_hours_node):
+        # bot_core vai ser chamado
+        if ia_dentro_horario:
+            cenario.append("bot_core checa horário da IA → DENTRO → IA responde normalmente")
+        else:
+            cenario.append("bot_core checa horário da IA → FORA → IA fica CALADA (silêncio total)")
+
+    # ── 4. Deteccao de gap ou sobreposicao ──
+    conflitos = []
+    if horario_ia and fluxo_horarios_visiveis:
+        # Check simples pro momento atual: se AMBOS dizem "fora", tem gap
+        if ia_dentro_horario is False and fluxo_is_open_agora is False:
+            conflitos.append(f"🚨 GAP: neste momento ({hora_atual_str}) nem IA nem fluxo atendem. Cliente fica sem resposta.")
+        # Se AMBOS dizem "dentro", tem sobreposicao (nao e erro fatal, mas inesperado)
+        if ia_dentro_horario is True and fluxo_is_open_agora is True:
+            conflitos.append(f"⚠️ SOBREPOSIÇÃO: agora ({hora_atual_str}) fluxo E IA estão ativos. O fluxo tem prioridade, mas confira se é intencional.")
+
+    return {
+        "empresa_id": empresa_id,
+        "agora_brt": agora_brt.strftime("%Y-%m-%d %H:%M:%S %a"),
+        "ia_personalidade": {
+            "horario_configurado": horario_ia,
+            "dentro_horario_agora": ia_dentro_horario,
+            "fonte_decisao": "banco (fn_ia_esta_no_horario_v2)" if db_result is not None else "python fallback",
+            "db_check": db_result,
+            "python_check": py_result,
+        },
+        "fluxo_triagem": {
+            "ativo": fluxo_ativo,
+            "tem_no_business_hours": bool(business_hours_node),
+            "modo": fluxo_modo,
+            "dentro_horario_agora": fluxo_is_open_agora,
+            "horarios_config": fluxo_horarios_visiveis,
+        },
+        "simulacao_mensagem_agora": cenario,
+        "conflitos": conflitos,
+        "solucao_se_gap": (
+            "Garanta que os 2 horários (Fluxo BusinessHours + IA horario_atendimento_ia) "
+            "cubram 24h sem deixar buraco. Ex: Fluxo 8h-17h / IA 17h-8h."
+        ) if conflitos else None,
     }

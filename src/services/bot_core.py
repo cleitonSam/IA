@@ -1050,8 +1050,37 @@ async def processar_ia_e_responder(
 
         logger.info(f"🕒 [Bot Core] Resultado Final Horário: {_no_horario}")
         if not _no_horario:
-            logger.info(f"⏰ IA fora do horário de atendimento para empresa {empresa_id}; conv {conversation_id} ignorada (silencioso)")
-            return
+            # [HORA-02] Fora do horario da IA — MAS checa se o fluxo esta ativo com BusinessHours.
+            # Se tem, significa que o admin ja configurou horario no fluxo; a IA deve
+            # AUTOMATICAMENTE cobrir o complemento (fora do horario do fluxo = dentro do horario da IA).
+            # Isso evita o gap de "ninguem atende" quando admin esquece de sincronizar os 2 campos.
+            try:
+                _fluxo_cfg = await carregar_fluxo_triagem(empresa_id, unidade_id=None)
+            except Exception:
+                _fluxo_cfg = None
+
+            _tem_business_hours = False
+            if _fluxo_cfg and _fluxo_cfg.get("ativo"):
+                _nodes = _fluxo_cfg.get("nodes") or []
+                if isinstance(_nodes, list):
+                    _tem_business_hours = any(
+                        (n.get("type") == "businessHours") for n in _nodes if isinstance(n, dict)
+                    )
+
+            if _tem_business_hours:
+                logger.info(
+                    f"🕒 [HORA-02] IA fora do horario_atendimento_ia MAS fluxo ativo com BusinessHours "
+                    f"(empresa={empresa_id}). IA vai cobrir como complemento do fluxo — continuando."
+                )
+                # NAO faz return — IA continua processando normalmente.
+                # O fluxo ja rotou pela logica dele; se chegou aqui e que o fluxo decidiu 'fechado',
+                # entao esta na hora da IA responder.
+            else:
+                logger.info(
+                    f"⏰ IA fora do horario empresa={empresa_id} conv={conversation_id} — silenciosa "
+                    f"(sem fluxo ativo com BusinessHours para complementar)"
+                )
+                return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
             return

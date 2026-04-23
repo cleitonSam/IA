@@ -587,6 +587,26 @@ async def update_personality_by_id(
     except Exception:
         pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
 
+    # [HORA-01] Salva mensagem_fora_horario separadamente (migration pode estar pendente)
+    if data.mensagem_fora_horario is not None:
+        try:
+            await _database.db_pool.execute(
+                "UPDATE personalidade_ia SET mensagem_fora_horario=$1 WHERE id=$2 AND empresa_id=$3",
+                data.mensagem_fora_horario.strip() or None, pid, empresa_id,
+            )
+        except Exception:
+            try:
+                # Cria coluna se nao existir (migration pendente)
+                await _database.db_pool.execute(
+                    "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS mensagem_fora_horario TEXT"
+                )
+                await _database.db_pool.execute(
+                    "UPDATE personalidade_ia SET mensagem_fora_horario=$1 WHERE id=$2 AND empresa_id=$3",
+                    data.mensagem_fora_horario.strip() or None, pid, empresa_id,
+                )
+            except Exception as _e:
+                logger.warning(f"[HORA-01] nao conseguiu salvar mensagem_fora_horario: {_e}")
+
     # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
     if data.ativo:
         await _database.db_pool.execute(
