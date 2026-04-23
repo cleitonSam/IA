@@ -32,7 +32,6 @@ services:
       timeout: 5s
       retries: 4
       start_period: 30s
-    # [INF-06] Limites de recurso — evita que um runaway derrube o host
     deploy:
       resources:
         limits:
@@ -61,7 +60,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    # [INF-07] Healthcheck do worker via heartbeat em Redis (gravado pelo proprio worker)
     healthcheck:
       test: ["CMD", "python", "-c", "import redis, os, time, sys; r=redis.from_url(os.environ['REDIS_URL']); hb=r.get('worker:heartbeat'); sys.exit(0 if hb and time.time()-float(hb)<120 else 1)"]
       interval: 30s
@@ -110,11 +108,11 @@ services:
     container_name: ia-prod-nginx
     ports:
       - "80:80"
-      - "443:443"  # [INF-01] HTTPS
+      - "443:443"
     volumes:
       - ./nginx/prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro       # [INF-01] TLS certs (fullchain.pem + privkey.pem)
-      - ./nginx/www/certbot:/var/www/certbot:ro # Let's Encrypt challenge (opcional)
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/www/certbot:/var/www/certbot:ro
     depends_on:
       api:
         condition: service_healthy

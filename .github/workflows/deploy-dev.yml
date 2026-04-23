@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: deploy-dev
-  cancel-in-progress: true  # dev pode cancelar builds em andamento
+  cancel-in-progress: true
 
 jobs:
   deploy:

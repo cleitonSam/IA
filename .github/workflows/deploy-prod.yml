@@ -32,7 +32,6 @@ jobs:
             echo "[prod] deploy commit=${SHA}"
             cd ${{ secrets.PROD_PATH }}
 
-            # [INF-03] Captura a imagem atual para possivel rollback
             PREV_IMG=$(docker inspect --format='{{.Image}}' ia-prod-api 2>/dev/null || echo "")
             echo "[prod] imagem anterior: ${PREV_IMG:-nenhuma}"
 
@@ -41,7 +40,6 @@ jobs:
             git checkout main
             git pull origin main
 
-            # [ARQ-01] Roda migrations como job isolado com lock distribuido ANTES de subir a app
             echo "[prod] rodando migrations em container descartavel..."
             docker compose -f docker-compose.prod.yml run --rm \
               -e ALEMBIC_LOCK_TTL=300 \
@@ -78,8 +76,6 @@ jobs:
               exit 1
             fi
 
-            # [INF-03] NAO faz mais 'docker image prune -f' imediato.
-            # Mantem as 3 ultimas imagens (tag=sha) para rollback rapido.
             echo "[prod] limpando imagens antigas (mantendo 3 ultimas)..."
             docker image ls --filter "reference=ia-prod-*" --format "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" \
               | sort -k2 -r | awk 'NR>3 {print $1}' \
