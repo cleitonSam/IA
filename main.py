@@ -4114,10 +4114,11 @@ async def processar_ia_e_responder(
 
         # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
         # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
-        # O fluxo SÓ roda dentro do horário de atendimento configurado.
-        # Fora do horário, o fluxo é ignorado e a IA responde normalmente.
+        # O fluxo tem seu PROPRIO horario (no businessHours), independente da IA.
+        # O flow_executor roteia aberto/fechado internamente no no businessHours,
+        # entao aqui so checamos se o fluxo esta ativo.
         _fluxo_config = await carregar_fluxo_triagem(empresa_id)
-        if _fluxo_config and _fluxo_config.get("ativo") and _db_esta_no_horario:
+        if _fluxo_config and _fluxo_config.get("ativo"):
             # Recupera o telefone do Redis (armazenado pelo webhook)
             _fone_redis = await redis_client.get(f"fone_cliente:{empresa_id}:{conversation_id}")
             if _fone_redis:
