@@ -6293,10 +6293,12 @@ async def status_endpoint():
 
 @app.get("/")
 @app.head("/")
+@app.get("/health")
+@app.head("/health")
 async def health():
     """
-    Health check para plataformas (Render, Railway, Fly.io, etc.).
-    HEAD / e GET / retornam 200 — evita falso 'unhealthy' no dashboard.
+    Health check para plataformas (Render, Railway, Fly.io, Easypanel etc.).
+    GET/HEAD em / e /health retornam 200 — evita falso 'unhealthy' no dashboard.
     """
     return {
         "status": "ok",
