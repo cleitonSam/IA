@@ -10,6 +10,7 @@ import {
   BarChart3, Cpu, DollarSign
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import BotCompletudeCard from "@/components/BotCompletudeCard";
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -282,6 +283,9 @@ export default function DashboardPage() {
           </div>
 
           {/* KPI Cards — filtra pela unidade selecionada */}
+          {/* [CACHE-02] Completude do bot + limpar memória */}
+          <BotCompletudeCard />
+
           <div className="flex items-center gap-2 mb-3">
             <span className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">Métricas dos últimos 30 dias</span>
             {selectedUnit && <span className="text-[10px] font-bold text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-full">{selectedUnit.nome}</span>}
