@@ -1,18 +1,22 @@
 """
-Multi-Model Router — Roteia perguntas para o modelo mais eficiente.
+[AI-UPGRADE] Multi-Model Router — roteia perguntas para o melhor modelo custo/qualidade.
 
-Economia estimada: ~40% nos custos de tokens ao rotear perguntas simples
-para modelos lite.
+Stack Gemini 2.5 (Google) — abril 2026:
 
-Regras:
-- Perguntas simples (horário, endereço, saudação) → gemini-2.0-flash-lite (rápido, barato)
-- Vendas complexas, objeções, comparação → gemini-2.5-flash (potente)
-- Conversação geral → modelo configurado na personalidade
-- Com imagens → sempre gemini-2.0-flash (multimodal)
+  LITE    — gemini-2.5-flash-lite   (saudacao, horario, endereco — rapido e barato)
+  PADRAO  — gemini-2.5-flash        (conversacao geral — sweet spot de custo/qualidade)
+  POTENTE — gemini-2.5-pro          (objecoes complexas, cancelamento, negociacao)
+  VISION  — gemini-2.5-pro          (multimodal nativo, state-of-art em 2026)
+  CLASSIFIER — gemini-2.5-flash-lite (classificacao interna: sentiment, intent)
+
+Override por empresa: se a personalidade tem modelo configurado, ele prevalece no PADRAO.
+Override por env: MODELO_PADRAO_OVERRIDE=google/gemini-2.5-pro (por exemplo)
 """
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import os
+
 from src.core.config import logger
 
 
@@ -40,10 +44,21 @@ PALAVRAS_COMPLEXIDADE_ALTA = {
     "regulamento", "contrato", "multa", "fidelidade",
 }
 
-# Modelos disponíveis
-MODELO_LITE = "google/gemini-2.0-flash-lite"
-MODELO_PADRAO = "google/gemini-2.0-flash"
-MODELO_POTENTE = "google/gemini-2.5-flash"
+# ============================================================
+# Modelos — Gemini 2.5 series (2026)
+# ============================================================
+
+MODELO_LITE    = os.getenv("MODELO_LITE",    "google/gemini-2.5-flash-lite")
+MODELO_PADRAO  = os.getenv("MODELO_PADRAO",  "google/gemini-2.5-flash")
+MODELO_POTENTE = os.getenv("MODELO_POTENTE", "google/gemini-2.5-pro")
+MODELO_VISION  = os.getenv("MODELO_VISION",  "google/gemini-2.5-pro")
+
+# Modelo barato para tarefas internas de classificacao (sentimento, intent triage)
+# — NAO sao respostas ao cliente, entao usa modelo custo-efetivo.
+MODELO_CLASSIFIER = os.getenv("MODELO_CLASSIFIER", "google/gemini-2.5-flash-lite")
+
+# Override por env para urgencia (ex: "forca tudo pra gemini-2.5-pro por 1 dia")
+MODELO_PADRAO_OVERRIDE = os.getenv("MODELO_PADRAO_OVERRIDE", "").strip() or None
 
 
 def _is_horario_economico() -> bool:
@@ -85,9 +100,9 @@ def escolher_modelo(
         logger.debug("🌙 ModelRouter: horário econômico → upgrade para POTENTE")
         return MODELO_POTENTE
 
-    # Regra 1: Imagens sempre precisam de multimodal
+    # Regra 1: Imagens sempre usam o modelo multimodal (Gemini 2.5 Pro em 2026)
     if tem_imagens:
-        return MODELO_PADRAO
+        return MODELO_VISION
 
     # Regra 2: Intenção conhecida → roteamento direto
     if intencao:
@@ -115,9 +130,13 @@ def escolher_modelo(
     if total_mensagens > 15:
         return MODELO_POTENTE
 
-    # Regra 6: Modelo configurado na personalidade (fallback)
+    # Regra 6: Override global (ex: forca todo mundo pra Opus por 1 dia)
+    if MODELO_PADRAO_OVERRIDE:
+        return MODELO_PADRAO_OVERRIDE
+
+    # Regra 7: Modelo configurado na personalidade (fallback)
     if modelo_personalidade:
         return modelo_personalidade
 
-    # Default: modelo padrão
+    # Default: modelo padrao (Gemini 2.5 Flash em 2026)
     return MODELO_PADRAO

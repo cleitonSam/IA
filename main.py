@@ -82,6 +82,14 @@ load_dotenv()
 CHATWOOT_URL = os.getenv("CHATWOOT_URL")
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN")
 
+# [INF-10] Inicializa Sentry antes do FastAPI — captura erros de startup tambem.
+try:
+    from src.core.sentry_init import init_sentry
+    init_sentry()
+except Exception as _sentry_err:
+    # Nao bloqueia startup se Sentry falhar
+    pass
+
 app = FastAPI()
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
@@ -121,6 +129,26 @@ app.include_router(dashboard_router)
 app.include_router(management_router)
 app.include_router(uaz_webhook_router)
 app.include_router(ws_router)
+
+# [MKT] Rotas novas — features de produto (abril 2026)
+try:
+    from src.api.routers.kb import router as kb_router
+    from src.api.routers.instagram_webhook import router as instagram_router
+    from src.api.routers.voice_webhook import router as voice_webhook_router
+    from src.api.routers.leads_dashboard import (
+        router as leads_router,
+        alertas_router,
+        roi_router,
+    )
+    app.include_router(kb_router)                # [MKT-04] KB crawl/PDF
+    app.include_router(instagram_router)         # [MKT-05] Instagram DM
+    app.include_router(voice_webhook_router)     # [MKT-06] Voice callback
+    app.include_router(leads_router)             # [MKT-01] Leads por tier
+    app.include_router(alertas_router)           # [MKT-02] Alertas de escalacao
+    app.include_router(roi_router)               # [MKT-07] Dashboard ROI
+    logger.info("[MKT] Routers novos registrados: kb, instagram, voice, leads, alertas, roi")
+except Exception as _mkt_err:
+    logger.error(f"[MKT] Falha ao registrar routers novos: {_mkt_err}")
 
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook

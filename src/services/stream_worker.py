@@ -12,6 +12,18 @@ from src.core.redis_client import redis_client
 from src.services.db_queries import carregar_integracao, buscar_conversa_por_fone, bd_iniciar_conversa
 from src.services.bot_core import processar_ia_e_responder
 
+# [MKT] Hooks de features novas
+try:
+    from src.services.sentiment_realtime import analisar_mensagem as _mkt_analisar_msg
+    from src.services.lead_scoring import score_conversa as _mkt_score_conversa
+    from src.services.client_memory import extract_and_store_facts as _mkt_extract_facts
+    from src.services.followup_engine import check_and_cancel_on_customer_activity as _mkt_cancel_followup
+    from src.services.roi_attribution import record_lead_qualificado as _mkt_record_lead
+    _MKT_HOOKS_OK = True
+except Exception as _mkt_hook_err:
+    _MKT_HOOKS_OK = False
+    logger.warning(f"[MKT] Hooks indisponiveis: {_mkt_hook_err}")
+
 STREAM_NAME = "ia:webhook:stream"
 DEADLETTER_STREAM = "ia:webhook:deadletter"
 CONSUMER_GROUP = "ia_workers_group"
@@ -344,6 +356,27 @@ async def _process_job(msg_id: str, payload: dict):
                 await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
                 return
 
+            # ============================================================
+            # [MKT] Hooks pre-IA — rodam em paralelo sem bloquear a resposta:
+            #   1. Cancela follow-ups 'sem_resposta' (cliente voltou a conversar)
+            #   2. Analisa sentimento da mensagem em tempo real (dispara alerta se tipo de risco)
+            #   3. Extrai fatos duraveis para memoria do cliente (async fire-and-forget)
+            # ============================================================
+            if _MKT_HOOKS_OK and conversation_id and empresa_id:
+                _texto_cliente = payload.get("content", "") or ""
+                # 1. Cancela follow-ups 'sem_resposta' pendentes
+                asyncio.create_task(_mkt_cancel_followup(conversation_id, empresa_id))
+                # 2. Analisa sentimento (pode bloquear alerta de escalacao)
+                asyncio.create_task(_mkt_analisar_msg(
+                    conversation_id, empresa_id, _texto_cliente,
+                ))
+                # 3. Extrai fatos para memoria (fire-and-forget — roda em background)
+                if contato_fone and len(_texto_cliente.strip()) > 10:
+                    asyncio.create_task(_mkt_extract_facts(
+                        empresa_id, contato_fone, [_texto_cliente],
+                        min_messages=1,  # aceita 1 msg — o LLM decide se tem fato relevante
+                    ))
+
             logger.info(f"⚙️ Integração {source} carregada com sucesso. Iniciando processamento IA.")
             lock_val = str(uuid.uuid4())
             lock_key = f"lock:{empresa_id}:{conversation_id}"
@@ -377,6 +410,31 @@ async def _process_job(msg_id: str, payload: dict):
             await _mark_processed(idempotency_key)
             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, msg_id)
             await redis_client.xdel(STREAM_NAME, msg_id)
+
+            # ============================================================
+            # [MKT] Hooks pos-IA — rescore do lead e atribuicao de ROI
+            # ============================================================
+            if _MKT_HOOKS_OK and conversation_id and empresa_id:
+                async def _post_ia_mkt_hooks():
+                    try:
+                        result = await _mkt_score_conversa(
+                            conversation_id=conversation_id,
+                            empresa_id=empresa_id,
+                            use_cache=False,
+                            persist=True,
+                        )
+                        # Se chegou a tier A, registra como lead qualificado pelo bot (MKT-07)
+                        if result and result.tier == "A" and contato_fone:
+                            await _mkt_record_lead(
+                                empresa_id=empresa_id,
+                                conversation_id=conversation_id,
+                                contato_fone=contato_fone,
+                                score=result.score,
+                                origem="bot",
+                            )
+                    except Exception as _ph_err:
+                        logger.warning(f"[MKT] post-ia hooks falharam: {_ph_err}")
+                asyncio.create_task(_post_ia_mkt_hooks())
 
             if PROMETHEUS_OK:
                 METRIC_WORKER_PROCESSED.labels(status="success").inc()

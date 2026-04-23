@@ -31,8 +31,6 @@ _MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "google/gemini-2.5-flash-lite":    {"input": 0.075, "output": 0.30},
     "google/gemini-2.0-flash-001":     {"input": 0.10,  "output": 0.40},
     "google/gemini-2.0-flash-lite":    {"input": 0.075, "output": 0.30},
-    "anthropic/claude-3-5-sonnet":     {"input": 3.00,  "output": 15.00},
-    "anthropic/claude-3-5-haiku":      {"input": 0.80,  "output": 4.00},
     "_default":                        {"input": 1.00,  "output": 4.00},
 }
 
