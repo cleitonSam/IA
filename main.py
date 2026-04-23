@@ -1690,7 +1690,7 @@ def detectar_intencao(texto: str) -> Optional[str]:
     return melhor_intencao
 
 
-async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
+async def coletar_mensagens_buffer(empresa_id: int, conversation_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
     Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
@@ -1728,7 +1728,7 @@ async def coletar_mensagens_buffer(conversation_id: int) -> List[str]:
     return mensagens_acumuladas
 
 
-async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str]) -> bool:
+async def aguardar_escolha_unidade_ou_reencaminhar(conversation_id: int, mensagens_acumuladas: List[str], empresa_id: int) -> bool:
     """Reencaminha buffer quando conversa ainda está aguardando escolha de unidade."""
     if not await redis_client.exists(f"esperando_unidade:{empresa_id}:{conversation_id}"):
         return False
@@ -4159,7 +4159,7 @@ async def processar_ia_e_responder(
                             instance_name=_integr_uaz.get("instance", "default")
                         )
                         # Pega a última mensagem do buffer para o fluxo
-                        _mensagens_pool = await coletar_mensagens_buffer(conversation_id)
+                        _mensagens_pool = await coletar_mensagens_buffer(empresa_id, conversation_id)
                         if _mensagens_pool:
                             _ultima_msg = _mensagens_pool[-1]
 
@@ -4207,7 +4207,7 @@ async def processar_ia_e_responder(
 
         # --- FIM Fluxo Visual ---
 
-        mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id)
+        mensagens_acumuladas = await coletar_mensagens_buffer(empresa_id, conversation_id)
         if not mensagens_acumuladas:
             return
 
