@@ -201,10 +201,11 @@ async def carregar_integracao(
 
     try:
         if unidade_id:
-            # Tenta unidade específica primeiro
+            # Tenta unidade específica primeiro (ordenado por id DESC = mais recente)
             row = await _database.db_pool.fetchrow("""
                 SELECT config FROM integracoes
                 WHERE empresa_id = $1 AND tipo = $2 AND unidade_id = $3 AND ativo = true
+                ORDER BY id DESC
                 LIMIT 1
             """, empresa_id, tipo, unidade_id)
             if row:
@@ -216,10 +217,11 @@ async def carregar_integracao(
                 except Exception as e:
                     logger.error(f"Erro ao parsear config de integração {tipo} da unidade {unidade_id}: {e}")
 
-        # Fallback para global
+        # Fallback para global (ordenado por id DESC = mais recente)
         row = await _database.db_pool.fetchrow("""
             SELECT config FROM integracoes
             WHERE empresa_id = $1 AND tipo = $2 AND unidade_id IS NULL AND ativo = true
+            ORDER BY id DESC
             LIMIT 1
         """, empresa_id, tipo)
         
