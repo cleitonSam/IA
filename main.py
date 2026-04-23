@@ -150,6 +150,14 @@ try:
 except Exception as _mkt_err:
     logger.error(f"[MKT] Falha ao registrar routers novos: {_mkt_err}")
 
+# [CACHE-01] Router admin de flush de cache (botao do dashboard)
+try:
+    from src.api.routers.cache_admin import router as cache_admin_router
+    app.include_router(cache_admin_router)
+    logger.info("[CACHE-01] Router cache_admin registrado")
+except Exception as _ca_err:
+    logger.error(f"[CACHE-01] Falha ao registrar cache_admin: {_ca_err}")
+
 # ── Middleware de Rate Limit Global ──────────────────────────────────────────
 # Bloqueia IPs e empresas que abusem do endpoint /webhook
 @app.middleware("http")

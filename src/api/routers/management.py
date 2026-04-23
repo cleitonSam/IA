@@ -12,6 +12,22 @@ import asyncio
 from src.services.db_queries import listar_unidades_ativas, buscar_planos_ativos, formatar_planos_para_prompt
 from src.utils.rate_limit import rate_limit_empresa
 
+# [CACHE-01] Invalidacao centralizada — toda mutacao (PUT/POST/DELETE) deve chamar
+# a funcao correspondente para garantir que a proxima mensagem do cliente use o
+# conteudo atualizado imediatamente, sem esperar TTL de 5 minutos.
+from src.services.cache_invalidation import (
+    invalidate_personalidade,
+    invalidate_faq,
+    invalidate_kb,
+    invalidate_menu_triagem,
+    invalidate_fluxo_triagem,
+    invalidate_integracao,
+    invalidate_unidades,
+    invalidate_planos,
+    invalidate_global,
+    flush_empresa,
+)
+
 router = APIRouter(prefix="/management", tags=["management"])
 
 # --- Schemas ---
@@ -451,6 +467,8 @@ async def create_personality(
                 empresa_id, new_id
             )
 
+        # [CACHE-01] Nova personalidade criada — limpa cache
+        await invalidate_personalidade(empresa_id)
         return {"id": new_id, "status": "success"}
     except Exception as e:
         logger.error(f"Erro ao criar personalidade: {e}")
@@ -575,9 +593,8 @@ async def update_personality_by_id(
             "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
             empresa_id, pid
         )
-    # Invalida caches para forçar releitura imediata no bot e no webhook
-    await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
-    await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
+    # [CACHE-01] Invalidacao completa — inclui personalidade, menu, fluxo, global
+    await invalidate_personalidade(empresa_id)
 
     # Sincroniza flag Redis de pausa com o campo ativo da personalidade
     paused_key = f"ia:chatwoot:paused:{empresa_id}"
@@ -603,6 +620,8 @@ async def delete_personality(
     await _database.db_pool.execute(
         "DELETE FROM personalidade_ia WHERE id = $1 AND empresa_id = $2", pid, empresa_id
     )
+    # [CACHE-01] Invalida cache da personalidade (e menu/fluxo que vivem nela)
+    await invalidate_personalidade(empresa_id)
     return {"status": "success"}
 
 
@@ -765,7 +784,9 @@ async def save_fluxo_triagem(
                 "INSERT INTO personalidade_ia (empresa_id, fluxo_triagem, created_at, updated_at) VALUES ($1, $2::jsonb, NOW(), NOW())",
                 empresa_id, payload
             )
-        await redis_client.delete(f"cfg:fluxo_triagem:{empresa_id}")
+        # [CACHE-01] Invalida todas as variantes (global + por unidade) + personalidade/menu
+        await invalidate_fluxo_triagem(empresa_id)
+        await invalidate_personalidade(empresa_id)
         logger.info(f"✅ Fluxo triagem salvo para empresa {empresa_id} | nodes={len(data.get('nodes', []))} edges={len(data.get('edges', []))}")
         return {"status": "ok"}
     except Exception as e:
@@ -1474,6 +1495,8 @@ async def create_faq(body: FAQCreate, token_payload: dict = Depends(get_current_
     except Exception as e:
         logger.error(f"Erro ao criar FAQ para empresa {empresa_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao salvar pergunta. Tente novamente.")
+    # [CACHE-01] Nova pergunta de FAQ — limpa cache de todas as unidades
+    await invalidate_faq(empresa_id)
     return {"status": "success"}
 
 @router.put("/faq/{faq_id}")
@@ -1494,6 +1517,8 @@ async def update_faq(faq_id: int, body: FAQCreate, token_payload: dict = Depends
     except Exception as e:
         logger.error(f"Erro ao atualizar FAQ {faq_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao atualizar pergunta. Tente novamente.")
+    # [CACHE-01] FAQ editado — limpa cache pra proxima resposta usar o novo conteudo
+    await invalidate_faq(empresa_id)
     return {"status": "success"}
 
 @router.delete("/faq/{faq_id}")
@@ -1503,6 +1528,8 @@ async def delete_faq(faq_id: int, token_payload: dict = Depends(get_current_user
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
     try:
         await _database.db_pool.execute("DELETE FROM faq WHERE id=$1 AND empresa_id=$2", faq_id, empresa_id)
+        # [CACHE-01] FAQ deletado — limpa cache
+        await invalidate_faq(empresa_id)
     except Exception as e:
         logger.error(f"Erro ao excluir FAQ {faq_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao excluir pergunta. Tente novamente.")
@@ -1673,10 +1700,8 @@ async def update_evo_unit(
             empresa_id, config_json, body.ativo, unidade_id
         )
 
-    # Invalida cache da integração EVO desta unidade
-    from src.core.redis_client import redis_client as _rc
-    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:{unidade_id}")
-    await _rc.delete(f"cfg:integracao:{empresa_id}:evo:global")
+    # [CACHE-01] Invalida cache da integração EVO (todas as variantes da empresa)
+    await invalidate_integracao(empresa_id, tipo="evo")
 
     return {"status": "success"}
 
@@ -1710,13 +1735,12 @@ async def update_integration(
             empresa_id, tipo, config_json, body.ativo
         )
 
-    # Invalida o cache do Redis para que a nova config seja lida imediatamente
-    from src.core.redis_client import redis_client as _rc
-    await _rc.delete(f"cfg:integracao:{empresa_id}:{tipo}:global")
-    # Também invalida o cache de mapeamento account_id → empresa (caso account_id tenha mudado)
+    # [CACHE-01] Invalida TODAS as variantes da integracao (global + por unidade)
+    await invalidate_integracao(empresa_id, tipo=tipo)
+    # Tambem invalida o cache de mapeamento account_id -> empresa (se account_id mudou)
     _account_id = body.config.get("account_id")
     if _account_id:
-        await _rc.delete(f"map:account:{_account_id}")
+        await redis_client.delete(f"map:account:{_account_id}")
 
     return {"status": "success"}
 
@@ -2108,6 +2132,9 @@ async def criar_knowledge_base(
         conteudo=body.conteudo,
         categoria=body.categoria
     )
+    # [CACHE-01] Garante que RAG + FAQ sejam re-lidos (KB novo pode afetar respostas)
+    await invalidate_kb(empresa_id)
+    await invalidate_faq(empresa_id)
     return {"status": "success", "chunks_indexados": chunks, "titulo": body.titulo}
 
 
@@ -2124,6 +2151,9 @@ async def deletar_knowledge_base(
     ok = await deletar_conhecimento(empresa_id, kb_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Erro ao desativar documento")
+    # [CACHE-01] Item removido — limpa cache RAG e FAQ
+    await invalidate_kb(empresa_id)
+    await invalidate_faq(empresa_id)
     return {"status": "success"}
 
 
@@ -2300,13 +2330,8 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
     except Exception as e:
         logger.error(f"Erro ao criar plano para empresa {empresa_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao salvar plano. Tente novamente.")
-    try:
-        from src.services.db_queries import redis_client as _rc
-        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
-        if body.unidade_id:
-            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
-    except Exception:
-        pass
+    # [CACHE-01] Invalida cache de planos (proxima consulta vai re-ler do banco)
+    await invalidate_planos(empresa_id)
     return {"status": "success"}
 
 
@@ -2335,13 +2360,8 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
     except Exception as e:
         logger.error(f"Erro ao atualizar plano {plano_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao atualizar plano. Tente novamente.")
-    try:
-        from src.services.db_queries import redis_client as _rc
-        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
-        if body.unidade_id:
-            await _rc.delete(f"planos:ativos:{empresa_id}:{body.unidade_id}")
-    except Exception:
-        pass
+    # [CACHE-01] Invalida cache de planos (proxima consulta vai re-ler do banco)
+    await invalidate_planos(empresa_id)
     return {"status": "success"}
 
 
@@ -2357,13 +2377,8 @@ async def delete_plano(plano_id: int, token_payload: dict = Depends(get_current_
     await _database.db_pool.execute(
         "DELETE FROM planos WHERE id=$1 AND empresa_id=$2", plano_id, empresa_id
     )
-    try:
-        from src.services.db_queries import redis_client as _rc
-        await _rc.delete(f"planos:ativos:{empresa_id}:todos")
-        if row and row["unidade_id"]:
-            await _rc.delete(f"planos:ativos:{empresa_id}:{row['unidade_id']}")
-    except Exception:
-        pass
+    # [CACHE-01] Plano deletado — invalida cache
+    await invalidate_planos(empresa_id)
     return {"status": "success"}
 
 
@@ -2373,9 +2388,10 @@ async def sync_planos(token_payload: dict = Depends(get_current_user_token)):
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
-    from src.services.db_queries import sincronizar_planos_evo, redis_client as _rc
+    from src.services.db_queries import sincronizar_planos_evo
     count = await sincronizar_planos_evo(empresa_id, bypass_cache=True)
-    await _rc.delete(f"planos:ativos:{empresa_id}:todos")
+    # [CACHE-01] Apos sync — invalida todos os caches de planos da empresa
+    await invalidate_planos(empresa_id)
     return {"status": "success", "sincronizados": count}
 
 
