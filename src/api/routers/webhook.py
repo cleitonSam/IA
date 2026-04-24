@@ -413,6 +413,25 @@ async def chatwoot_webhook(
     # Enviado na primeira mensagem do contato. Após 1h sem mensagens, reenvia na próxima.
     # Só envia se a IA não está pausada por atendente humano.
     MENU_INACTIVITY_TTL = 3600  # 1 hora
+
+    # [DIAG-IG] Log pra diagnosticar por que o menu nao dispara no Instagram.
+    # Na maioria dos casos o payload de IG chega SEM phone_number (IG usa user_id),
+    # fazendo o bloco abaixo ser pulado por inteiro.
+    logger.info(
+        f"🔍 [DIAG-IG] Entrando no bloco menu — empresa={empresa_id} conv={id_conv} "
+        f"channel='{channel_type}' is_ig={is_instagram_channel} "
+        f"contato_fone={contato_fone!r} "
+        f"sender.id={contato.get('id')!r} "
+        f"sender.identifier={contato.get('identifier')!r} "
+        f"sender.source_id={contato.get('source_id')!r}"
+    )
+
+    if not contato_fone:
+        logger.warning(
+            f"⚠️ [DIAG-IG] contato_fone VAZIO — menu/fluxo NAO vai disparar para conv={id_conv} "
+            f"(is_ig={is_instagram_channel}). Este eh provavelmente o motivo de IG nao receber o menu."
+        )
+
     if contato_fone:
         menu_triagem_key = f"menu_triagem:sent:{empresa_id}:{contato_fone}"
         menu_already_sent = await redis_client.exists(menu_triagem_key)
