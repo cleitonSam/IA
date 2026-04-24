@@ -4126,7 +4126,13 @@ async def processar_ia_e_responder(
                 _ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"))
                 _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis}"))
                 
-                if not _ia_pausada and not _phone_paused:
+                # [FLUXO-ENDED] Se fluxo ja encerrou (node end), nao reinicia em 30min
+                _fluxo_recem_encerrado = bool(
+                    await redis_client.exists(f"fluxo_ended:{empresa_id}:0:{_fone_redis}")
+                    or await redis_client.exists(f"fluxo_ended:{empresa_id}:{_fone_redis}")
+                )
+
+                if not _ia_pausada and not _phone_paused and not _fluxo_recem_encerrado:
                     # ── Anti-bloqueio: verifica limite de mensagens bot por conversa ───
                     # Máx 30 msgs do bot em 1h por conversa. Evita burst que parece spam.
                     _burst_key = f"bot_msg_count:{empresa_id}:{conversation_id}"

@@ -135,10 +135,18 @@ async def uazapi_webhook(
                 return {"status": "ignored", "reason": "from_me_bot"}
             else:
                 # É um atendente humano enviando manualmente — pausa a IA
+                # [HUMAN-PAUSE] Pausa IA por 4h (14400s) em AMBAS as chaves
+                # com sliding: cada nova msg do humano reseta o TTL.
+                # Antes: 12h (43200s) soh em pause_ia:{conv_id} — faltava pause_ia_phone.
+                _HUMAN_PAUSE_TTL = 14400  # 4 horas
                 if _conv_check:
                     conv_id_humano = _conv_check.get("conversation_id")
-                    await redis_client.setex(f"pause_ia:{empresa_id}:{conv_id_humano}", 43200, "1")
-                    logger.info(f"⏸️ IA pausada por atendente humano (UazAPI) — fone: {phone} conv: {conv_id_humano}")
+                    await redis_client.setex(f"pause_ia:{empresa_id}:{conv_id_humano}", _HUMAN_PAUSE_TTL, "1")
+                # Pausa TAMBEM por telefone (multi-tenant + legado) pra garantir que
+                # o flow_executor/main.py respeitem a pausa mesmo sem conv_id.
+                await redis_client.setex(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone}", _HUMAN_PAUSE_TTL, "1")
+                await redis_client.setex(f"pause_ia_phone:{empresa_id}:{phone}", _HUMAN_PAUSE_TTL, "1")
+                logger.info(f"⏸️ IA pausada por atendente humano (4h sliding) — fone: {phone}")
                 return {"status": "ignored", "reason": "from_me_human"}
 
         # Extrair conteúdo (texto, legenda ou seleção de menu interativo)
@@ -200,7 +208,14 @@ async def uazapi_webhook(
             f"ativo={_fluxo_config.get('ativo') if _fluxo_config else 'None'}"
         )
 
-        if _fluxo_config and _fluxo_config.get("ativo"):
+        # [FLUXO-ENDED] Se fluxo encerrou recentemente, nao reinicia
+        _fluxo_ended_check = (
+            await redis_client.exists(f"fluxo_ended:{empresa_id}:{unidade_id or 0}:{phone}")
+            or await redis_client.exists(f"fluxo_ended:{empresa_id}:{phone}")
+        )
+        if _fluxo_ended_check:
+            logger.info(f"⏹️ [FluxoTriagem] fluxo_ended ativo para {phone} — skip fluxo")
+        elif _fluxo_config and _fluxo_config.get("ativo"):
             _ia_pausada_fluxo = False
             if conversa_existente:
                 _conv_id_f = conversa_existente.get("conversation_id")

@@ -518,7 +518,20 @@ async def _execute_from(
     # ── End ──
     if node_type == "end":
         await _clear_state(empresa_id, phone, unidade_id)
-        logger.info(f"[FlowExecutor] Fluxo encerrado para {phone} empresa {empresa_id}")
+        # Marca fluxo como encerrado. Durante 30 min o fluxo NAO reinicia —
+        # mensagens subsequentes do cliente vao pra IA normal (nao pra start).
+        # TTL deliberadamente curto: se cliente sumir 30min, pode abrir novo fluxo.
+        try:
+            await redis_client.setex(
+                f"fluxo_ended:{empresa_id}:{unidade_id}:{phone}", 1800, "1"
+            )
+            # Chave legada (compat) sem unidade_id
+            await redis_client.setex(
+                f"fluxo_ended:{empresa_id}:{phone}", 1800, "1"
+            )
+        except Exception as e:
+            logger.debug(f"[FlowExecutor] fluxo_ended setex falhou: {e}")
+        logger.info(f"[FlowExecutor] Fluxo encerrado para {phone} empresa {empresa_id} (cooldown 30min)")
         return
 
     # ── GoToMenu: reinicia o fluxo a partir do nó Start ──
