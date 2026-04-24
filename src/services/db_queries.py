@@ -167,7 +167,7 @@ async def buscar_empresa_por_account_id(account_id: int) -> Optional[int]:
         row = await _database.db_pool.fetchrow(query, str(account_id))
         if row:
             empresa_id = row['empresa_id']
-            await redis_client.setex(cache_key, 3600, str(empresa_id))
+            await redis_client.setex(cache_key, 300, str(empresa_id))
             return empresa_id
         return None
     except asyncpg.PostgresError as e:

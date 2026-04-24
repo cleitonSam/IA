@@ -271,6 +271,30 @@ async def rate_limit_middleware(request: Request, call_next):
 import traceback as _traceback
 from fastapi.responses import JSONResponse as _JSONResponse
 
+# [SCALE-TIMEOUT] Timeout global de requisicao (default 60s).
+# Evita que endpoint travado segure worker por minutos.
+# Webhook e paths longos podem ter timeout maior via env.
+_REQUEST_TIMEOUT_S = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
+_REQUEST_TIMEOUT_LONG_PATHS = ("/webhook", "/uazapi/webhook", "/metricas/diagnostico")
+_REQUEST_TIMEOUT_LONG_S = int(os.getenv("REQUEST_TIMEOUT_LONG_SECONDS", "120"))
+
+
+@app.middleware("http")
+async def timeout_middleware(request: Request, call_next):
+    """[SCALE-TIMEOUT] Aborta request que passa do limite pra liberar worker."""
+    path = request.url.path
+    timeout = _REQUEST_TIMEOUT_LONG_S if any(p in path for p in _REQUEST_TIMEOUT_LONG_PATHS) else _REQUEST_TIMEOUT_S
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"[SCALE-TIMEOUT] request timeout {timeout}s: {request.method} {path}")
+        from fastapi.responses import JSONResponse as _TJR
+        return _TJR(
+            {"detail": f"Request timeout apos {timeout}s", "path": path},
+            status_code=504
+        )
+
+
 @app.middleware("http")
 async def error_handler_middleware(request: Request, call_next):
     """
@@ -301,6 +325,53 @@ async def error_handler_middleware(request: Request, call_next):
                 "request_id": request_id,
             },
         )
+
+
+
+# [SCALE-CB] Circuit breaker generico pra servicos externos (UazAPI, OpenRouter).
+# Evita cascade failure: se um servico cai, nao inundar ele com requests.
+import time as _cb_time
+
+class _CircuitBreaker:
+    """Circuit breaker simples: closed -> open (apos N falhas) -> half-open (apos cooldown)."""
+    def __init__(self, name: str, fail_threshold: int = 10, cooldown_s: int = 30):
+        self.name = name
+        self.fail_threshold = fail_threshold
+        self.cooldown_s = cooldown_s
+        self.failures = 0
+        self.state = "closed"
+        self.opened_at = 0.0
+
+    def record_success(self):
+        if self.state != "closed":
+            logger.info(f"[SCALE-CB] {self.name} -> closed (recovered)")
+        self.failures = 0
+        self.state = "closed"
+
+    def record_failure(self):
+        self.failures += 1
+        if self.failures >= self.fail_threshold and self.state != "open":
+            self.state = "open"
+            self.opened_at = _cb_time.time()
+            logger.error(f"[SCALE-CB] {self.name} -> OPEN apos {self.failures} falhas")
+
+    def can_call(self) -> bool:
+        """Retorna True se pode tentar chamar o servico."""
+        if self.state == "closed":
+            return True
+        # Aberto: checa se ja passou cooldown
+        if _cb_time.time() - self.opened_at > self.cooldown_s:
+            self.state = "half-open"
+            self.failures = 0
+            logger.info(f"[SCALE-CB] {self.name} -> half-open (testando)")
+            return True
+        return False
+
+
+# Circuit breakers globais pra servicos externos criticos
+_CB_UAZAPI = _CircuitBreaker("uazapi", fail_threshold=15, cooldown_s=30)
+_CB_OPENROUTER = _CircuitBreaker("openrouter", fail_threshold=10, cooldown_s=60)
+
 
 
 # ============================================================
@@ -5712,6 +5783,22 @@ async def chatwoot_webhook(
     set_tenant_context(empresa_id)
     logger.info(f"Webhook validado: empresa={empresa_id} event={event}")
 
+    # [H-06] Rate limit por empresa (evita 1 empresa consumir recurso de todas)
+    if not await _check_empresa_rate_limit(empresa_id):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"status": "rate_limited", "motivo": "empresa_rate_limit"},
+            status_code=429
+        )
+
+    # [H-11] Backpressure: se fila interna cheia, rejeita pra evitar OOM
+    if not await _check_webhook_queue_capacity():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"status": "queue_full", "motivo": "webhook_queue_backpressure"},
+            status_code=503
+        )
+
     conv_obj = payload.get("conversation", {}) if "conversation" in payload else payload
     if conv_obj:
         is_manual = "1" if (
@@ -6482,11 +6569,49 @@ async def status_endpoint():
 @app.head("/health")
 async def health():
     """
-    Health check para plataformas (Render, Railway, Fly.io, Easypanel etc.).
-    GET/HEAD em / e /health retornam 200 — evita falso 'unhealthy' no dashboard.
+    Liveness: app esta viva (subiu). Sempre retorna 200 se o processo esta rodando.
+    Easypanel/K8s usam isso pra saber se reinicia o container.
     """
     return {
         "status": "ok",
         "service": "Motor SaaS IA",
-        "version": APP_VERSION
+        "version": APP_VERSION,
     }
+
+
+@app.get("/health/ready")
+@app.head("/health/ready")
+async def health_ready():
+    """
+    Readiness: app esta pronta pra receber trafego (PG + Redis respondem).
+    K8s/LB usam isso pra saber se envia requisicoes. Retorna 503 se algum dependencia fora.
+    """
+    from fastapi.responses import JSONResponse
+    import asyncio as _asyncio
+    checks = {"redis": False, "postgres": False}
+    # Redis
+    try:
+        await _asyncio.wait_for(redis_client.ping(), timeout=2.0)
+        checks["redis"] = True
+    except Exception as e:
+        checks["redis_error"] = str(e)[:100]
+    # Postgres
+    try:
+        if db_pool:
+            async with db_pool.acquire(timeout=2) as _conn:
+                val = await _conn.fetchval("SELECT 1")
+                checks["postgres"] = (val == 1)
+    except Exception as e:
+        checks["postgres_error"] = str(e)[:100]
+
+    healthy = checks["redis"] and checks["postgres"]
+    status = 200 if healthy else 503
+    return JSONResponse(
+        {
+            "ready": healthy,
+            "checks": checks,
+            "service": "Motor SaaS IA",
+            "version": APP_VERSION,
+        },
+        status_code=status
+    )

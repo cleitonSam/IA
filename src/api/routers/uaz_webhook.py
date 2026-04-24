@@ -3,7 +3,7 @@ import json
 import hmac
 import asyncio
 from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
-from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO
+from src.core.config import logger, REDIS_URL, EMPRESA_ID_PADRAO, set_tenant_context
 from src.core.redis_client import redis_client
 from src.services.db_queries import (
     buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem,
@@ -61,6 +61,9 @@ async def uazapi_webhook(
         if found_uid:
             unidade_id = found_uid
             logger.debug(f"[UazWebhook] Instância '{instance_name}' → unidade_id={unidade_id}")
+
+    # [M-02] Marca empresa_id no contexto para logs
+    set_tenant_context(empresa_id)
 
     # Carrega integração UazAPI (preferindo a da unidade, fallback global)
     integracao = await carregar_integracao(empresa_id, 'uazapi', unidade_id=unidade_id or None)
