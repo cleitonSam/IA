@@ -4440,10 +4440,19 @@ async def processar_ia_e_responder(
                                     await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
                                 except Exception: pass
                                 return True
+                            else:
+                                # [FLOW-FALLTHROUGH] Fluxo nao tratou (handle sem conexao, businessHours fechado).
+                                # As mensagens JA foram drenadas do buffer por coletar_mensagens_buffer.
+                                # Reuso _mensagens_pool como mensagens_acumuladas na IA padrao abaixo.
+                                logger.info(f"⤵️ [FluxoTriagem Monolith] Fluxo nao tratou — IA padrao vai responder ({len(_mensagens_pool)} msgs do buffer)")
+                                mensagens_acumuladas = _mensagens_pool
+                                # Pula o coletar_mensagens_buffer duplicado abaixo
+                                _skip_buffer_collect = True
 
         # --- FIM Fluxo Visual ---
 
-        mensagens_acumuladas = await coletar_mensagens_buffer(empresa_id, conversation_id)
+        if not locals().get("_skip_buffer_collect"):
+            mensagens_acumuladas = await coletar_mensagens_buffer(empresa_id, conversation_id)
         if not mensagens_acumuladas:
             return
 
