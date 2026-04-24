@@ -1682,3 +1682,149 @@ def _extract_dot_path(obj, path: str):
         else:
             return None
     return cur
+
+
+# ─────────────────────────────────────────────────────────────
+# Marker de bot (evita fromMe echo no UazAPI)
+# ─────────────────────────────────────────────────────────────
+
+async def _bot_sent_marker(empresa_id: int, phone: str, unidade_id: int = 0):
+    """Marca que o proximo fromMe eh do bot (nao do atendente humano).
+    TTL 120s. Seta chave multi-tenant E legada para compatibilidade."""
+    try:
+        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 120, "1")
+        await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 120, "1")
+    except Exception as e:
+        logger.debug(f"[FlowExecutor] _bot_sent_marker falhou: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# AI Menu — Geracao dinamica de menu via LLM
+# ─────────────────────────────────────────────────────────────
+
+async def _execute_aimenu(
+    empresa_id: int,
+    phone: str,
+    mensagem: str,
+    fluxo: Dict,
+    node: Dict,
+    uaz_client,
+    session_vars: Dict,
+    _depth: int,
+    unidade_id: int = 0,
+):
+    """Gera menu dinamicamente via LLM com opcoes contextuais."""
+    node_id = node["id"]
+    data = node.get("data", {})
+    instrucao = _render_vars(data.get("instrucao", "Gere um menu com 3 opcoes sobre o contexto."), session_vars)
+    botao = data.get("botao", "Ver opcoes")
+    rodape = data.get("rodape", "")
+
+    prompt = (
+        f"Gere um menu JSON no formato {{'titulo': str, 'texto': str, 'choices': [str1, str2, ...]}}. "
+        f"Instrucao: {instrucao}. Mensagem do usuario: '{mensagem}'. "
+        f"Use no maximo 5 choices. Retorne APENAS o JSON, sem markdown."
+    )
+    result = await _call_ia(empresa_id, prompt, mensagem, max_tokens=300)
+    try:
+        import json as _json
+        js = result.strip()
+        for m in ("```json", "```"):
+            if m in js:
+                js = js.split(m)[1].split("```")[0].strip()
+                break
+        cfg = _json.loads(js)
+        opcoes = []
+        for i, ch in enumerate(cfg.get("choices", []) or []):
+            opcoes.append({"titulo": str(ch), "id": str(i + 1)})
+        if not opcoes:
+            logger.warning(f"[FlowExecutor] aiMenu sem opcoes geradas empresa={empresa_id}")
+            return
+        menu = {
+            "tipo": "list",
+            "titulo": cfg.get("titulo", "Opcoes"),
+            "texto": cfg.get("texto", "Como posso ajudar?"),
+            "rodape": rodape,
+            "botao": botao,
+            "opcoes": opcoes,
+        }
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
+        await uaz_client.send_menu(phone, menu)
+        await _set_state(empresa_id, phone, {
+            "node_id": node_id,
+            "step": "awaiting_aimenu",
+            "generated_options": opcoes,
+        }, unidade_id=unidade_id)
+    except Exception as e:
+        logger.error(f"[FlowExecutor] aiMenu erro empresa={empresa_id}: {e}")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+
+# ─────────────────────────────────────────────────────────────
+# AIQualify — fluxo de qualificacao multi-pergunta
+# ─────────────────────────────────────────────────────────────
+
+async def _execute_aiqualify(
+    empresa_id: int,
+    phone: str,
+    mensagem: str,
+    fluxo: Dict,
+    node: Dict,
+    uaz_client,
+    session_vars: Dict,
+    _depth: int,
+    unidade_id: int = 0,
+):
+    """Gerencia o fluxo de perguntas sequenciais do AIQualify."""
+    node_id = node["id"]
+    data = node.get("data", {})
+    perguntas = data.get("perguntas", [])
+    variaveis = data.get("variaveis", [])
+
+    state = await _get_state(empresa_id, phone, unidade_id)
+    step_idx = state.get("qualify_step", 0) if state else 0
+
+    if step_idx < len(perguntas):
+        pergunta = _render_vars(perguntas[step_idx], session_vars)
+        await _bot_sent_marker(empresa_id, phone, unidade_id)
+        await uaz_client.send_text(phone, pergunta)
+        await _set_state(empresa_id, phone, {
+            "node_id": node_id,
+            "step": "awaiting_qualify",
+            "qualify_step": step_idx + 1,
+        }, unidade_id=unidade_id)
+    else:
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+
+
+# ─────────────────────────────────────────────────────────────
+# Webhook externo (legado — prefira httpRequest)
+# ─────────────────────────────────────────────────────────────
+
+async def _execute_webhook(data: Dict, session_vars: Dict, empresa_id: int, phone: str):
+    """Chama uma URL externa com dados da sessao. Simples: GET/POST apenas."""
+    url = data.get("url", "")
+    method = data.get("method", "POST").upper()
+    body_template = data.get("body", {})
+
+    if not url:
+        return
+
+    rendered_body = {}
+    if isinstance(body_template, dict):
+        for k, v in body_template.items():
+            rendered_body[k] = _render_vars(str(v), session_vars)
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            if method == "GET":
+                resp = await client.get(url, params=rendered_body)
+            else:
+                resp = await client.post(url, json=rendered_body)
+            logger.info(f"[FlowExecutor] Webhook {method} {url} -> status {resp.status_code} empresa {empresa_id}")
+    except Exception as e:
+        logger.error(f"[FlowExecutor] Webhook error para empresa {empresa_id}: {e}")
+
