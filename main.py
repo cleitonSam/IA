@@ -4434,9 +4434,14 @@ async def processar_ia_e_responder(
 
             # [IG-FLUXO] Instagram nao tem phone_number — usamos ig:{conv_id} como
             # identificador pra chaves de state (fluxo_state, fluxo_vars, pause_ia_phone).
+            # IMPORTANTE: se canal eh IG, FORCA ident=ig:{conv_id} mesmo que exista
+            # fone_cliente salvo (evita state fragmentado entre phone e ig:conv_id).
             _conv_channel_fluxo = await redis_client.get(f"conv_channel:{empresa_id}:{conversation_id}")
             _is_ig_fluxo = str(_conv_channel_fluxo or "").lower() == "instagram"
-            _fluxo_ident = _fone_redis or (f"ig:{conversation_id}" if _is_ig_fluxo else None)
+            if _is_ig_fluxo:
+                _fluxo_ident = f"ig:{conversation_id}"
+            else:
+                _fluxo_ident = _fone_redis
 
             if _fluxo_ident:
                 # Verifica se a IA está pausada para esta conversa
@@ -4482,20 +4487,27 @@ async def processar_ia_e_responder(
                     #   - Instagram → ChatwootFlowClient (texto numerado via Chatwoot)
                     _fluxo_client = None
                     if _is_ig_fluxo:
-                        # IG: adapter Chatwoot, nao precisa de integracao UazAPI
-                        _pers_fluxo = await carregar_personalidade(empresa_id) or {}
-                        _nome_ia_fluxo = _pers_fluxo.get("nome_ia") or "Atendente"
-                        _fluxo_client = ChatwootFlowClient(
-                            account_id=account_id,
-                            conversation_id=conversation_id,
-                            integracao_chatwoot=integracao_chatwoot,
-                            empresa_id=empresa_id,
-                            nome_ia=_nome_ia_fluxo,
-                        )
-                        logger.info(
-                            f"🔁 [FluxoTriagem Monolith] canal=Instagram — usando "
-                            f"ChatwootFlowClient (conv={conversation_id})"
-                        )
+                        # IG: adapter Chatwoot — precisa da integracao chatwoot
+                        _integr_ig = integracao_chatwoot or await carregar_integracao(empresa_id, 'chatwoot')
+                        if not _integr_ig:
+                            logger.error(
+                                f"[FluxoTriagem Monolith] IG sem integracao Chatwoot empresa={empresa_id} "
+                                f"conv={conversation_id} — fluxo pulado, IA padrao vai responder"
+                            )
+                        else:
+                            _pers_fluxo = await carregar_personalidade(empresa_id) or {}
+                            _nome_ia_fluxo = _pers_fluxo.get("nome_ia") or "Atendente"
+                            _fluxo_client = ChatwootFlowClient(
+                                account_id=account_id,
+                                conversation_id=conversation_id,
+                                integracao_chatwoot=_integr_ig,
+                                empresa_id=empresa_id,
+                                nome_ia=_nome_ia_fluxo,
+                            )
+                            logger.info(
+                                f"🔁 [FluxoTriagem Monolith] canal=Instagram — usando "
+                                f"ChatwootFlowClient (conv={conversation_id})"
+                            )
                     else:
                         # WhatsApp: mantem cliente UazAPI original
                         _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
@@ -4504,6 +4516,11 @@ async def processar_ia_e_responder(
                                 base_url=_integr_uaz.get("url", ""),
                                 token=_integr_uaz.get("token", ""),
                                 instance_name=_integr_uaz.get("instance", "default")
+                            )
+                        else:
+                            logger.warning(
+                                f"[FluxoTriagem Monolith] WA sem integracao UazAPI empresa={empresa_id} "
+                                f"conv={conversation_id} — fluxo pulado"
                             )
 
                     if _fluxo_client:

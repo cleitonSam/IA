@@ -41,26 +41,36 @@ _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 def _monta_menu_texto(menu: Dict[str, Any]) -> str:
-    """Converte um dict de menu (titulo/texto/opcoes) em texto numerado."""
+    """
+    Converte um dict de menu (titulo/texto/opcoes) em texto numerado.
+    Formato alinhado com flow_executor._render_menu_numerado ("1 - X")
+    pra evitar que o cliente veja dois estilos diferentes dependendo
+    do path (sendMenu node → cai aqui, aiMenu/menuFixoIA → flow_executor).
+    """
     titulo = (menu or {}).get("titulo") or ""
     texto = (menu or {}).get("texto") or ""
     rodape = (menu or {}).get("rodape") or ""
     opcoes = (menu or {}).get("opcoes") or []
 
-    partes = [p for p in (titulo, texto) if p]
-    header = "\n\n".join(partes).strip() or "Escolha uma opção:"
+    partes = []
+    if titulo:
+        partes.append(f"*{titulo}*")
+    if texto and texto != titulo:
+        partes.append(texto)
+    if not partes:
+        partes.append("Escolha uma opção:")
+    partes.append("")  # linha em branco antes das opcoes
 
-    linhas = [header, ""]
     for i, op in enumerate(opcoes, 1):
         t = op.get("titulo") or op.get("title") or op.get("label") or ""
-        linhas.append(f"{i}. {t}")
+        partes.append(f"{i} - {t}")
+
     if opcoes:
-        linhas.append("")
-        linhas.append("_Responda com o número da opção_")
+        partes.append("")
+        partes.append("_Responda com o numero da opcao_")
     if rodape:
-        linhas.append("")
-        linhas.append(f"_{rodape}_")
-    return "\n".join(linhas)
+        partes.append(f"_{rodape}_")
+    return "\n".join(partes)
 
 
 class ChatwootFlowClient:
@@ -166,7 +176,15 @@ class ChatwootFlowClient:
             f"/conversations/{self.conversation_id}/messages"
         )
 
-        content = f"*{self.nome_ia}*\n{text}" if self.nome_ia else text
+        # Prefixa nome da IA, mas evita duplicar quando texto ja comeca com
+        # markdown bold (*Titulo*) — caso tipico de menu numerado.
+        _texto = text or ""
+        _ja_formatado = _texto.lstrip().startswith("*")
+        if self.nome_ia and not _ja_formatado:
+            content = f"*{self.nome_ia}*\n{_texto}"
+        else:
+            content = _texto
+
         payload = {
             "content": content,
             "message_type": "outgoing",
