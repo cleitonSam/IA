@@ -1278,6 +1278,24 @@ async def startup_event():
         )
     )
 
+    # [HTTP-FIX] Injeta o http_client nos modulos que usam var global `http_client`
+    # (chatwoot_client, instagram_client). Sem isso, qualquer chamada a
+    # enviar_mensagem_chatwoot do services.chatwoot_client falha com
+    # 'NoneType' object has no attribute 'post' — impacta Fluxo Triagem no IG.
+    try:
+        import src.services.chatwoot_client as _chatwoot_svc
+        _chatwoot_svc.http_client = http_client
+        logger.info("✅ [HTTP-FIX] http_client injetado em src.services.chatwoot_client")
+    except Exception as _e:
+        logger.warning(f"[HTTP-FIX] falha injetando http_client em chatwoot_client: {_e}")
+
+    try:
+        import src.services.instagram_client as _ig_svc
+        _ig_svc.http_client = http_client
+        logger.info("✅ [HTTP-FIX] http_client injetado em src.services.instagram_client")
+    except Exception as _e:
+        logger.warning(f"[HTTP-FIX] falha injetando http_client em instagram_client: {_e}")
+
     try:
         # [SCALE-03] Connection pool explicito pra 800 tenants
         _redis_pool = redis.ConnectionPool.from_url(
