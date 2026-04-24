@@ -89,6 +89,53 @@ async def _check_media_rate_limit(empresa_id: int, conversation_id: int, media_t
 
 
 
+async def _check_admin_rate_limit(
+    token_payload: dict = None,
+    endpoint_key: str = "generic",
+    max_per_minute: int = 60,
+) -> bool:
+    """[H-07] Rate limit por usuario+endpoint pra endpoints admin.
+    Previne abuse de JWT vazado martelando /export-leads, /logs etc.
+    Default: 60 req/min por (user, endpoint). Configure via ADMIN_RATE_LIMIT_PER_MIN.
+    """
+    try:
+        if not token_payload:
+            return True
+        user_id = token_payload.get("sub") or token_payload.get("user_id") or "?"
+        import os as _os
+        cap = int(_os.getenv("ADMIN_RATE_LIMIT_PER_MIN", str(max_per_minute)))
+        k = f"rl:admin:{user_id}:{endpoint_key}:m"
+        cnt = await redis_client.incr(k)
+        if cnt == 1:
+            await redis_client.expire(k, 60)
+        if cnt > cap:
+            logger.warning(f"[H-07] Admin rate limit: user={user_id} endpoint={endpoint_key} cnt={cnt}/{cap}")
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def admin_rate_limit(endpoint_key: str, max_per_minute: int = 60):
+    """[H-07] Factory de dependency FastAPI pra rate limit de endpoint admin.
+    Uso:
+        @router.get("/export-leads", dependencies=[Depends(admin_rate_limit("export-leads", 10))])
+        async def export_leads(token_payload = Depends(get_current_user_token)):
+            ...
+    """
+    async def _dep(token_payload: dict = Depends(get_current_user_token)):
+        ok = await _check_admin_rate_limit(token_payload, endpoint_key, max_per_minute)
+        if not ok:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit excedido em /{endpoint_key} ({max_per_minute}/min)"
+            )
+        return token_payload
+    return _dep
+
+
+
+
 
 # Garante que o diretório raiz esteja no sys.path para imports modularizados
 _root = os.path.dirname(os.path.abspath(__file__))
@@ -156,6 +203,16 @@ from src.core.config import (
     METRIC_ERROS_TOTAL, METRIC_CONVERSAS_ATIVAS, METRIC_PLANOS_ENVIADOS,
     METRIC_ALUNO_DETECTADO, generate_latest, CONTENT_TYPE_LATEST
 )
+
+# [M-01] Inicializa Sentry o mais cedo possivel pra capturar erros de startup tambem.
+# Se SENTRY_DSN nao estiver setado, init_sentry apenas loga e retorna False (no-op).
+try:
+    from src.core.sentry_init import init_sentry
+    init_sentry()
+except Exception as _sentry_err:
+    # Nao queremos que falha do Sentry derrube o app
+    import logging as _logging
+    _logging.getLogger("motor-saas-ia").warning(f"[M-01] init_sentry falhou: {_sentry_err}")
 
 load_dotenv()
 

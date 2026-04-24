@@ -161,8 +161,26 @@ async def websocket_dashboard(websocket: WebSocket, empresa_id: int, token: str 
         await websocket.close(code=4003, reason="Sem permissão para esta empresa")
         return
 
+    # [M-05] Limita conexoes WS por (user, empresa) — default 10, configuravel via WS_MAX_CONNECTIONS_PER_USER
+    import os as _os
+    _user_id = payload.get("sub") or payload.get("user_id") or "?"
+    _ws_cap = int(_os.getenv("WS_MAX_CONNECTIONS_PER_USER", "10"))
+    _ws_key = f"ws_connections:{_user_id}:{empresa_id}"
+    try:
+        _ws_cnt = await redis_client.incr(_ws_key)
+        if _ws_cnt == 1:
+            await redis_client.expire(_ws_key, 120)  # auto-limpa se processo morrer
+        if _ws_cnt > _ws_cap:
+            logger.warning(f"[M-05] WS connection limit: user={_user_id} empresa={empresa_id} {_ws_cnt}/{_ws_cap}")
+            await redis_client.decr(_ws_key)
+            await websocket.close(code=4008, reason=f"Limite de {_ws_cap} conexoes WS por usuario")
+            return
+    except Exception as _e:
+        logger.debug(f"[M-05] WS rate check falhou (fail-open): {_e}")
+
     await websocket.accept()
-    logger.info(f"📡 WebSocket conectado: empresa={empresa_id} user={payload.get('sub')}")
+    logger.info(f"📡 WebSocket conectado: empresa={empresa_id} user={payload.get('sub')} (connections={_ws_cnt if '_ws_cnt' in dir() else '?'})")
+
 
     try:
         while True:
@@ -189,5 +207,11 @@ async def websocket_dashboard(websocket: WebSocket, empresa_id: int, token: str 
         logger.error(f"❌ Erro WebSocket empresa={empresa_id}: {e}")
         try:
             await websocket.close(code=1011)
+        except Exception:
+            pass
+    finally:
+        # [M-05] Decrementa contador de conexoes
+        try:
+            await redis_client.decr(_ws_key)
         except Exception:
             pass
