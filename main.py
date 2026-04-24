@@ -62,7 +62,7 @@ from datetime import datetime, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
 from src.core.security import get_current_user_token
-from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
+from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response, Depends
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import redis.asyncio as redis
