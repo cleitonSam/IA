@@ -2451,10 +2451,49 @@ async def simular_digitacao(account_id: int, conversation_id: int, integracao: d
 
 
 def formatar_mensagem_saida(content: str) -> str:
-    """Padroniza quebras de linha e espaços para mensagens mais legíveis."""
+    """
+    Padroniza quebras de linha e espaços para mensagens mais legíveis.
+
+    Regras aplicadas:
+    - Normaliza bullets: * e - em inicio de linha viram • (bullet unicode uniforme)
+    - Quebra apos saudacao "Nome,"/"Ola Nome," quando for seguida de bullet (evita "Cleiton, • item1")
+    - Colapsa espacos multiplos e quebras >3
+    """
     txt = limpar_markdown(content or "")
     txt = txt.replace("\r\n", "\n").replace("\r", "\n")
     txt = re.sub(r"[ \t]+", " ", txt)
+
+    # [FORMAT-01] Normaliza bullets no inicio de linha: * ou - viram •
+    # Cuidado: nao troca * dentro de palavras (italico/negrito markdown)
+    txt = re.sub(r"^[\t ]*[\*\-][\t ]+", "• ", txt, flags=re.M)
+
+    # [FORMAT-02] Quebra antes de um bullet que vem na MESMA linha de saudacao
+    # Ex: "Cleiton, • item1" -> "Cleiton,\n\n• item1"
+    # Pattern: texto acabando em "," ou ":" ou "!" seguido de espaco e bullet
+    txt = re.sub(r"([,:\!])\s+(•\s+)", r"\1\n\n\2", txt)
+
+    # [FORMAT-03] Quebra dupla APENAS antes do PRIMEIRO bullet de uma sequencia
+    # (nao entre bullets consecutivos — eles devem ter so \n entre si)
+    # Pattern: linha nao-bullet -> bullet. Como regex so pega o primeiro match por posicao,
+    # aplicamos linha a linha:
+    _lines = txt.split("\n")
+    _out = []
+    for i, ln in enumerate(_lines):
+        is_bullet = ln.lstrip().startswith("•")
+        if is_bullet and i > 0 and _out:
+            prev_nonempty_idx = len(_out) - 1
+            # procura ultimo nao-vazio
+            while prev_nonempty_idx >= 0 and not _out[prev_nonempty_idx].strip():
+                prev_nonempty_idx -= 1
+            if prev_nonempty_idx >= 0:
+                prev_is_bullet = _out[prev_nonempty_idx].lstrip().startswith("•")
+                if not prev_is_bullet:
+                    # Garante linha vazia entre texto livre e primeiro bullet
+                    if not (_out and not _out[-1].strip()):
+                        _out.append("")
+        _out.append(ln)
+    txt = "\n".join(_out)
+
     txt = re.sub(r"\n{3,}", "\n\n", txt)
     return txt.strip()
 
