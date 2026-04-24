@@ -1297,6 +1297,13 @@ async def startup_event():
         logger.warning(f"[HTTP-FIX] falha injetando http_client em instagram_client: {_e}")
 
     try:
+        import src.services.chatwoot_flow_client as _cfc
+        _cfc.http_client = http_client
+        logger.info("✅ [HTTP-FIX] http_client injetado em src.services.chatwoot_flow_client")
+    except Exception as _e:
+        logger.warning(f"[HTTP-FIX] falha injetando http_client em chatwoot_flow_client: {_e}")
+
+    try:
         # [SCALE-03] Connection pool explicito pra 800 tenants
         _redis_pool = redis.ConnectionPool.from_url(
             REDIS_URL,
@@ -6092,6 +6099,12 @@ async def chatwoot_webhook(
             _fone_ch = await redis_client.get(f"fone_cliente:{empresa_id}:{id_conv}")
             if _fone_ch:
                 await redis_client.setex(f"conv_channel_phone:{empresa_id}:{_fone_ch}", 3600, "instagram")
+            else:
+                # [IG-CHANNEL-FIX] IG nao tem phone_number — usa ig:{conv_id} como chave
+                # pra flow_executor achar o canal via conv_channel_phone lookup.
+                await redis_client.setex(
+                    f"conv_channel_phone:{empresa_id}:ig:{id_conv}", 3600, "instagram"
+                )
         except Exception:
             pass
 

@@ -20,6 +20,7 @@ Uso:
 """
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,15 @@ from urllib.parse import urlparse
 import httpx
 
 from src.core.config import logger
+
+# [HTTP-POOL] http_client global injetado pelo startup do main.py.
+# Se None (ex.: teste unitario), _enviar cria um AsyncClient local.
+http_client: Optional[httpx.AsyncClient] = None
+
+# Retry config — alinhado com UazAPIClient / InstagramClient
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1.0, 2.0, 4.0]
+_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 def _monta_menu_texto(menu: Dict[str, Any]) -> str:
@@ -85,14 +95,70 @@ class ChatwootFlowClient:
             url_base = f"https://{raw}"
         return str(url_base).rstrip("/"), str(token)
 
+    async def _do_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Optional[httpx.Response]:
+        """
+        HTTP com retry exponencial em 429/5xx. Reusa http_client global injetado
+        pelo startup; se nao tiver, cria AsyncClient local por chamada.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                client = http_client
+                if client is None:
+                    # Fallback — contexto sem startup (raro). Cria client local.
+                    async with httpx.AsyncClient(timeout=20.0) as local:
+                        resp = await local.request(
+                            method, url, json=json, data=data, files=files, headers=headers
+                        )
+                else:
+                    resp = await client.request(
+                        method, url, json=json, data=data, files=files, headers=headers, timeout=20.0
+                    )
+
+                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+                    delay = _RETRY_DELAYS[attempt]
+                    logger.warning(
+                        f"[ChatwootFlowClient] HTTP {resp.status_code} retentavel "
+                        f"conv={self.conversation_id} — retry em {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                return resp
+
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+                last_exc = e
+                delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
+                logger.warning(
+                    f"[ChatwootFlowClient] rede {type(e).__name__} "
+                    f"conv={self.conversation_id} — retry {attempt+1}/{_MAX_RETRIES} em {delay}s"
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logger.error(f"[ChatwootFlowClient] erro inesperado: {e}")
+                return None
+
+        logger.error(
+            f"[ChatwootFlowClient] falhou apos {_MAX_RETRIES} tentativas "
+            f"conv={self.conversation_id}: {last_exc}"
+        )
+        return None
+
     async def _enviar(self, text: str) -> bool:
-        """
-        POST direto pra API do Chatwoot. Nao depende de http_client global
-        (que nao eh inicializado neste contexto — causava NoneType.post).
-        """
+        """POST JSON pra API do Chatwoot — com retry estruturado."""
         url_base, token = self._resolve_url_token()
         if not url_base or not token:
-            logger.error(f"[ChatwootFlowClient] integracao Chatwoot incompleta conv={self.conversation_id}")
+            logger.error(
+                f"[ChatwootFlowClient] integracao Chatwoot incompleta conv={self.conversation_id}"
+            )
             return False
 
         post_url = (
@@ -100,9 +166,7 @@ class ChatwootFlowClient:
             f"/conversations/{self.conversation_id}/messages"
         )
 
-        # Prefixo de nome (mesma convencao do enviar_mensagem_chatwoot)
         content = f"*{self.nome_ia}*\n{text}" if self.nome_ia else text
-
         payload = {
             "content": content,
             "message_type": "outgoing",
@@ -114,33 +178,33 @@ class ChatwootFlowClient:
         }
         headers = {"api_access_token": token}
 
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(post_url, json=payload, headers=headers)
-                if resp.status_code >= 400:
-                    logger.error(
-                        f"[ChatwootFlowClient] send_text HTTP {resp.status_code}: {resp.text[:200]}"
-                    )
-                    return False
+        resp = await self._do_request("POST", post_url, json=payload, headers=headers)
+        if resp is None or resp.status_code >= 400:
+            logger.error(
+                f"[ChatwootFlowClient] send_text final HTTP={resp.status_code if resp else 'None'}: "
+                f"{resp.text[:200] if resp else 'sem resposta'}"
+            )
+            return False
 
-                # Marca ID da msg no Redis pra evitar que seja reconhecida como humana
+        # Marca ID da msg no Redis pra evitar que seja reconhecida como humana
+        try:
+            _data = resp.json()
+            _msg_id = _data.get("id") if isinstance(_data, dict) else None
+            if _msg_id:
                 try:
-                    _data = resp.json()
-                    _msg_id = _data.get("id") if isinstance(_data, dict) else None
-                    if _msg_id:
-                        try:
-                            from src.core.redis_client import redis_client as _rc
-                            await _rc.setex(f"ai_msg_id:{self.empresa_id}:{_msg_id}", 600, "1")
-                            await _rc.setex(f"ai_msg_id:{_msg_id}", 600, "1")  # legado
-                        except Exception:
-                            pass
+                    from src.core.redis_client import redis_client as _rc
+                    await _rc.setex(f"ai_msg_id:{self.empresa_id}:{_msg_id}", 600, "1")
+                    await _rc.setex(f"ai_msg_id:{_msg_id}", 600, "1")  # legado
                 except Exception:
                     pass
+        except Exception:
+            pass
 
-            return True
-        except Exception as e:
-            logger.error(f"[ChatwootFlowClient] _enviar exception conv={self.conversation_id}: {e}")
-            return False
+        logger.info(
+            f"✅ [ChatwootFlowClient] send_text conv={self.conversation_id} "
+            f"({len(content)} chars)"
+        )
+        return True
 
     # ──────────────────── texto ────────────────────
     async def send_text(self, phone: str, text: str, **kw) -> bool:
@@ -227,14 +291,18 @@ class ChatwootFlowClient:
             }
             headers = {"api_access_token": str(token)}
 
-            async with httpx.AsyncClient(timeout=30.0) as up:
-                resp = await up.post(post_url, data=data, files=files, headers=headers)
-                if resp.status_code >= 400:
-                    logger.error(
-                        f"[ChatwootFlowClient] upload falhou {resp.status_code}: {resp.text[:200]}"
-                    )
-                    # fallback: manda como texto pra nao perder a mensagem
-                    return await self._enviar(f"{url}\n\n{caption}" if caption else url)
+            # Usa _do_request pra reusar pool + retry em 429/5xx
+            resp = await self._do_request(
+                "POST", post_url, data=data, files=files, headers=headers
+            )
+            if resp is None or resp.status_code >= 400:
+                logger.error(
+                    f"[ChatwootFlowClient] upload falhou "
+                    f"HTTP={resp.status_code if resp else 'None'}: "
+                    f"{resp.text[:200] if resp else 'sem resposta'}"
+                )
+                # fallback: manda como texto pra nao perder a mensagem
+                return await self._enviar(f"{url}\n\n{caption}" if caption else url)
 
             logger.info(
                 f"✅ [ChatwootFlowClient] mídia enviada conv={self.conversation_id} "
