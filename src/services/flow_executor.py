@@ -233,6 +233,10 @@ async def executar_fluxo(
 
     # Persiste todas as variáveis alteradas durante o processamento/execução
     await _set_vars(empresa_id, phone, session_vars, unidade_id)
+    # [HORA-01] Se algum no sinalizou fallback, retorna False pra IA padrao assumir
+    if session_vars.get("_flow_fallthrough"):
+        logger.info(f"[FlowExecutor] Fluxo sinalizou fallback — IA padrao vai responder (phone={phone})")
+        return False
     return True
 
 
@@ -970,12 +974,15 @@ async def _execute_from(
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         else:
-            # [HORA-01] Handle sem conexao — loga WARNING pra admin saber, mas NAO envia
-            # mensagem automatica (nao interfere no atendimento humano fora do horario).
+            # [HORA-01] Handle sem conexao — sinaliza fallback pra IA padrao assumir
+            # (evita conversa morta quando admin esqueceu de conectar handle).
             logger.warning(
                 f"[FlowExecutor] BusinessHours handle='{handle}' SEM conexao proxima empresa={empresa_id}. "
-                f"Se quer comportamento especifico, conecte o handle '{handle}' a um no no editor."
+                f"Fluxo sinalizou fallback pra IA padrao responder."
             )
+            session_vars["_flow_fallthrough"] = True
+            # Limpa state pra nao prender o cliente no fluxo
+            await _clear_state(empresa_id, phone, unidade_id)
         return
 
     # ── code (Python Snippet) ──
