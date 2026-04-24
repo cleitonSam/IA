@@ -4,16 +4,39 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- [M-02] ContextVar de empresa_id — injetado em TODOS os logs ---
+# Setado em middlewares, webhooks, workers. Permite filtrar logs por empresa.
+from contextvars import ContextVar
+_tenant_context: ContextVar = ContextVar("empresa_id", default=None)
+
+
+def set_tenant_context(empresa_id):
+    """Seta empresa_id no contexto atual. Chamar no inicio de webhook/worker task."""
+    return _tenant_context.set(empresa_id)
+
+
+def get_tenant_context():
+    """Retorna empresa_id do contexto atual, ou None."""
+    return _tenant_context.get()
+
+
 # --- CONFIGURAÇÃO DE LOG (loguru se disponível, senão logging padrão) ---
 try:
     from loguru import logger as _loguru_logger
     import sys as _sys
     _loguru_logger.remove()
+
+    def _tenant_filter(record):
+        """Injeta empresa_id do ContextVar em record.extra."""
+        record["extra"]["tenant"] = _tenant_context.get() or "-"
+        return True
+
     _loguru_logger.add(
         _sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <dim>t={extra[tenant]}</dim> | <cyan>{message}</cyan>",
         level="INFO",
-        colorize=True
+        colorize=True,
+        filter=_tenant_filter,
     )
     logger = _loguru_logger
     # Suprime logs de bibliotecas externas via logging padrão
