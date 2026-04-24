@@ -56,26 +56,38 @@ async def uazapi_webhook(
         return {"status": "ignored", "reason": "integration_not_active"}
 
     # [SEC-03] Validação de webhook secret — FAIL-CLOSED com comparação constant-time.
-    # Suporta X-Api-Key, X-Webhook-Token e Authorization: Bearer <token>.
+    # Pode ser desabilitado por integração com `require_webhook_secret: false` no config.
     _expected_secret = integracao.get("webhook_secret") or integracao.get("webhook_token")
-    if not _expected_secret:
-        logger.error(
-            f"[SEC-03] UazAPI webhook_secret AUSENTE para empresa={empresa_id} unidade={unidade_id} — "
-            f"rejeitando webhook. Configure integracao.webhook_secret."
-        )
-        raise HTTPException(status_code=400, detail="Webhook secret não configurado")
+    _require_secret = integracao.get("require_webhook_secret", True)
+    # Normaliza: "false"/"0"/False → False (pode vir como string do JSON)
+    if isinstance(_require_secret, str):
+        _require_secret = _require_secret.strip().lower() not in ("false", "0", "no", "nao", "não", "")
 
-    _received_raw = (
-        x_api_key
-        or x_webhook_token
-        or (authorization.replace("Bearer ", "").strip() if authorization else None)
-    )
-    _received = (_received_raw or "").strip()
-    if not _received or not hmac.compare_digest(_received, str(_expected_secret).strip()):
-        logger.warning(
-            f"[SEC-03] Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id} unidade={unidade_id})"
+    if not _expected_secret:
+        if _require_secret:
+            logger.error(
+                f"[SEC-03] UazAPI webhook_secret AUSENTE para empresa={empresa_id} unidade={unidade_id} — "
+                f"rejeitando webhook. Configure integracao.webhook_secret OU defina require_webhook_secret=false."
+            )
+            raise HTTPException(status_code=400, detail="Webhook secret não configurado")
+        else:
+            # Integração marcada explicitamente como "sem secret" — aceita mas loga warning
+            logger.warning(
+                f"[SEC-03] Webhook UazAPI SEM validacao de secret (require_webhook_secret=false) — "
+                f"empresa={empresa_id} unidade={unidade_id}. Considere habilitar para producao."
+            )
+    else:
+        _received_raw = (
+            x_api_key
+            or x_webhook_token
+            or (authorization.replace("Bearer ", "").strip() if authorization else None)
         )
-        raise HTTPException(status_code=401, detail="Webhook secret inválido")
+        _received = (_received_raw or "").strip()
+        if not _received or not hmac.compare_digest(_received, str(_expected_secret).strip()):
+            logger.warning(
+                f"[SEC-03] Webhook UazAPI rejeitado — secret inválido (empresa={empresa_id} unidade={unidade_id})"
+            )
+            raise HTTPException(status_code=401, detail="Webhook secret inválido")
 
     try:
         event = body.get("event")
