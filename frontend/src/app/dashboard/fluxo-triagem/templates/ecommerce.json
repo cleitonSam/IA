@@ -1,0 +1,57 @@
+{
+  "nome": "E-commerce / Suporte",
+  "descricao": "Triagem de suporte em e-commerce: status de pedido, devolução, dúvidas de produto, FAQ com IA.",
+  "ativo": true,
+  "nodes": [
+    { "id": "start-1", "type": "start", "position": { "x": 0, "y": 0 }, "data": {} },
+    { "id": "sendText-welcome", "type": "sendText", "position": { "x": 0, "y": 140 }, "data": { "texto": "Olá! 🛍️ Seja bem-vindo(a). Como posso ajudar?" } },
+    { "id": "sendMenu-1", "type": "sendMenu", "position": { "x": 0, "y": 300 }, "data": {
+      "tipo": "list", "titulo": "Suporte", "texto": "Escolha uma opção:", "rodape": "",
+      "botao": "Ver opções",
+      "opcoes": [
+        { "id": "1", "titulo": "📦 Status do meu pedido" },
+        { "id": "2", "titulo": "↩️ Trocas e devoluções" },
+        { "id": "3", "titulo": "❓ Dúvidas de produto" },
+        { "id": "4", "titulo": "👤 Atendente humano" }
+      ]
+    }},
+    { "id": "switch-1", "type": "switch", "position": { "x": 0, "y": 460 }, "data": {
+      "conditions": [
+        { "handle": "h1", "label": "Pedido", "value": "1" },
+        { "handle": "h2", "label": "Troca", "value": "2" },
+        { "handle": "h3", "label": "Duvida", "value": "3" },
+        { "handle": "h4", "label": "Humano", "value": "4" }
+      ]
+    }},
+    { "id": "waitInput-pedido", "type": "waitInput", "position": { "x": -400, "y": 620 }, "data": { "prompt": "Me passa o número do seu pedido (ex: #12345):", "variavel": "numero_pedido" } },
+    { "id": "httpRequest-status", "type": "httpRequest", "position": { "x": -400, "y": 780 }, "data": {
+      "method": "GET",
+      "url": "https://seu-erp.com/api/pedidos/{{numero_pedido}}",
+      "auth_type": "bearer",
+      "auth_token": "{{api_token}}",
+      "headers": {},
+      "response_map": { "status_pedido": "status", "previsao_entrega": "delivery_estimate" },
+      "timeout": 10
+    }},
+    { "id": "sendText-status", "type": "sendText", "position": { "x": -400, "y": 960 }, "data": { "texto": "📦 Pedido *{{numero_pedido}}*\nStatus: *{{status_pedido}}*\nPrevisão: {{previsao_entrega}}" } },
+    { "id": "sendText-erro", "type": "sendText", "position": { "x": -700, "y": 960 }, "data": { "texto": "Hmm, não consegui consultar agora. Vou te passar pra um atendente." } },
+    { "id": "aiRespond-troca", "type": "aiRespond", "position": { "x": -100, "y": 620 }, "data": { "prompt_extra": "Explique o processo de troca/devolucao: prazo de 7 dias, produto lacrado, como fazer a solicitacao. Mantenha tom amigavel." } },
+    { "id": "search-faq", "type": "search", "position": { "x": 200, "y": 620 }, "data": { "termo": "{{mensagem}}", "variavel": "faq_resposta" } },
+    { "id": "aiRespond-duvida", "type": "aiRespond", "position": { "x": 200, "y": 780 }, "data": { "prompt_extra": "Use {{faq_resposta}} se encontrou; senao, responda baseado nos produtos." } },
+    { "id": "humanTransfer-1", "type": "humanTransfer", "position": { "x": 500, "y": 620 }, "data": { "mensagem": "Ok, vou te passar pra um atendente humano. 👤" } }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start-1", "target": "sendText-welcome", "type": "default" },
+    { "id": "e2", "source": "sendText-welcome", "target": "sendMenu-1", "type": "default" },
+    { "id": "e3", "source": "sendMenu-1", "target": "switch-1", "type": "default" },
+    { "id": "e4a", "source": "switch-1", "sourceHandle": "h1", "target": "waitInput-pedido", "type": "default" },
+    { "id": "e4b", "source": "switch-1", "sourceHandle": "h2", "target": "aiRespond-troca", "type": "default" },
+    { "id": "e4c", "source": "switch-1", "sourceHandle": "h3", "target": "search-faq", "type": "default" },
+    { "id": "e4d", "source": "switch-1", "sourceHandle": "h4", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e5", "source": "waitInput-pedido", "target": "httpRequest-status", "type": "default" },
+    { "id": "e6a", "source": "httpRequest-status", "sourceHandle": "success", "target": "sendText-status", "type": "default" },
+    { "id": "e6b", "source": "httpRequest-status", "sourceHandle": "error", "target": "sendText-erro", "type": "default" },
+    { "id": "e7", "source": "sendText-erro", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e8", "source": "search-faq", "target": "aiRespond-duvida", "type": "default" }
+  ]
+}

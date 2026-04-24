@@ -1493,6 +1493,13 @@ async def _execute_from(
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
+    # ── Group Box (no-op no runtime — so existe no editor visual) ──
+    if node_type == "groupBox":
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
     # ── Sticky Note (no-op no runtime — so existe no editor) ──
     if node_type == "stickyNote":
         next_id = _get_next_node_id(fluxo, node_id)

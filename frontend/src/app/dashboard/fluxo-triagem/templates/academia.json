@@ -1,0 +1,49 @@
+{
+  "nome": "Academia / Fitness",
+  "descricao": "Triagem simples: boas-vindas, menu (planos, aulas, horários, falar com atendente), respostas com IA e transferência humano.",
+  "ativo": true,
+  "nodes": [
+    { "id": "start-1", "type": "start", "position": { "x": 0, "y": 0 }, "data": {} },
+    { "id": "sendText-welcome", "type": "sendText", "position": { "x": 0, "y": 150 }, "data": { "texto": "Olá! 👋 Bem-vindo(a) à academia! Em que posso ajudar?" } },
+    { "id": "sendMenu-1", "type": "sendMenu", "position": { "x": 0, "y": 320 }, "data": {
+      "tipo": "list", "titulo": "Menu principal", "texto": "Escolha uma opção:", "rodape": "Atendimento 24h",
+      "botao": "Ver opções",
+      "opcoes": [
+        { "id": "1", "titulo": "💰 Planos e preços" },
+        { "id": "2", "titulo": "🧘 Aulas e modalidades" },
+        { "id": "3", "titulo": "📅 Agendar visita" },
+        { "id": "4", "titulo": "👤 Falar com atendente" }
+      ]
+    }},
+    { "id": "switch-1", "type": "switch", "position": { "x": 0, "y": 480 }, "data": {
+      "conditions": [
+        { "handle": "h1", "label": "Planos", "value": "1" },
+        { "handle": "h2", "label": "Aulas", "value": "2" },
+        { "handle": "h3", "label": "Agendar", "value": "3" },
+        { "handle": "h4", "label": "Atendente", "value": "4" }
+      ]
+    }},
+    { "id": "aiRespond-planos", "type": "aiRespond", "position": { "x": -300, "y": 640 }, "data": { "prompt_extra": "Fale sobre planos mensais, anuais e promocoes atuais. Use bullets e convide pra marcar uma visita." } },
+    { "id": "aiRespond-aulas", "type": "aiRespond", "position": { "x": -100, "y": 640 }, "data": { "prompt_extra": "Apresente as modalidades (musculacao, funcional, spinning, pilates, zumba). Pergunte qual interessa mais." } },
+    { "id": "aiQualify-1", "type": "aiQualify", "position": { "x": 100, "y": 640 }, "data": {
+      "perguntas": ["Qual o melhor dia pra visita?", "Qual horário?", "Pode me passar seu nome?"],
+      "variaveis": ["data_visita", "hora_visita", "nome_lead"]
+    }},
+    { "id": "humanTransfer-1", "type": "humanTransfer", "position": { "x": 300, "y": 640 }, "data": { "mensagem": "Vou te transferir para um atendente humano. Aguarde um momento! 👤" } },
+    { "id": "addLabel-visita", "type": "addLabel", "position": { "x": 100, "y": 800 }, "data": { "labels": ["Visita-Agendada"] } },
+    { "id": "end-1", "type": "end", "position": { "x": 0, "y": 960 }, "data": {} }
+  ],
+  "edges": [
+    { "id": "e-start-welcome", "source": "start-1", "target": "sendText-welcome", "type": "default" },
+    { "id": "e-welcome-menu",  "source": "sendText-welcome", "target": "sendMenu-1", "type": "default" },
+    { "id": "e-menu-switch",   "source": "sendMenu-1", "target": "switch-1", "type": "default" },
+    { "id": "e-sw-planos",     "source": "switch-1", "sourceHandle": "h1", "target": "aiRespond-planos", "type": "default" },
+    { "id": "e-sw-aulas",      "source": "switch-1", "sourceHandle": "h2", "target": "aiRespond-aulas", "type": "default" },
+    { "id": "e-sw-visita",     "source": "switch-1", "sourceHandle": "h3", "target": "aiQualify-1", "type": "default" },
+    { "id": "e-sw-transfer",   "source": "switch-1", "sourceHandle": "h4", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e-qual-label",    "source": "aiQualify-1", "target": "addLabel-visita", "type": "default" },
+    { "id": "e-label-end",     "source": "addLabel-visita", "target": "end-1", "type": "default" },
+    { "id": "e-planos-end",    "source": "aiRespond-planos", "target": "end-1", "type": "default" },
+    { "id": "e-aulas-end",     "source": "aiRespond-aulas", "target": "end-1", "type": "default" }
+  ]
+}

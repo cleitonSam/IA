@@ -148,3 +148,55 @@ git push origin main
 ```
 
 Depois do deploy, a aba "Fluxo de Triagem" vai ter 10 nós novos na paleta lateral e suporte a undo/redo.
+
+## Onda 4 — 8 itens "de boa" (continuação)
+
+### Novos nós implementados
+
+| Nó | Uso | Arquivo |
+|---|---|---|
+| `delayHuman` | Delay aleatório entre `min_seconds`-`max_seconds` (simula humano). Opção de mostrar "digitando..." | `DelayHumanNode.tsx` |
+| `abTestSplit` | Split A/B por hash do telefone (determinístico — mesmo user sempre cai na mesma variante). N variantes com pesos customizáveis | `AbTestSplitNode.tsx` |
+| `formValidation` | Valida email / CPF / CNPJ / telefone BR em tempo real. Handles `valid` e `invalid` | `FormValidationNode.tsx` |
+| `stickyNote` | Nota adesiva colorida (5 cores) pra documentar o fluxo no canvas. Sem handles, no-op em runtime | `StickyNoteNode.tsx` |
+| `groupBox` | Moldura visual pra agrupar nós. Redimensionável, 5 cores de borda. No-op em runtime | `GroupBoxNode.tsx` |
+
+### Validação ao salvar
+
+Função `validateFlow()` em `page.tsx` detecta antes do publish:
+- Falta de nó `start` ou múltiplos `start`s
+- Nós órfãos (sem edge apontando pra eles, exceto `start` e `stickyNote`)
+- Nós sem saída conectada (exceto terminais: `end`, `humanTransfer`, `transferTeam`, `goToMenu`, `stickyNote`)
+- URLs vazias em `sendImage`/`sendMedia`/`sendAudio`/`httpRequest`
+- Texto vazio em `sendText`/`waitInput`
+
+Se tiver problema, mostra alerta e pergunta se quer salvar mesmo assim.
+
+### Templates prontos por vertical
+
+Criados 4 templates em `frontend/src/app/dashboard/fluxo-triagem/templates/`:
+
+1. **Academia / Fitness** — 10 nós, menu (planos, aulas, agendar, atendente), IA responde planos/aulas, qualify pra agendamento
+2. **Clínica / Consultório** — 13 nós, respeita horário comercial, valida CPF, qualify (nome + especialidade + preferência)
+3. **Imobiliária / Corretagem** — 9 nós, qualifica lead (tipo, região, preço, cômodos), extract pra normalizar, labels dinâmicas, transfer pra corretor
+4. **E-commerce / Suporte** — 12 nós, consulta status de pedido via HTTP Request (GET ao ERP), trocas via IA, dúvidas via FAQ+IA
+
+Integrados no `TemplatesModal` existente como "built-in" (ids negativos, não podem ser deletados).
+
+### MiniMap
+
+MiniMap já estava implementado no `page.tsx:677-688` com cores baseadas em `NODE_CONFIG[n.type].border`. Nada a fazer.
+
+### Fix UazAPI delay em int ms
+
+Confirmado que todos os `delay` passados pra UazAPI são `int()` em millisegundos (800, 900, 1000, ...). Match com a documentação da UazAPI.
+
+### Grouping — status parcial
+
+Implementado como **grupo visual** (moldura redimensionável `GroupBoxNode`) — não é true parent/child. Pra ter filhos que se movem junto com o grupo no React Flow precisa:
+- `parentId` nos nós filhos
+- `extent: "parent"` pra limitar ao bounding box
+- Lógica de drag-to-parent no editor
+
+Isso fica pendente pra próxima onda — a moldura visual já resolve 80% do caso de uso (organização).
+

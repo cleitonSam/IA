@@ -16,7 +16,7 @@ export type NodeTypeName =
   | "businessHours"
   | "humanTransfer" | "transferTeam" | "webhook" | "generateProtocol"
   | "search" | "redis" | "sourceFilter"
-  | "delayHuman" | "abTestSplit" | "formValidation" | "stickyNote";
+  | "delayHuman" | "abTestSplit" | "formValidation" | "stickyNote" | "groupBox";
 
 export const NODE_CONFIG: Record<NodeTypeName, {
   label: string;
@@ -70,6 +70,7 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   abTestSplit:   { label: "A/B Test",        icon: "🧪", border: "#c084fc", headerBg: "#3b0764",  headerText: "#e9d5ff", category: "logic"   },
   formValidation:{ label: "Validar Campo",   icon: "✅", border: "#059669", headerBg: "#064e3b",  headerText: "#bbf7d0", category: "logic"   },
   stickyNote:    { label: "Nota (Sticky)",   icon: "📝", border: "#fbbf24", headerBg: "#78350f",  headerText: "#fef3c7", category: "system"  },
+  groupBox:      { label: "Grupo",           icon: "🗂", border: "#64748b", headerBg: "#1e293b",  headerText: "#cbd5e1", category: "system"  },
   generateProtocol: { label: "Protocolo",    icon: "🔢", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
 };
 

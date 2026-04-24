@@ -20,6 +20,7 @@ import DelayHumanNode from "./DelayHumanNode";
 import AbTestSplitNode from "./AbTestSplitNode";
 import FormValidationNode from "./FormValidationNode";
 import StickyNoteNode from "./StickyNoteNode";
+import GroupBoxNode from "./GroupBoxNode";
 import AIRespondNode from "./AIRespondNode";
 import AIClassifyNode from "./AIClassifyNode";
 import AISentimentNode from "./AISentimentNode";
@@ -67,6 +68,7 @@ export const nodeTypes = {
   abTestSplit:   AbTestSplitNode,
   formValidation:FormValidationNode,
   stickyNote:    StickyNoteNode,
+  groupBox:      GroupBoxNode,
   aiRespond:     AIRespondNode,
   aiClassify:    AIClassifyNode,
   aiSentiment:   AISentimentNode,

@@ -207,8 +207,67 @@ export default function FluxoTriagemPage() {
       .finally(() => setLoading(false));
   }, [attachOnChange, setEdges, setNodes]);
 
+  // ─── Validar fluxo antes de salvar ───
+  // Retorna array de problemas (vazio = tudo ok).
+  const validateFlow = (): string[] => {
+    const problemas: string[] = [];
+    const startNodes = nodes.filter((n) => n.type === "start");
+    if (startNodes.length === 0) problemas.push("Falta no 'Inicio' (start).");
+    if (startNodes.length > 1) problemas.push(`Multiplos nos 'Inicio' encontrados (${startNodes.length}) — deve haver apenas 1.`);
+
+    // Nos orfaos: nenhum edge chega neles (exceto start e stickyNote)
+    const incomingByTarget = new Map<string, number>();
+    edges.forEach((e) => {
+      incomingByTarget.set(e.target, (incomingByTarget.get(e.target) || 0) + 1);
+    });
+    const orfaos = nodes.filter(
+      (n) => n.type !== "start" && n.type !== "stickyNote" && !incomingByTarget.has(n.id)
+    );
+    if (orfaos.length > 0) {
+      const ids = orfaos.slice(0, 5).map((n) => `${n.type}#${n.id.slice(0, 8)}`).join(", ");
+      problemas.push(`${orfaos.length} no(s) orfao(s) sem ninguem apontando pra eles: ${ids}${orfaos.length > 5 ? "..." : ""}`);
+    }
+
+    // Nos sem saida (exceto end, humanTransfer, transferTeam, stickyNote, goToMenu)
+    const TERMINAL_TYPES = new Set(["end", "humanTransfer", "transferTeam", "stickyNote", "goToMenu"]);
+    const outgoingBySource = new Map<string, number>();
+    edges.forEach((e) => {
+      outgoingBySource.set(e.source, (outgoingBySource.get(e.source) || 0) + 1);
+    });
+    const semSaida = nodes.filter(
+      (n) => !TERMINAL_TYPES.has(n.type as string) && !outgoingBySource.has(n.id)
+    );
+    if (semSaida.length > 0) {
+      const ids = semSaida.slice(0, 5).map((n) => `${n.type}#${n.id.slice(0, 8)}`).join(", ");
+      problemas.push(`${semSaida.length} no(s) sem saida conectada: ${ids}${semSaida.length > 5 ? "..." : ""}`);
+    }
+
+    // URLs vazias em nos de envio/midia (warning leve)
+    nodes.forEach((n) => {
+      const d = n.data as Record<string, unknown>;
+      if ((n.type === "sendImage" || n.type === "sendMedia" || n.type === "sendAudio") && !d.url) {
+        problemas.push(`${n.type} (${n.id.slice(0, 8)}): URL vazia.`);
+      }
+      if ((n.type === "sendText" || n.type === "waitInput") && !(d.texto || d.prompt)) {
+        problemas.push(`${n.type} (${n.id.slice(0, 8)}): texto vazio.`);
+      }
+      if (n.type === "httpRequest" && !d.url) {
+        problemas.push(`httpRequest (${n.id.slice(0, 8)}): URL vazia.`);
+      }
+    });
+
+    return problemas;
+  };
+
   // ─── Salvar fluxo ───
   const handleSave = async () => {
+    const problemas = validateFlow();
+    if (problemas.length > 0) {
+      const msg = "Corrija antes de publicar:\n\n• " + problemas.join("\n• ");
+      if (!window.confirm(msg + "\n\nSalvar mesmo assim?")) {
+        return;
+      }
+    }
     setSaving(true);
     setError("");
     try {
@@ -815,6 +874,7 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     },
     formValidation:{ tipo: "email", valor: "{{mensagem}}", variavel_resultado: "_validation_ok" },
     stickyNote:    { texto: "Anotação...", color_idx: 0 },
+    groupBox:      { titulo: "Grupo", color_idx: 0, width: 400, height: 300 },
     aiRespond:     { prompt_extra: "" },
     aiClassify:    { conditions: [], variavel: "intencao" },
     aiSentiment:   { variavel: "sentimento" },

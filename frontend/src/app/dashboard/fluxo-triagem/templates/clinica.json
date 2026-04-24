@@ -1,0 +1,67 @@
+{
+  "nome": "Clínica / Consultório",
+  "descricao": "Boas-vindas, horário, roteamento por especialidade, agendamento de consulta com validação de CPF e dados do paciente.",
+  "ativo": true,
+  "nodes": [
+    { "id": "start-1", "type": "start", "position": { "x": 0, "y": 0 }, "data": {} },
+    { "id": "businessHours-1", "type": "businessHours", "position": { "x": 0, "y": 140 }, "data": {
+      "modo": "custom", "fusoHorario": "America/Sao_Paulo",
+      "horarios": {
+        "0": { "ativo": false, "inicio": "", "fim": "" },
+        "1": { "ativo": true, "inicio": "08:00", "fim": "18:00" },
+        "2": { "ativo": true, "inicio": "08:00", "fim": "18:00" },
+        "3": { "ativo": true, "inicio": "08:00", "fim": "18:00" },
+        "4": { "ativo": true, "inicio": "08:00", "fim": "18:00" },
+        "5": { "ativo": true, "inicio": "08:00", "fim": "18:00" },
+        "6": { "ativo": true, "inicio": "08:00", "fim": "12:00" }
+      }
+    }},
+    { "id": "sendText-fora", "type": "sendText", "position": { "x": -300, "y": 300 }, "data": { "texto": "Olá! No momento estamos fora do horário de atendimento. Nossa recepção atende de seg-sex 8h-18h e sáb 8h-12h. 🩺" } },
+    { "id": "sendText-welcome", "type": "sendText", "position": { "x": 200, "y": 300 }, "data": { "texto": "Olá! 👋 Como posso te ajudar hoje?" } },
+    { "id": "sendMenu-1", "type": "sendMenu", "position": { "x": 200, "y": 460 }, "data": {
+      "tipo": "list", "titulo": "Atendimento", "texto": "Selecione:", "rodape": "",
+      "botao": "Ver opções",
+      "opcoes": [
+        { "id": "1", "titulo": "📅 Agendar consulta" },
+        { "id": "2", "titulo": "📋 Meus agendamentos" },
+        { "id": "3", "titulo": "💊 Receitas e exames" },
+        { "id": "4", "titulo": "👩‍⚕️ Falar com recepção" }
+      ]
+    }},
+    { "id": "switch-1", "type": "switch", "position": { "x": 200, "y": 620 }, "data": {
+      "conditions": [
+        { "handle": "h1", "label": "Agendar", "value": "1" },
+        { "handle": "h2", "label": "Meus", "value": "2" },
+        { "handle": "h3", "label": "Receitas", "value": "3" },
+        { "handle": "h4", "label": "Recepcao", "value": "4" }
+      ]
+    }},
+    { "id": "waitInput-cpf", "type": "waitInput", "position": { "x": 0, "y": 780 }, "data": { "prompt": "Me passa seu CPF (só números):", "variavel": "cpf_paciente" } },
+    { "id": "formValidation-cpf", "type": "formValidation", "position": { "x": 0, "y": 940 }, "data": { "tipo": "cpf", "valor": "{{cpf_paciente}}", "variavel_resultado": "cpf_ok" } },
+    { "id": "sendText-cpf-invalido", "type": "sendText", "position": { "x": -300, "y": 1100 }, "data": { "texto": "Hmm, esse CPF não parece válido. Pode conferir e digitar novamente?" } },
+    { "id": "aiQualify-1", "type": "aiQualify", "position": { "x": 200, "y": 1100 }, "data": {
+      "perguntas": ["Qual seu nome completo?", "Qual especialidade você procura?", "Tem preferência de dia/horário?"],
+      "variaveis": ["nome_paciente", "especialidade", "preferencia_horario"]
+    }},
+    { "id": "humanTransfer-1", "type": "humanTransfer", "position": { "x": 500, "y": 780 }, "data": { "mensagem": "Estou te passando pra recepção. Aguarde um momentinho! 👩‍⚕️" } },
+    { "id": "addLabel-agend", "type": "addLabel", "position": { "x": 200, "y": 1260 }, "data": { "labels": ["Agendamento-Pendente"] } },
+    { "id": "end-1", "type": "end", "position": { "x": 200, "y": 1420 }, "data": {} }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start-1", "target": "businessHours-1", "type": "default" },
+    { "id": "e2a", "source": "businessHours-1", "sourceHandle": "fechado", "target": "sendText-fora", "type": "default" },
+    { "id": "e2b", "source": "businessHours-1", "sourceHandle": "aberto", "target": "sendText-welcome", "type": "default" },
+    { "id": "e3", "source": "sendText-welcome", "target": "sendMenu-1", "type": "default" },
+    { "id": "e4", "source": "sendMenu-1", "target": "switch-1", "type": "default" },
+    { "id": "e5a", "source": "switch-1", "sourceHandle": "h1", "target": "waitInput-cpf", "type": "default" },
+    { "id": "e5b", "source": "switch-1", "sourceHandle": "h2", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e5c", "source": "switch-1", "sourceHandle": "h3", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e5d", "source": "switch-1", "sourceHandle": "h4", "target": "humanTransfer-1", "type": "default" },
+    { "id": "e6", "source": "waitInput-cpf", "target": "formValidation-cpf", "type": "default" },
+    { "id": "e7a", "source": "formValidation-cpf", "sourceHandle": "invalid", "target": "sendText-cpf-invalido", "type": "default" },
+    { "id": "e7b", "source": "formValidation-cpf", "sourceHandle": "valid", "target": "aiQualify-1", "type": "default" },
+    { "id": "e8", "source": "sendText-cpf-invalido", "target": "waitInput-cpf", "type": "default" },
+    { "id": "e9", "source": "aiQualify-1", "target": "addLabel-agend", "type": "default" },
+    { "id": "e10", "source": "addLabel-agend", "target": "end-1", "type": "default" }
+  ]
+}

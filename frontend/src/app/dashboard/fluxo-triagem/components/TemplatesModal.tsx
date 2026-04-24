@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from "axios";
 import { X, Save, Trash2, Loader2 } from "lucide-react";
+import { TEMPLATES_FLUXO } from "../templates";
 
 interface FlowTemplate {
   id: number;
@@ -61,8 +62,29 @@ export default function TemplatesModal({ open, onClose, currentFlow, onLoadTempl
   const fetchTemplates = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get("/api-backend/management/flow-templates", getConfig());
-      setTemplates(res.data);
+      let list: FlowTemplate[] = [];
+      try {
+        const res = await axios.get("/api-backend/management/flow-templates", getConfig());
+        list = res.data;
+      } catch (e) {
+        console.warn("Templates remotos nao acessiveis", e);
+      }
+      // Mescla templates built-in (sempre disponiveis, nao podem ser deletados)
+      const builtin: FlowTemplate[] = TEMPLATES_FLUXO.map((t, i) => ({
+        id: -1000 - i,
+        nome: t.nome + " (built-in)",
+        categoria: t.nome.toLowerCase().includes("academia") ? "academia"
+          : t.nome.toLowerCase().includes("clinica") ? "clinica"
+          : t.nome.toLowerCase().includes("imobili") ? "geral"
+          : t.nome.toLowerCase().includes("ecommerce") || t.nome.toLowerCase().includes("e-commerce") ? "ecommerce"
+          : "geral",
+        descricao: t.descricao,
+        publico: true,
+        proprio: false,
+        created_at: new Date().toISOString(),
+        flow_data: { ativo: t.ativo, nodes: t.nodes, edges: t.edges },
+      }));
+      setTemplates([...builtin, ...list]);
     } catch (e) {
       console.error(e);
     } finally {
@@ -96,6 +118,10 @@ export default function TemplatesModal({ open, onClose, currentFlow, onLoadTempl
   };
 
   const handleDeleteTemplate = async (id: number) => {
+    if (id < 0) {
+      alert("Templates built-in nao podem ser deletados.");
+      return;
+    }
     try {
       await axios.delete(`/api-backend/management/flow-templates/${id}`, getConfig());
       setTemplates((t) => t.filter((tpl) => tpl.id !== id));

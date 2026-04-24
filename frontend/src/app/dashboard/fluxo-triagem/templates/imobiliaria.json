@@ -1,0 +1,55 @@
+{
+  "nome": "Imobiliária / Corretagem",
+  "descricao": "Qualificação de lead imobiliário: tipo de imóvel, compra/aluguel, região, faixa de preço, envio pro corretor com tags.",
+  "ativo": true,
+  "nodes": [
+    { "id": "start-1", "type": "start", "position": { "x": 0, "y": 0 }, "data": {} },
+    { "id": "sendText-welcome", "type": "sendText", "position": { "x": 0, "y": 140 }, "data": { "texto": "Olá! 🏠 Vamos encontrar o imóvel ideal pra você. Posso fazer umas perguntas rápidas?" } },
+    { "id": "sendMenu-finalidade", "type": "sendMenu", "position": { "x": 0, "y": 300 }, "data": {
+      "tipo": "list", "titulo": "Você procura pra:", "texto": "Qual a sua intenção?", "rodape": "",
+      "botao": "Selecionar",
+      "opcoes": [
+        { "id": "comprar", "titulo": "🛒 Comprar" },
+        { "id": "alugar", "titulo": "🔑 Alugar" },
+        { "id": "investir", "titulo": "💼 Investir" }
+      ]
+    }},
+    { "id": "switch-finalidade", "type": "switch", "position": { "x": 0, "y": 460 }, "data": {
+      "conditions": [
+        { "handle": "h1", "label": "Comprar", "value": "comprar" },
+        { "handle": "h2", "label": "Alugar", "value": "alugar" },
+        { "handle": "h3", "label": "Investir", "value": "investir" }
+      ]
+    }},
+    { "id": "aiQualify-1", "type": "aiQualify", "position": { "x": 0, "y": 620 }, "data": {
+      "perguntas": [
+        "Qual tipo de imóvel? (casa, apartamento, terreno, comercial)",
+        "Qual bairro/região preferida?",
+        "Qual a faixa de preço aproximada?",
+        "Quantos quartos? Vagas de garagem?"
+      ],
+      "variaveis": ["tipo_imovel", "regiao", "faixa_preco", "comodos"]
+    }},
+    { "id": "aiExtract-1", "type": "aiExtract", "position": { "x": 0, "y": 780 }, "data": {
+      "campos": [
+        { "label": "tipo", "variavel": "tipo_imovel_norm" },
+        { "label": "quartos", "variavel": "qtd_quartos" }
+      ]
+    }},
+    { "id": "addLabel-lead", "type": "addLabel", "position": { "x": 0, "y": 940 }, "data": { "labels": ["Lead-Quente", "Tipo-{{tipo_imovel_norm}}"] } },
+    { "id": "sendText-resumo", "type": "sendText", "position": { "x": 0, "y": 1100 }, "data": { "texto": "Perfeito! Resumo do que você procura:\n\n🏠 *{{tipo_imovel}}*\n📍 {{regiao}}\n💰 {{faixa_preco}}\n🛏️ {{comodos}}\n\nVou te passar pro nosso corretor especializado agora!" } },
+    { "id": "humanTransfer-1", "type": "humanTransfer", "position": { "x": 0, "y": 1260 }, "data": { "mensagem": "Transferindo pra especialista em {{tipo_imovel_norm}}. Em instantes! 🏡" } }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start-1", "target": "sendText-welcome", "type": "default" },
+    { "id": "e2", "source": "sendText-welcome", "target": "sendMenu-finalidade", "type": "default" },
+    { "id": "e3", "source": "sendMenu-finalidade", "target": "switch-finalidade", "type": "default" },
+    { "id": "e4a", "source": "switch-finalidade", "sourceHandle": "h1", "target": "aiQualify-1", "type": "default" },
+    { "id": "e4b", "source": "switch-finalidade", "sourceHandle": "h2", "target": "aiQualify-1", "type": "default" },
+    { "id": "e4c", "source": "switch-finalidade", "sourceHandle": "h3", "target": "aiQualify-1", "type": "default" },
+    { "id": "e5", "source": "aiQualify-1", "target": "aiExtract-1", "type": "default" },
+    { "id": "e6", "source": "aiExtract-1", "target": "addLabel-lead", "type": "default" },
+    { "id": "e7", "source": "addLabel-lead", "target": "sendText-resumo", "type": "default" },
+    { "id": "e8", "source": "sendText-resumo", "target": "humanTransfer-1", "type": "default" }
+  ]
+}
