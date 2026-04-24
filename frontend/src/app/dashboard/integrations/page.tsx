@@ -366,6 +366,22 @@ export default function IntegrationsPage() {
                 <motion.div key={activeTab} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }}
                   className="space-y-6">
 
+                  {/* ── Banner multi-canal Chatwoot ── */}
+                  {activeTab === "chatwoot" && (
+                    <div className="flex items-start gap-3 bg-gradient-to-r from-fuchsia-500/5 to-[#00d2ff]/5 border border-fuchsia-500/15 rounded-2xl p-4">
+                      <div className="w-8 h-8 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/20 flex items-center justify-center shrink-0">
+                        <span className="text-sm">📱</span>
+                      </div>
+                      <div className="text-[11px] leading-relaxed">
+                        <p className="text-fuchsia-300 font-bold mb-0.5">Inclui Instagram, WhatsApp (via Chatwoot) e outros canais</p>
+                        <p className="text-slate-400">
+                          Ao configurar o Chatwoot aqui, todas as inboxes conectadas dentro dele (IG Direct, WhatsApp, Email, etc.) passam a disparar o fluxo de triagem e a IA.
+                          No Instagram, menus com botões viram lista numerada automaticamente — o cliente responde com o número.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* ── Status Card ── */}
                   <div className={`rounded-3xl border p-6 transition-all ${
                     isConfigured && currentConfig.ativo

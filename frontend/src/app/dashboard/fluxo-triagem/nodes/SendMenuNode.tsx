@@ -1,5 +1,5 @@
 "use client";
-import React from "react";
+import React, { useState } from "react";
 import { NodeProps } from "@xyflow/react";
 import BaseNode, { NodeInput, NodeTextarea } from "./BaseNode";
 
@@ -10,6 +10,18 @@ export default function SendMenuNode(props: NodeProps) {
   const onChange = props.data?.onChange as ((patch: Record<string, unknown>) => void) | undefined;
   const opcoes: MenuOpcao[] = Array.isArray(data.opcoes) ? (data.opcoes as MenuOpcao[]) : [];
   const tipo = (data.tipo as string) || "list";
+  const [showIgPreview, setShowIgPreview] = useState(false);
+
+  // Preview de como o menu aparece no Instagram (texto numerado)
+  const igPreviewLines = [
+    (data.titulo as string) ? `*${data.titulo}*` : "",
+    (data.texto as string) || "",
+    "",
+    ...opcoes.map((o, i) => `${i + 1} - ${o.titulo || "(sem título)"}`),
+    opcoes.length > 0 ? "" : "",
+    opcoes.length > 0 ? "_Responda com o numero da opcao_" : "",
+    (data.rodape as string) ? `_${data.rodape}_` : "",
+  ].filter(Boolean).join("\n");
 
   const setOpcao = (idx: number, field: keyof MenuOpcao, val: string) => {
     const next = [...opcoes];
@@ -27,6 +39,12 @@ export default function SendMenuNode(props: NodeProps) {
 
   return (
     <BaseNode nodeType="sendMenu" {...props}>
+      {/* Badge multi-canal */}
+      <div className="flex items-center gap-1.5 bg-gradient-to-r from-fuchsia-500/10 to-blue-500/10 border border-fuchsia-500/20 rounded-md px-2 py-1">
+        <span className="text-[9px] font-bold text-fuchsia-300">📱 Multi-canal</span>
+        <span className="text-[9px] text-slate-400">WhatsApp + Instagram</span>
+      </div>
+
       {/* Tipo */}
       <div className="flex gap-1.5">
         {(["list", "button"] as const).map((t) => (
@@ -113,6 +131,25 @@ export default function SendMenuNode(props: NodeProps) {
 
       {tipo === "button" && opcoes.length > 3 && (
         <p className="text-[9px] text-red-400 font-bold">⚠️ Máx. 3 botões no WhatsApp</p>
+      )}
+
+      {/* Preview Instagram — mostra como o menu vai aparecer no IG */}
+      <button
+        type="button"
+        onClick={() => setShowIgPreview((v) => !v)}
+        className="nodrag w-full text-[9px] text-fuchsia-300/80 hover:text-fuchsia-300 font-bold border border-fuchsia-500/20 hover:border-fuchsia-500/40 rounded-md px-2 py-1 mt-1 text-left transition-colors"
+      >
+        {showIgPreview ? "▼" : "▶"} 📸 Preview Instagram (texto numerado)
+      </button>
+      {showIgPreview && (
+        <div className="nodrag bg-black/40 border border-fuchsia-500/10 rounded-md p-2 mt-1">
+          <pre className="text-[10px] text-slate-300 whitespace-pre-wrap font-mono leading-relaxed">
+{igPreviewLines || "(preencha título/texto/opções pra ver o preview)"}
+          </pre>
+          <p className="text-[8px] text-slate-500 mt-1.5 italic">
+            No Instagram, botões viram lista numerada. Cliente responde com o número.
+          </p>
+        </div>
       )}
     </BaseNode>
   );
