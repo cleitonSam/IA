@@ -426,7 +426,15 @@ async def _process_state(
 
         logger.info(f"[Switch] matched_handle={matched_handle}")
         if matched_handle:
-            return _get_next_node_id(fluxo, node_id, matched_handle)
+            _next = _get_next_node_id(fluxo, node_id, matched_handle)
+            # [DIAG-SWITCH] Log proximo no pra diagnosticar IA respondendo apos switch
+            _next_node_obj = next((n for n in fluxo.get("nodes", []) if n.get("id") == _next), None) if _next else None
+            _next_type = _next_node_obj.get("type") if _next_node_obj else None
+            logger.info(
+                f"[Switch] ▶️ match={matched_handle} → next_id={_next} type={_next_type} "
+                f"last_choice={session_vars.get('last_choice')}"
+            )
+            return _next
         # Nenhum match: volta ao nó de menu para repetir a mensagem
         _menu_src = state.get("_menu_node_id")
         if _menu_src:
@@ -434,7 +442,9 @@ async def _process_state(
             return _menu_src
         # Sem referência de menu: tenta a primeira saída padrão
         handles = _get_all_next_handles(fluxo, node_id)
-        return handles[0][1] if handles else None
+        _fallback = handles[0][1] if handles else None
+        logger.info(f"[Switch] ⚠️ Sem match e sem _menu_node_id — fallback next={_fallback}")
+        return _fallback
 
     # ── MenuFixoIA: identifica a opção escolhida e salva handle para o _execute_from ──
     if node_type == "menuFixoIA":
@@ -762,6 +772,13 @@ async def _execute_from(
         else:
             handles = _get_all_next_handles(fluxo, node_id)
             next_id = handles[0][1] if handles else None
+        # [DIAG-SWITCH] Identifica tipo do proximo no — ajuda a ver se fluxo vai
+        # cair em aiRespond/fallbackLLM/end (deixando IA padrao responder)
+        _nxt_obj = next((n for n in fluxo.get("nodes", []) if n.get("id") == next_id), None) if next_id else None
+        logger.info(
+            f"[Switch/exec] ▶️ next_id={next_id} type={_nxt_obj.get('type') if _nxt_obj else None} "
+            f"match={matched_handle} last_choice={session_vars.get('last_choice')}"
+        )
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
