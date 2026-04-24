@@ -5862,7 +5862,7 @@ async def chatwoot_webhook(
             await redis_client.delete(*_keys_fluxo)
             # [HUMAN-TAKEOVER] Pausa IA 4h (sliding reset a cada nova msg do atendente)
             import os as _os_at
-            _ttl_pause = int(_os_at.getenv("HUMAN_PAUSE_TTL_SECONDS", "14400"))
+            _ttl_pause = int(_os_at.getenv("HUMAN_PAUSE_TTL_SECONDS", "7200"))
             await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", _ttl_pause, "1")
             await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_fluxo}", _ttl_pause, "1")
             await redis_client.setex(f"pause_ia_phone:{empresa_id}:{_fone_fluxo}", _ttl_pause, "1")  # legado
@@ -6350,7 +6350,7 @@ async def chatwoot_webhook(
 
         # [HUMAN-TAKEOVER] Pausa 4h sliding (antes 12h). TTL via env HUMAN_PAUSE_TTL_SECONDS.
         import os as _os_ht
-        _HUMAN_PAUSE_TTL = int(_os_ht.getenv("HUMAN_PAUSE_TTL_SECONDS", "14400"))
+        _HUMAN_PAUSE_TTL = int(_os_ht.getenv("HUMAN_PAUSE_TTL_SECONDS", "7200"))
 
         # 1. Pausa IA (conv + telefone multi-tenant + legado)
         await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", _HUMAN_PAUSE_TTL, "1")
