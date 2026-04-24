@@ -4382,42 +4382,11 @@ async def processar_ia_e_responder(
                             # (fluxo não encontrou state = novo início), oferece atendente.
                             # [FIX] Adicionado cooldown: uma vez enviada a mensagem,
                             # nao reenvia por 1h mesmo que contador siga subindo.
-                            _state_exists = await redis_client.exists(
-                                f"fluxo_state:{empresa_id}:0:{_fone_redis}"
-                            )
-                            _escalation_cooldown_key = f"fluxo_escalation_sent:{empresa_id}:{_fone_redis}"
-                            _already_escalated = await redis_client.exists(_escalation_cooldown_key)
-
-                            if not _state_exists and not _already_escalated:
-                                _restart_key = f"fluxo_restarts:{empresa_id}:{_fone_redis}"
-                                _restarts = await redis_client.incr(_restart_key)
-                                if _restarts == 1:
-                                    await redis_client.expire(_restart_key, 86400)
-                                if _restarts >= 4:
-                                    logger.info(
-                                        f"🔁 [FluxoTriagem] {_fone_redis} reiniciou o fluxo {_restarts}x em 24h — "
-                                        f"oferecendo atendente humano"
-                                    )
-                                    # [FIX] Marca escalation enviada pra nao repetir por 1h
-                                    await redis_client.setex(_escalation_cooldown_key, 3600, "1")
-                                    # [FIX] Pausa IA nessa conv por 1h pra atendente humano assumir
-                                    await redis_client.setex(f"pause_ia:{empresa_id}:{conversation_id}", 3600, "1")
-                                    await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_redis}", 3600, "1")
-                                    _pers_restart = await carregar_personalidade(empresa_id) or {}
-                                    _nome_ia_restart = _pers_restart.get("nome_ia") or "Atendente"
-                                    _integr_restart = await carregar_integracao(empresa_id, 'chatwoot')
-                                    if _integr_restart:
-                                        await enviar_mensagem_chatwoot(
-                                            account_id, conversation_id,
-                                            "Olá! 😊 Percebi que você entrou em contato algumas vezes. "
-                                            "Posso te conectar direto com um de nossos atendentes agora. "
-                                            "Prefere isso ou posso continuar te ajudando aqui?",
-                                            _nome_ia_restart, _integr_restart, empresa_id
-                                        )
-                                    try:
-                                        await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
-                                    except Exception: pass
-                                    return True
+                            # [ANTI-RESTART DISABLED] Removido contador de reinicios e escalacao
+                            # automatica — causavam experiencia ruim pro cliente final
+                            # (IA repetia "percebi que voce entrou em contato varias vezes").
+                            # Se precisar monitorar, usar metrica Prometheus + Grafana em vez de
+                            # bloquear cliente. A IA responde normalmente sempre.
                             # ── Fim cooldown reinicializações ────────────────────────────
 
                             # [QW-2] Resolve unidade_id para multi-tenancy correta no flow_executor
