@@ -5990,7 +5990,18 @@ async def chatwoot_webhook(
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao auto-resolver Story conv={id_conv}: {e}")
             return {"status": "story_auto_resolvida"}
-    
+
+    # [IG-CHANNEL] Marca canal IG na conv pro flow_executor renderizar menu como texto numerado
+    if _is_instagram:
+        try:
+            await redis_client.setex(f"conv_channel:{empresa_id}:{id_conv}", 3600, "instagram")
+            # Tambem salva por phone — flow_executor recebe phone, nao conv_id
+            _fone_ch = await redis_client.get(f"fone_cliente:{empresa_id}:{id_conv}")
+            if _fone_ch:
+                await redis_client.setex(f"conv_channel_phone:{empresa_id}:{_fone_ch}", 3600, "instagram")
+        except Exception:
+            pass
+
     # Identificação robusta de mensagens da IA (Sync ou Direta)
     # Verifica atributos no nível raiz do payload e também dentro do objeto message (comum em anexos)
     msg_obj = payload.get("message") or {}

@@ -98,8 +98,57 @@ def _render_vars(text: str, vars_dict: Dict) -> str:
 # Redis helpers de estado
 # ─────────────────────────────────────────────────────────────
 
+
+
+def _render_menu_numerado(menu_data: dict) -> str:
+    """
+    [IG-MENU] Renderiza menu como texto numerado (1 - X / 2 - Y...).
+    Usado no Instagram pq Chatwoot nao passa botoes interativos do WhatsApp pro IG.
+    """
+    titulo = menu_data.get("titulo") or ""
+    texto = menu_data.get("texto") or "Escolha uma opcao:"
+    rodape = menu_data.get("rodape") or ""
+    opcoes = menu_data.get("opcoes") or []
+
+    parts = []
+    if titulo:
+        parts.append(f"*{titulo}*")
+    if texto and texto != titulo:
+        parts.append(texto)
+    parts.append("")
+    for i, o in enumerate(opcoes, 1):
+        title = o.get("titulo") or o.get("title") or ""
+        parts.append(f"{i} - {title}")
+    parts.append("")
+    parts.append("_Responda com o numero da opcao_")
+    if rodape:
+        parts.append(f"_{rodape}_")
+    return "\n".join(parts)
+
 async def _get_state(empresa_id: int, phone: str, unidade_id: int = 0) -> Optional[Dict]:
     return await redis_get_json(f"fluxo_state:{empresa_id}:{unidade_id}:{phone}")
+
+
+
+async def _send_menu_smart(uaz_client, phone: str, menu_data: dict, session_vars: dict) -> bool:
+    """
+    [IG-MENU] Envia menu respeitando o canal:
+    - Instagram (via Chatwoot): texto numerado (cliente responde com numero)
+    - WhatsApp/outros: menu interativo original
+    """
+    channel = (session_vars.get("_channel") or "").lower()
+    if channel == "instagram":
+        texto_numerado = _render_menu_numerado(menu_data)
+        # Usa send_text do client — funciona tanto UazAPI quanto via Chatwoot
+        try:
+            if hasattr(uaz_client, "send_text_smart"):
+                return await uaz_client.send_text_smart(phone, texto_numerado)
+            return await uaz_client.send_text(phone, texto_numerado)
+        except Exception as e:
+            logger.error(f"[IG-MENU] send_text falhou: {e}")
+            return False
+    # Nao-IG: usa o menu interativo padrao
+    return await uaz_client.send_menu(phone, menu_data)
 
 
 async def _set_state(empresa_id: int, phone: str, state: Dict, unidade_id: int = 0):
@@ -194,6 +243,25 @@ async def executar_fluxo(
 
     state = await _get_state(empresa_id, phone, unidade_id)
     session_vars = await _get_vars(empresa_id, phone, unidade_id)
+
+    # [IG-CHANNEL] Carrega canal (instagram/whatsapp) da conv — usado pra decidir
+    # se menu renderiza como texto numerado (IG) ou menu interativo (WA)
+    try:
+        # Tenta achar o conv_id nos session vars ou em chaves Redis
+        _conv_id_for_channel = session_vars.get("_conv_id") or session_vars.get("conversation_id")
+        if not _conv_id_for_channel:
+            # scan por fone_cliente:{empresa_id}:{conv_id} -> {phone}
+            # Aqui nao temos conv_id diretamente; fallback: checar key fixa por phone
+            _channel_phone_key = f"conv_channel_phone:{empresa_id}:{phone}"
+            _ch = await redis_client.get(_channel_phone_key)
+            if _ch:
+                session_vars["_channel"] = str(_ch)
+        else:
+            _ch = await redis_client.get(f"conv_channel:{empresa_id}:{_conv_id_for_channel}")
+            if _ch:
+                session_vars["_channel"] = str(_ch)
+    except Exception:
+        pass
 
     # Injeta variáveis de contexto automáticas
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -570,7 +638,7 @@ async def _execute_from(
         menu_data["texto"] = _render_vars(menu_data.get("texto", ""), session_vars)
         menu_data["titulo"] = _render_vars(menu_data.get("titulo", ""), session_vars)
         await _bot_sent_marker(empresa_id, phone, unidade_id)
-        sent = await uaz_client.send_menu(phone, menu_data)
+        sent = await _send_menu_smart(uaz_client, phone, menu_data, session_vars)
         if sent:
             # Pausa o fluxo: aguarda resposta
             next_id = _get_next_node_id(fluxo, node_id)
@@ -1179,7 +1247,7 @@ async def _execute_from(
                 "opcoes": opcoes,
             }
             await _bot_sent_marker(empresa_id, phone, unidade_id)
-            sent = await uaz_client.send_menu(phone, menu_data)
+            sent = await _send_menu_smart(uaz_client, phone, menu_data, session_vars)
             if sent:
                 await _set_state(empresa_id, phone, {
                     "node_id": node_id,
@@ -1243,7 +1311,7 @@ async def _execute_from(
                     "opcoes": opcoes,
                 }
                 await _bot_sent_marker(empresa_id, phone, unidade_id)
-                sent = await uaz_client.send_menu(phone, final_menu)
+                sent = await _send_menu_smart(uaz_client, phone, final_menu, session_vars)
                 if sent:
                     await _set_state(empresa_id, phone, {
                         "node_id": node_id,
