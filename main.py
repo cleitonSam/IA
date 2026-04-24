@@ -5860,9 +5860,12 @@ async def chatwoot_webhook(
                 )
             ]
             await redis_client.delete(*_keys_fluxo)
-            # Pausa IA para esta conversa e para este telefone
-            await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 86400, "1")
-            await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_fluxo}", 86400, "1")
+            # [HUMAN-TAKEOVER] Pausa IA 4h (sliding reset a cada nova msg do atendente)
+            import os as _os_at
+            _ttl_pause = int(_os_at.getenv("HUMAN_PAUSE_TTL_SECONDS", "14400"))
+            await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", _ttl_pause, "1")
+            await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_fluxo}", _ttl_pause, "1")
+            await redis_client.setex(f"pause_ia_phone:{empresa_id}:{_fone_fluxo}", _ttl_pause, "1")  # legado
             logger.info(
                 f"🛑 [FluxoTriagem] Atendente assumiu conv {id_conv} "
                 f"(assignee={conv_obj.get('assignee_id')}) — fluxo parado e IA pausada para {_fone_fluxo}"
@@ -6341,19 +6344,47 @@ async def chatwoot_webhook(
         # envia sender.type nos webhooks outgoing. Agora pausamos para QUALQUER
         # outgoing não-IA, que é o comportamento correto.
         logger.warning(
-            f"⏸️ Pausando IA para conv {id_conv} - Mensagem Outgoing de atendente humano "
-            f"(sender={sender_type}, origin={content_attrs.get('origin')}, "
-            f"msg_origin={msg_attrs.get('origin')}, ai_redis={is_ai_in_redis}, uaz_echo={is_uaz_echo})"
+            f"⏸️ Pausando IA+FLUXO para conv {id_conv} - Atendente humano assumiu "
+            f"(sender={sender_type}, origin={content_attrs.get('origin')}, uaz_echo={is_uaz_echo})"
         )
 
-        await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", 43200, "1")
+        # [HUMAN-TAKEOVER] Pausa 4h sliding (antes 12h). TTL via env HUMAN_PAUSE_TTL_SECONDS.
+        import os as _os_ht
+        _HUMAN_PAUSE_TTL = int(_os_ht.getenv("HUMAN_PAUSE_TTL_SECONDS", "14400"))
+
+        # 1. Pausa IA (conv + telefone multi-tenant + legado)
+        await redis_client.setex(f"pause_ia:{empresa_id}:{id_conv}", _HUMAN_PAUSE_TTL, "1")
+        _fone_ht = await redis_client.get(f"fone_cliente:{empresa_id}:{id_conv}")
+        if _fone_ht:
+            await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_ht}", _HUMAN_PAUSE_TTL, "1")
+            await redis_client.setex(f"pause_ia_phone:{empresa_id}:{_fone_ht}", _HUMAN_PAUSE_TTL, "1")
+            # 2. Para fluxo em andamento (limpa state + vars)
+            try:
+                await redis_client.delete(
+                    f"fluxo_state:{empresa_id}:0:{_fone_ht}",
+                    f"fluxo_vars:{empresa_id}:0:{_fone_ht}",
+                )
+                # Tambem tenta por unidade (se existir)
+                async for k in redis_client.scan_iter(f"fluxo_state:{empresa_id}:*:{_fone_ht}"):
+                    await redis_client.delete(k)
+                async for k in redis_client.scan_iter(f"fluxo_vars:{empresa_id}:*:{_fone_ht}"):
+                    await redis_client.delete(k)
+                logger.info(f"🛑 Fluxo em andamento PARADO pro fone={_fone_ht} (atendente assumiu)")
+            except Exception as _e_ht:
+                logger.debug(f"[HUMAN-TAKEOVER] clear flow state falhou: {_e_ht}")
+
+        # 3. Cancela follow-ups pendentes
         if db_pool:
             await db_pool.execute(
                 "UPDATE followups SET status = 'cancelado' "
                 "WHERE conversa_id = (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2) "
                 "AND status = 'pendente'", id_conv, empresa_id
             )
-        return {"status": "ia_pausada"}
+
+        # 4. Marca atendimento manual (usado em outros pontos do codigo pra checar)
+        await redis_client.setex(f"atend_manual:{empresa_id}:{id_conv}", _HUMAN_PAUSE_TTL, "1")
+
+        return {"status": "ia_pausada_atendente_assumiu"}
 
 
     if message_type != "incoming":
