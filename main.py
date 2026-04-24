@@ -155,8 +155,9 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from rapidfuzz import fuzz
 
 # Imports para Fluxo Visual (Triagem)
-from src.services.db_queries import carregar_fluxo_triagem, carregar_integracao, carregar_menu_triagem
+from src.services.db_queries import carregar_fluxo_triagem, carregar_integracao
 from src.services.flow_executor import executar_fluxo
+from src.services.chatwoot_flow_client import ChatwootFlowClient
 from src.services.uaz_client import UazAPIClient
 from src.utils.text_helpers import (
     nome_eh_valido as _nome_eh_valido_completo,
@@ -4396,118 +4397,6 @@ async def processar_ia_e_responder(
             f"DB_Check={_db_esta_no_horario} | Config: {_horario_config}"
         )
 
-        # ─────────────────────────────────────────────────────────────
-        # [MKT-05] Menu de Triagem — dispara ANTES do fluxo/IA, pra
-        # WhatsApp (Chatwoot) e Instagram. Anteriormente so disparava
-        # via uaz_webhook.py direto; via Chatwoot nunca rodava.
-        #
-        # Identificador (chave redis):
-        #   - WhatsApp: telefone do cliente (fone_cliente)
-        #   - Instagram: "ig:{conversation_id}" (IG nao tem fone)
-        #
-        # Canal detectado pela chave "conv_channel" salva pelo webhook.
-        # Envio sempre via enviar_mensagem_chatwoot — Chatwoot roteia
-        # pro canal certo (funciona em IG e WhatsApp).
-        # ─────────────────────────────────────────────────────────────
-        try:
-            _conv_channel_redis = await redis_client.get(f"conv_channel:{empresa_id}:{conversation_id}")
-            _is_ig_conv = str(_conv_channel_redis or "").lower() == "instagram"
-            _fone_redis_menu = await redis_client.get(f"fone_cliente:{empresa_id}:{conversation_id}")
-
-            # Identificador robusto multi-canal
-            _menu_ident = _fone_redis_menu or (f"ig:{conversation_id}" if _is_ig_conv else None)
-
-            if _menu_ident:
-                # Resolve unidade_id (mesma logica do fluxo abaixo)
-                _unid_menu = 0
-                try:
-                    _unid_data_menu = await carregar_unidade(slug, empresa_id) if slug else None
-                    if _unid_data_menu and _unid_data_menu.get("id"):
-                        _unid_menu = int(_unid_data_menu["id"])
-                except Exception:
-                    _unid_menu = 0
-
-                _menu_key = f"menu_triagem:sent:{empresa_id}:{_unid_menu}:{_menu_ident}"
-                _menu_already = await redis_client.exists(_menu_key)
-
-                # Compat chave legada (sem unidade_id)
-                if not _menu_already and _unid_menu:
-                    _legacy = f"menu_triagem:sent:{empresa_id}:{_menu_ident}"
-                    if await redis_client.exists(_legacy):
-                        _menu_already = True
-                        _menu_key = _legacy
-
-                MENU_INACTIVITY_TTL_MONO = 3600  # 1h
-                if _menu_already:
-                    await redis_client.expire(_menu_key, MENU_INACTIVITY_TTL_MONO)
-                else:
-                    # Checa pausa (humano assumiu)
-                    _ia_pausada_menu = bool(
-                        await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}")
-                    )
-                    _phone_paused_menu = False
-                    if _fone_redis_menu:
-                        _phone_paused_menu = bool(
-                            await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_unid_menu}:{_fone_redis_menu}")
-                            or await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis_menu}")
-                        )
-
-                    if not _ia_pausada_menu and not _phone_paused_menu:
-                        _menu_cfg = await carregar_menu_triagem(empresa_id, unidade_id=_unid_menu or None)
-                        logger.info(
-                            f"📋 [MenuTriagem Monolith] empresa={empresa_id} unidade={_unid_menu} "
-                            f"ident={_menu_ident} ig={_is_ig_conv} "
-                            f"config={bool(_menu_cfg)} ativo={_menu_cfg.get('ativo') if _menu_cfg else None}"
-                        )
-                        if _menu_cfg and _menu_cfg.get("ativo"):
-                            # Monta menu como texto numerado — funciona IG+WA+qualquer canal
-                            _titulo = _menu_cfg.get("titulo") or ""
-                            _texto_m = _menu_cfg.get("texto") or ""
-                            _rodape = _menu_cfg.get("rodape") or ""
-                            _opcoes = _menu_cfg.get("opcoes") or []
-
-                            _partes = [p for p in (_titulo, _texto_m) if p]
-                            _header = "\n\n".join(_partes).strip() or "Escolha uma opção:"
-
-                            _linhas = [_header, ""]
-                            for _i, _op in enumerate(_opcoes, 1):
-                                _tit_op = _op.get("titulo") or _op.get("title") or ""
-                                _linhas.append(f"{_i}. {_tit_op}")
-                            if _opcoes:
-                                _linhas.append("")
-                                _linhas.append("_Responda com o número da opção_")
-                            if _rodape:
-                                _linhas.append("")
-                                _linhas.append(f"_{_rodape}_")
-
-                            _msg_menu = "\n".join(_linhas)
-
-                            _pers_menu = await carregar_personalidade(empresa_id) or {}
-                            _nome_ia_menu = _pers_menu.get("nome_ia") or "Atendente"
-                            _integr_menu = integracao_chatwoot or await carregar_integracao(empresa_id, 'chatwoot')
-
-                            try:
-                                await enviar_mensagem_chatwoot(
-                                    account_id, conversation_id, _msg_menu,
-                                    _nome_ia_menu, _integr_menu, empresa_id
-                                )
-                                await redis_client.setex(_menu_key, MENU_INACTIVITY_TTL_MONO, "1")
-                                logger.info(
-                                    f"✅ [MenuTriagem Monolith] enviado conv={conversation_id} "
-                                    f"ident={_menu_ident} ig={_is_ig_conv}"
-                                )
-                                # Libera lock e encerra — NAO cai na IA
-                                try:
-                                    await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
-                                except Exception:
-                                    pass
-                                return True
-                            except Exception as _me:
-                                logger.error(f"❌ [MenuTriagem Monolith] falha envio: {_me}")
-        except Exception as _outer_menu_err:
-            logger.error(f"❌ [MenuTriagem Monolith] erro externo: {_outer_menu_err}")
-        # ─────────────────────────────── Fim Menu Triagem ────────────
-
         # --- NOVIDADE: Fluxo Visual de Triagem (n8n-style) ---
         # Se houver um fluxo ativo para a empresa, ele assume o controle ANTES da IA.
         # O fluxo tem seu PROPRIO horario (no businessHours), independente da IA.
@@ -4517,15 +4406,22 @@ async def processar_ia_e_responder(
         if _fluxo_config and _fluxo_config.get("ativo"):
             # Recupera o telefone do Redis (armazenado pelo webhook)
             _fone_redis = await redis_client.get(f"fone_cliente:{empresa_id}:{conversation_id}")
-            if _fone_redis:
+
+            # [IG-FLUXO] Instagram nao tem phone_number — usamos ig:{conv_id} como
+            # identificador pra chaves de state (fluxo_state, fluxo_vars, pause_ia_phone).
+            _conv_channel_fluxo = await redis_client.get(f"conv_channel:{empresa_id}:{conversation_id}")
+            _is_ig_fluxo = str(_conv_channel_fluxo or "").lower() == "instagram"
+            _fluxo_ident = _fone_redis or (f"ig:{conversation_id}" if _is_ig_fluxo else None)
+
+            if _fluxo_ident:
                 # Verifica se a IA está pausada para esta conversa
                 _ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{conversation_id}"))
-                _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fone_redis}"))
-                
+                _phone_paused = bool(await redis_client.exists(f"pause_ia_phone:{empresa_id}:{_fluxo_ident}"))
+
                 # [FLUXO-ENDED] Se fluxo ja encerrou (node end), nao reinicia em 30min
                 _fluxo_recem_encerrado = bool(
-                    await redis_client.exists(f"fluxo_ended:{empresa_id}:0:{_fone_redis}")
-                    or await redis_client.exists(f"fluxo_ended:{empresa_id}:{_fone_redis}")
+                    await redis_client.exists(f"fluxo_ended:{empresa_id}:0:{_fluxo_ident}")
+                    or await redis_client.exists(f"fluxo_ended:{empresa_id}:{_fluxo_ident}")
                 )
 
                 if not _ia_pausada and not _phone_paused and not _fluxo_recem_encerrado:
@@ -4556,14 +4452,36 @@ async def processar_ia_e_responder(
                         return True
                     # ── Fim anti-burst ───────────────────────────────────────────────
 
-                    # Carrega integração para envio
-                    _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
-                    if _integr_uaz:
-                        _uaz_fluxo_cli = UazAPIClient(
-                            base_url=_integr_uaz.get("url", ""),
-                            token=_integr_uaz.get("token", ""),
-                            instance_name=_integr_uaz.get("instance", "default")
+                    # [IG-FLUXO] Cliente de envio muda conforme o canal da conv:
+                    #   - WhatsApp → UazAPIClient (botoes ricos, presence etc.)
+                    #   - Instagram → ChatwootFlowClient (texto numerado via Chatwoot)
+                    _fluxo_client = None
+                    if _is_ig_fluxo:
+                        # IG: adapter Chatwoot, nao precisa de integracao UazAPI
+                        _pers_fluxo = await carregar_personalidade(empresa_id) or {}
+                        _nome_ia_fluxo = _pers_fluxo.get("nome_ia") or "Atendente"
+                        _fluxo_client = ChatwootFlowClient(
+                            account_id=account_id,
+                            conversation_id=conversation_id,
+                            integracao_chatwoot=integracao_chatwoot,
+                            empresa_id=empresa_id,
+                            nome_ia=_nome_ia_fluxo,
                         )
+                        logger.info(
+                            f"🔁 [FluxoTriagem Monolith] canal=Instagram — usando "
+                            f"ChatwootFlowClient (conv={conversation_id})"
+                        )
+                    else:
+                        # WhatsApp: mantem cliente UazAPI original
+                        _integr_uaz = await carregar_integracao(empresa_id, 'uazapi')
+                        if _integr_uaz:
+                            _fluxo_client = UazAPIClient(
+                                base_url=_integr_uaz.get("url", ""),
+                                token=_integr_uaz.get("token", ""),
+                                instance_name=_integr_uaz.get("instance", "default")
+                            )
+
+                    if _fluxo_client:
                         # Pega a última mensagem do buffer para o fluxo
                         _mensagens_pool = await coletar_mensagens_buffer(empresa_id, conversation_id)
                         if _mensagens_pool:
@@ -4591,11 +4509,14 @@ async def processar_ia_e_responder(
                                 _unidade_id_fluxo = 0
 
                             _tratou = await executar_fluxo(
-                                empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli,
+                                empresa_id, _fluxo_ident, _ultima_msg, _fluxo_config, _fluxo_client,
                                 unidade_id=_unidade_id_fluxo,
                             )
                             if _tratou:
-                                logger.info(f"✅ [FluxoTriagem Monolith] Mensagem tratada pelo fluxo visual para {_fone_redis}")
+                                logger.info(
+                                    f"✅ [FluxoTriagem Monolith] tratado pelo fluxo — "
+                                    f"ident={_fluxo_ident} ig={_is_ig_fluxo}"
+                                )
                                 # Se tratou, libera o lock e encerra para evitar que a IA responda
                                 try:
                                     await redis_client.eval(LUA_RELEASE_LOCK, 1, chave_lock, lock_val)
