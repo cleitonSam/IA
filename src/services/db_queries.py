@@ -1591,5 +1591,5 @@ async def criar_usuario(nome: str, email: str, senha_hash: str, empresa_id: int,
         """, nome, email, senha_hash, empresa_id, perfil)
         return True
     except Exception as e:
-        logger.error(f"Erro ao criar usuário {email}: {e}")
-        return False
+        logger.error(f"Erro ao criar usuario {email}: {e}")
+        return None

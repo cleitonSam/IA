@@ -5,7 +5,15 @@ import redis.asyncio as redis
 from src.core.config import REDIS_URL, logger
 
 # Inicialização global do redis_client
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+# [SCALE-03] Connection pool explicito pra 800 tenants
+import os as _os
+_redis_pool = redis.ConnectionPool.from_url(
+    REDIS_URL,
+    max_connections=int(_os.getenv("REDIS_POOL_MAX", "50")),
+    socket_keepalive=True,
+    decode_responses=True,
+)
+redis_client = redis.Redis(connection_pool=_redis_pool)
 
 # Memória local para fallback em caso de falha no Redis
 _LOCAL_REDIS_FALLBACK: dict[str, tuple[float, str]] = {}

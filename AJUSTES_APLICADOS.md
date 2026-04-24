@@ -200,3 +200,104 @@ Implementado como **grupo visual** (moldura redimensionável `GroupBoxNode`) —
 
 Isso fica pendente pra próxima onda — a moldura visual já resolve 80% do caso de uso (organização).
 
+## Sprint 1+2 — Pré-escala 800 tenants
+
+Sprint executada pra endurecer o sistema antes de cadastrar várias empresas (segunda-feira).
+
+### Sizing & Pools (SCALE-01/02/03)
+
+| Mudança | Antes | Depois | Arquivo |
+|---|---|---|---|
+| Pool Postgres | 3/15 | **30/120** (configurável via env) | `docker-compose.prod.yml`, `main.py`, `.env.production.example` |
+| `command_timeout` do pool | 10s | **30s** | `main.py` |
+| Redis connection pool | sem pool | **50 conexões explícitas, socket_keepalive** | `src/core/redis_client.py`, `main.py` |
+| httpx pool | 50 conexões | **200 conexões** (keepalive 50) | `main.py` |
+| Uvicorn workers | 1 | **4 workers** (configurável via `UVICORN_WORKERS`) | `Dockerfile` |
+
+### Segurança CRÍTICA (C-01, C-05, C-06)
+
+| ID | Fix | Arquivo |
+|---|---|---|
+| C-01 | `/sync-planos/{empresa_id}` agora exige JWT + valida empresa_id do token | `main.py` |
+| C-01 | `/desbloquear/{empresa_id}/{conversation_id}` idem | `main.py` |
+| C-01 | `/metricas/diagnostico` idem (force empresa do token se não admin_master) | `main.py` |
+| C-05 | **Circuit breaker** no `llm_quota` — se Redis falhar 5× em 2min, fail-closed (antes era fail-open sempre) | `src/services/llm_quota.py` |
+| C-06 | Helper `_mask_phone()` mascara telefone em logs: `+55 (11) ****-1234` | `main.py`, `src/api/routers/uaz_webhook.py` |
+| C-06 | 5 logs de PII mascarados (UAZAPI enviado, FollowUp cancelado, OptOut, IA pausada) | idem |
+
+### Performance (H-06, H-10)
+
+| ID | Fix | Arquivo |
+|---|---|---|
+| H-06 | Helper `_check_empresa_rate_limit()` — rate limit **por empresa** (default 5000 msgs/h, configurável via `EMPRESA_RATE_LIMIT_PER_HOUR`) | `main.py` |
+| H-10 | TTL FAQ 300→600s, Menu/Fluxo 120→300s, Integração 300→600s | `src/services/db_queries.py` |
+
+### Indexes Postgres (aplicados direto no DB prod)
+
+```sql
+idx_conversas_empresa_unidade_created    ✅ criado
+idx_mensagens_conversa_role_created      ✅ criado
+idx_followups_status_agenda              ✅ criado
+idx_integracoes_empresa_tipo_ativa       ✅ criado
+idx_eventos_funil_empresa_unidade_data   ⚠️  falhou (coluna unidade_id não existe em eventos_funil)
+idx_memoria_cliente_empresa_phone        ⚠️  falhou (coluna contato_telefone não existe)
+idx_conversas_ativas                     ⚠️  falhou (NOW() não IMMUTABLE)
+```
+
+4 de 7 indexes principais foram aplicados em prod com `CONCURRENTLY` (sem downtime). Os 3 que falharam são por schema diferente do esperado — não bloqueante.
+
+### Bug encontrado e corrigido
+
+- `src/services/db_queries.py:1590` — função `criar_usuario()` estava **truncada em disco** (OneDrive cortou a meio de uma query). Completada.
+
+### Fluxo de comportamento novo (complementar)
+
+- Nó `end` agora seta `fluxo_ended:{empresa_id}:{unidade_id}:{phone}` com TTL **30 min** → fluxo não reinicia em 30min depois do end
+- Atendente humano no WhatsApp pausa IA por **4h** (antes 12h) em AMBAS as chaves `pause_ia:` e `pause_ia_phone:` (multi-tenant + legado)
+- UazAPI `webhook_secret` agora suporta flag `require_webhook_secret: false` por integração — permite integração sem secret enquanto você configura
+
+## Deploy final — tudo junto
+
+```bash
+cd "/c/Users/cleit/OneDrive/Documentos/IA"
+
+git add main.py \
+        src/ \
+        frontend/src/app/dashboard/fluxo-triagem/ \
+        docker-compose.prod.yml \
+        Dockerfile \
+        .env.production.example \
+        AJUSTES_APLICADOS.md \
+        AUDITORIA_FLUXO_TRIAGEM.md \
+        AUDITORIA_FLUXO_TRIAGEM.docx \
+        AUDITORIA_ESCALA_800_TENANTS.md \
+        AUDITORIA_ESCALA_800_TENANTS.docx
+
+git commit -m "feat: sprint 1+2 pre-escala (800 tenants) — pools, PII mask, C-01 auth, C-05 circuit breaker, TTLs, rate limit por empresa, indexes"
+git push origin main
+```
+
+Depois do deploy:
+1. Verifique no Easypanel que as env vars `DB_POOL_MIN=30`, `DB_POOL_MAX=120`, `UVICORN_WORKERS=4`, `REDIS_POOL_MAX=50`, `HTTPX_MAX_CONNECTIONS=200`, `EMPRESA_RATE_LIMIT_PER_HOUR=5000` estão setadas (ou defaults do código valem)
+2. Monitore `pg_stat_activity` pra ver se pool não enche
+3. Teste webhook real: log deve mostrar `+55 (11) ****-1234` ao invés do telefone completo
+4. Teste que um usuário da empresa 1 **não consegue** chamar `/sync-planos/2` (deve retornar 403)
+
+## O que ficou pra depois (backlog restante)
+
+### Riscos ainda abertos (médio prazo)
+
+| ID | Item | Esforço |
+|---|---|---|
+| C-02 | HMAC Chatwoot (já implementado se secret configurado; garantir config por empresa) | Operacional |
+| C-03/C-04 | `require_tenant_match` no WebSocket | 2h |
+| C-07 | Validar `conversation_id` único por (empresa, source) | 4-6h |
+| H-02/H-03/H-04 | Otimizar N+1 nos workers (sync_planos, metricas_diarias, followups batch) | 1-2 dias |
+| H-05 | Proteger `flush_all()` com 2FA | 30min |
+| H-07 | Rate limit em `/management/*` com slowapi | 3-4h |
+| H-11 | Backpressure na fila de webhook | 2h |
+| H-12 | Fallback Redis per-tenant | 1-2h |
+| M-01 a M-10 | Hardening geral (Sentry obrigatório, trace IDs, WS limits, modelo por empresa, etc) | 1 semana |
+
+Referência completa em `AUDITORIA_ESCALA_800_TENANTS.docx`.
+

@@ -9,6 +9,22 @@ from src.services.db_queries import (
     buscar_conversa_por_fone, carregar_integracao, carregar_menu_triagem,
     carregar_fluxo_triagem, buscar_unidade_por_instancia_uaz,
 )
+
+
+def _mask_phone(phone) -> str:
+    """[SEC-PII] Mascara telefone pra logs."""
+    if not phone:
+        return "***"
+    s = str(phone)
+    digits = "".join(cc for cc in s if cc.isdigit())
+    if len(digits) < 4:
+        return "***"
+    tail = digits[-4:]
+    if digits.startswith("55") and len(digits) >= 12:
+        ddd = digits[2:4]
+        return f"+55 ({ddd}) ****-{tail}"
+    return f"***-{tail}"
+
 from src.services.flow_executor import executar_fluxo
 from src.services.uaz_client import UazAPIClient
 
@@ -158,7 +174,7 @@ async def uazapi_webhook(
                 # o flow_executor/main.py respeitem a pausa mesmo sem conv_id.
                 await redis_client.setex(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone}", _HUMAN_PAUSE_TTL, "1")
                 await redis_client.setex(f"pause_ia_phone:{empresa_id}:{phone}", _HUMAN_PAUSE_TTL, "1")
-                logger.info(f"⏸️ IA pausada por atendente humano (4h sliding) — fone: {phone}")
+                logger.info(f"⏸️ IA pausada por atendente humano (4h sliding) — fone: {_mask_phone(phone)}")
                 return {"status": "ignored", "reason": "from_me_human"}
 
         # Extrair conteúdo (texto, legenda ou seleção de menu interativo)

@@ -41,13 +41,36 @@ def _keys(empresa_id: int) -> dict:
     }
 
 
+# [C-05] Circuit breaker pra evitar fail-open infinito em queda de Redis.
+# Se 5+ falhas em 2 min, bloqueia LLM calls ("fail-closed") ate melhorar.
+_CIRCUIT_BREAKER = {
+    "failures": 0,
+    "last_failure": 0.0,
+    "state": "closed",  # closed | open | half-open
+}
+_CB_THRESHOLD = 5
+_CB_WINDOW_S = 120       # 2 min
+_CB_OPEN_COOLDOWN_S = 60  # re-tenta apos 60s em "half-open"
+
+
 async def check_and_reserve_llm_call(empresa_id: int, estimated_tokens: int = 2000) -> Tuple[bool, str]:
     """
     Verifica se a chamada é permitida. Reserva (incrementa RPM) atomicamente.
     Retorna (permitido, motivo_se_negado).
     """
+    import time as _time
     if not empresa_id or empresa_id <= 0:
         return False, "empresa_id_invalido"
+
+    # Circuit breaker check (C-05)
+    now = _time.time()
+    if _CIRCUIT_BREAKER["state"] == "open":
+        if now - _CIRCUIT_BREAKER["last_failure"] > _CB_OPEN_COOLDOWN_S:
+            _CIRCUIT_BREAKER["state"] = "half-open"
+            _CIRCUIT_BREAKER["failures"] = 0
+            logger.warning("[C-05] llm_quota circuit breaker: half-open (tentando reconectar)")
+        else:
+            return False, "circuit_breaker_open_redis_down"
 
     k = _keys(empresa_id)
 
@@ -71,11 +94,25 @@ async def check_and_reserve_llm_call(empresa_id: int, estimated_tokens: int = 20
         if usd_cents / 100.0 >= MONTHLY_USD_CAP:
             return False, f"monthly_usd_cap_reached (${MONTHLY_USD_CAP}/mes)"
 
+        # Sucesso: reset breaker
+        if _CIRCUIT_BREAKER["state"] != "closed":
+            _CIRCUIT_BREAKER["state"] = "closed"
+            _CIRCUIT_BREAKER["failures"] = 0
+            logger.info("[C-05] llm_quota circuit breaker: closed (Redis voltou)")
+
         return True, ""
     except Exception as e:
-        # Fail-open se Redis estiver fora (nao queremos bloquear trafego legitimo).
-        # Loga para monitoramento.
-        logger.warning(f"[ARQ-04] llm_quota check falhou (fail-open) empresa={empresa_id}: {e}")
+        # Registra falha no breaker
+        if now - _CIRCUIT_BREAKER["last_failure"] > _CB_WINDOW_S:
+            _CIRCUIT_BREAKER["failures"] = 1
+        else:
+            _CIRCUIT_BREAKER["failures"] += 1
+        _CIRCUIT_BREAKER["last_failure"] = now
+        if _CIRCUIT_BREAKER["failures"] >= _CB_THRESHOLD:
+            _CIRCUIT_BREAKER["state"] = "open"
+            logger.error(f"[C-05] llm_quota circuit breaker: OPEN (Redis falhou {_CB_THRESHOLD}x em {_CB_WINDOW_S}s)")
+            return False, "circuit_breaker_triggered"
+        logger.warning(f"[ARQ-04] llm_quota check falhou (fail-open transitorio) empresa={empresa_id}: {e}")
         return True, ""
 
 

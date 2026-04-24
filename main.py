@@ -16,6 +16,43 @@ import unicodedata
 import os
 import sys
 
+
+def _mask_phone(phone) -> str:
+    """[SEC-PII] Mascara telefone pra logs: +55 (11) ****-1234"""
+    if not phone:
+        return "***"
+    s = str(phone)
+    digits = "".join(c for c in s if c.isdigit())
+    if len(digits) < 4:
+        return "***"
+    tail = digits[-4:]
+    if digits.startswith("55") and len(digits) >= 12:
+        ddd = digits[2:4]
+        return f"+55 ({ddd}) ****-{tail}"
+    return f"***-{tail}"
+
+
+
+async def _check_empresa_rate_limit(empresa_id: int, max_per_hour: int = 5000) -> bool:
+    """[H-06] Rate limit GLOBAL por empresa pra evitar 1 tenant consumir recurso de todos.
+    Default: 5000 msgs/h por empresa (ajustavel via ENV EMPRESA_RATE_LIMIT_PER_HOUR)."""
+    try:
+        import os as _os
+        cap = int(_os.getenv("EMPRESA_RATE_LIMIT_PER_HOUR", str(max_per_hour)))
+        k = f"rl:empresa:{empresa_id}:h"
+        cnt = await redis_client.incr(k)
+        if cnt == 1:
+            await redis_client.expire(k, 3600)
+        if cnt > cap:
+            logger.warning(f"[H-06] Rate limit atingido pra empresa={empresa_id}: {cnt}/{cap} msgs/h")
+            return False
+        return True
+    except Exception as e:
+        logger.debug(f"[H-06] rate limit check falhou (fail-open): {e}")
+        return True
+
+
+
 # Garante que o diretório raiz esteja no sys.path para imports modularizados
 _root = os.path.dirname(os.path.abspath(__file__))
 if _root not in sys.path:
@@ -24,6 +61,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any
+from src.core.security import get_current_user_token
 from fastapi import FastAPI, Request, BackgroundTasks, Header, HTTPException, Response
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -1100,13 +1138,25 @@ RESPOSTAS_CONTATO = [
 async def startup_event():
     global http_client, redis_client, db_pool, worker_tasks, is_shutting_down
     is_shutting_down = False
+    # [SCALE-02] httpx pool subido pra 200 conexoes pra aguentar 800 tenants em burst
     http_client = httpx.AsyncClient(
         timeout=30.0,
-        limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)
+        limits=httpx.Limits(
+            max_keepalive_connections=int(os.getenv("HTTPX_KEEPALIVE", "50")),
+            max_connections=int(os.getenv("HTTPX_MAX_CONNECTIONS", "200")),
+        )
     )
 
     try:
-        redis_client = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+        # [SCALE-03] Connection pool explicito pra 800 tenants
+        _redis_pool = redis.ConnectionPool.from_url(
+            REDIS_URL,
+            max_connections=int(os.getenv("REDIS_POOL_MAX", "50")),
+            socket_keepalive=True,
+            decode_responses=True,
+            encoding="utf-8",
+        )
+        redis_client = redis.Redis(connection_pool=_redis_pool)
         await redis_client.ping()
         logger.info("🚀 Conexão com Redis estabelecida com sucesso!")
     except redis.RedisError as e:
@@ -1154,11 +1204,15 @@ async def startup_event():
             except Exception as migration_err:
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
 
+            # [SCALE-01] Pool configuravel via env (default 30/120 pra 800 tenants)
+            _db_min = int(os.getenv("DB_POOL_MIN", "30"))
+            _db_max = int(os.getenv("DB_POOL_MAX", "120"))
+            _db_cmd_timeout = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "30"))
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
-                min_size=2,
-                max_size=30,
-                command_timeout=10,
+                min_size=_db_min,
+                max_size=_db_max,
+                command_timeout=_db_cmd_timeout,
                 timeout=5,
             )
             import src.core.database as core_database
@@ -2194,7 +2248,15 @@ async def worker_sync_planos():
 
 
 @app.get("/sync-planos/{empresa_id}")
-async def sync_planos_manual(empresa_id: int):
+async def sync_planos_manual(
+    empresa_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    # [C-01] Autenticacao obrigatoria + verifica empresa do JWT
+    _token_emp = int(token_payload.get("empresa_id", 0) or 0)
+    _is_admin = token_payload.get("role") == "admin_master"
+    if not _is_admin and _token_emp != empresa_id:
+        raise HTTPException(status_code=403, detail="Sem permissao pra essa empresa")
     count = await sincronizar_planos_evo(empresa_id)
     await redis_client.delete(f"planos:ativos:{empresa_id}:todos")
     return {"status": "ok", "sincronizados": count}
@@ -2642,7 +2704,7 @@ async def enviar_mensagem_chatwoot(
                     }
 
                 uaz_headers = {"token": uaz_token, "Content-Type": "application/json", "Accept": "application/json"}
-                logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_fone_clean} (Media={bool(attachment_url)}) url={uaz_url} token_len={len(uaz_token)} token_prefix={uaz_token[:8] if uaz_token else 'VAZIO'}...")
+                logger.info(f"🚀 [UAZAPI-DIRETO] Enviando para {_mask_phone(_fone_clean)} (Media={bool(attachment_url)}) url={uaz_url} token_len={len(uaz_token)} token_prefix={uaz_token[:8] if uaz_token else 'VAZIO'}...")
                 uaz_resp = await http_client.post(uaz_url, json=uaz_payload, headers=uaz_headers, timeout=20.0)
                 uaz_resp.raise_for_status()
 
@@ -2654,7 +2716,7 @@ async def enviar_mensagem_chatwoot(
                     await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{_fone_clean}", _echo_ttl, "1")
 
                 # UazAPI enviou com sucesso — retorna sem sync Chatwoot para evitar duplicação
-                logger.info(f"✅ [UAZAPI-DIRETO] Enviado com sucesso para {_fone_clean}")
+                logger.info(f"✅ [UAZAPI-DIRETO] Enviado com sucesso para {_mask_phone(_fone_clean)}")
                 return uaz_resp
 
         except Exception as e:
@@ -2778,7 +2840,7 @@ async def worker_followup():
                         # Busca pelo conversation_id direto (chave usada pelo webhook)
                         _fone_fu = await redis_client.get(f"fone_cliente:{f['conversation_id']}")
                     if _fone_fu and await redis_client.exists(f"optout_whatsapp:{f['empresa_id']}:{_fone_fu}"):
-                        logger.info(f"🚫 [FollowUp] Cancelado — opt-out ativo para {_fone_fu}")
+                        logger.info(f"🚫 [FollowUp] Cancelado — opt-out ativo para {_mask_phone(_fone_fu)}")
                         await db_pool.execute("UPDATE followups SET status = 'cancelado' WHERE id = $1", f['id'])
                         continue
 
@@ -5879,7 +5941,7 @@ async def chatwoot_webhook(
                 "Estaremos aqui! 😊"
             )
             await enviar_mensagem_chatwoot(account_id, id_conv, _msg_optout, _nome_ia_optout, integracao, empresa_id)
-            logger.info(f"🚫 [OptOut] Cliente {_fone_optout or id_conv} solicitou opt-out — automação pausada")
+            logger.info(f"🚫 [OptOut] Cliente {_mask_phone(_fone_optout) if _fone_optout else id_conv} solicitou opt-out — automação pausada")
             return {"status": "optout_registrado"}
 
     # ── Anti-bloqueio: verifica opt-out persistente por telefone ─────────────────
@@ -6149,7 +6211,16 @@ async def chatwoot_webhook(
 
 
 @app.get("/desbloquear/{empresa_id}/{conversation_id}")
-async def desbloquear_ia(empresa_id: int, conversation_id: int):
+async def desbloquear_ia(
+    empresa_id: int,
+    conversation_id: int,
+    token_payload: dict = Depends(get_current_user_token)
+):
+    # [C-01] Autenticacao + valida empresa do JWT
+    _token_emp = int(token_payload.get("empresa_id", 0) or 0)
+    _is_admin = token_payload.get("role") == "admin_master"
+    if not _is_admin and _token_emp != empresa_id:
+        raise HTTPException(status_code=403, detail="Sem permissao pra essa empresa")
     if await redis_client.delete(f"pause_ia:{empresa_id}:{conversation_id}"):
         return {"status": "sucesso", "mensagem": f"✅ IA reativada para {conversation_id} na empresa {empresa_id}!"}
     return {"status": "aviso", "mensagem": f"A conversa {conversation_id} não estava pausada."}
@@ -6180,8 +6251,17 @@ async def metrics_endpoint():
 async def metricas_diagnostico(
     empresa_id: Optional[int] = None,
     data: Optional[str] = None,
-    dias: int = 7
+    dias: int = 7,
+    token_payload: dict = Depends(get_current_user_token),
 ):
+    # [C-01] Autenticacao + restringe a empresa do token (salvo admin_master)
+    _token_emp = int(token_payload.get("empresa_id", 0) or 0)
+    _is_admin = token_payload.get("role") == "admin_master"
+    if not _is_admin:
+        # forca empresa do token se nao for admin
+        empresa_id = _token_emp if not empresa_id else empresa_id
+        if empresa_id != _token_emp:
+            raise HTTPException(status_code=403, detail="Sem permissao pra essa empresa")
     """
     Diagnóstico das métricas diárias — mostra colunas preenchidas e zeradas.
 
