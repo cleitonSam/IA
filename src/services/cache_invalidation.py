@@ -76,13 +76,20 @@ async def _delete_by_pattern(pattern: str, batch: int = 200) -> int:
 
 async def invalidate_personalidade(empresa_id: int) -> int:
     """Limpa cache da personalidade (texto, tom, menu, fluxo — tudo que está em personalidade_ia).
-    Tambem limpa menu/fluxo/global porque menu_triagem e fluxo_triagem VIVEM na personalidade."""
+    Tambem limpa menu/fluxo/global porque menu_triagem e fluxo_triagem VIVEM na personalidade.
+
+    [RESET-FLOW] Ao salvar personalidade (inclui horario da IA), tambem reseta
+    TODOS os estados de fluxo em andamento — assim mudanca de horario afeta
+    conversas ativas imediatamente, sem precisar esperar TTL.
+    """
     n = 0
     n += await _delete_keys([f"cfg:pers:empresa:{empresa_id}"])
     n += await _delete_by_pattern(f"cfg:menu_triagem:{empresa_id}:*")
     n += await _delete_by_pattern(f"cfg:fluxo_triagem:{empresa_id}:*")
     n += await _delete_keys([f"cfg:global:empresa:{empresa_id}"])
-    logger.info(f"[CACHE-01] personalidade empresa={empresa_id} invalidada ({n} keys)")
+    # [RESET-FLOW] Forca todas conversas a reiniciar
+    n += await reset_all_flow_states(empresa_id)
+    logger.info(f"[CACHE-01] personalidade empresa={empresa_id} invalidada ({n} keys total incl. flow states)")
     return n
 
 
@@ -117,8 +124,10 @@ async def invalidate_menu_triagem(empresa_id: int) -> int:
 
 
 async def invalidate_fluxo_triagem(empresa_id: int) -> int:
+    """[RESET-FLOW] Ao salvar fluxo, reseta states em andamento pra aplicar imediato."""
     n = await _delete_by_pattern(f"cfg:fluxo_triagem:{empresa_id}:*")
-    logger.info(f"[CACHE-01] fluxo_triagem empresa={empresa_id} invalidado ({n} keys)")
+    n += await reset_all_flow_states(empresa_id)
+    logger.info(f"[CACHE-01] fluxo_triagem empresa={empresa_id} invalidado ({n} keys total)")
     return n
 
 
@@ -235,4 +244,24 @@ async def flush_all_confirmed(confirm_token: str) -> int:
     n += await _delete_by_pattern("planos:*")
     n += await _delete_by_pattern("lead_score:*")
     logger.warning(f"[CACHE-01] FLUSH GLOBAL (autorizado): {n} keys apagadas")
+    return n
+
+
+
+async def reset_all_flow_states(empresa_id: int) -> int:
+    """
+    Limpa TODOS os estados de fluxo em andamento da empresa.
+    Usado quando admin salva mudanca de horario/fluxo — forca todas as conversas
+    a reiniciar do start na proxima msg, pegando a config nova.
+    """
+    n = 0
+    # States e vars do flow_executor (por phone)
+    n += await _delete_by_pattern(f"fluxo_state:{empresa_id}:*")
+    n += await _delete_by_pattern(f"fluxo_vars:{empresa_id}:*")
+    # Cooldowns / contadores (pra nao ficarem com valores antigos)
+    n += await _delete_by_pattern(f"fluxo_ended:{empresa_id}:*")
+    n += await _delete_by_pattern(f"fluxo_restarts:{empresa_id}:*")
+    n += await _delete_by_pattern(f"fluxo_escalation_sent:{empresa_id}:*")
+    n += await _delete_by_pattern(f"fluxo_loop:{empresa_id}:*")
+    logger.info(f"[CACHE-01] flow states empresa={empresa_id} resetados ({n} keys) — conversas vao reiniciar do start")
     return n
