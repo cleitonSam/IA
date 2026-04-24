@@ -53,6 +53,43 @@ async def _check_empresa_rate_limit(empresa_id: int, max_per_hour: int = 5000) -
 
 
 
+async def _check_webhook_queue_capacity(max_size: int = 5000) -> bool:
+    """[H-11] Backpressure: rejeita webhook se fila (stream Redis) > max_size.
+    Evita OOM quando worker trava. Default 5000; configure via WEBHOOK_QUEUE_MAX_SIZE."""
+    try:
+        import os as _os
+        cap = int(_os.getenv("WEBHOOK_QUEUE_MAX_SIZE", str(max_size)))
+        size = await redis_client.xlen("ia:webhook:stream")
+        if size > cap:
+            logger.warning(f"[H-11] Webhook queue cheia: {size}/{cap} — rejeitando novos")
+            return False
+        return True
+    except Exception as e:
+        # Fail-open: se Redis nao responde, deixa passar (nao queremos bloquear tudo)
+        logger.debug(f"[H-11] queue capacity check falhou (fail-open): {e}")
+        return True
+
+
+async def _check_media_rate_limit(empresa_id: int, conversation_id: int, media_type: str, max_per_day: int = 20) -> bool:
+    """[M-07] Limite de media (audio/imagem) por conversa/dia.
+    Default 20/dia. Configure via MEDIA_RATE_LIMIT_PER_DAY."""
+    try:
+        import os as _os
+        cap = int(_os.getenv("MEDIA_RATE_LIMIT_PER_DAY", str(max_per_day)))
+        k = f"rl:media:{empresa_id}:{conversation_id}:{media_type}:d"
+        cnt = await redis_client.incr(k)
+        if cnt == 1:
+            await redis_client.expire(k, 86400)
+        if cnt > cap:
+            logger.warning(f"[M-07] Limite de {media_type} atingido: empresa={empresa_id} conv={conversation_id} {cnt}/{cap}")
+            return False
+        return True
+    except Exception:
+        return True
+
+
+
+
 # Garante que o diretório raiz esteja no sys.path para imports modularizados
 _root = os.path.dirname(os.path.abspath(__file__))
 if _root not in sys.path:
@@ -108,6 +145,7 @@ except ImportError:
     logging.getLogger("openai").setLevel(logging.WARNING)
 
 # --- PROMETHEUS METRICS ---
+from src.core.config import set_tenant_context
 from src.core.config import (
     PROMETHEUS_OK as _PROMETHEUS_OK,
     METRIC_WEBHOOKS_TOTAL, METRIC_IA_LATENCY, METRIC_FAST_PATH_TOTAL,
@@ -4267,10 +4305,15 @@ async def processar_ia_e_responder(
                             # ── Anti-bloqueio: cooldown entre reinicializações do fluxo ──
                             # Conta quantas vezes o fluxo reiniciou em 24h. Na 4ª vez
                             # (fluxo não encontrou state = novo início), oferece atendente.
+                            # [FIX] Adicionado cooldown: uma vez enviada a mensagem,
+                            # nao reenvia por 1h mesmo que contador siga subindo.
                             _state_exists = await redis_client.exists(
                                 f"fluxo_state:{empresa_id}:0:{_fone_redis}"
                             )
-                            if not _state_exists:
+                            _escalation_cooldown_key = f"fluxo_escalation_sent:{empresa_id}:{_fone_redis}"
+                            _already_escalated = await redis_client.exists(_escalation_cooldown_key)
+
+                            if not _state_exists and not _already_escalated:
                                 _restart_key = f"fluxo_restarts:{empresa_id}:{_fone_redis}"
                                 _restarts = await redis_client.incr(_restart_key)
                                 if _restarts == 1:
@@ -4280,6 +4323,11 @@ async def processar_ia_e_responder(
                                         f"🔁 [FluxoTriagem] {_fone_redis} reiniciou o fluxo {_restarts}x em 24h — "
                                         f"oferecendo atendente humano"
                                     )
+                                    # [FIX] Marca escalation enviada pra nao repetir por 1h
+                                    await redis_client.setex(_escalation_cooldown_key, 3600, "1")
+                                    # [FIX] Pausa IA nessa conv por 1h pra atendente humano assumir
+                                    await redis_client.setex(f"pause_ia:{empresa_id}:{conversation_id}", 3600, "1")
+                                    await redis_client.setex(f"pause_ia_phone:{empresa_id}:0:{_fone_redis}", 3600, "1")
                                     _pers_restart = await carregar_personalidade(empresa_id) or {}
                                     _nome_ia_restart = _pers_restart.get("nome_ia") or "Atendente"
                                     _integr_restart = await carregar_integracao(empresa_id, 'chatwoot')
@@ -5656,6 +5704,8 @@ async def chatwoot_webhook(
                 logger.warning(f"Assinatura invalida para account={account_id} (formato legado)")
                 raise HTTPException(status_code=401, detail="Assinatura inválida")
 
+    # [M-02] Marca empresa_id no contexto dos logs
+    set_tenant_context(empresa_id)
     logger.info(f"Webhook validado: empresa={empresa_id} event={event}")
 
     conv_obj = payload.get("conversation", {}) if "conversation" in payload else payload
