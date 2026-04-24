@@ -16,6 +16,10 @@ import DeleteMessageNode from "./DeleteMessageNode";
 import AddLabelNode from "./AddLabelNode";
 import RemoveLabelNode from "./RemoveLabelNode";
 import HttpRequestNode from "./HttpRequestNode";
+import DelayHumanNode from "./DelayHumanNode";
+import AbTestSplitNode from "./AbTestSplitNode";
+import FormValidationNode from "./FormValidationNode";
+import StickyNoteNode from "./StickyNoteNode";
 import AIRespondNode from "./AIRespondNode";
 import AIClassifyNode from "./AIClassifyNode";
 import AISentimentNode from "./AISentimentNode";
@@ -59,6 +63,10 @@ export const nodeTypes = {
   addLabel:      AddLabelNode,
   removeLabel:   RemoveLabelNode,
   httpRequest:   HttpRequestNode,
+  delayHuman:    DelayHumanNode,
+  abTestSplit:   AbTestSplitNode,
+  formValidation:FormValidationNode,
+  stickyNote:    StickyNoteNode,
   aiRespond:     AIRespondNode,
   aiClassify:    AIClassifyNode,
   aiSentiment:   AISentimentNode,

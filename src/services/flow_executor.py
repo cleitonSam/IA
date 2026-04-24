@@ -1304,7 +1304,7 @@ async def _execute_from(
         estado = data.get("estado", "composing")  # composing / recording / paused / available / unavailable
         duracao_ms = int(data.get("duracao_ms", 2000))
         try:
-            await uaz_client.set_presence(phone, estado, duration=duracao_ms)
+            await uaz_client.set_presence(phone, estado, delay=duracao_ms)
         except AttributeError:
             logger.warning("[FlowExecutor] set_presence nao disponivel no client")
         next_id = _get_next_node_id(fluxo, node_id)
@@ -1384,6 +1384,117 @@ async def _execute_from(
                 await uaz_client.remove_label(phone, labels)
             except AttributeError:
                 logger.warning("[FlowExecutor] remove_label nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Delay humanizado (aleatorio entre min e max segundos) ──
+    if node_type == "delayHuman":
+        import random as _rand
+        min_s = float(data.get("min_seconds", 2))
+        max_s = float(data.get("max_seconds", 5))
+        # limites de seguranca
+        min_s = max(0.5, min(min_s, 20))
+        max_s = max(min_s, min(max_s, 30))
+        delay = _rand.uniform(min_s, max_s)
+        logger.debug(f"[FlowExecutor] delayHuman {delay:.1f}s empresa={empresa_id}")
+        # Opcional: mostra "digitando..." durante o delay
+        if data.get("show_typing", True):
+            try:
+                await uaz_client.set_presence(phone, "composing", delay=int(delay * 1000))
+            except AttributeError:
+                pass
+        await asyncio.sleep(delay)
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── A/B Test Split (divide usuarios por percentual) ──
+    if node_type == "abTestSplit":
+        import hashlib as _hash
+        variants = data.get("variants") or [
+            {"handle": "a", "weight": 50, "label": "A"},
+            {"handle": "b", "weight": 50, "label": "B"},
+        ]
+        # Hash deterministico do phone para mesma pessoa cair sempre no mesmo bucket
+        seed = f"{empresa_id}:{unidade_id}:{phone}:{node_id}"
+        h = int(_hash.md5(seed.encode()).hexdigest(), 16) % 10000  # 0..9999
+        total_weight = sum(max(1, int(v.get("weight", 1))) for v in variants)
+        threshold = 0
+        chosen = variants[0]
+        for v in variants:
+            threshold += int(v.get("weight", 1)) * 10000 // total_weight
+            if h <= threshold:
+                chosen = v
+                break
+        chosen_handle = chosen.get("handle", "a")
+        # Salva qual variant foi escolhido em sessao (pra tracking/analytics)
+        var_name = data.get("variavel", "_ab_variant")
+        session_vars[var_name] = chosen.get("label", chosen_handle)
+        await _update_var(empresa_id, phone, var_name, chosen.get("label", chosen_handle), unidade_id=unidade_id)
+        logger.info(f"[FlowExecutor] abTestSplit empresa={empresa_id} phone={phone} -> variant={chosen_handle}")
+        next_id = _get_next_node_id(fluxo, node_id, chosen_handle)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Form Validation (CPF, CNPJ, email, telefone BR) ──
+    if node_type == "formValidation":
+        import re as _re
+        tipo = (data.get("tipo") or "email").lower()  # email/cpf/cnpj/telefone
+        valor = _render_vars(data.get("valor", mensagem), session_vars).strip()
+        is_valid = False
+
+        if tipo == "email":
+            is_valid = bool(_re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", valor))
+        elif tipo == "cpf":
+            digits = [int(c) for c in valor if c.isdigit()]
+            if len(digits) == 11 and len(set(digits)) > 1:
+                # Dig verificador 1
+                s1 = sum(digits[i] * (10 - i) for i in range(9))
+                d1 = (s1 * 10) % 11
+                if d1 == 10: d1 = 0
+                # Dig verificador 2
+                s2 = sum(digits[i] * (11 - i) for i in range(10))
+                d2 = (s2 * 10) % 11
+                if d2 == 10: d2 = 0
+                is_valid = digits[9] == d1 and digits[10] == d2
+        elif tipo == "cnpj":
+            digits = [int(c) for c in valor if c.isdigit()]
+            if len(digits) == 14 and len(set(digits)) > 1:
+                w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+                w2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+                s1 = sum(digits[i] * w1[i] for i in range(12))
+                d1 = 11 - (s1 % 11)
+                if d1 >= 10: d1 = 0
+                s2 = sum(digits[i] * w2[i] for i in range(13))
+                d2 = 11 - (s2 % 11)
+                if d2 >= 10: d2 = 0
+                is_valid = digits[12] == d1 and digits[13] == d2
+        elif tipo in ("telefone", "phone", "celular"):
+            digits = "".join(c for c in valor if c.isdigit())
+            # Brasil: 10 (fixo com DDD) ou 11 (celular com DDD) digitos;
+            # aceita tambem 12/13 com DDI 55
+            if digits.startswith("55") and len(digits) in (12, 13):
+                digits = digits[2:]
+            is_valid = len(digits) in (10, 11) and digits[2] == "9" if len(digits) == 11 else len(digits) in (10, 11)
+
+        # Salva resultado em variavel (opcional)
+        var_out = data.get("variavel_resultado") or "_validation_ok"
+        session_vars[var_out] = bool(is_valid)
+        await _update_var(empresa_id, phone, var_out, bool(is_valid), unidade_id=unidade_id)
+
+        handle = "valid" if is_valid else "invalid"
+        logger.info(f"[FlowExecutor] formValidation tipo={tipo} valor={valor[:40]} -> {handle}")
+        next_id = _get_next_node_id(fluxo, node_id, handle)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Sticky Note (no-op no runtime — so existe no editor) ──
+    if node_type == "stickyNote":
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)

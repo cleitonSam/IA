@@ -805,6 +805,16 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
       method: "GET", url: "", headers: {}, body: {}, query_params: {},
       auth_type: "none", response_map: {}, timeout: 15, body_type: "json",
     },
+    delayHuman:    { min_seconds: 2, max_seconds: 5, show_typing: true },
+    abTestSplit:   {
+      variavel: "_ab_variant",
+      variants: [
+        { handle: "a", weight: 50, label: "A" },
+        { handle: "b", weight: 50, label: "B" },
+      ],
+    },
+    formValidation:{ tipo: "email", valor: "{{mensagem}}", variavel_resultado: "_validation_ok" },
+    stickyNote:    { texto: "Anotação...", color_idx: 0 },
     aiRespond:     { prompt_extra: "" },
     aiClassify:    { conditions: [], variavel: "intencao" },
     aiSentiment:   { variavel: "sentimento" },

@@ -18,7 +18,7 @@ export default function HttpRequestNode(props: NodeProps) {
   };
 
   return (
-    <BaseNode nodeType="httpRequest" {...props} customOutputHandles={["success", "error"]}>
+    <BaseNode nodeType="httpRequest" {...props} customOutputHandles={[{ id: "success", label: "✓ 2xx" }, { id: "error", label: "✗ erro" }]}>
       <div className="space-y-1.5">
         <div className="flex gap-1">
           <select

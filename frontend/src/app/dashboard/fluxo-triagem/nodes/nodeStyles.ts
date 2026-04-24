@@ -15,7 +15,8 @@ export type NodeTypeName =
   | "switch" | "condition" | "delay" | "waitInput" | "setVariable" | "getVariable"
   | "businessHours"
   | "humanTransfer" | "transferTeam" | "webhook" | "generateProtocol"
-  | "search" | "redis" | "sourceFilter";
+  | "search" | "redis" | "sourceFilter"
+  | "delayHuman" | "abTestSplit" | "formValidation" | "stickyNote";
 
 export const NODE_CONFIG: Record<NodeTypeName, {
   label: string;
@@ -65,6 +66,10 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   addLabel:      { label: "Adicionar Tag",   icon: "🏷",  border: "#14b8a6", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
   removeLabel:   { label: "Remover Tag",     icon: "🚫", border: "#f43f5e", headerBg: "#4c0519",  headerText: "#fecdd3", category: "system"  },
   httpRequest:   { label: "HTTP Request",    icon: "🌐", border: "#10b981", headerBg: "#064e3b",  headerText: "#d1fae5", category: "system"  },
+  delayHuman:    { label: "Delay Humano",    icon: "⏳", border: "#78716c", headerBg: "#292524",  headerText: "#e7e5e4", category: "logic"   },
+  abTestSplit:   { label: "A/B Test",        icon: "🧪", border: "#c084fc", headerBg: "#3b0764",  headerText: "#e9d5ff", category: "logic"   },
+  formValidation:{ label: "Validar Campo",   icon: "✅", border: "#059669", headerBg: "#064e3b",  headerText: "#bbf7d0", category: "logic"   },
+  stickyNote:    { label: "Nota (Sticky)",   icon: "📝", border: "#fbbf24", headerBg: "#78350f",  headerText: "#fef3c7", category: "system"  },
   generateProtocol: { label: "Protocolo",    icon: "🔢", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
 };
 
