@@ -21,8 +21,8 @@ services:
       - .env.production
     environment:
       - APP_MODE=api
-      - DB_POOL_MIN=30
-      - DB_POOL_MAX=120
+      - DB_POOL_MIN=5
+      - DB_POOL_MAX=20
     restart: always
     networks:
       - ia-prod-net
@@ -52,8 +52,8 @@ services:
       - .env.production
     environment:
       - APP_MODE=worker
-      - DB_POOL_MIN=30
-      - DB_POOL_MAX=120
+      - DB_POOL_MIN=5
+      - DB_POOL_MAX=20
     restart: always
     networks:
       - ia-prod-net

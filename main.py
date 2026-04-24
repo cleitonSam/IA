@@ -1205,8 +1205,8 @@ async def startup_event():
                 logger.warning(f"⚠️ Falha ao aplicar migrations: {migration_err}")
 
             # [SCALE-01] Pool configuravel via env (default 30/120 pra 800 tenants)
-            _db_min = int(os.getenv("DB_POOL_MIN", "30"))
-            _db_max = int(os.getenv("DB_POOL_MAX", "120"))
+            _db_min = int(os.getenv("DB_POOL_MIN", "5"))
+            _db_max = int(os.getenv("DB_POOL_MAX", "20"))
             _db_cmd_timeout = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "30"))
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
