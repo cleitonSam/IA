@@ -142,11 +142,18 @@ class UazAPIClient:
                 )
                 await asyncio.sleep(delay)
             except httpx.HTTPStatusError as e:
-                # Não faz retry para erros 4xx (exceto 429 — rate limit)
-                if e.response.status_code == 429:
+                # [QW-9] Retry para status retentaveis: 408 (request timeout),
+                # 429 (rate limit), 500, 502, 503, 504 (erros transientes de servidor).
+                # 4xx (exceto os acima) sao erros do cliente e nao fazem retry.
+                _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+                status = e.response.status_code
+                if status in _RETRYABLE_STATUS:
                     last_error = e
                     delay = _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1]
-                    logger.warning(f"⚠️ UazAPI rate limited ({endpoint}), retry em {delay}s")
+                    logger.warning(
+                        f"⚠️ UazAPI status {status} retentavel ({endpoint}), "
+                        f"retry {attempt+1}/{_MAX_RETRIES} em {delay}s"
+                    )
                     await asyncio.sleep(delay)
                 else:
                     body = ""
@@ -155,8 +162,7 @@ class UazAPIClient:
                     except Exception:
                         pass
                     logger.error(
-                        f"❌ UazAPI erro HTTP {e.response.status_code} ({endpoint}): "
-                        f"body={body}"
+                        f"❌ UazAPI erro HTTP {status} ({endpoint}): body={body}"
                     )
                     if PROMETHEUS_OK:
                         METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
@@ -805,3 +811,135 @@ class UazAPIClient:
         }
         res = await self._request("POST", "/send/location", json=payload)
         return res is not None
+
+    # ─────────────────────────────────────────────────────────────────
+    # REACOES, EDIT, DELETE
+    # ─────────────────────────────────────────────────────────────────
+
+    async def send_reaction(
+        self,
+        number: str,
+        message_id: str,
+        emoji: str,
+    ) -> bool:
+        """
+        Envia reacao emoji a uma mensagem especifica.
+        emoji: string unicode. Passar string vazia remove a reacao.
+        """
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "messageId": message_id,
+            "reaction": emoji,
+            "track_source": "chatbot",
+        }
+        res = await self._request("POST", "/send/reaction", json=payload)
+        return res is not None
+
+    async def edit_message(
+        self,
+        number: str,
+        message_id: str,
+        new_text: str,
+    ) -> bool:
+        """Edita uma mensagem de texto ja enviada."""
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "messageId": message_id,
+            "text": new_text,
+            "track_source": "chatbot",
+        }
+        res = await self._request("POST", "/message/edit", json=payload)
+        return res is not None
+
+    async def delete_message(
+        self,
+        number: str,
+        message_id: str,
+    ) -> bool:
+        """Revoga/deleta uma mensagem enviada (apaga para ambos)."""
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "messageId": message_id,
+            "track_source": "chatbot",
+        }
+        res = await self._request("POST", "/message/delete", json=payload)
+        return res is not None
+
+    # ─────────────────────────────────────────────────────────────────
+    # LABELS / TAGS
+    # ─────────────────────────────────────────────────────────────────
+
+    async def add_label(
+        self,
+        number: str,
+        labels: List[str],
+    ) -> bool:
+        """Adiciona uma ou mais labels/tags a um contato."""
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "labels": labels,
+            "track_source": "chatbot",
+        }
+        res = await self._request("POST", "/label/add", json=payload)
+        return res is not None
+
+    async def remove_label(
+        self,
+        number: str,
+        labels: List[str],
+    ) -> bool:
+        """Remove uma ou mais labels/tags de um contato."""
+        clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+        payload = {
+            "number": clean_number,
+            "labels": labels,
+            "track_source": "chatbot",
+        }
+        res = await self._request("POST", "/label/remove", json=payload)
+        return res is not None
+
+    # ─────────────────────────────────────────────────────────────────
+    # TRANSFER (handoff)
+    # ─────────────────────────────────────────────────────────────────
+
+    async def transfer_to_team(
+        self,
+        number: str,
+        team_id=None,
+        team_name=None,
+        note: str = "",
+    ) -> bool:
+        """
+        [QW-1] Transfere conversa para time/fila. A UazAPI nao tem endpoint
+        nativo de transferencia, entao estrategia e marcar com LABEL do time.
+        """
+        try:
+            labels = []
+            if team_id:
+                labels.append(f"team:{team_id}")
+            if team_name:
+                labels.append(f"team_name:{team_name}")
+            if labels:
+                await self.add_label(number, labels)
+
+            if note:
+                clean_number = "".join(filter(str.isdigit, number)) if "@" not in number else number
+                payload = {
+                    "number": clean_number,
+                    "text": note,
+                    "readchat": True,
+                    "readmessages": True,
+                    "track_source": f"transfer:{team_id or 'unknown'}",
+                }
+                await self._request("POST", "/send/text", json=payload)
+
+            logger.info(f"transfer_to_team: numero={number} team_id={team_id}")
+            return True
+        except Exception as e:
+            logger.error(f"transfer_to_team falhou: {e}")
+            return False
+

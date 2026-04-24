@@ -6,6 +6,16 @@ import SendMenuNode from "./SendMenuNode";
 import SendImageNode from "./SendImageNode";
 import SendAudioNode from "./SendAudioNode";
 import SendMediaNode from "./SendMediaNode";
+import SendLocationNode from "./SendLocationNode";
+import SendContactNode from "./SendContactNode";
+import SendPollNode from "./SendPollNode";
+import SetPresenceNode from "./SetPresenceNode";
+import SendReactionNode from "./SendReactionNode";
+import EditMessageNode from "./EditMessageNode";
+import DeleteMessageNode from "./DeleteMessageNode";
+import AddLabelNode from "./AddLabelNode";
+import RemoveLabelNode from "./RemoveLabelNode";
+import HttpRequestNode from "./HttpRequestNode";
 import AIRespondNode from "./AIRespondNode";
 import AIClassifyNode from "./AIClassifyNode";
 import AISentimentNode from "./AISentimentNode";
@@ -39,6 +49,16 @@ export const nodeTypes = {
   sendImage:     SendImageNode,
   sendAudio:     SendAudioNode,
   sendMedia:     SendMediaNode,
+  sendLocation:  SendLocationNode,
+  sendContact:   SendContactNode,
+  sendPoll:      SendPollNode,
+  setPresence:   SetPresenceNode,
+  sendReaction:  SendReactionNode,
+  editMessage:   EditMessageNode,
+  deleteMessage: DeleteMessageNode,
+  addLabel:      AddLabelNode,
+  removeLabel:   RemoveLabelNode,
+  httpRequest:   HttpRequestNode,
   aiRespond:     AIRespondNode,
   aiClassify:    AIClassifyNode,
   aiSentiment:   AISentimentNode,

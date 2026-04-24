@@ -31,6 +31,75 @@ import TutorialModal from "./components/TutorialModal";
 import DeletableEdge from "./components/DeletableEdge";
 
 // ─────────────────────────────────────────────────────────────
+// useUndoRedo — historico simples via snapshots
+// ─────────────────────────────────────────────────────────────
+type Snapshot = { nodes: any[]; edges: any[] };
+function useUndoRedo(
+  nodes: any[],
+  edges: any[],
+  setNodes: (n: any[]) => void,
+  setEdges: (e: any[]) => void,
+) {
+  const historyRef = React.useRef<Snapshot[]>([]);
+  const pointerRef = React.useRef<number>(-1);
+  const suppressRef = React.useRef<boolean>(false);
+
+  // Salva snapshot atual no historico quando nodes/edges mudam
+  React.useEffect(() => {
+    if (suppressRef.current) {
+      suppressRef.current = false;
+      return;
+    }
+    const snap: Snapshot = { nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) };
+    // Se estamos no meio do historico (apos undos), trunca o futuro
+    if (pointerRef.current < historyRef.current.length - 1) {
+      historyRef.current = historyRef.current.slice(0, pointerRef.current + 1);
+    }
+    historyRef.current.push(snap);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+    else pointerRef.current++;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges]);
+
+  const undo = React.useCallback(() => {
+    if (pointerRef.current > 0) {
+      pointerRef.current--;
+      const s = historyRef.current[pointerRef.current];
+      suppressRef.current = true;
+      setNodes(s.nodes);
+      setEdges(s.edges);
+    }
+  }, [setNodes, setEdges]);
+
+  const redo = React.useCallback(() => {
+    if (pointerRef.current < historyRef.current.length - 1) {
+      pointerRef.current++;
+      const s = historyRef.current[pointerRef.current];
+      suppressRef.current = true;
+      setNodes(s.nodes);
+      setEdges(s.edges);
+    }
+  }, [setNodes, setEdges]);
+
+  // Atalhos de teclado: Ctrl+Z (undo), Ctrl+Y ou Ctrl+Shift+Z (redo)
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      // Ignora se o foco estiver em input/textarea (pra nao quebrar edicao de campos)
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((e.key === "y") || (e.key === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  return { undo, redo };
+}
+
+
+// ─────────────────────────────────────────────────────────────
 // Tipagem
 // ─────────────────────────────────────────────────────────────
 type FlowData = {
@@ -78,6 +147,7 @@ const EDGE_TYPES = { deletable: DeletableEdge };
 export default function FluxoTriagemPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState(DEFAULT_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState(DEFAULT_EDGES);
+  const { undo, redo } = useUndoRedo(nodes, edges, setNodes, setEdges);
 
   const [ativo, setAtivo] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -722,6 +792,19 @@ function getDefaultData(type: NodeTypeName): Record<string, unknown> {
     sendImage:     { url: "", caption: "" },
     sendAudio:     { url: "" },
     sendMedia:     { type: "image", url: "", caption: "" },
+    sendLocation:  { latitude: "", longitude: "", name: "", address: "" },
+    sendContact:   { contact_name: "", contact_phone: "" },
+    sendPoll:      { pergunta: "Qual sua preferencia?", opcoes: ["Opcao 1", "Opcao 2"], multi_select: false },
+    setPresence:   { estado: "composing", duracao_ms: 2000 },
+    sendReaction:  { message_id: "{{_last_msg_id}}", emoji: "👍" },
+    editMessage:   { message_id: "{{_last_bot_msg_id}}", new_text: "" },
+    deleteMessage: { message_id: "{{_last_bot_msg_id}}" },
+    addLabel:      { labels: ["Lead"] },
+    removeLabel:   { labels: [] },
+    httpRequest:   {
+      method: "GET", url: "", headers: {}, body: {}, query_params: {},
+      auth_type: "none", response_map: {}, timeout: 15, body_type: "json",
+    },
     aiRespond:     { prompt_extra: "" },
     aiClassify:    { conditions: [], variavel: "intencao" },
     aiSentiment:   { variavel: "sentimento" },

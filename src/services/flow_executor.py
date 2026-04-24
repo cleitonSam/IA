@@ -1237,177 +1237,330 @@ async def _execute_from(
                     await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
         return
 
-    logger.warning(f"[FlowExecutor] Tipo de nó desconhecido: {node_type}")
+    # ═════════════════════════════════════════════════════════════
+    # NOVOS NOS (Onda 1/2) — expoe recursos UazAPI subutilizados
+    # ═════════════════════════════════════════════════════════════
 
-
-# ─────────────────────────────────────────────────────────────
-# AIQualify — fluxo de qualificação multi-pergunta
-# ─────────────────────────────────────────────────────────────
-
-async def _execute_aiqualify(
-    empresa_id: int,
-    phone: str,
-    mensagem: str,
-    fluxo: Dict,
-    node: Dict,
-    uaz_client,
-    session_vars: Dict,
-    _depth: int,
-    unidade_id: int = 0,
-):
-    """Gerencia o fluxo de perguntas sequenciais do AIQualify."""
-    node_id = node["id"]
-    data = node.get("data", {})
-    perguntas = data.get("perguntas", [])
-    variaveis = data.get("variaveis", [])
-
-    state = await _get_state(empresa_id, phone, unidade_id)
-    step_idx = state.get("qualify_step", 0) if state else 0
-
-    if step_idx < len(perguntas):
-        pergunta = _render_vars(perguntas[step_idx], session_vars)
-        await _bot_sent_marker(empresa_id, phone, unidade_id)
-        await uaz_client.send_text(phone, pergunta)
-        await _set_state(empresa_id, phone, {
-            "node_id": node_id,
-            "step": "awaiting_qualify",
-            "qualify_step": step_idx + 1,
-        }, unidade_id=unidade_id)
-    else:
-        # Todas as perguntas foram respondidas
+    # ── Send Location (pin no mapa) ──
+    if node_type == "sendLocation":
+        try:
+            latitude = float(_render_vars(str(data.get("latitude", "0")), session_vars))
+            longitude = float(_render_vars(str(data.get("longitude", "0")), session_vars))
+        except (TypeError, ValueError):
+            latitude = longitude = 0.0
+        name = _render_vars(data.get("name", ""), session_vars)
+        address = _render_vars(data.get("address", ""), session_vars)
+        if latitude or longitude:
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
+            await uaz_client.send_location(phone, latitude, longitude, name=name, address=address)
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
-
-
-# ─────────────────────────────────────────────────────────────
-# Webhook externo
-# ─────────────────────────────────────────────────────────────
-
-async def _execute_webhook(data: Dict, session_vars: Dict, empresa_id: int, phone: str):
-    """Chama uma URL externa com dados da sessão."""
-    url = data.get("url", "")
-    method = data.get("method", "POST").upper()
-    body_template = data.get("body", {})
-
-    if not url:
         return
 
-    # Renderiza variáveis no body
-    rendered_body = {}
-    for k, v in body_template.items():
-        rendered_body[k] = _render_vars(str(v), session_vars)
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            if method == "GET":
-                resp = await client.get(url, params=rendered_body)
-            else:
-                resp = await client.post(url, json=rendered_body)
-            logger.info(f"[FlowExecutor] Webhook {method} {url} → status {resp.status_code} empresa {empresa_id}")
-    except Exception as e:
-        logger.error(f"[FlowExecutor] Webhook error para empresa {empresa_id}: {e}")
-
-
-# ─────────────────────────────────────────────────────────────
-# Marker de bot (evita fromMe echo no UazAPI)
-# ─────────────────────────────────────────────────────────────
-
-async def _bot_sent_marker(empresa_id: int, phone: str, unidade_id: int = 0):
-    """Marca que o próximo fromMe é do bot (não do atendente humano).
-    TTL 120s: mídia gera múltiplos webhooks (sent + thumbnail + delivered).
-    Seta chave multi-tenant E legada para compatibilidade.
-    """
-    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{unidade_id}:{phone}", 120, "1")
-    await redis_client.setex(f"uaz_bot_sent:{empresa_id}:{phone}", 120, "1")
-
-
-# ─────────────────────────────────────────────────────────────
-# AI Menu — Geração dinâmica de menu via LLM
-# ─────────────────────────────────────────────────────────────
-
-async def _execute_aimenu(
-    empresa_id: int,
-    phone: str,
-    mensagem: str,
-    fluxo: Dict,
-    node: Dict,
-    uaz_client,
-    session_vars: Dict,
-    _depth: int,
-    unidade_id: int = 0,
-):
-    """Usa IA para gerar um menu contextual e enviar ao usuário."""
-    node_id = node["id"]
-    data = node.get("data", {})
-    instrucao = data.get("instrucao", "Gere um menu com opções de atendimento baseado na dúvida do cliente.")
-    
-    # Prompt para o LLM gerar o menu em JSON
-    prompt = (
-        f"Você é um especialista em experiência do cliente e atendimento via WhatsApp.\n"
-        f"Sua missão é gerar um menu interativo extremamente útil, amigável e focado na dúvida do usuário.\n\n"
-        f"Instrução Estratégica: {instrucao}\n"
-        f"Mensagem do Usuário: {mensagem}\n"
-        f"Histórico/Variáveis: {json.dumps(session_vars, ensure_ascii=False)}\n\n"
-        f"REGRAS CRÍTICAS:\n"
-        f"1. Responda APENAS um JSON válido.\n"
-        f"2. O campo 'texto' deve ser caloroso, empático e usar emojis.\n"
-        f"3. O campo 'titulo' deve ser curto e profissional.\n"
-        f"4. O campo 'choices' deve ser uma lista de strings no formato 'Etiqueta Visível|id_curto'.\n"
-        f"5. Gere no máximo 5 opções.\n"
-        f"6. Tudo deve ser em PORTUGUÊS (Brasil).\n\n"
-        f"Exemplo de saída:\n"
-        f"{{\n"
-        f"  \"texto\": \"Olá! Vi que você quer saber sobre planos. Qual tipo de treino você prefere? 😊\",\n"
-        f"  \"titulo\": \"Opções de Planos\",\n"
-        f"  \"choices\": [\"Musculação|plano_musc\", \"Aulas Coletivas|plano_aula\", \"Falar com Humano|atendente\"]\n"
-        f"}}"
-    )
-
-    result_raw = await _call_ia(empresa_id, prompt, mensagem, max_tokens=300)
-    try:
-        # Extrai JSON caso a IA tenha colocado markdown
-        json_str = result_raw.strip()
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0].strip()
-            
-        menu_config = json.loads(json_str)
-        
-        # Prepara dados para o uaz_client.send_menu
-        # uaz_client.send_menu espera: { tipo, titulo, texto, rodape, botao, opcoes: [{id, titulo}] }
-        choices_raw = menu_config.get("choices", [])
-        opcoes = []
-        for choice in choices_raw:
-            if "|" in choice:
-                lbl, cid = choice.split("|", 1)
-                opcoes.append({"titulo": lbl.strip(), "id": cid.strip()})
-            else:
-                opcoes.append({"titulo": choice.strip(), "id": choice.strip().lower().replace(" ", "_")})
-
-        final_menu = {
-            "tipo": "list",
-            "titulo": menu_config.get("titulo", "Menu de IA"),
-            "texto": menu_config.get("texto", "Como posso ajudar?"),
-            "rodape": data.get("rodape", "Powered by IA"),
-            "botao": data.get("botao", "Ver opções"),
-            "opcoes": opcoes
-        }
-
-        await _bot_sent_marker(empresa_id, phone, unidade_id)
-        sent = await uaz_client.send_menu(phone, final_menu)
-        if sent:
-            next_id = _get_next_node_id(fluxo, node_id)
-            if next_id:
-                await _set_state(empresa_id, phone, {
-                    "node_id": next_id,
-                    "step": "awaiting_menu_reply",
-                    "_menu_node_id": node_id,   # permite repetir o menu se o switch não bater
-                }, unidade_id=unidade_id)
-    except Exception as e:
-        logger.error(f"[FlowExecutor] Erro ao gerar AI Menu: {e} | Resposta: {result_raw}")
-        # Se falhar, tenta apenas responder via IA normal ou end
+    # ── Send Contact (vCard) ──
+    if node_type == "sendContact":
+        contact_name = _render_vars(data.get("contact_name", ""), session_vars)
+        contact_phone = _render_vars(data.get("contact_phone", ""), session_vars)
+        if contact_name and contact_phone:
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
+            # send_contact existe no client — assinatura: (number, contact_name, contact_phone)
+            try:
+                await uaz_client.send_contact(phone, contact_name, contact_phone)
+            except AttributeError:
+                logger.warning("[FlowExecutor] send_contact nao disponivel no client")
         next_id = _get_next_node_id(fluxo, node_id)
         if next_id:
             await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Send Poll (enquete) ──
+    if node_type == "sendPoll":
+        pergunta = _render_vars(data.get("pergunta", ""), session_vars)
+        opcoes_raw = data.get("opcoes", [])
+        # Aceita lista de strings ou lista de dicts
+        opcoes = []
+        for o in opcoes_raw:
+            if isinstance(o, dict):
+                opcoes.append(_render_vars(o.get("titulo") or o.get("label") or "", session_vars))
+            else:
+                opcoes.append(_render_vars(str(o), session_vars))
+        opcoes = [o for o in opcoes if o]
+        if pergunta and opcoes:
+            await _bot_sent_marker(empresa_id, phone, unidade_id)
+            try:
+                await uaz_client.send_poll(phone, pergunta, opcoes, multi_select=bool(data.get("multi_select", False)))
+            except AttributeError:
+                # Fallback: usa send_menu tipo poll
+                menu_cfg = {"tipo": "poll", "texto": pergunta, "opcoes": [{"titulo": o, "id": o} for o in opcoes]}
+                await uaz_client.send_menu(phone, menu_cfg)
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Set Presence (digitando...) ──
+    if node_type == "setPresence":
+        estado = data.get("estado", "composing")  # composing / recording / paused / available / unavailable
+        duracao_ms = int(data.get("duracao_ms", 2000))
+        try:
+            await uaz_client.set_presence(phone, estado, duration=duracao_ms)
+        except AttributeError:
+            logger.warning("[FlowExecutor] set_presence nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Send Reaction (emoji a mensagem especifica) ──
+    if node_type == "sendReaction":
+        # message_id pode vir de: data.message_id (explicit), session_vars (_last_msg_id), ou
+        # a mensagem atual do cliente (caso queira reagir a mensagem entrante — precisa estar em vars)
+        message_id = _render_vars(data.get("message_id", ""), session_vars) or session_vars.get("_last_msg_id", "")
+        emoji = _render_vars(data.get("emoji", "👍"), session_vars)
+        if message_id:
+            try:
+                await uaz_client.send_reaction(phone, message_id, emoji)
+            except AttributeError:
+                logger.warning("[FlowExecutor] send_reaction nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Edit Message ──
+    if node_type == "editMessage":
+        message_id = _render_vars(data.get("message_id", ""), session_vars) or session_vars.get("_last_bot_msg_id", "")
+        new_text = _render_vars(data.get("new_text", ""), session_vars)
+        if message_id and new_text:
+            try:
+                await uaz_client.edit_message(phone, message_id, new_text)
+            except AttributeError:
+                logger.warning("[FlowExecutor] edit_message nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Delete Message ──
+    if node_type == "deleteMessage":
+        message_id = _render_vars(data.get("message_id", ""), session_vars) or session_vars.get("_last_bot_msg_id", "")
+        if message_id:
+            try:
+                await uaz_client.delete_message(phone, message_id)
+            except AttributeError:
+                logger.warning("[FlowExecutor] delete_message nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Add Label (tag no contato) ──
+    if node_type == "addLabel":
+        labels_raw = data.get("labels", [])
+        if isinstance(labels_raw, str):
+            labels = [l.strip() for l in labels_raw.split(",") if l.strip()]
+        else:
+            labels = [_render_vars(str(l), session_vars) for l in labels_raw if l]
+        if labels:
+            try:
+                await uaz_client.add_label(phone, labels)
+            except AttributeError:
+                logger.warning("[FlowExecutor] add_label nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── Remove Label ──
+    if node_type == "removeLabel":
+        labels_raw = data.get("labels", [])
+        if isinstance(labels_raw, str):
+            labels = [l.strip() for l in labels_raw.split(",") if l.strip()]
+        else:
+            labels = [_render_vars(str(l), session_vars) for l in labels_raw if l]
+        if labels:
+            try:
+                await uaz_client.remove_label(phone, labels)
+            except AttributeError:
+                logger.warning("[FlowExecutor] remove_label nao disponivel no client")
+        next_id = _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    # ── HTTP Request (no generico — M-1 do backlog) ──
+    # Suporta GET/POST/PUT/DELETE/PATCH, headers, auth (bearer/basic), body, e
+    # mapeamento de campos da resposta JSON pra variaveis de sessao.
+    if node_type == "httpRequest":
+        await _execute_http_request(data, session_vars, empresa_id, phone, unidade_id)
+        _last_status = int(session_vars.get("_http_last_status", 0) or 0)
+        if 200 <= _last_status < 300:
+            next_id = _get_next_node_id(fluxo, node_id, "success") or _get_next_node_id(fluxo, node_id)
+        else:
+            next_id = _get_next_node_id(fluxo, node_id, "error") or _get_next_node_id(fluxo, node_id)
+        if next_id:
+            await _execute_from(empresa_id, phone, mensagem, fluxo, next_id, uaz_client, session_vars, _depth + 1, unidade_id=unidade_id)
+        return
+
+    logger.warning(f"[FlowExecutor] Tipo de no desconhecido: {node_type}")
+
+
+# ─────────────────────────────────────────────────────────────
+# HTTP Request (no generico — M-1) — generico, novo
+# ─────────────────────────────────────────────────────────────
+
+async def _execute_http_request(
+    data: Dict,
+    session_vars: Dict,
+    empresa_id: int,
+    phone: str,
+    unidade_id: int = 0,
+):
+    """
+    Chamada HTTP genérica:
+    - Métodos: GET, POST, PUT, DELETE, PATCH
+    - Auth: none / bearer / basic
+    - Headers customizáveis
+    - Body JSON (dict ou string com {{vars}}) ou form urlencoded
+    - Query params com {{vars}}
+    - Timeout customizável (default 15s)
+    - response_map = {"var_name": "dot.path.in.json"} — salva campos em vars
+    Salva em session_vars: _http_last_status, _http_last_body_preview, _http_last_error
+    """
+    import json as _json
+
+    url = _render_vars(data.get("url", ""), session_vars)
+    if not url:
+        session_vars["_http_last_status"] = 0
+        session_vars["_http_last_error"] = "url_vazia"
+        return
+
+    method = str(data.get("method", "GET")).upper()
+    timeout_s = float(data.get("timeout", 15.0))
+
+    headers = {}
+    for k, v in (data.get("headers") or {}).items():
+        headers[str(k)] = _render_vars(str(v), session_vars)
+
+    auth_type = (data.get("auth_type") or "none").lower()
+    if auth_type == "bearer":
+        token = _render_vars(data.get("auth_token", ""), session_vars)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    elif auth_type == "basic":
+        import base64 as _b64
+        user = _render_vars(data.get("auth_user", ""), session_vars)
+        pwd = _render_vars(data.get("auth_password", ""), session_vars)
+        if user or pwd:
+            creds = _b64.b64encode(f"{user}:{pwd}".encode()).decode()
+            headers["Authorization"] = f"Basic {creds}"
+
+    params = {}
+    for k, v in (data.get("query_params") or {}).items():
+        params[str(k)] = _render_vars(str(v), session_vars)
+
+    body_raw = data.get("body")
+    rendered_body = None
+    body_type = (data.get("body_type") or "json").lower()
+
+    if body_raw is not None and method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if isinstance(body_raw, dict):
+            rendered_body = {}
+            for k, v in body_raw.items():
+                if isinstance(v, str):
+                    rendered_body[k] = _render_vars(v, session_vars)
+                else:
+                    rendered_body[k] = v
+        elif isinstance(body_raw, str):
+            rendered_str = _render_vars(body_raw, session_vars)
+            if body_type == "json":
+                try:
+                    rendered_body = _json.loads(rendered_str) if rendered_str.strip() else None
+                except _json.JSONDecodeError:
+                    rendered_body = rendered_str
+            else:
+                rendered_body = rendered_str
+
+    status_code = 0
+    body_preview = ""
+    parsed_json = None
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            kwargs = {"params": params, "headers": headers}
+            if rendered_body is not None:
+                if body_type == "form" and isinstance(rendered_body, dict):
+                    kwargs["data"] = rendered_body
+                elif isinstance(rendered_body, (dict, list)):
+                    kwargs["json"] = rendered_body
+                else:
+                    kwargs["content"] = rendered_body if isinstance(rendered_body, (bytes, str)) else str(rendered_body)
+                    lower_headers = {k.lower(): k for k in headers}
+                    if "content-type" not in lower_headers:
+                        kwargs["headers"]["Content-Type"] = "application/json" if body_type == "json" else "text/plain"
+
+            resp = await client.request(method, url, **kwargs)
+            status_code = resp.status_code
+            body_preview = resp.text[:500] if resp.text else ""
+            try:
+                parsed_json = resp.json()
+            except Exception:
+                parsed_json = None
+
+            logger.info(f"[FlowExecutor] HTTP {method} {url} -> status {status_code} empresa {empresa_id}")
+
+    except httpx.TimeoutException:
+        session_vars["_http_last_status"] = 0
+        session_vars["_http_last_error"] = "timeout"
+        logger.warning(f"[FlowExecutor] HTTP {method} {url} TIMEOUT empresa {empresa_id}")
+        return
+    except Exception as e:
+        session_vars["_http_last_status"] = 0
+        session_vars["_http_last_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        logger.error(f"[FlowExecutor] HTTP {method} {url} ERROR empresa {empresa_id}: {e}")
+        return
+
+    session_vars["_http_last_status"] = status_code
+    session_vars["_http_last_body_preview"] = body_preview
+    session_vars.pop("_http_last_error", None)
+
+    response_map = data.get("response_map") or {}
+    if parsed_json is not None and isinstance(response_map, dict):
+        for var_name, path in response_map.items():
+            try:
+                value = _extract_dot_path(parsed_json, str(path))
+                if value is not None:
+                    session_vars[var_name] = value
+                    await _update_var(empresa_id, phone, var_name, value, unidade_id=unidade_id)
+            except Exception as e:
+                logger.debug(f"[FlowExecutor] response_map falhou para {var_name}={path}: {e}")
+
+
+def _extract_dot_path(obj, path: str):
+    """Extrai valor JSON por dot-notation. Ex: 'data.user.name', 'items[0].id'."""
+    if not path:
+        return obj
+    cur = obj
+    tokens = []
+    for part in path.split("."):
+        if "[" in part and part.endswith("]"):
+            name, idx_str = part.split("[", 1)
+            if name:
+                tokens.append(name)
+            try:
+                tokens.append(int(idx_str.rstrip("]")))
+            except ValueError:
+                tokens.append(idx_str.rstrip("]"))
+        else:
+            tokens.append(part)
+    for t in tokens:
+        if cur is None:
+            return None
+        if isinstance(t, int) and isinstance(cur, list):
+            cur = cur[t] if 0 <= t < len(cur) else None
+        elif isinstance(cur, dict):
+            cur = cur.get(str(t))
+        else:
+            return None
+    return cur

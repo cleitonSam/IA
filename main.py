@@ -4200,7 +4200,19 @@ async def processar_ia_e_responder(
                                     return True
                             # ── Fim cooldown reinicializações ────────────────────────────
 
-                            _tratou = await executar_fluxo(empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli)
+                            # [QW-2] Resolve unidade_id para multi-tenancy correta no flow_executor
+                            _unidade_id_fluxo = 0
+                            try:
+                                _unid_data = await carregar_unidade(slug, empresa_id) if slug else None
+                                if _unid_data and _unid_data.get("id"):
+                                    _unidade_id_fluxo = int(_unid_data["id"])
+                            except Exception:
+                                _unidade_id_fluxo = 0
+
+                            _tratou = await executar_fluxo(
+                                empresa_id, _fone_redis, _ultima_msg, _fluxo_config, _uaz_fluxo_cli,
+                                unidade_id=_unidade_id_fluxo,
+                            )
                             if _tratou:
                                 logger.info(f"✅ [FluxoTriagem Monolith] Mensagem tratada pelo fluxo visual para {_fone_redis}")
                                 # Se tratou, libera o lock e encerra para evitar que a IA responda

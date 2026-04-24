@@ -6,6 +6,10 @@
 export type NodeTypeName =
   | "start" | "end" | "loop" | "goToMenu"
   | "sendText" | "sendMenu" | "sendImage" | "sendAudio" | "sendMedia"
+  | "sendLocation" | "sendContact" | "sendPoll" | "setPresence"
+  | "sendReaction" | "editMessage" | "deleteMessage"
+  | "addLabel" | "removeLabel"
+  | "httpRequest"
   | "aiRespond" | "aiClassify" | "aiSentiment" | "aiQualify" | "aiExtract" | "aiMenu"
   | "menuFixoIA" | "aiMenuDinamicoIA"
   | "switch" | "condition" | "delay" | "waitInput" | "setVariable" | "getVariable"
@@ -51,6 +55,16 @@ export const NODE_CONFIG: Record<NodeTypeName, {
   humanTransfer: { label: "Transferir Humano", icon: "👤", border: "#f97316", headerBg: "#7c2d12",  headerText: "#ffedd5", category: "system"  },
   transferTeam:  { label: "Transferir Time",  icon: "🏢", border: "#38bdf8", headerBg: "#0c4a6e",  headerText: "#7dd3fc", category: "system"  },
   webhook:       { label: "Webhook",         icon: "🌐", border: "#10b981", headerBg: "#064e3b",  headerText: "#d1fae5", category: "system"  },
+  sendLocation:  { label: "Enviar Local",    icon: "📍", border: "#06b6d4", headerBg: "#0c4a6e",  headerText: "#a5f3fc", category: "send"    },
+  sendContact:   { label: "Enviar Contato",  icon: "👤", border: "#818cf8", headerBg: "#1e1b4b",  headerText: "#c7d2fe", category: "send"    },
+  sendPoll:      { label: "Enviar Enquete",  icon: "📊", border: "#fbbf24", headerBg: "#78350f",  headerText: "#fde68a", category: "send"    },
+  setPresence:   { label: "Digitando...",    icon: "⏳", border: "#94a3b8", headerBg: "#1e293b",  headerText: "#cbd5e1", category: "send"    },
+  sendReaction:  { label: "Reacao (Emoji)",  icon: "👍", border: "#fb923c", headerBg: "#7c2d12",  headerText: "#fed7aa", category: "send"    },
+  editMessage:   { label: "Editar Mensagem", icon: "✏️", border: "#facc15", headerBg: "#713f12",  headerText: "#fef9c3", category: "send"    },
+  deleteMessage: { label: "Apagar Mensagem", icon: "🗑",  border: "#ef4444", headerBg: "#7f1d1d",  headerText: "#fecaca", category: "send"    },
+  addLabel:      { label: "Adicionar Tag",   icon: "🏷",  border: "#14b8a6", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
+  removeLabel:   { label: "Remover Tag",     icon: "🚫", border: "#f43f5e", headerBg: "#4c0519",  headerText: "#fecdd3", category: "system"  },
+  httpRequest:   { label: "HTTP Request",    icon: "🌐", border: "#10b981", headerBg: "#064e3b",  headerText: "#d1fae5", category: "system"  },
   generateProtocol: { label: "Protocolo",    icon: "🔢", border: "#2dd4bf", headerBg: "#134e4a",  headerText: "#ccfbf1", category: "system"  },
 };
 
