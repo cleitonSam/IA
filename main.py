@@ -145,7 +145,11 @@ except ImportError:
     logging.getLogger("openai").setLevel(logging.WARNING)
 
 # --- PROMETHEUS METRICS ---
-from src.core.config import set_tenant_context
+try:
+    from src.core.config import set_tenant_context
+except ImportError:
+    def set_tenant_context(empresa_id):
+        return None
 from src.core.config import (
     PROMETHEUS_OK as _PROMETHEUS_OK,
     METRIC_WEBHOOKS_TOTAL, METRIC_IA_LATENCY, METRIC_FAST_PATH_TOTAL,
