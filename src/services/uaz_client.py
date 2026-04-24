@@ -122,6 +122,17 @@ class UazAPIClient:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         last_error = None
 
+        # [SCALE-CB] Verifica circuit breaker do UazAPI antes de tentar.
+        # Se aberto (provedor esta fora), rejeita rapido pra nao inundar.
+        try:
+            from main import cb_uazapi as _cb_uaz
+            _cb_state = await _cb_uaz.get_state()
+            if _cb_state == "OPEN":
+                logger.warning(f"[SCALE-CB] UazAPI circuit OPEN — rejeitando {endpoint}")
+                return None
+        except Exception:
+            _cb_uaz = None  # circuit breaker opcional; se import falhar, segue normal
+
         for attempt in range(_MAX_RETRIES):
             try:
                 client = http_client if http_client else httpx.AsyncClient(timeout=15.0)
@@ -129,6 +140,12 @@ class UazAPIClient:
                 try:
                     resp = await client.request(method, url, headers=self.headers, **kwargs)
                     resp.raise_for_status()
+                    # [SCALE-CB] Sucesso — reseta contador do CB
+                    if _cb_uaz is not None:
+                        try:
+                            await _cb_uaz.record_success()
+                        except Exception:
+                            pass
                     return resp.json()
                 finally:
                     if own_client:
@@ -181,6 +198,12 @@ class UazAPIClient:
         )
         if PROMETHEUS_OK:
             METRIC_ERROS_TOTAL.labels(tipo="uazapi_error").inc()
+        # [SCALE-CB] Registra falha no circuit breaker (pra abrir apos N falhas)
+        if _cb_uaz is not None:
+            try:
+                await _cb_uaz.record_failure()
+            except Exception:
+                pass
         return None
 
     # ─────────────────────────────────────────────────────────────────

@@ -328,49 +328,7 @@ async def error_handler_middleware(request: Request, call_next):
 
 
 
-# [SCALE-CB] Circuit breaker generico pra servicos externos (UazAPI, OpenRouter).
-# Evita cascade failure: se um servico cai, nao inundar ele com requests.
-import time as _cb_time
-
-class _CircuitBreaker:
-    """Circuit breaker simples: closed -> open (apos N falhas) -> half-open (apos cooldown)."""
-    def __init__(self, name: str, fail_threshold: int = 10, cooldown_s: int = 30):
-        self.name = name
-        self.fail_threshold = fail_threshold
-        self.cooldown_s = cooldown_s
-        self.failures = 0
-        self.state = "closed"
-        self.opened_at = 0.0
-
-    def record_success(self):
-        if self.state != "closed":
-            logger.info(f"[SCALE-CB] {self.name} -> closed (recovered)")
-        self.failures = 0
-        self.state = "closed"
-
-    def record_failure(self):
-        self.failures += 1
-        if self.failures >= self.fail_threshold and self.state != "open":
-            self.state = "open"
-            self.opened_at = _cb_time.time()
-            logger.error(f"[SCALE-CB] {self.name} -> OPEN apos {self.failures} falhas")
-
-    def can_call(self) -> bool:
-        """Retorna True se pode tentar chamar o servico."""
-        if self.state == "closed":
-            return True
-        # Aberto: checa se ja passou cooldown
-        if _cb_time.time() - self.opened_at > self.cooldown_s:
-            self.state = "half-open"
-            self.failures = 0
-            logger.info(f"[SCALE-CB] {self.name} -> half-open (testando)")
-            return True
-        return False
-
-
-# Circuit breakers globais pra servicos externos criticos
-_CB_UAZAPI = _CircuitBreaker("uazapi", fail_threshold=15, cooldown_s=30)
-_CB_OPENROUTER = _CircuitBreaker("openrouter", fail_threshold=10, cooldown_s=60)
+# [SCALE-CB] Removido — usamos classe CircuitBreaker robusta (Redis-backed) abaixo.
 
 
 
@@ -472,6 +430,8 @@ class CircuitBreaker:
 
 # Instância global
 cb_llm = CircuitBreaker(name="openrouter", failure_threshold=5, recovery_timeout=60)
+# [SCALE-CB] Circuit breaker para UazAPI — se o provedor cair, nao inundar com requests
+cb_uazapi = CircuitBreaker(name="uazapi", failure_threshold=15, recovery_timeout=30)
 
 # --- CONFIGURAÇÕES E VARIÁVEIS DE AMBIENTE ---
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
@@ -2897,21 +2857,45 @@ async def agendar_followups(conversation_id: int, account_id: int, slug: str, em
             ORDER BY t.unidade_id NULLS LAST, t.ordem
         """, empresa_id, slug)
 
+        if not templates:
+            logger.info(f"📅 0 follow-ups agendados (sem templates) para conversa {conversation_id}")
+            return
+
+        # [H-04] Pre-fetch conversa_id e unidade_id 1x para evitar N+1 subqueries
+        conv_row = await db_pool.fetchrow(
+            "SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+            conversation_id, empresa_id
+        )
+        if not conv_row:
+            logger.warning(f"📅 Conversa {conversation_id} nao encontrada pra agendar followups")
+            return
+        conv_pk = conv_row["id"]
+
+        unid_row = await db_pool.fetchrow(
+            "SELECT id FROM unidades WHERE slug = $1 AND empresa_id = $2",
+            slug, empresa_id
+        ) if slug else None
+        unid_pk = unid_row["id"] if unid_row else None
+
         agora = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
+
+        # [H-04] Batch INSERT — executa uma query com todos os templates
+        values_rows = []
         for t in templates:
             agendado_para = agora + timedelta(minutes=t["delay_minutos"])
-            await db_pool.execute("""
-                INSERT INTO followups
-                    (conversa_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
-                VALUES (
-                    (SELECT id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2),
-                    $2,
-                    (SELECT id FROM unidades WHERE slug = $3 AND empresa_id = $2),
-                    $4, $5, $6, $7, $8, 'pendente'
-                )
-            """, conversation_id, empresa_id, slug, t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para)
+            values_rows.append((
+                conv_pk, empresa_id, unid_pk,
+                t["id"], t["tipo"], t["mensagem"], t["ordem"], agendado_para, "pendente"
+            ))
 
-        logger.info(f"📅 {len(templates)} follow-ups agendados para conversa {conversation_id}")
+        # executemany: driver asyncpg gera 1 INSERT com placeholders
+        await db_pool.executemany("""
+            INSERT INTO followups
+                (conversa_id, empresa_id, unidade_id, template_id, tipo, mensagem, ordem, agendado_para, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """, values_rows)
+
+        logger.info(f"📅 {len(templates)} follow-ups agendados para conversa {conversation_id} (batch)")
     except Exception as e:
         logger.error(f"Erro ao agendar followups: {e}")
 
