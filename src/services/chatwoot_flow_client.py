@@ -28,7 +28,6 @@ from urllib.parse import urlparse
 import httpx
 
 from src.core.config import logger
-from src.services.chatwoot_client import enviar_mensagem_chatwoot
 
 
 def _monta_menu_texto(menu: Dict[str, Any]) -> str:
@@ -72,24 +71,75 @@ class ChatwootFlowClient:
         self.nome_ia = nome_ia
 
     # ──────────────────── envio core ────────────────────
+    def _resolve_url_token(self) -> tuple[Optional[str], Optional[str]]:
+        """Extrai URL base e token da integracao, com normalizacao de protocolo."""
+        cfg = self.integracao or {}
+        url_base = cfg.get("url") or cfg.get("base_url")
+        token = cfg.get("access_token") or cfg.get("token")
+        if isinstance(token, dict):
+            token = token.get("access_token") or token.get("token")
+        if not url_base or not token:
+            return None, None
+        raw = str(url_base).strip()
+        if not raw.startswith(("http://", "https://")):
+            url_base = f"https://{raw}"
+        return str(url_base).rstrip("/"), str(token)
+
     async def _enviar(self, text: str) -> bool:
         """
-        Assinatura de enviar_mensagem_chatwoot:
-          (account_id, conversation_id, content, url_base_ou_integracao, empresa_id,
-           token=None, contact_id=None, nome_ia="Assistente", ...)
+        POST direto pra API do Chatwoot. Nao depende de http_client global
+        (que nao eh inicializado neste contexto — causava NoneType.post).
         """
+        url_base, token = self._resolve_url_token()
+        if not url_base or not token:
+            logger.error(f"[ChatwootFlowClient] integracao Chatwoot incompleta conv={self.conversation_id}")
+            return False
+
+        post_url = (
+            f"{url_base}/api/v1/accounts/{self.account_id}"
+            f"/conversations/{self.conversation_id}/messages"
+        )
+
+        # Prefixo de nome (mesma convencao do enviar_mensagem_chatwoot)
+        content = f"*{self.nome_ia}*\n{text}" if self.nome_ia else text
+
+        payload = {
+            "content": content,
+            "message_type": "outgoing",
+            "content_attributes": {
+                "origin": "ai",
+                "ai_agent": self.nome_ia,
+                "ignore_webhook": True,
+            },
+        }
+        headers = {"api_access_token": token}
+
         try:
-            await enviar_mensagem_chatwoot(
-                self.account_id,
-                self.conversation_id,
-                text,
-                self.integracao,
-                self.empresa_id,
-                nome_ia=self.nome_ia,
-            )
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(post_url, json=payload, headers=headers)
+                if resp.status_code >= 400:
+                    logger.error(
+                        f"[ChatwootFlowClient] send_text HTTP {resp.status_code}: {resp.text[:200]}"
+                    )
+                    return False
+
+                # Marca ID da msg no Redis pra evitar que seja reconhecida como humana
+                try:
+                    _data = resp.json()
+                    _msg_id = _data.get("id") if isinstance(_data, dict) else None
+                    if _msg_id:
+                        try:
+                            from src.core.redis_client import redis_client as _rc
+                            await _rc.setex(f"ai_msg_id:{self.empresa_id}:{_msg_id}", 600, "1")
+                            await _rc.setex(f"ai_msg_id:{_msg_id}", 600, "1")  # legado
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             return True
         except Exception as e:
-            logger.error(f"[ChatwootFlowClient] send falhou conv={self.conversation_id}: {e}")
+            logger.error(f"[ChatwootFlowClient] _enviar exception conv={self.conversation_id}: {e}")
             return False
 
     # ──────────────────── texto ────────────────────
@@ -149,22 +199,13 @@ class ChatwootFlowClient:
                     filename = f"{filename}{_ext}"
 
             # 2. Extrai URL base e token da integracao Chatwoot
-            cfg = self.integracao or {}
-            url_base = cfg.get("url") or cfg.get("base_url")
-            token = cfg.get("access_token") or cfg.get("token")
-            if isinstance(token, dict):
-                token = token.get("access_token") or token.get("token")
+            url_base, token = self._resolve_url_token()
             if not url_base or not token:
                 logger.warning(f"[ChatwootFlowClient] send_media: integracao incompleta — fallback texto")
                 return await self._enviar(f"{url}\n\n{caption}" if caption else url)
 
-            raw = str(url_base).strip()
-            if not raw.startswith(("http://", "https://")):
-                url_base = f"https://{raw}"
-
             post_url = (
-                f"{str(url_base).rstrip('/')}"
-                f"/api/v1/accounts/{self.account_id}"
+                f"{url_base}/api/v1/accounts/{self.account_id}"
                 f"/conversations/{self.conversation_id}/messages"
             )
 
