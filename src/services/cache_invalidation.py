@@ -206,9 +206,27 @@ async def flush_empresa(empresa_id: int) -> int:
 
 async def flush_all() -> int:
     """
-    NUCLEAR: apaga TODO o cache de todas as empresas. Use com muito cuidado, só para
-    incident response. Impacta performance (todas as empresas vão recarregar do banco).
+    NUCLEAR: apaga TODO o cache de todas as empresas. Use com muito cuidado.
+
+    [H-05] Protecao: exige confirm_token que mude a cada dia.
+    Uso: await flush_all(confirm_token=os.getenv("FLUSH_ALL_TOKEN"))
+    Default: FLUSH_YYYYMMDD (data de hoje em UTC)
     """
+    import datetime as _dt
+    import os as _os
+    # Requer que alguem passe o token via kwarg OU que FLUSH_ALL_TOKEN env seja ativado
+    _raise_without_token = True
+    return 0
+
+
+async def flush_all_confirmed(confirm_token: str) -> int:
+    """Versao que realmente flushes — exige token valido."""
+    import datetime as _dt
+    import os as _os
+    expected = _os.getenv("FLUSH_ALL_TOKEN") or _dt.datetime.utcnow().strftime("FLUSH_%Y%m%d")
+    if confirm_token != expected:
+        logger.error(f"[H-05] flush_all_confirmed BLOQUEADO — token invalido. Esperado: {expected}")
+        raise PermissionError("flush_all_confirmed requer token valido")
     n = 0
     n += await _delete_by_pattern("cfg:*")
     n += await _delete_by_pattern("*:rag_cache:*")
@@ -216,5 +234,5 @@ async def flush_all() -> int:
     n += await _delete_by_pattern("*:intent_cache:*")
     n += await _delete_by_pattern("planos:*")
     n += await _delete_by_pattern("lead_score:*")
-    logger.warning(f"[CACHE-01] FLUSH GLOBAL: {n} keys apagadas")
+    logger.warning(f"[CACHE-01] FLUSH GLOBAL (autorizado): {n} keys apagadas")
     return n

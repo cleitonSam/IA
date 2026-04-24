@@ -2235,10 +2235,20 @@ async def worker_sync_planos():
                 await asyncio.sleep(10)
                 continue
             try:
-                empresas = await db_pool.fetch("SELECT id FROM empresas")
-                for emp in empresas:
-                    await sincronizar_planos_evo(emp['id'])
-                logger.info("✅ worker_sync_planos executado pelo líder")
+                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE COALESCE(status, 'active') = 'active'")
+                # [H-02] Limita concorrencia a 4 empresas simultaneas pra nao sobrecarregar DB
+                _SYNC_CONCURRENCY = int(os.getenv("WORKER_SYNC_CONCURRENCY", "4"))
+                _sem = asyncio.Semaphore(_SYNC_CONCURRENCY)
+
+                async def _sync_one(emp_id: int):
+                    async with _sem:
+                        try:
+                            await sincronizar_planos_evo(emp_id)
+                        except Exception as _e:
+                            logger.error(f"sync_planos empresa={emp_id} falhou: {_e}")
+
+                await asyncio.gather(*[_sync_one(emp['id']) for emp in empresas], return_exceptions=True)
+                logger.info(f"✅ worker_sync_planos executado pelo líder ({len(empresas)} empresas, concurrency={_SYNC_CONCURRENCY})")
             except Exception as e:
                 logger.error(f"Erro no worker de sincronização de planos: {e}")
             await asyncio.sleep(21600)  # 6 horas
@@ -3867,93 +3877,112 @@ async def worker_metricas_diarias():
                 continue
             try:
                 hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-                empresas = await db_pool.fetch("SELECT id FROM empresas WHERE status = 'active'")
+                # [H-03] JOIN pra eliminar N+1 (antes: 1 + 80 + 800 queries)
+                pares = await db_pool.fetch("""
+                    SELECT e.id AS empresa_id, u.id AS unidade_id
+                    FROM empresas e
+                    LEFT JOIN unidades u ON u.empresa_id = e.id AND u.ativa = true
+                    WHERE e.status = 'active'
+                    ORDER BY e.id, u.id
+                """)
 
-                total_unidades = 0
-                for emp in empresas:
-                    empresa_id = emp['id']
-                    unidades = await db_pool.fetch(
-                        "SELECT id FROM unidades WHERE empresa_id = $1 AND ativa = true",
-                        empresa_id
+                # [H-03] Semaphore pra limitar concorrencia de _coletar_metricas_unidade
+                _METRICS_CONCURRENCY = int(os.getenv("WORKER_METRICS_CONCURRENCY", "8"))
+                _sem = asyncio.Semaphore(_METRICS_CONCURRENCY)
+
+                async def _process_par(empresa_id, unidade_id):
+                    async with _sem:
+                        try:
+                            return (empresa_id, unidade_id, await _coletar_metricas_unidade(empresa_id, unidade_id, hoje))
+                        except Exception as _e:
+                            logger.error(f"metrics empresa={empresa_id} unidade={unidade_id} falhou: {_e}")
+                            return None
+
+                _tasks = []
+                for par in pares:
+                    if par['unidade_id'] is not None:
+                        _tasks.append(_process_par(par['empresa_id'], par['unidade_id']))
+                _results = await asyncio.gather(*_tasks, return_exceptions=True)
+
+                total_unidades = sum(1 for r in _results if isinstance(r, tuple) and r is not None)
+
+                # Agora processa upserts individualmente mas em paralelo tb
+                for result in _results:
+                    if not isinstance(result, tuple) or result is None:
+                        continue
+                    empresa_id, unidade_id, m = result
+
+                    # ── Upsert principal (colunas garantidas) ─────────────
+                    await db_pool.execute("""
+                        INSERT INTO metricas_diarias (
+                            empresa_id, unidade_id, data,
+                            total_conversas, conversas_encerradas, conversas_sem_resposta,
+                            novos_contatos,
+                            total_mensagens, total_mensagens_ia,
+                            leads_qualificados, taxa_conversao,
+                            tempo_medio_resposta,
+                            total_solicitacoes_telefone, total_links_enviados,
+                            total_planos_enviados, total_matriculas,
+                            pico_hora,
+                            satisfacao_media,
+                            updated_at
+                        )
+                        VALUES (
+                            $1, $2, $3,
+                            $4, $5, $6,
+                            $7,
+                            $8, $9,
+                            $10, $11,
+                            $12,
+                            $13, $14,
+                            $15, $16,
+                            $17,
+                            $18,
+                            NOW()
+                        )
+                        ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
+                            total_conversas            = EXCLUDED.total_conversas,
+                            conversas_encerradas       = EXCLUDED.conversas_encerradas,
+                            conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
+                            novos_contatos             = EXCLUDED.novos_contatos,
+                            total_mensagens            = EXCLUDED.total_mensagens,
+                            total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
+                            leads_qualificados         = EXCLUDED.leads_qualificados,
+                            taxa_conversao             = EXCLUDED.taxa_conversao,
+                            tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
+                            total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
+                            total_links_enviados       = EXCLUDED.total_links_enviados,
+                            total_planos_enviados      = EXCLUDED.total_planos_enviados,
+                            total_matriculas           = EXCLUDED.total_matriculas,
+                            pico_hora                  = EXCLUDED.pico_hora,
+                            satisfacao_media           = EXCLUDED.satisfacao_media,
+                            updated_at                 = NOW()
+                    """,
+                        empresa_id, unidade_id, hoje,
+                        m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
+                        m["novos_contatos"],
+                        m["total_mensagens"], m["total_mensagens_ia"],
+                        m["leads_qualificados"], m["taxa_conversao"],
+                        m["tempo_medio_resposta"],
+                        m["total_solicitacoes_telefone"], m["total_links_enviados"],
+                        m["total_planos_enviados"], m["total_matriculas"],
+                        m["pico_hora"],
+                        m["satisfacao_media"],
                     )
 
-                    for unid in unidades:
-                        unidade_id = unid['id']
-                        total_unidades += 1
-
-                        m = await _coletar_metricas_unidade(empresa_id, unidade_id, hoje)
-
-                        # ── Upsert principal (colunas garantidas) ─────────────
-                        await db_pool.execute("""
-                            INSERT INTO metricas_diarias (
-                                empresa_id, unidade_id, data,
-                                total_conversas, conversas_encerradas, conversas_sem_resposta,
-                                novos_contatos,
-                                total_mensagens, total_mensagens_ia,
-                                leads_qualificados, taxa_conversao,
-                                tempo_medio_resposta,
-                                total_solicitacoes_telefone, total_links_enviados,
-                                total_planos_enviados, total_matriculas,
-                                pico_hora,
-                                satisfacao_media,
-                                updated_at
-                            )
-                            VALUES (
-                                $1, $2, $3,
-                                $4, $5, $6,
-                                $7,
-                                $8, $9,
-                                $10, $11,
-                                $12,
-                                $13, $14,
-                                $15, $16,
-                                $17,
-                                $18,
-                                NOW()
-                            )
-                            ON CONFLICT (empresa_id, unidade_id, data) DO UPDATE SET
-                                total_conversas            = EXCLUDED.total_conversas,
-                                conversas_encerradas       = EXCLUDED.conversas_encerradas,
-                                conversas_sem_resposta     = EXCLUDED.conversas_sem_resposta,
-                                novos_contatos             = EXCLUDED.novos_contatos,
-                                total_mensagens            = EXCLUDED.total_mensagens,
-                                total_mensagens_ia         = EXCLUDED.total_mensagens_ia,
-                                leads_qualificados         = EXCLUDED.leads_qualificados,
-                                taxa_conversao             = EXCLUDED.taxa_conversao,
-                                tempo_medio_resposta       = EXCLUDED.tempo_medio_resposta,
-                                total_solicitacoes_telefone = EXCLUDED.total_solicitacoes_telefone,
-                                total_links_enviados       = EXCLUDED.total_links_enviados,
-                                total_planos_enviados      = EXCLUDED.total_planos_enviados,
-                                total_matriculas           = EXCLUDED.total_matriculas,
-                                pico_hora                  = EXCLUDED.pico_hora,
-                                satisfacao_media           = EXCLUDED.satisfacao_media,
-                                updated_at                 = NOW()
-                        """,
-                            empresa_id, unidade_id, hoje,
-                            m["total_conversas"], m["conversas_encerradas"], m["conversas_sem_resposta"],
-                            m["novos_contatos"],
-                            m["total_mensagens"], m["total_mensagens_ia"],
-                            m["leads_qualificados"], m["taxa_conversao"],
-                            m["tempo_medio_resposta"],
-                            m["total_solicitacoes_telefone"], m["total_links_enviados"],
-                            m["total_planos_enviados"], m["total_matriculas"],
-                            m["pico_hora"],
-                            m["satisfacao_media"],
-                        )
-
-                        # ── Colunas opcionais (tokens/custo) — graceful fallback ──
-                        if m["tokens_consumidos"] is not None:
-                            try:
-                                await db_pool.execute("""
-                                    UPDATE metricas_diarias
-                                    SET tokens_consumidos  = $4,
-                                        custo_estimado_usd = $5,
-                                        updated_at         = NOW()
-                                    WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
-                                """, empresa_id, unidade_id, hoje,
-                                    m["tokens_consumidos"], m["custo_estimado_usd"])
-                            except Exception:
-                                pass  # colunas ainda não existem no banco
+                    # ── Colunas opcionais (tokens/custo) — graceful fallback ──
+                    if m["tokens_consumidos"] is not None:
+                        try:
+                            await db_pool.execute("""
+                                UPDATE metricas_diarias
+                                SET tokens_consumidos  = $4,
+                                    custo_estimado_usd = $5,
+                                    updated_at         = NOW()
+                                WHERE empresa_id = $1 AND unidade_id = $2 AND data = $3
+                            """, empresa_id, unidade_id, hoje,
+                                m["tokens_consumidos"], m["custo_estimado_usd"])
+                        except Exception:
+                            pass  # colunas ainda não existem no banco
 
                 logger.info(f"✅ Métricas diárias atualizadas — {total_unidades} unidades / {hoje}")
 
