@@ -33,9 +33,20 @@ import httpx
 
 from src.core.config import logger
 from src.core.redis_client import redis_client
-from src.services.db_queries import carregar_integracao
+from src.services.db_queries import (
+    carregar_integracao,
+    carregar_menu_triagem,
+    carregar_fluxo_triagem,
+    buscar_conversa_por_fone,
+)
+from src.services.flow_executor import executar_fluxo
+from src.services.instagram_client import InstagramClient
 
 router = APIRouter()
+
+
+# TTLs alinhados com uaz_webhook.py pra consistencia multi-canal
+MENU_INACTIVITY_TTL = 3600  # 1h — reenvia menu apos inatividade
 
 
 INSTAGRAM_VERIFY_TOKEN = os.getenv("INSTAGRAM_VERIFY_TOKEN", "").strip()
@@ -169,11 +180,107 @@ async def instagram_receive(
             if not content:
                 continue
 
+            unidade_id = int(integracao.get("unidade_id") or 0)
+            phone_key = f"ig:{sender}"  # usamos ig:<user_id> para diferenciar de WhatsApp
+
+            # ─────────────────────────────────────────────────────
+            # [MKT-05 fix] Mesma logica de Fluxo + Menu de Triagem
+            # do uaz_webhook.py, pra Instagram nao pular direto pra IA.
+            # ─────────────────────────────────────────────────────
+            conversa_existente = None
+            try:
+                conversa_existente = await buscar_conversa_por_fone(phone_key, empresa_id)
+            except Exception as _e:
+                logger.debug(f"[MKT-05] buscar_conversa_por_fone falhou: {_e}")
+
+            # Checa pausa da IA (atendente humano assumiu)
+            _ia_pausada = False
+            if conversa_existente:
+                _conv_id = conversa_existente.get("conversation_id")
+                if _conv_id:
+                    _ia_pausada = bool(await redis_client.exists(f"pause_ia:{empresa_id}:{_conv_id}"))
+            _phone_paused = bool(
+                await redis_client.exists(f"pause_ia_phone:{empresa_id}:{unidade_id}:{phone_key}")
+                or await redis_client.exists(f"pause_ia_phone:{empresa_id}:{phone_key}")
+            )
+
+            # Cliente IG reutilizavel (drop-in no flow_executor)
+            _ig_client = None
+            _page_id = (
+                integracao.get("page_id")
+                or integracao.get("business_account_id")
+                or str(recipient or "")
+            )
+            _ig_token = (
+                integracao.get("page_access_token")
+                or integracao.get("access_token")
+                or ""
+            )
+            if _page_id and _ig_token:
+                _ig_client = InstagramClient(page_id=_page_id, access_token=_ig_token)
+
+            # ── Fluxo Visual de Triagem ──
+            _fluxo_handled = False
+            if _ig_client and not _ia_pausada and not _phone_paused:
+                _fluxo_ended_check = (
+                    await redis_client.exists(f"fluxo_ended:{empresa_id}:{unidade_id}:{phone_key}")
+                    or await redis_client.exists(f"fluxo_ended:{empresa_id}:{phone_key}")
+                )
+                if not _fluxo_ended_check:
+                    try:
+                        _fluxo_config = await carregar_fluxo_triagem(empresa_id, unidade_id=unidade_id or None)
+                        if _fluxo_config and _fluxo_config.get("ativo"):
+                            _fluxo_handled = await executar_fluxo(
+                                empresa_id, phone_key, content, _fluxo_config, _ig_client,
+                                unidade_id=unidade_id,
+                            )
+                            if _fluxo_handled:
+                                logger.info(
+                                    f"✅ [MKT-05][FluxoTriagem] IG tratado pelo fluxo "
+                                    f"empresa={empresa_id} unidade={unidade_id} sender={sender}"
+                                )
+                    except Exception as _fe:
+                        logger.error(f"[MKT-05][FluxoTriagem] erro: {_fe}")
+
+            if _fluxo_handled:
+                continue  # nao enfileira — fluxo ja respondeu
+
+            # ── Menu de Triagem (legado) ──
+            if _ig_client and not _ia_pausada and not _phone_paused:
+                menu_key = f"menu_triagem:sent:{empresa_id}:{unidade_id}:{phone_key}"
+                menu_already_sent = await redis_client.exists(menu_key)
+                if not menu_already_sent and unidade_id:
+                    legacy_key = f"menu_triagem:sent:{empresa_id}:{phone_key}"
+                    if await redis_client.exists(legacy_key):
+                        menu_already_sent = True
+                        menu_key = legacy_key
+
+                if menu_already_sent:
+                    await redis_client.expire(menu_key, MENU_INACTIVITY_TTL)
+                else:
+                    try:
+                        menu_config = await carregar_menu_triagem(empresa_id, unidade_id=unidade_id or None)
+                        if menu_config and menu_config.get("ativo"):
+                            sent_ok = await _ig_client.send_menu(sender, menu_config)
+                            if sent_ok:
+                                await redis_client.setex(menu_key, MENU_INACTIVITY_TTL, "1")
+                                logger.info(
+                                    f"✅ [MKT-05] Menu de triagem IG enviado sender={sender} "
+                                    f"empresa={empresa_id} unidade={unidade_id}"
+                                )
+                                continue  # nao enfileira — menu ja respondeu
+                            else:
+                                logger.warning(f"[MKT-05] Falha enviar menu IG sender={sender} — seguindo IA")
+                    except Exception as _me:
+                        logger.error(f"[MKT-05] Erro menu IG: {_me}")
+
+            # ── Fim Menu/Fluxo — segue pipeline normal da IA ──
+
             job_data = {
                 "source": "instagram",
                 "empresa_id": str(empresa_id),
-                "unidade_id": str(integracao.get("unidade_id") or 0),
-                "phone": f"ig:{sender}",  # usamos ig:<user_id> para diferenciar de WhatsApp
+                "unidade_id": str(unidade_id),
+                "phone": phone_key,
                 "content": content,
                 "nome_cliente": "Cliente Instagram",
                 "msg_id": str(msg_mid or ""),
