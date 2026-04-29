@@ -29,9 +29,17 @@ def descomprimir_texto(texto_comprimido: str) -> str:
 
 
 def limpar_nome(nome):
+    """Limpa nome removendo ~, +, números, símbolos do WhatsApp.
+    Ex: '~Cleiton' -> 'Cleiton', '~+5511962142852' -> ''."""
     if not nome:
         return "Cliente"
-    return re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", str(nome)).strip()
+    s = str(nome).strip()
+    # Remove tilde de WhatsApp (vem de contato sem nome salvo)
+    while s.startswith("~"):
+        s = s[1:].lstrip()
+    # Remove tudo que não é letra ou espaço
+    s = re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", s).strip()
+    return s
 
 
 def primeiro_nome_cliente(nome: Optional[str]) -> str:

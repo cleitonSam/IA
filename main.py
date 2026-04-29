@@ -2723,13 +2723,23 @@ async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome
     """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
     if not contact_id or not nome_eh_valido(nome):
         return False
+    # [BLINDADO] Tira tilde do WhatsApp e simbolos antes de salvar no Chatwoot.
+    # Mantem letras, espacos, hifen e digitos (idMember pode vir tipo 'Maria - 19051').
+    import re as _re_nome
+    _nome_limpo = str(nome).strip()
+    while _nome_limpo.startswith("~"):
+        _nome_limpo = _nome_limpo[1:].lstrip()
+    # Remove caracteres exoticos mas mantem letras + espacos + hifen + digitos (pra ID)
+    _nome_limpo = _re_nome.sub(r"[^a-zA-ZÀ-ÿ0-9\s\-]", "", _nome_limpo).strip()
+    if not _nome_limpo:
+        return False
     url_base = integracao.get('url')
     token = extrair_token_chatwoot(integracao)
     if not url_base or not token:
         return False
 
     headers = {"api_access_token": token}
-    payload = {"name": nome.strip()}
+    payload = {"name": _nome_limpo}
     url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
     try:
         resp = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
@@ -3659,16 +3669,39 @@ async def bd_iniciar_conversa(
         """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id, contato_telefone)
 
         # 2) se não atualizou nenhuma linha, insere nova conversa
+        # [BLINDADO] Como pode existir constraint UNIQUE no conversation_id sozinho
+        # (legado de migration nao aplicada), tentamos INSERT primeiro, e se der duplicate,
+        # forcamos UPDATE no registro existente (mesmo que seja de outra empresa — corrige).
         if str(_updated).endswith(" 0"):
-            await db_pool.execute("""
-                INSERT INTO conversas (
-                    conversation_id, account_id, contato_id, contato_nome,
-                    empresa_id, unidade_id, primeira_mensagem, status, contato_telefone
+            try:
+                await db_pool.execute("""
+                    INSERT INTO conversas (
+                        conversation_id, account_id, contato_id, contato_nome,
+                        empresa_id, unidade_id, primeira_mensagem, status, contato_telefone
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa', $7)
+                """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
+            except asyncpg.exceptions.UniqueViolationError:
+                # Conversa ja existe (provavelmente em outra empresa devido a unique global legado)
+                # FORCA update sem filtro de empresa pra recuperar o registro
+                logger.warning(
+                    f"[bd_iniciar_conversa] duplicate em conversation_id={conversation_id} "
+                    f"(provavelmente legado UNIQUE conversation_id-only). Forcando update SEM filtro empresa."
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa', $7)
-            """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
+                await db_pool.execute("""
+                    UPDATE conversas
+                       SET account_id       = $2,
+                           contato_id       = COALESCE($3, contato_id),
+                           contato_nome     = $4,
+                           empresa_id       = $5,
+                           unidade_id       = $6,
+                           contato_telefone = COALESCE($7, contato_telefone),
+                           status           = 'ativa',
+                           updated_at       = NOW()
+                     WHERE conversation_id = $1
+                """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
     except Exception as e:
-        logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {e}")
+        logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {type(e).__name__}: {e}")
 
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
