@@ -759,6 +759,7 @@ async def agendar_aula_experimental_evo(
     id_activity: Optional[int] = None,
     id_service: Optional[int] = None,
     id_branch: Optional[int] = None,
+    id_activity_session: Optional[int] = None,   # [FIX-I] id da SESSAO especifica (usado no pre-check)
 ) -> Dict[str, Any]:
     """Agenda uma aula experimental para o prospect.
     Retorna {ok: bool, status: int, mensagens: [str], data: {...}}.
@@ -796,15 +797,17 @@ async def agendar_aula_experimental_evo(
             )
         activity_date = _ad
 
-    # [FIX-B] re-check de vaga ANTES de agendar (anti-race com outros agendamentos)
+    # [FIX-B+I] re-check de vaga ANTES de agendar (anti-race com outros agendamentos)
     # E [FIX-E] valida janela de booking — se ainda nao abriu OU ja fechou,
     # retorna mensagem clara pra IA explicar ao cliente.
-    if id_activity:
+    # [FIX-I] usa id_activity_session (id da SESSAO) — antes usavamos id_activity (modalidade) por engano
+    _id_para_check = id_activity_session or id_activity
+    if _id_para_check:
         try:
             _check_url = f"{_evo_api_base(integracao)}/activities/schedule/detail"
             _check = await _evo_request(
                 "GET", _check_url, headers,
-                params={"idActivitySession": str(id_activity)},
+                params={"idActivitySession": str(_id_para_check)},
                 log_tag=f"EVO:check:{empresa_id}",
             )
             if _check is not None and _check.status_code == 200:
@@ -952,4 +955,37 @@ async def agendar_aula_experimental_evo(
         return {"ok": True, "status": resp.status_code, "mensagens": msgs, "data": data}
 
     logger.warning(f"❌ EVO agendamento falhou {resp.status_code}: {msgs or resp.text[:200]}")
+
+    # [FIX-I] Detecta "Horario da atividade excluido" — sessao removida/cancelada na EVO.
+    # Invalida cache de horarios (a lista no cliente está stale) e retorna instrucao_ia clara.
+    _texto_total = ""
+    try:
+        _texto_total = (resp.text or "").lower()
+    except Exception:
+        pass
+    _excluido = (
+        "horario da atividade exclu" in _texto_total  # "excluído" / "excluido"
+        or "horário da atividade exclu" in _texto_total
+        or "atividade exclu" in _texto_total
+    )
+    if _excluido:
+        try:
+            for k in await redis_client.keys(f"evo:horarios:{empresa_id}:{branch}:*"):
+                await redis_client.delete(k)
+            logger.info(f"[FIX-I] cache horarios invalidado (sessao excluida) empresa={empresa_id} branch={branch}")
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "mensagens": ["Esse horário foi removido da agenda."],
+            "sessao_excluida": True,
+            "instrucao_ia": (
+                "A aula que o cliente escolheu foi REMOVIDA da agenda da EVO depois "
+                "que voce mostrou as opcoes (pode ter sido cancelada pela academia, "
+                "ou a janela de reserva fechou). Peca desculpas, e CHAME consultar_horarios "
+                "DE NOVO pra pegar a lista atualizada — depois ofereca um novo horario."
+            ),
+        }
+
     return {"ok": False, "status": resp.status_code, "mensagens": msgs or [f"HTTP {resp.status_code}"], "data": data}

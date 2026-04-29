@@ -437,6 +437,7 @@ async def executar_tool(
             id_activity=int(id_activity) if id_activity else None,
             id_service=pers.get("agendamento_id_service"),
             id_branch=_id_branch_para_agend,
+            id_activity_session=int(id_session) if id_session else None,  # [FIX-I] pre-check usa id da SESSAO
         )
 
         if res.get("ok"):
@@ -460,11 +461,25 @@ async def executar_tool(
             }
         else:
             mensagens = res.get("mensagens") or []
+            # [FIX-I] Sessao excluida -> limpa horarios oferecidos do estado pra forcar nova consulta
+            if res.get("sessao_excluida"):
+                estado["horarios_oferecidos"] = []
+                estado["etapa"] = "lista_invalidada"
+                await salvar_estado_agendamento(empresa_id, conversation_id, estado)
+                return {
+                    "ok": False,
+                    "erro": "sessao_excluida",
+                    "mensagens": mensagens,
+                    "instrucao_ia": res.get("instrucao_ia") or (
+                        "A aula escolhida foi removida da agenda. Peca desculpas e chame "
+                        "consultar_horarios de novo pra mostrar a lista atualizada."
+                    ),
+                }
             return {
                 "ok": False,
                 "erro": "EVO recusou o agendamento",
                 "mensagens": mensagens,
-                "instrucao_ia": (
+                "instrucao_ia": res.get("instrucao_ia") or (
                     f"O agendamento nao foi feito. Mensagens da EVO: {mensagens}. "
                     f"Peca desculpas ao cliente, sugira outro horario, ou diga que vai escalar pra equipe."
                 ),
