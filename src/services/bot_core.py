@@ -290,7 +290,7 @@ async def shutdown_event():
 
 # --- UTILITÁRIOS ---
 
-def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True) -> List[str]:
+def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True, usar_emoji: bool = True, emoji_tipo: str = "") -> List[str]:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
     Retorna uma LISTA de strings — cada item = uma mensagem separada no chat.
@@ -318,10 +318,14 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         Quer saber como funciona ou tirar alguma dúvida?
     """
     if not planos:
-        return ["Não temos planos disponíveis no momento. 😕"]
+        return ["Não temos planos disponíveis no momento." + (" 😕" if usar_emoji else "")]
 
-    # Emojis rotativos por posição para dar variedade visual
-    _EMOJIS_PLANO = ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
+    # Emojis rotativos por posição — só usados se usar_emoji=True
+    if usar_emoji:
+        _emoji_pers_split = [e.strip() for e in (emoji_tipo or "").split() if e.strip()]
+        _EMOJIS_PLANO = _emoji_pers_split if _emoji_pers_split else ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
+    else:
+        _EMOJIS_PLANO = []
 
     blocos: List[str] = []
 
@@ -385,14 +389,16 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         pitch = None if _e_codigo or not _pitch_raw else _pitch_raw
 
         # ── Emoji do plano ───────────────────────────────────────────
-        emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)]
+        emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)] if _EMOJIS_PLANO else ""
 
         # ── Montagem do bloco ────────────────────────────────────────
         linhas: List[str] = []
 
         # Cabeçalho
-        _selo = " 🏆 *MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
-        linhas.append(f"{emoji} *{nome}*{_selo}")
+        _selo_emoji = "🏆 " if usar_emoji else ""
+        _selo = f" {_selo_emoji}*MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
+        _prefix = f"{emoji} " if emoji else ""
+        linhas.append(f"{_prefix}*{nome}*{_selo}")
 
         # Pitch (só se existir e não for código)
         if pitch:
@@ -413,21 +419,24 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
             linhas.append("")
 
         # Preço principal
+        _e_dinheiro = "💰 " if usar_emoji else ""
         if valor_float and valor_float > 0:
             valor_fmt = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linhas.append(f"💰 *R${valor_fmt} por mês*")
+            linhas.append(f"{_e_dinheiro}*R${valor_fmt} por mês*")
         else:
-            linhas.append("💰 *Consulte o valor*")
+            linhas.append(f"{_e_dinheiro}*Consulte o valor*")
 
         # Promoção (opcional)
         if promo_float and promo_float > 0 and meses_promo:
             promo_fmt = f"{promo_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             linhas.append("")
-            linhas.append(f"⚡ *Oferta: {meses_promo}x R${promo_fmt}/mês*")
+            _e_oferta = "⚡ " if usar_emoji else ""
+            linhas.append(f"{_e_oferta}*Oferta: {meses_promo}x R${promo_fmt}/mês*")
 
         # Link de matrícula
         linhas.append("")
-        linhas.append("👉 Comece agora:")
+        _e_seta = "👉 " if usar_emoji else ""
+        linhas.append(f"{_e_seta}Comece agora:")
         linhas.append(link.strip())
 
         # ⚠️ SEM pergunta de fechamento aqui — vai só no último bloco (ver abaixo)
@@ -435,10 +444,11 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         blocos.append("\n".join(linhas))
 
     if not blocos:
-        return ["Não temos planos disponíveis no momento. 😕"]
+        return ["Não temos planos disponíveis no momento." + (" 😕" if usar_emoji else "")]
 
     # Pergunta de fechamento apenas no ÚLTIMO plano
-    blocos[-1] += "\n\nQuer saber mais sobre algum plano ou tirar alguma dúvida? 😊"
+    _fech_emoji = " 😊" if usar_emoji else ""
+    blocos[-1] += f"\n\nQuer saber mais sobre algum plano ou tirar alguma dúvida?{_fech_emoji}"
 
     # Cada bloco = mensagem separada
     return blocos
@@ -717,9 +727,11 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     # Lembrete amigável — pergunta de novo sem listar todas as unidades
     _pers_monit = await carregar_personalidade(empresa_id) or {}
     _nome_ia_monit = _pers_monit.get('nome_ia') or 'Assistente'
+    _ue_monit = bool(_pers_monit.get('usar_emoji'))
+    _e_monit = " 😊" if _ue_monit else ""
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
-        "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
+        f"Só pra eu não te perder de vista{_e_monit}\n\nQual cidade ou bairro você prefere para treinar?",
         integracao, empresa_id, nome_ia=_nome_ia_monit
     )
 
@@ -1268,8 +1280,15 @@ async def processar_ia_e_responder(
         ))
         if planos_ativos and intencao in {"planos", "preco"}:
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
-            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
-            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
+            _ue_planos = bool(pers.get("usar_emoji"))  # default OFF
+            _et_planos = (pers.get("emoji_tipo") or "").strip()
+            fast_reply_lista = formatar_planos_bonito(
+                _planos_filtrados,
+                destacar_melhor_preco=True,
+                usar_emoji=_ue_planos,
+                emoji_tipo=_et_planos,
+            )
+            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos, emoji={_ue_planos})")
 
         # Pré-carrega slug para buscar unidade na pergunta de modalidades (sem fast_reply)
         if intencao == "modalidades":
@@ -1796,9 +1815,11 @@ RESPONDA com a mensagem diretamente — texto puro.""")
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
+            _ue_fb = bool(pers.get("usar_emoji"))
             if await redis_client.get(llm_provider_pause_key) == "1":
+                _e_pause = " 😕" if _ue_fb else ""
                 resposta_texto = (
-                    "Agora estamos com alto volume no atendimento automático 😕\n\n"
+                    f"Agora estamos com alto volume no atendimento automático{_e_pause}\n\n"
                     "Se quiser, me manda sua dúvida em uma frase curta que priorizo aqui pra você."
                 )
                 novo_estado = estado_atual
@@ -1815,16 +1836,19 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             if not goto_send and not _cb_allowed:
                 logger.warning(f"🔴 CircuitBreaker OPEN — usando resposta padrão para conv {conversation_id}")
                 # Resposta de fallback quando LLM está indisponível
+                _e_ola = " 😊" if _ue_fb else ""
+                _e_atend = " 💪" if _ue_fb else ""
                 resposta_texto = (
-                    "Olá! 😊 Estou com uma lentidão no momento.\n\n"
-                    "Pode me repetir sua dúvida em instantes? Já vou te atender! 💪"
+                    f"Olá!{_e_ola} Estou com uma lentidão no momento.\n\n"
+                    f"Pode me repetir sua dúvida em instantes? Já vou te atender!{_e_atend}"
                 )
                 novo_estado = estado_atual
                 # Pula o bloco IA e vai direto para envio
                 goto_send = True
             if not goto_send:
                 if not cliente_ia:
-                    resposta_texto = "Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes? 😊"
+                    _e_ia = " 😊" if _ue_fb else ""
+                    resposta_texto = f"Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes?{_e_ia}"
                     novo_estado = estado_atual
                     goto_send = True
 
@@ -2782,13 +2806,18 @@ async def chatwoot_webhook(
                     _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
                     _horario_hoje = horario_hoje_formatado(_hor_unid)
-                    _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
-                    _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
+                    _ue_conf = bool(_pers_temp.get('usar_emoji'))
+                    _e_clock = "🕒 " if _ue_conf else ""
+                    _e_pin = "📍 " if _ue_conf else ""
+                    _e_gym = " 🏋️" if _ue_conf else ""
+                    _e_smile = " 😊" if _ue_conf else ""
+                    _linha_horario = f"\n{_e_clock}Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                    _linha_end = f"\n{_e_pin}{_end_unid}" if _end_unid else ""
 
                     _msg_confirmacao = (
-                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
+                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}*{_e_gym}"
                         f"{_linha_end}{_linha_horario}"
-                        f"\n\nComo posso te ajudar? 😊"
+                        f"\n\nComo posso te ajudar?{_e_smile}"
                     )
                     await enviar_mensagem_chatwoot(
                         account_id, id_conv, _msg_confirmacao, integracao, empresa_id, nome_ia=_nome_ia_temp
