@@ -1095,6 +1095,19 @@ async def processar_ia_e_responder(
                     f"⏰ IA fora do horario empresa={empresa_id} conv={conversation_id} — silenciosa "
                     f"(sem fluxo ativo com BusinessHours para complementar)"
                 )
+                # [HORA-01] Envia mensagem custom fora do horario se configurada
+                _msg_fora = (_pers_horario.get("mensagem_fora_horario") or "").strip()
+                if _msg_fora:
+                    try:
+                        from src.services.chatwoot_client import enviar_mensagem_chatwoot
+                        await enviar_mensagem_chatwoot(
+                            account_id, conversation_id, _msg_fora,
+                            integracao, source=source, contato_fone=contato_fone,
+                            nome_ia=(_pers_horario.get("nome_ia") or "Assistente"),
+                        )
+                        logger.info(f"📤 [HORA-01] mensagem_fora_horario enviada conv={conversation_id}")
+                    except Exception as _ehor:
+                        logger.warning(f"[HORA-01] falha ao enviar msg fora horario: {_ehor}")
                 return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
@@ -1518,6 +1531,23 @@ Convênios: {convenios_prompt}
 
             if tom_voz:
                 blocos_prompt.append(f"[TOM DE VOZ]\n{tom_voz}")
+
+            # Controles de resposta: usar_emoji + comprimento_resposta
+            _ue = pers.get('usar_emoji')
+            _compr = (pers.get('comprimento_resposta') or 'normal').lower()
+            _compr_map = {
+                'concisa': 'Respostas CURTAS e diretas (1-2 paragrafos pequenos, sem rodeios).',
+                'normal': 'Respostas com tamanho equilibrado (2-4 paragrafos curtos).',
+                'detalhada': 'Respostas DETALHADAS quando a pergunta exigir, mas ainda assim concisas e bem estruturadas.'
+            }
+            _emoji_regra = ''
+            if _ue is False:
+                _emoji_regra = 'PROIBIDO usar emojis nas respostas. Texto puro, sem nenhum emoji.'
+            elif _ue is True:
+                _emoji_regra = 'Pode usar emojis com moderacao para humanizar (sem exagero).'
+            _compr_regra = _compr_map.get(_compr, _compr_map['normal'])
+            blocos_prompt.append(f"[CONTROLES DE RESPOSTA]\n- {_compr_regra}\n{('- ' + _emoji_regra) if _emoji_regra else ''}".rstrip())
+
             if estilo:
                 blocos_prompt.append(f"[ESTILO DE COMUNICAÇÃO]\n{estilo}")
 
@@ -1648,7 +1678,7 @@ REGRAS:
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
 REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente já informou no histórico da conversa. Se ainda não sabe o nome, pergunte de forma natural (ex: "E qual seu nome?" ou "Com quem eu falo?"). Depois que souber, use o primeiro nome do cliente nas mensagens seguintes.
-{contexto_precarregado_bloco}{ctx_saudacao}
+{contexto_precarregado}{ctx_saudacao}
 
 [MENSAGENS DO CLIENTE]
 {mensagens_formatadas}
@@ -1767,16 +1797,31 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                 _link_tour = unidade.get("link_tour_virtual")
                 if _link_tour:
                     _oferecer_tour_ativo = pers.get("oferecer_tour", True)
+                    _estrategia_tour = (pers.get("estrategia_tour") or "smart").lower()
+                    _tour_1a_visita = pers.get("tour_perguntar_primeira_visita", True)
+                    _tour_msg_custom = (pers.get("tour_mensagem_custom") or "").strip()
                     _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
                     _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
 
-                    if _oferecer_tour_ativo and _eh_lead:
+                    # estrategia_tour controla quando o tour e oferecido:
+                    #   "always"  -> sempre que houver link, mesmo pra alunos atuais
+                    #   "smart"   -> apenas leads (default — comportamento original)
+                    #   "passive" -> apenas se o cliente perguntar (modo passivo)
+                    _modo_proativo = False
+                    if _oferecer_tour_ativo:
+                        if _estrategia_tour == "always":
+                            _modo_proativo = True
+                        elif _estrategia_tour == "smart" and _eh_lead:
+                            _modo_proativo = True
+                        # passive nunca e proativo
+
+                    if _modo_proativo:
                         # MODO PROATIVO: IA oferece tour ativamente para leads
                         prompt_sistema += f"""
 [TOUR VIRTUAL — MODO PROATIVO]
 Esta unidade possui um vídeo de Tour Virtual disponível.
 
-VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
+VOCÊ DEVE oferecer proativamente o tour virtual ao cliente.{(' Este cliente e um LEAD.' if _eh_lead else '')}{(' Use ESTA mensagem custom (e nao a generica): ' + _tour_msg_custom) if _tour_msg_custom else ''}{(' Pergunte SEMPRE na primeira visita.' if _tour_1a_visita else '')}
 
 ESTRATÉGIA DE OFERECIMENTO:
 1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
