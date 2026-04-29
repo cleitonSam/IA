@@ -4798,8 +4798,10 @@ async def processar_ia_e_responder(
                             _slug_unid = _slug_unid or "geral"
                             _label = f"aluno-{_slug_unid}"
 
-                            # [PRIORIZA EXISTENTES] Se ja existe label parecida no Chatwoot
-                            # (ex: 'aluno-belenzinho' criada manualmente), USA ela em vez de criar nova.
+                            # [PRIORIZA EXISTENTES] Procura label aluno-* JA CADASTRADA cujo
+                            # sufixo seja a SUBSTRING MAIS CURTA do nosso slug.
+                            # Ex: slug='altino-arantes', existem ['aluno-altino', 'aluno-altino-arantes']
+                            # -> escolhe 'aluno-altino' (mais curta = mais estavel/correta).
                             try:
                                 from src.services.chatwoot_client import _chatwoot_url_token as _cw_ut
                                 _u_b, _t_t = _cw_ut(_integ_cw_lab)
@@ -4815,30 +4817,67 @@ async def processar_ia_e_responder(
                                         _dl = _rl.json() or {}
                                         _pl = _dl.get("payload") or (_dl.get("data") or {}).get("payload") or []
                                         _existentes = [str(l.get("title", "")).lower() for l in _pl if isinstance(l, dict)]
-                                        # Se existe alguma label aluno-* que termina com nosso slug, usa ela
+                                        # Procura aluno-* cujo sufixo apareca no nosso slug — escolhe MAIS CURTO
+                                        _candidatos = []
                                         for _ex in _existentes:
-                                            if _ex.startswith("aluno-") and (
-                                                _ex == _label or
-                                                _ex.endswith(_slug_unid) or
-                                                _slug_unid.endswith(_ex.replace("aluno-", ""))
-                                            ):
-                                                if _ex != _label:
-                                                    logger.info(f"[FRANQUEADA] usando label EXISTENTE '{_ex}' em vez de criar '{_label}'")
-                                                    _label = _ex
-                                                break
+                                            if not _ex.startswith("aluno-"):
+                                                continue
+                                            _ex_suf = _ex[len("aluno-"):]
+                                            if _ex == _label:
+                                                _candidatos.append(_ex)
+                                            # sufixo da existente aparece como token no nosso slug
+                                            elif _ex_suf in _slug_unid.split("-") or _slug_unid.startswith(_ex_suf + "-") or _slug_unid == _ex_suf:
+                                                _candidatos.append(_ex)
+                                            # nosso slug e prefixo de uma existente — nao usa (e mais especifica)
+                                        if _candidatos:
+                                            # Pega a label MAIS CURTA dentre os matches
+                                            _melhor_label = min(_candidatos, key=len)
+                                            if _melhor_label != _label:
+                                                logger.info(f"[FRANQUEADA] usando label EXISTENTE mais curta '{_melhor_label}' em vez de '{_label}'")
+                                                _label = _melhor_label
                             except Exception as _ex_e:
                                 logger.debug(f"[FRANQUEADA] busca label existente falhou: {_ex_e}")
 
-                            # Aplica em AMBOS: contato (persistente, ficha) + conversa (visivel barra)
+                            # [INADIMPLENTE] Se status na EVO for "Inactive" / "Bloqueado" / equivalente
+                            # -> adiciona label 'inadimplentes' (cor vermelha pra destacar)
+                            _labels_aplicar = [_label]
+                            _status_aluno = (res_membro.get("status_raw") or "").strip().lower()
+                            _status_inativo = _status_aluno in (
+                                "inactive", "inativo", "blocked", "bloqueado",
+                                "suspended", "suspenso", "cancelled", "cancelado",
+                                "expired", "expirado", "pending", "pendente",
+                            )
+                            if _status_inativo:
+                                # Garante a label 'inadimplentes' com cor vermelha
+                                try:
+                                    from src.services.chatwoot_client import garantir_label_existe_chatwoot
+                                    await garantir_label_existe_chatwoot(
+                                        account_id, "inadimplentes", _integ_cw_lab,
+                                        color="#ef4444",  # vermelho
+                                        description="Aluno com cadastro inativo na EVO (sem mensalidade ativa)",
+                                    )
+                                except Exception as _ei:
+                                    logger.debug(f"[FRANQUEADA] garantir label inadimplentes falhou: {_ei}")
+                                _labels_aplicar.append("inadimplentes")
+                                logger.info(
+                                    f"[FRANQUEADA] status='{_status_aluno}' -> aluno INATIVO, "
+                                    f"adicionando label 'inadimplentes'"
+                                )
+
+                            # Aplica TODAS as labels (aluno-X + opcional inadimplentes) em AMBOS:
+                            # contato (persistente, ficha) + conversa (visivel barra superior)
                             from src.services.chatwoot_client import aplicar_label_conversa_chatwoot
-                            await aplicar_label_contato_chatwoot(
-                                account_id, contact_id, _label, _integ_cw_lab,
-                                grupo_prefix="aluno-",
-                            )
+                            for _lbl in _labels_aplicar:
+                                _grupo = "aluno-" if _lbl.startswith("aluno-") else None
+                                await aplicar_label_contato_chatwoot(
+                                    account_id, contact_id, _lbl, _integ_cw_lab,
+                                    grupo_prefix=_grupo,
+                                )
+                            # Conversa: aplica todas DE UMA VEZ (POST substitui o conjunto)
                             await aplicar_label_conversa_chatwoot(
-                                account_id, conversation_id, _label, _integ_cw_lab,
+                                account_id, conversation_id, _labels_aplicar, _integ_cw_lab,
                             )
-                            logger.info(f"[FRANQUEADA] label '{_label}' aplicada contato={contact_id} + conv={conversation_id}")
+                            logger.info(f"[FRANQUEADA] labels {_labels_aplicar} aplicadas contato={contact_id} + conv={conversation_id}")
 
                             await redis_client.setex(_flag_key, 86400, "1")
                         except Exception as _e_franq:

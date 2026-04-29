@@ -2167,16 +2167,24 @@ async def evo_aplicar_aluno_test(
     slug_unid = _re.sub(r"[^a-z0-9]+", "-", slug_unid).strip("-") or "geral"
     label = f"aluno-{slug_unid}"
 
-    # 3) Aplica label
-    try:
-        ok_label = await aplicar_label_contato_chatwoot(
-            int(account_id), contact_id, label, integ_cw, grupo_prefix="aluno-"
-        )
-        acoes.append({"acao": "aplicar_label", "label": label, "ok": bool(ok_label)})
-    except Exception as e:
-        acoes.append({"acao": "aplicar_label", "label": label, "erro": str(e)})
+    # Inadimplente?
+    labels_aplicar = [label]
+    status_raw = (res.get("status_raw") or "").strip().lower()
+    if status_raw in ("inactive", "inativo", "blocked", "bloqueado", "suspended", "suspenso", "cancelled", "cancelado", "expired", "expirado"):
+        labels_aplicar.append("inadimplentes")
 
-    return {"status": "ok", "evo_response": res, "acoes": acoes}
+    # 3) Aplica labels (todas)
+    for lbl in labels_aplicar:
+        grupo = "aluno-" if lbl.startswith("aluno-") else None
+        try:
+            ok_label = await aplicar_label_contato_chatwoot(
+                int(account_id), contact_id, lbl, integ_cw, grupo_prefix=grupo
+            )
+            acoes.append({"acao": "aplicar_label_contato", "label": lbl, "ok": bool(ok_label)})
+        except Exception as e:
+            acoes.append({"acao": "aplicar_label_contato", "label": lbl, "erro": str(e)})
+
+    return {"status": "ok", "evo_response": res, "labels_aplicadas": labels_aplicar, "acoes": acoes}
 
 
 @router.get("/integrations/evo-franqueada/units")
