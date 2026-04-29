@@ -504,12 +504,12 @@ export default function UnitsPage() {
                         <Field label="Nome Oficial *" icon={Info}>
                           <input required type="text" value={formData.nome}
                             onChange={e => setFormData((prev: any) => ({ ...prev, nome: e.target.value }))}
-                            className={inputClass} placeholder="Ex: Red Fitness – Mandaqui" />
+                            className={inputClass} placeholder="Ex: Sua Marca – Centro" />
                         </Field>
                         <Field label="Nome Curto / Exibição" icon={Layers}>
                           <input type="text" value={formData.nome_abreviado}
                             onChange={e => setFormData((prev: any) => ({ ...prev, nome_abreviado: e.target.value }))}
-                            className={inputClass} placeholder="Ex: Mandaqui" />
+                            className={inputClass} placeholder="Ex: Centro" />
                         </Field>
                       </div>
                     )}
@@ -565,7 +565,7 @@ export default function UnitsPage() {
                             <Instagram className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#00d2ff]/40" />
                             <input type="text" value={formData.instagram}
                               onChange={e => setFormData((prev: any) => ({ ...prev, instagram: e.target.value }))}
-                              className={`${inputClass} pl-12`} placeholder="redfitness" />
+                              className={`${inputClass} pl-12`} placeholder="suamarca" />
                           </div>
                         </Field>
                         <Field label="Website (URL)" icon={Globe}>

@@ -761,11 +761,11 @@ export default function SettingsPage() {
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     <div className="col-span-2">
                       <label className="block text-xs text-gray-400 mb-1">Nome *</label>
-                      <input required placeholder="Ex: Red Fitness – Centro" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3" />
+                      <input required placeholder="Ex: Sua Marca – Centro" value={unitFormData.nome} onChange={e => setUnitFormData({...unitFormData, nome: e.target.value})} className="w-full bg-slate-950/40 border border-white/10 rounded-xl px-4 py-3" />
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Nome Abreviado</label>
-                      <input placeholder="Ex: RF Centro" value={unitFormData.nome_abreviado} onChange={e => setUnitFormData({...unitFormData, nome_abreviado: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
+                      <input placeholder="Ex: SM Centro" value={unitFormData.nome_abreviado} onChange={e => setUnitFormData({...unitFormData, nome_abreviado: e.target.value})} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3" />
                     </div>
                     <div>
                       <label className="block text-xs text-gray-400 mb-1">Cidade</label>
