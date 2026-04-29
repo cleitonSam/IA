@@ -757,6 +757,25 @@ async def update_personality_by_id(
             else:
                 params.append("[]")
             n += 1
+        elif field == "cenarios":
+            # [CENARIOS-FIX] Lista JSONB de cenarios SE/ENTAO — estava sendo ignorada!
+            sets.append(f"cenarios = ${n}::jsonb")
+            if isinstance(val, list):
+                params.append(json.dumps(val))
+            elif isinstance(val, str) and val.strip():
+                try:
+                    json.loads(val)
+                    params.append(val)
+                except Exception:
+                    params.append("[]")
+            elif val is None:
+                params.append("[]")
+            else:
+                params.append(json.dumps(val) if val else "[]")
+            n += 1
+        else:
+            # [DEBUG] Campo extra que nao bateu em nenhuma rota — log pra catch
+            logger.warning(f"[PUT personality] Campo IGNORADO no save: {field} = {val!r}")
 
     if not sets:
         # Nada pra atualizar (PUT vazio)
