@@ -1546,7 +1546,8 @@ Convênios: {convenios_prompt}
             if tom_voz:
                 blocos_prompt.append(f"[TOM DE VOZ]\n{tom_voz}")
 
-            # Controles de resposta: usar_emoji + comprimento_resposta
+            # [FIX-EMOJI] Controles de resposta: usar_emoji + comprimento_resposta
+            # Usa emoji_tipo da Personalidade (campo Branding) quando usar_emoji=True
             _ue = pers.get('usar_emoji')
             _compr = (pers.get('comprimento_resposta') or 'normal').lower()
             _compr_map = {
@@ -1554,13 +1555,24 @@ Convênios: {convenios_prompt}
                 'normal': 'Respostas com tamanho equilibrado (2-4 paragrafos curtos).',
                 'detalhada': 'Respostas DETALHADAS quando a pergunta exigir, mas ainda assim concisas e bem estruturadas.'
             }
-            _emoji_regra = ''
-            if _ue is False:
-                _emoji_regra = 'PROIBIDO usar emojis nas respostas. Texto puro, sem nenhum emoji.'
-            elif _ue is True:
-                _emoji_regra = 'Pode usar emojis com moderacao para humanizar (sem exagero).'
+            if _ue is True:
+                _emoji_tipo_pers = (pers.get('emoji_tipo') or '').strip()
+                _emoji_cor_pers = (pers.get('emoji_cor') or '').strip()
+                if _emoji_tipo_pers:
+                    _emoji_regra = (
+                        f"Use EMOJIS nas respostas (com moderacao, max 1-2 por mensagem). "
+                        f"Use PREFERENCIALMENTE estes emojis configurados pela marca: {_emoji_tipo_pers}. "
+                        f"Pode variar entre eles ou usar outros que combinem com o tom."
+                    )
+                    if _emoji_cor_pers:
+                        _emoji_regra += f" Paleta visual: {_emoji_cor_pers} (priorize emojis com essa vibe de cor)."
+                else:
+                    _emoji_regra = "Pode usar emojis com moderacao para humanizar (max 1-2 por mensagem)."
+            else:
+                # Default = SEM emoji se Personalidade nao ativou explicitamente
+                _emoji_regra = "PROIBIDO usar QUALQUER emoji nas respostas. Texto puro sem emojis."
             _compr_regra = _compr_map.get(_compr, _compr_map['normal'])
-            blocos_prompt.append(f"[CONTROLES DE RESPOSTA]\n- {_compr_regra}\n{('- ' + _emoji_regra) if _emoji_regra else ''}".rstrip())
+            blocos_prompt.append(f"[CONTROLES DE RESPOSTA]\n- {_compr_regra}\n- {_emoji_regra}")
 
             if estilo:
                 blocos_prompt.append(f"[ESTILO DE COMUNICAÇÃO]\n{estilo}")

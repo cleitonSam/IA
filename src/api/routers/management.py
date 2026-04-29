@@ -1140,25 +1140,27 @@ def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None,
     if _bloco_agend:
         blocos.append(_bloco_agend)
 
-    # 9.5 Fluxo de Vendedor Real (proatividade)
+    # 9.5 Fluxo de Vendedor Real (proatividade) — exemplos SEM valores hardcoded
     blocos.append("""[FLUXO DE VENDEDOR — OBRIGATÓRIO]
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo SEMPRE:
 1. Responda a pergunta do cliente de forma direta e curta.
 2. Depois da resposta, faça UMA pergunta de descoberta que avance a conversa.
 
-Exemplos:
-• Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
-• Cliente: "Qual o horário?" → "Nosso horário é seg-sex 06h às 23h 😊 Você já treina ou está começando agora?"
-• Cliente: "Quanto custa?" → "Temos planos a partir de R$X! Qual seu objetivo principal — musculação, cardio, ou os dois?"
-• Cliente: "Quero começar" → "Que demais, parabéns pela decisão! 💪 Qual unidade fica mais perto de você? Posso te mostrar os planos e horários!"
+Padrão de resposta (use SEMPRE os DADOS REAIS configurados — nunca invente valores):
+• "Tem diária?" → consulte o campo diaria_disponivel da unidade.
+   Se sim: informe o valor REAL da diária (campo diaria_valor) e pergunte se quer só treinar hoje ou começar.
+   Se não: explique que essa unidade não trabalha com diária e pergunte o objetivo do cliente.
+• "Qual o horário?" → use os horários REAIS da unidade selecionada.
+• "Quanto custa?" → use os planos REAIS configurados.
+• "Quero começar" → pergunte qual unidade fica mais perto.
 
 REGRAS:
-- Resposta + pergunta na MESMA mensagem, SEMPRE.
+- Resposta + pergunta de descoberta na MESMA mensagem.
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização, urgência).
-- NUNCA adicione dados que o cliente NÃO pediu.
-- Se o cliente já respondeu uma descoberta, avance para o próximo passo (mostrar plano, agendar visita).
-- NUNCA invente serviços ou ofertas — use apenas o que consta nos dados/FAQ fornecidos.
-- NUNCA peça dados pessoais para cadastro (nome completo, email, CPF, endereço). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.""")
+- NUNCA invente valores, horários, serviços ou ofertas — use APENAS os dados configurados.
+- Se o cliente já respondeu uma descoberta, avance pro próximo passo (mostrar plano, agendar visita).
+- NUNCA peça dados pessoais para cadastro (CPF, endereço completo). Você é um vendedor, não um formulário. Se o cliente quiser se matricular, direcione à unidade ou recepção.
+- Use emojis SOMENTE se a configuração [CONTROLES DE RESPOSTA] permitir. Caso contrário, texto puro.""")
 
     # 10. Unidades da rede
     if unidades:
