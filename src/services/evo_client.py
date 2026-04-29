@@ -673,8 +673,10 @@ async def listar_horarios_disponiveis_evo(
         nomes_permitidos: set = set()
         try:
             from src.utils.text_helpers import normalizar
-            # Pega lista global de activities (discovery, ja cachada)
-            todas_atividades = await listar_activities_evo(empresa_id, unidade_id)
+            # [FIX-tradução] busca activities SEM unidade_id pra pegar a mesma
+            # credencial fallback de onde os IDs configurados vieram. Se passar
+            # unidade_id, pode pegar credencial DIFERENTE (com IDs locais distintos).
+            todas_atividades = await listar_activities_evo(empresa_id, unidade_id=None)
             for a in todas_atividades:
                 if a.get("id") in allow_ids and a.get("name"):
                     nomes_permitidos.add(normalizar(a["name"]).strip(" ."))
