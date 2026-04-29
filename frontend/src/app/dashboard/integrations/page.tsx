@@ -304,12 +304,11 @@ export default function IntegrationsPage() {
   const tabs = [
     { id: "chatwoot", label: "Chatwoot", icon: MessageSquare },
     { id: "evo", label: "EVO W12", icon: Zap },
-    { id: "evo_franqueada", label: "Franqueada (Aluno)", icon: UserCheck },
-    { id: "etiquetas", label: "Etiquetas", icon: Tag },
     { id: "uazapi", label: "UazAPI", icon: Hash },
   ];
 
-  const isCustomTab = (t: string) => t === "evo" || t === "evo_franqueada" || t === "etiquetas";
+  // Franqueada e Etiquetas viraram paginas dedicadas no sidebar (/dashboard/franqueada e /etiquetas)
+  const isCustomTab = (t: string) => t === "evo";
 
   return (
     <div className="min-h-screen bg-[#020617] text-white flex">
