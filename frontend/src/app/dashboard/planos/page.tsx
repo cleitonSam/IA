@@ -10,10 +10,11 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 import { apiGet, apiPost, apiPut, apiDelete, ApiException } from "@/lib/api";
 import type { Plano, Unidade } from "@/types";
 
-const emptyPlano: Plano = {
+const emptyPlano: any = {
   nome: "", valor: null, valor_promocional: null, meses_promocionais: null,
   descricao: "", diferenciais: "", link_venda: "",
   unidade_id: null, ativo: true, ordem: 0,
+  prioridade: 5, motivo_prioridade: "",
 };
 
 export default function PlanosPage() {
@@ -221,7 +222,20 @@ export default function PlanosPage() {
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Global (todas)
                         </span>
                       )}
-                      <h3 className="text-base font-bold mt-2 leading-tight">{plano.nome}</h3>
+                      <h3 className="text-base font-bold mt-2 leading-tight flex items-center gap-2">
+                        {plano.nome}
+                        {((plano as any).prioridade ?? 5) >= 8 && (
+                          <span title="Carro-chefe — IA prioriza apresentar" className="text-xs">🌟</span>
+                        )}
+                        {((plano as any).prioridade ?? 5) >= 6 && ((plano as any).prioridade ?? 5) < 8 && (
+                          <span title="Destaque" className="text-xs">⭐</span>
+                        )}
+                      </h3>
+                      {((plano as any).prioridade ?? 5) !== 5 && (
+                        <p className="text-[9px] text-slate-500 mt-0.5 uppercase tracking-widest">
+                          Prioridade IA: {(plano as any).prioridade}/10
+                        </p>
+                      )}
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <button
@@ -416,6 +430,57 @@ export default function PlanosPage() {
                     onChange={e => setFormData(p => ({ ...p, link_venda: e.target.value }))}
                   />
                 </div>
+
+                {/* Prioridade — quanto a IA prioriza esse plano */}
+                <div>
+                  <label className={labelClass + " flex items-center justify-between"}>
+                    <span>🌡️ Prioridade da IA</span>
+                    <span className={`text-base font-black ${
+                      ((formData as any).prioridade ?? 5) >= 8 ? "text-emerald-400" :
+                      ((formData as any).prioridade ?? 5) >= 6 ? "text-cyan-400" :
+                      ((formData as any).prioridade ?? 5) <= 2 ? "text-slate-500" :
+                      "text-slate-300"
+                    }`}>
+                      {(formData as any).prioridade ?? 5}/10
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-slate-500">Baixa</span>
+                    <input
+                      type="range"
+                      min="0" max="10" step="1"
+                      value={(formData as any).prioridade ?? 5}
+                      onChange={e => setFormData(p => ({ ...p, prioridade: parseInt(e.target.value) } as any))}
+                      className="flex-1 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00d2ff]"
+                    />
+                    <span className="text-[10px] text-emerald-400">Carro-chefe</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-2 italic">
+                    {((formData as any).prioridade ?? 5) >= 8
+                      ? "🌟 IA vai apresentar PRIMEIRO esse plano e empurrar mais forte"
+                      : ((formData as any).prioridade ?? 5) >= 6
+                      ? "⭐ IA destaca esse plano nas opções"
+                      : ((formData as any).prioridade ?? 5) <= 2
+                      ? "🔇 IA só menciona se cliente perguntar específico"
+                      : "Prioridade normal — IA apresenta junto com os outros"}
+                  </p>
+                </div>
+
+                {/* Motivo da prioridade */}
+                {((formData as any).prioridade ?? 5) >= 6 && (
+                  <div>
+                    <label className={labelClass}>Motivo (opcional, IA usa pra argumentar)</label>
+                    <input
+                      className={inputClass}
+                      placeholder="Ex: melhor custo-benefício, plano com piscina incluída, ideal pra iniciante"
+                      value={(formData as any).motivo_prioridade || ""}
+                      onChange={e => setFormData(p => ({ ...p, motivo_prioridade: e.target.value } as any))}
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1 italic">
+                      A IA cita esse motivo quando apresentar o plano (ex: "esse é nosso plano premium porque inclui piscina")
+                    </p>
+                  </div>
+                )}
 
                 {/* Diferenciais */}
                 <div>

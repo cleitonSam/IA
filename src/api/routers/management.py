@@ -3277,6 +3277,9 @@ class PlanoCreate(BaseModel):
     unidade_id: Optional[int] = None
     ativo: bool = True
     ordem: int = 0
+    # [PRIORIDADE-01] Quanto mais alto, mais a IA puxa esse plano (0-10)
+    prioridade: Optional[int] = 5
+    motivo_prioridade: Optional[str] = None
 
 
 @router.get("/planos")
@@ -3290,11 +3293,13 @@ async def list_planos(token_payload: dict = Depends(get_current_user_token)):
             SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
                    p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
                    p.ativo, p.ordem, p.id_externo,
+                   COALESCE(p.prioridade, 5) AS prioridade,
+                   p.motivo_prioridade,
                    u.nome AS unidade_nome
             FROM planos p
             LEFT JOIN unidades u ON u.id = p.unidade_id
             WHERE p.empresa_id = $1
-            ORDER BY p.ordem, p.nome
+            ORDER BY COALESCE(p.prioridade, 5) DESC, p.ordem, p.nome
             LIMIT 500
             """,
             empresa_id
@@ -3370,18 +3375,22 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
             raise HTTPException(status_code=400, detail=f"Unidade {body.unidade_id} não pertence a esta empresa")
 
     diferenciais_val = await _diferenciais_para_coluna(body.diferenciais)
+    # Sanitiza prioridade entre 0 e 10
+    _prio = max(0, min(10, int(body.prioridade or 5)))
     try:
         await _database.db_pool.execute(
             """
             INSERT INTO planos
                 (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
-                 descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+                 descricao, diferenciais, link_venda, ativo, ordem,
+                 prioridade, motivo_prioridade, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
             """,
             empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
             body.meses_promocionais, body.descricao,
             diferenciais_val,
-            body.link_venda, body.ativo, body.ordem
+            body.link_venda, body.ativo, body.ordem,
+            _prio, body.motivo_prioridade,
         )
     except asyncpg.UniqueViolationError as e:
         logger.warning(f"Plano duplicado empresa={empresa_id}: {e}")
@@ -3412,18 +3421,23 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
             raise HTTPException(status_code=400, detail=f"Unidade {body.unidade_id} não pertence a esta empresa")
 
     diferenciais_val = await _diferenciais_para_coluna(body.diferenciais)
+    _prio = max(0, min(10, int(body.prioridade or 5)))
     try:
         result = await _database.db_pool.execute(
             """
             UPDATE planos
             SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
                 descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
-                ativo=$9, ordem=$10, updated_at=NOW()
-            WHERE id=$11 AND empresa_id=$12
+                ativo=$9, ordem=$10,
+                prioridade=$11, motivo_prioridade=$12,
+                updated_at=NOW()
+            WHERE id=$13 AND empresa_id=$14
             """,
             body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
             body.descricao, diferenciais_val, body.link_venda, body.unidade_id,
-            body.ativo, body.ordem, plano_id, empresa_id
+            body.ativo, body.ordem,
+            _prio, body.motivo_prioridade,
+            plano_id, empresa_id
         )
         if result == "UPDATE 0":
             raise HTTPException(status_code=404, detail="Plano não encontrado")

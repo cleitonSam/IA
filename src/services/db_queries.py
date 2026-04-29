@@ -503,7 +503,8 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
     if unidade_id:
         query += " AND (unidade_id = $2 OR unidade_id IS NULL)"
         params.append(unidade_id)
-    query += " ORDER BY ordem, nome"
+    # [PRIORIDADE] Ordena por prioridade DESC (10=carro-chefe primeiro), depois ordem, depois nome
+    query += " ORDER BY COALESCE(prioridade, 5) DESC, ordem, nome"
 
     rows = await _database.db_pool.fetch(query, *params)
     planos = [dict(r) for r in rows]
@@ -523,11 +524,14 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
 def formatar_planos_para_prompt(planos: List[Dict]) -> str:
     """
     Formata planos para inserção no prompt da IA (texto técnico, sem markdown decorativo).
+    [PRIORIDADE] Marca planos com prioridade>=8 como CARRO-CHEFE pra IA priorizar.
+    Inclui motivo_prioridade quando preenchido.
     """
     if not planos:
         return "Nenhum plano disponível no momento."
 
     linhas = []
+    instrucoes_prioridade = []
     for p in planos:
         nome = p.get('nome', 'Plano')
         link = p.get('link_venda', '')
@@ -546,8 +550,20 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
 
         meses_promo = p.get('meses_promocionais')
         diferenciais = p.get('diferenciais', [])
+        prioridade = p.get('prioridade', 5) or 5
+        motivo_prio = (p.get('motivo_prioridade') or '').strip()
 
-        linha = f"- {nome}"
+        # Prefixo conforme prioridade
+        if prioridade >= 8:
+            prefixo = "🌟 [CARRO-CHEFE — PRIORIZE]"
+        elif prioridade >= 6:
+            prefixo = "⭐ [DESTAQUE]"
+        elif prioridade <= 2:
+            prefixo = "(baixa prioridade — só se cliente perguntar específico)"
+        else:
+            prefixo = "-"
+
+        linha = f"{prefixo} {nome}"
         if valor_float and valor_float > 0:
             linha += f": R$ {valor_float:.2f}/mes"
         if promocao_float and meses_promo and promocao_float > 0:
@@ -555,10 +571,28 @@ def formatar_planos_para_prompt(planos: List[Dict]) -> str:
         if diferenciais:
             diffs_str = ", ".join(diferenciais) if isinstance(diferenciais, list) else str(diferenciais)
             linha += f" | Diferenciais: {diffs_str}"
+        linha += f" | Prioridade: {prioridade}/10"
+        if motivo_prio:
+            linha += f" | Motivo: {motivo_prio}"
         linha += f" | Link: {link}"
         linhas.append(linha)
 
-    return "\n".join(linhas) if linhas else "Nenhum plano disponível no momento."
+        # Coleta instrucao especial de planos prioridade alta
+        if prioridade >= 8 and motivo_prio:
+            instrucoes_prioridade.append(f"  • {nome}: {motivo_prio}")
+
+    if not linhas:
+        return "Nenhum plano disponível no momento."
+
+    saida = "\n".join(linhas)
+    if instrucoes_prioridade:
+        saida += (
+            "\n\n[INSTRUÇÃO DE VENDA — PLANOS CARRO-CHEFE]\n"
+            "Apresente PRIMEIRO os planos marcados 🌟 quando o cliente perguntar opções:\n"
+            + "\n".join(instrucoes_prioridade)
+            + "\nSó mostre planos de prioridade baixa se o cliente pedir alternativa mais barata ou perguntar específico."
+        )
+    return saida
 
 
 # ── Distributed Leader Election ──────────────────────────────────────────────
