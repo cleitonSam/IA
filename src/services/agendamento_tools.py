@@ -95,6 +95,31 @@ def detectar_tool_call(texto_resposta: str) -> Optional[Dict[str, Any]]:
 
 # ─── FORMATADORES de resultado pra IA digerir ──────────────────────────────
 
+_DIAS_PT = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+_MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+             "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+
+
+def _formatar_data_ptbr(activity_date: str, start_time: str = "") -> str:
+    """Converte '2026-05-03T00:00:00' + '08:00' em 'domingo, 3 de maio às 08h00'.
+    [FIX-J] Calcula dia-da-semana CORRETO (LLM erra calendar) — IA so copia."""
+    try:
+        from datetime import datetime as _dt
+        _data_iso = str(activity_date or "")[:10]
+        if not _data_iso or len(_data_iso) < 10:
+            return ""
+        dt = _dt.fromisoformat(_data_iso)
+        dia_semana = _DIAS_PT[dt.weekday()]  # 0=segunda...6=domingo
+        mes_nome = _MESES_PT[dt.month - 1]
+        base = f"{dia_semana}, {dt.day} de {mes_nome}"
+        if start_time:
+            hh = str(start_time)[:5].replace(":", "h")
+            base += f" às {hh}"
+        return base
+    except Exception:
+        return ""
+
+
 def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
     """Reduz a lista de horarios pra um formato que a IA consome bem
     (max N itens, com numero pro cliente escolher).
@@ -115,6 +140,8 @@ def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
                 "start_time": h.get("startTime"),  # "HH:MM" — usado para montar datetime
                 "end_time": h.get("endTime"),
                 "horario": f"{h.get('startTime', '')}-{h.get('endTime', '')}",
+                # [FIX-J] data ja formatada em PT-BR — IA usa ESTA, nao calcula sozinha
+                "data_formatada_ptbr": _formatar_data_ptbr(h.get("activityDate"), h.get("startTime") or ""),
                 "vagas_livres": h.get("vagas"),
                 "area": h.get("area"),
             }
@@ -309,8 +336,11 @@ async def executar_tool(
             "ok": True,
             "instrucao_ia": (
                 "Mostre as opcoes ao cliente de forma natural (max 5-7 horarios). "
-                "Use formato amigavel: 'Quarta 30/04 - 07h Funcional (Maria)'. "
-                "Pergunte qual ele prefere. Se ele disser um numero (1, 2, 3...), use a id_activity_session correspondente."
+                "[CRITICO] Use SEMPRE o campo 'data_formatada_ptbr' EXATAMENTE como veio "
+                "(ex: 'domingo, 3 de maio às 08h00'). NUNCA calcule o dia da semana sozinho — "
+                "voce sempre erra calendar. Junte: 'data_formatada_ptbr - nome_aula (instrutor)'. "
+                "Pergunte qual o cliente prefere. Quando ele escolher (numero ou descricao), "
+                "passe `numero` no proximo agendar_aula."
             ),
             **formatado,
         }
@@ -356,13 +386,25 @@ async def executar_tool(
                             ),
                         }
                 else:
+                    # [FIX-J] Se a lista esvaziou (state expirou ou foi limpo), instrucao diferente
+                    if len(oferecidos) == 0:
+                        return {
+                            "ok": False,
+                            "erro": "lista_expirou",
+                            "instrucao_ia": (
+                                "A lista de horarios anterior expirou ou foi invalidada. "
+                                "NAO mostre numeros antigos ao cliente. Em vez disso, peca licenca "
+                                "e CHAME consultar_horarios DE NOVO pra pegar opcoes atualizadas. "
+                                "Depois mostre a nova lista e peca pro cliente escolher."
+                            ),
+                        }
                     return {
                         "ok": False,
                         "erro": "numero_fora_range",
                         "instrucao_ia": (
                             f"O numero {numero_escolha} nao corresponde a nenhuma das "
                             f"{len(oferecidos)} opcoes mostradas. Confirme com o cliente "
-                            "qual horario ele quer (1 a {len(oferecidos)})."
+                            f"qual horario ele quer (1 a {len(oferecidos)})."
                         ),
                     }
             except (ValueError, TypeError):
@@ -559,6 +601,11 @@ FLUXO RECOMENDADO:
 
 REGRAS IMPORTANTES:
 - NUNCA invente horarios ou IDs. Sempre consulte primeiro.
+- [CRITICO] DIA DA SEMANA: use SEMPRE o campo 'data_formatada_ptbr' que vem na resposta de
+  consultar_horarios. NAO calcule weekday sozinho — voce ERRA. O campo ja vem certo
+  (ex: 'domingo, 3 de maio às 08h00'). Copie LITERAL.
 - Quando o sistema responder com instrucao_ia, SIGA essa instrucao na sua resposta ao cliente.
 - Se faltar dado, peca de forma natural (uma coisa por vez).
-- Se o sistema retornar erro, pesa desculpas e sugira tentar outro horario."""
+- Se o sistema retornar 'lista_expirou' ou 'sessao_excluida', NAO mostre numeros antigos —
+  chame consultar_horarios de novo e ofereca a nova lista.
+- Se o sistema retornar erro, peca desculpas e sugira tentar outro horario."""
