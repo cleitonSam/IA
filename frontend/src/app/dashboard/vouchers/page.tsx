@@ -41,7 +41,7 @@ export default function VouchersPage() {
   const [loading, setLoading] = useState(false);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [erro, setErro] = useState<string | null>(null);
-  const [onlyValid, setOnlyValid] = useState(true);
+  const [filtroStatus, setFiltroStatus] = useState<"ativos" | "inativos" | "todos">("ativos");
   const [busca, setBusca] = useState("");
   const [testModal, setTestModal] = useState<{ open: boolean; voucher: Voucher | null }>({ open: false, voucher: null });
   const [testIdMembership, setTestIdMembership] = useState<string>("");
@@ -53,13 +53,15 @@ export default function VouchersPage() {
   const fetchVouchers = () => {
     setLoading(true);
     setErro(null);
-    axios.get(`/api-backend/management/franqueada/vouchers?only_valid=${onlyValid}&take=100`, getToken())
+    // Pra Inativos/Todos buscamos com only_valid=false e filtramos no client
+    const onlyValidParam = filtroStatus === "ativos";
+    axios.get(`/api-backend/management/franqueada/vouchers?only_valid=${onlyValidParam}&take=200`, getToken())
       .then(r => setVouchers(Array.isArray(r.data?.vouchers) ? r.data.vouchers : []))
       .catch(e => setErro(e?.response?.data?.detail || "Falha ao carregar vouchers"))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchVouchers(); }, [onlyValid]);
+  useEffect(() => { fetchVouchers(); }, [filtroStatus]);
 
   const testarVoucher = async () => {
     if (!testModal.voucher || !testIdMembership) return;
@@ -76,11 +78,35 @@ export default function VouchersPage() {
     } finally { setTesting(false); }
   };
 
-  const vouchersFiltrados = vouchers.filter(v =>
-    !busca.trim() ||
-    v.nome?.toLowerCase().includes(busca.toLowerCase()) ||
-    (v.planos_nomes || []).some(p => p.toLowerCase().includes(busca.toLowerCase()))
-  );
+  // Determina se voucher está ATIVO (não vencido, com vagas, dentro do prazo)
+  const isVoucherAtivo = (v: Voucher): boolean => {
+    if (v.expira_em) {
+      try {
+        const exp = new Date(v.expira_em);
+        if (exp < new Date()) return false;
+      } catch {}
+    }
+    if (v.limited && (v.available || 0) <= 0) return false;
+    return true;
+  };
+
+  const vouchersFiltrados = vouchers.filter(v => {
+    // Filtro de status
+    const ativo = isVoucherAtivo(v);
+    if (filtroStatus === "ativos" && !ativo) return false;
+    if (filtroStatus === "inativos" && ativo) return false;
+
+    // Filtro de busca
+    if (!busca.trim()) return true;
+    const q = busca.toLowerCase();
+    return (
+      v.nome?.toLowerCase().includes(q) ||
+      (v.planos_nomes || []).some(p => p.toLowerCase().includes(q))
+    );
+  });
+
+  const totalAtivos = vouchers.filter(isVoucherAtivo).length;
+  const totalInativos = vouchers.filter(v => !isVoucherAtivo(v)).length;
 
   return (
     <div className="min-h-screen bg-[#020617] text-white flex">
@@ -104,14 +130,30 @@ export default function VouchersPage() {
                 quando a Personalidade IA tem <span className="text-purple-400 not-italic">Usar Vouchers</span> ativado.
               </p>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => setOnlyValid(!onlyValid)}
-                className={`flex items-center gap-2 px-4 py-3 rounded-2xl border text-xs font-black uppercase tracking-widest transition-all ${
-                  onlyValid ? "bg-emerald-400/10 border-emerald-400/30 text-emerald-400" : "bg-slate-800 border-white/5 text-slate-400"
-                }`}>
-                {onlyValid ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                {onlyValid ? "Só Válidos" : "Todos"}
-              </button>
+            <div className="flex gap-2 flex-wrap">
+              {/* Filtro tri-state — Ativos / Inativos / Todos */}
+              <div className="inline-flex bg-slate-900/60 border border-white/8 rounded-2xl p-1">
+                <button onClick={() => setFiltroStatus("ativos")}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${
+                    filtroStatus === "ativos" ? "bg-emerald-400/15 text-emerald-400 shadow-inner" : "text-slate-500 hover:text-white"
+                  }`}>
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Ativos {filtroStatus === "ativos" && totalAtivos > 0 && <span className="text-[9px] opacity-70">({totalAtivos})</span>}
+                </button>
+                <button onClick={() => setFiltroStatus("inativos")}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${
+                    filtroStatus === "inativos" ? "bg-amber-400/15 text-amber-400 shadow-inner" : "text-slate-500 hover:text-white"
+                  }`}>
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Inativos {filtroStatus === "inativos" && totalInativos > 0 && <span className="text-[9px] opacity-70">({totalInativos})</span>}
+                </button>
+                <button onClick={() => setFiltroStatus("todos")}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                    filtroStatus === "todos" ? "bg-purple-400/15 text-purple-400 shadow-inner" : "text-slate-500 hover:text-white"
+                  }`}>
+                  Todos
+                </button>
+              </div>
               <button onClick={fetchVouchers} disabled={loading}
                 className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-sm font-semibold transition-all disabled:opacity-50">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -153,26 +195,40 @@ export default function VouchersPage() {
               {vouchersFiltrados.map((v, i) => {
                 const desc = v.desconto;
                 const isPercentage = desc?.tipo === "percentage";
+                const ativo = isVoucherAtivo(v);
                 return (
                   <motion.div
                     key={v.id}
                     initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: i * 0.03 }}
-                    className="bg-slate-900/50 border border-white/5 hover:border-purple-400/30 rounded-3xl overflow-hidden transition-all"
+                    className={`bg-slate-900/50 border rounded-3xl overflow-hidden transition-all ${
+                      ativo ? "border-white/5 hover:border-purple-400/30" : "border-amber-400/10 opacity-70 hover:opacity-100"
+                    }`}
                   >
                     <div className="p-6">
                       {/* Header card */}
                       <div className="flex items-start justify-between mb-4">
                         <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 rounded-2xl bg-purple-400/10 border border-purple-400/20 flex items-center justify-center">
-                            <Ticket className="w-6 h-6 text-purple-400" />
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
+                            ativo ? "bg-purple-400/10 border border-purple-400/20" : "bg-amber-400/10 border border-amber-400/20"
+                          }`}>
+                            <Ticket className={`w-6 h-6 ${ativo ? "text-purple-400" : "text-amber-400"}`} />
                           </div>
                           <div>
                             <h3 className="font-black text-base font-mono leading-tight">{v.nome}</h3>
                             <p className="text-[10px] text-slate-500 mt-0.5 uppercase tracking-widest">ID: {v.id} · {v.tipo}</p>
                           </div>
                         </div>
+                        {ativo ? (
+                          <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1.5 rounded-full">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Ativo
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1.5 rounded-full">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Inativo
+                          </span>
+                        )}
                       </div>
 
                       {/* Desconto destaque */}

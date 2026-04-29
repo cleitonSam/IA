@@ -22,7 +22,6 @@ const navItemsRaw = [
   { label: "FAQ Neural", icon: HelpCircle, href: "/dashboard/faq", id: "faq" },
   { label: "Planos", icon: CreditCard, href: "/dashboard/planos", id: "planos" },
   { label: "Vouchers", icon: Ticket, href: "/dashboard/vouchers", id: "vouchers" },
-  { label: "Franqueada (Aluno)", icon: UserCheck, href: "/dashboard/franqueada", id: "franqueada" },
   { label: "Etiquetas", icon: Tag, href: "/dashboard/etiquetas", id: "etiquetas" },
   { label: "Integrações", icon: Network, href: "/dashboard/integrations", id: "integrations" },
 ];
