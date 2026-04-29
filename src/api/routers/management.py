@@ -2085,6 +2085,115 @@ async def evo_verificar_membro_endpoint(
     return await verificar_membro_evo(empresa_id, telefone, unidade_id)
 
 
+# ────────── CHATWOOT LABELS — visualizacao das etiquetas ──────────
+
+@router.get("/chatwoot/labels")
+async def list_chatwoot_labels(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as labels (etiquetas) configuradas na conta Chatwoot da empresa.
+    Retorna: [{title, description, color, show_on_sidebar}].
+    NAO faz contagem de contatos por label aqui (caro) — a UI mostra so as labels."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.db_queries import carregar_integracao
+    integ = await carregar_integracao(empresa_id, 'chatwoot')
+    if not integ:
+        return {"labels": [], "erro": "Integração Chatwoot não configurada"}
+
+    # Reaproveita o helper que extrai url+token
+    from src.services.chatwoot_client import _chatwoot_url_token
+    url_base, token = _chatwoot_url_token(integ)
+    account_id = integ.get("account_id") or integ.get("accountId")
+    if not url_base or not token or not account_id:
+        return {"labels": [], "erro": "Configuração Chatwoot incompleta (url/token/account_id)"}
+
+    import httpx
+    headers = {"api_access_token": str(token)}
+    url = f"{url_base}/api/v1/accounts/{account_id}/labels"
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=10.0)
+        if resp.status_code != 200:
+            return {"labels": [], "erro": f"Chatwoot HTTP {resp.status_code}"}
+        data = resp.json() or {}
+        payload = data.get("payload") if isinstance(data, dict) else None
+        if payload is None and isinstance(data.get("data"), dict):
+            payload = data["data"].get("payload")
+        labels = payload if isinstance(payload, list) else []
+        # Normaliza: garante chaves esperadas
+        norm = []
+        for l in labels:
+            if not isinstance(l, dict):
+                continue
+            norm.append({
+                "id": l.get("id"),
+                "title": l.get("title") or "",
+                "description": l.get("description") or "",
+                "color": l.get("color") or "#10b981",
+                "show_on_sidebar": bool(l.get("show_on_sidebar", True)),
+            })
+        return {"labels": norm, "total": len(norm), "account_id": account_id}
+    except Exception as e:
+        logger.warning(f"[CW labels list] erro: {e}")
+        return {"labels": [], "erro": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@router.get("/chatwoot/labels/{label_title}/contacts")
+async def list_contacts_by_label(label_title: str, token_payload: dict = Depends(get_current_user_token)):
+    """Lista contatos que tem uma label especifica.
+    Usa o endpoint /api/v2/accounts/{id}/reports/agents_filter ou
+    /api/v1/accounts/{id}/labels/{title}/contacts (Chatwoot 3.x)."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.db_queries import carregar_integracao
+    integ = await carregar_integracao(empresa_id, 'chatwoot')
+    if not integ:
+        return {"contacts": [], "erro": "Integração Chatwoot não configurada"}
+
+    from src.services.chatwoot_client import _chatwoot_url_token
+    url_base, token = _chatwoot_url_token(integ)
+    account_id = integ.get("account_id") or integ.get("accountId")
+    if not url_base or not token or not account_id:
+        return {"contacts": [], "erro": "Configuração Chatwoot incompleta"}
+
+    import httpx
+    headers = {"api_access_token": str(token)}
+    # Chatwoot v3 — endpoint oficial pra listar contatos por label
+    url = f"{url_base}/api/v1/accounts/{account_id}/labels/{label_title}/contacts"
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=15.0)
+        if resp.status_code != 200:
+            return {"contacts": [], "total": 0, "erro": f"HTTP {resp.status_code}"}
+        data = resp.json() or {}
+        # Chatwoot retorna {payload: [...], meta: {count: N}} ou {data: {payload, meta}}
+        payload = data.get("payload") if isinstance(data, dict) else None
+        meta = data.get("meta") if isinstance(data, dict) else None
+        if payload is None and isinstance(data.get("data"), dict):
+            payload = data["data"].get("payload")
+            meta = data["data"].get("meta")
+        contatos = payload if isinstance(payload, list) else []
+        total = (meta or {}).get("count") if isinstance(meta, dict) else len(contatos)
+        norm = []
+        for c in contatos:
+            if not isinstance(c, dict):
+                continue
+            norm.append({
+                "id": c.get("id"),
+                "name": c.get("name") or "",
+                "phone_number": c.get("phone_number") or "",
+                "email": c.get("email") or "",
+                "thumbnail": c.get("thumbnail") or "",
+            })
+        return {"contacts": norm, "total": total or len(norm)}
+    except Exception as e:
+        logger.warning(f"[CW labels contacts] erro: {e}")
+        return {"contacts": [], "erro": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 @router.put("/integrations/{tipo}")
 async def update_integration(
     tipo: str,
