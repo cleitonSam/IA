@@ -53,8 +53,13 @@ export default function PlanosPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setSaveError(null);
+    // Validacao visivel (em vez do popup HTML5 que some no scroll)
+    if (!formData.nome || !String(formData.nome).trim()) {
+      setSaveError("⚠️ Preencha o NOME do plano antes de salvar.");
+      return;
+    }
+    setSaving(true);
     try {
       if (editingPlano?.id) {
         await apiPut(`/management/planos/${editingPlano.id}`, formData);
@@ -64,7 +69,9 @@ export default function PlanosPage() {
       setSuccess(true);
       setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchData(); }, 900);
     } catch (e) {
-      setSaveError(e instanceof ApiException ? e.message : "Erro ao salvar plano.");
+      const msg = e instanceof ApiException ? e.message : (e instanceof Error ? e.message : "Erro ao salvar plano.");
+      setSaveError(msg);
+      console.error("[planos] erro ao salvar:", e);
     } finally {
       setSaving(false);
     }
@@ -419,9 +426,13 @@ export default function PlanosPage() {
                 </div>
 
                 {saveError && (
-                  <div className="px-4 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                    {saveError}
-                  </div>
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+                    className="sticky bottom-16 px-4 py-3 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-sm font-semibold shadow-lg shadow-red-500/10 flex items-start gap-2"
+                  >
+                    <span className="text-base leading-none mt-0.5">⚠️</span>
+                    <span className="flex-1 break-words">{saveError}</span>
+                  </motion.div>
                 )}
                 {/* Botão salvar */}
                 <button
