@@ -535,12 +535,24 @@ async def listar_horarios_disponiveis_evo(
         if isinstance(r, list):
             todas.extend(r)
 
+    from datetime import datetime as _dt
+    _agora = _dt.now()
     normalizado = []
     for s in todas:
         cap = int(s.get("capacity") or 0)
         ocu = int(s.get("ocupation") or 0)
         if cap <= 0 or (cap - ocu) <= 0:
             continue
+        # [FIX-C] filtra sessoes cuja janela de reserva ja fechou
+        _bend = s.get("bookingEndTime")
+        if _bend:
+            try:
+                # bookingEndTime pode vir como "yyyy-MM-dd HH:mm:ss" ou ISO
+                _bdt = _dt.fromisoformat(str(_bend).replace("T", " ").split(".")[0])
+                if _bdt < _agora:
+                    continue  # janela ja fechou — descarta
+            except Exception:
+                pass  # se nao parseou, deixa passar
         normalizado.append({
             "idActivitySession": s.get("idAtividadeSessao") or s.get("idActivitySession"),
             "idActivity": s.get("idActivity"),
@@ -594,6 +606,34 @@ async def agendar_aula_experimental_evo(
     headers = await _get_evo_headers(integracao)
     if not headers:
         return {"ok": False, "status": 0, "mensagens": ["Credenciais EVO ausentes"]}
+
+    # [FIX-B] re-check de vaga ANTES de agendar (anti-race com outros agendamentos)
+    # Se a sessao ja encheu desde que a IA listou, retorna erro especifico
+    # pra IA poder dizer "esse horario acabou de encher, escolhe outro?".
+    if id_activity:
+        try:
+            _check_url = f"{_evo_api_base(integracao)}/activities/schedule/detail"
+            _check = await _evo_request(
+                "GET", _check_url, headers,
+                params={"idActivitySession": str(id_activity)},
+                log_tag=f"EVO:check:{empresa_id}",
+            )
+            if _check is not None and _check.status_code == 200:
+                _det = _check.json() or {}
+                _cap = int(_det.get("capacity") or 0)
+                _ocu = int(_det.get("ocupation") or 0)
+                if _cap > 0 and _ocu >= _cap:
+                    logger.info(f"⚠️ EVO: sessao {id_activity} encheu antes do agendamento (cap={_cap} ocu={_ocu})")
+                    return {
+                        "ok": False, "status": 409,
+                        "mensagens": [
+                            "Esse horario acabou de encher (alguem reservou a ultima vaga). Escolha outro horario."
+                        ],
+                        "vaga_perdida": True,
+                    }
+        except Exception as _ec:
+            # Se o re-check falhar, segue tentando o agendamento mesmo assim
+            logger.debug(f"[FIX-B] re-check vaga falhou (seguindo): {_ec}")
 
     url = f"{_evo_api_base(integracao)}/activities/schedule/experimental-class"
     params = {

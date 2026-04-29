@@ -1909,7 +1909,9 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                     conversation_id=conversation_id,
                                     contato_fone=contato_fone,
                                     pers=pers,
-                                    unidade_id=None,  # pega da integracao
+                                    # [FIX-A] usa unidade_id da conversa atual — cada
+                                    # filial usa SUA credencial EVO automaticamente.
+                                    unidade_id=unidade.get("id") if isinstance(unidade, dict) else None,
                                 )
                                 # Incorpora resultado e re-chama LLM
                                 _msgs_tool.append({"role": "assistant", "content": resposta_bruta})
