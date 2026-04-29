@@ -151,6 +151,32 @@ def limpar_markdown(texto: str) -> str:
     return texto
 
 
+def formatar_para_canal(texto: str, canal: str = "whatsapp") -> str:
+    """Adapta formatacao de texto pro canal de envio.
+
+    - whatsapp / uazapi / chatwoot: mantem *negrito* e _italico_ (formato nativo).
+    - instagram: REMOVE os asteriscos/underscores porque o Instagram DM nao
+      suporta formatacao — caso contrario o cliente ve '*SILVER*' literal.
+
+    Tambem normaliza markdown padrao (** -> *) ja que o limpar_markdown
+    pode ja ter rodado, mas garantimos idempotencia."""
+    if not texto:
+        return texto
+    canal = (canal or "").lower().strip()
+
+    # Garantia: ** -> * (caso o limpar_markdown nao tenha rodado antes)
+    texto = re.sub(r'\*\*(.+?)\*\*', r'*\1*', texto)
+
+    if canal in ("instagram", "ig", "messenger", "facebook"):
+        # Remove formatacao (asteriscos e underscores que envolvem palavras)
+        # *texto* -> texto    _texto_ -> texto
+        texto = re.sub(r'\*([^\s*][^*]*[^\s*]|[^\s*])\*', r'\1', texto)
+        texto = re.sub(r'\b_([^\s_][^_]*[^\s_]|[^\s_])_\b', r'\1', texto)
+    # whatsapp/uazapi/chatwoot: passa direto
+
+    return texto
+
+
 def randomizar_mensagem(texto: str) -> str:
     """
     Adiciona um caractere invisível (Zero Width Space ou similar) 

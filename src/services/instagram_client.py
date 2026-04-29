@@ -19,6 +19,7 @@ Uso:
     await client.send_text(recipient_id, "Olá!")
 """
 import asyncio
+from src.utils.text_helpers import formatar_para_canal
 import re
 import httpx
 from typing import Optional, List, Dict, Any
@@ -163,10 +164,13 @@ class InstagramClient:
     # ─────────────────────────────────────────────────────────────────
 
     async def send_text(self, recipient_id: str, text: str, **kwargs) -> bool:
-        """Envia mensagem de texto simples via Graph API."""
+        """Envia mensagem de texto simples via Graph API.
+        [FMT-IG] Remove *negrito* e _italico_ que nao sao suportados no IG DM
+        (apareceriam literais como '*SILVER*' ao inves de SILVER em destaque)."""
+        text_adaptado = formatar_para_canal(text or "", "instagram")
         payload = {
             "recipient": {"id": str(recipient_id)},
-            "message": {"text": text[:1000]},  # limite IG
+            "message": {"text": text_adaptado[:1000]},  # limite IG
         }
         res = await self._request("POST", f"{self.page_id}/messages", json=payload)
         return res is not None

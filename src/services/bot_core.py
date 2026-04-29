@@ -551,7 +551,16 @@ def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
     # 3) Juntar blocos muito curtos com o anterior
     final = []
     for b in resultado:
-        if final and len(b) < 40 and len(final[-1]) < 200:
+        # [FMT] nao juntar blocos que parecem ser itens de lista (preserva
+        # estrutura visual: cada bullet vira parte de mensagem unificada
+        # com espaco real, nao junta tudo em uma linha so).
+        b_stripped = b.lstrip()
+        is_lista = b_stripped.startswith(("•", "-", "*", "1.", "2.", "3.", "4.", "5."))
+        prev_lista = final and any(
+            line.lstrip().startswith(("•", "-", "1.", "2.", "3."))
+            for line in final[-1].split("\n")
+        )
+        if final and len(b) < 40 and len(final[-1]) < 200 and not is_lista and not prev_lista:
             final[-1] = f"{final[-1]}\n\n{b}"
         else:
             final.append(b)
@@ -1656,14 +1665,39 @@ REGRAS:
             e_tipo = pers.get('emoji_tipo') or "✨"
             e_cor = pers.get('emoji_cor') or "#00d2ff"
             
-            blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP]
-- Use *bold* para destaque. Listas com •.
-- Separe blocos com linha em branco.
-- NUNCA use markdown (**, ##, ```).
-- Tamanho ideal: 2-4 parágrafos curtos.
-- TERMINAR sempre frases completas.
-- EMOJI PRINCIPAL DA IA: {e_tipo}. Use-o com frequência.
-- PALETA DE CORES/VIBE: {e_cor}. Priorize emojis e tons que combinem com esta cor.
+            blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP — REGRAS RIGOROSAS]
+- USE SEMPRE *texto* (asterisco simples) para destacar nomes de planos, valores, palavras-chave.
+- NUNCA use **texto** (asterisco duplo / markdown).
+- NUNCA use ## headers, ``` code blocks, ou tags HTML.
+- Para LISTAS: cada item em uma LINHA SEPARADA, comecando com bullet •
+  E separe a INTRODUCAO da lista com LINHA EM BRANCO antes dos itens.
+- Entre paragrafos: SEMPRE uma LINHA EM BRANCO (dupla quebra \\n\\n).
+- TERMINAR sempre frases completas (sem reticencias soltas).
+- EMOJI PRINCIPAL DA IA: {e_tipo}. Use com frequencia.
+- PALETA: {e_cor}. Priorize emojis que combinem com essa cor.
+
+✅ EXEMPLO CERTO (note as LINHAS EM BRANCO):
+
+Temos 3 planos disponiveis:
+
+• *SILVER* — Acesso a unidade Ricardo Jafet
+   Fidelidade de 12 meses
+
+• *PLATINUM* — Acesso a toda rede
+   Sem fidelidade
+
+• *RED PREMIUM* — Acesso total
+   Cancelamento automatico apos 30 dias
+
+Qual te interessa mais? 💪
+
+❌ EXEMPLOS ERRADOS (NUNCA FACA):
+   ❌ "SILVER: x. PLATINUM: y. RED PREMIUM: z."  (TUDO grudado em uma linha)
+   ❌ "SILVER\nPLATINUM\nRED PREMIUM"  (quebra simples sem espaco visual entre itens)
+   ❌ "**SILVER**"  (asterisco duplo vira literal)
+   ❌ "## Planos disponiveis"  (markdown header nao funciona)
+
+REGRA DE OURO: prefira RESPIRO visual. Melhor 5 linhas espacadas que 2 linhas grudadas.
 {r_format}""")
 
             # 12. Dados finais e Variáveis do Atendimento
