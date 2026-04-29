@@ -2332,6 +2332,21 @@ async def list_planos(token_payload: dict = Depends(get_current_user_token)):
     return [dict(r) for r in rows]
 
 
+
+def _diferenciais_para_array(valor):
+    """Converte 'diferenciais' do payload em list[str] que o asyncpg envia
+    como text[] pro Postgres. O frontend manda string livre separada por
+    vírgula (ex: 'aula gratis, sem fidelidade') ou já uma lista. A coluna
+    no BD é text[], então não dá pra mandar string crua."""
+    if valor is None:
+        return None
+    if isinstance(valor, list):
+        return [str(v).strip() for v in valor if str(v).strip()]
+    if isinstance(valor, str):
+        return [v.strip() for v in valor.split(",") if v.strip()]
+    return [str(valor)]
+
+
 @router.post("/planos", status_code=201)
 async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
     empresa_id = await _resolve_empresa_id(token_payload)
@@ -2346,7 +2361,8 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
             """,
             empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
-            body.meses_promocionais, body.descricao, body.diferenciais,
+            body.meses_promocionais, body.descricao,
+            _diferenciais_para_array(body.diferenciais),
             body.link_venda, body.ativo, body.ordem
         )
     except Exception as e:
@@ -2372,7 +2388,7 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
             WHERE id=$11 AND empresa_id=$12
             """,
             body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
-            body.descricao, body.diferenciais, body.link_venda, body.unidade_id,
+            body.descricao, _diferenciais_para_array(body.diferenciais), body.link_venda, body.unidade_id,
             body.ativo, body.ordem, plano_id, empresa_id
         )
         if result == "UPDATE 0":
