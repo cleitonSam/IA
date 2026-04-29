@@ -631,12 +631,27 @@ async def listar_horarios_disponiveis_evo(
         ocu = int(s.get("ocupation") or 0)
         if cap <= 0 or (cap - ocu) <= 0:
             continue
+        # [FIX-D] descarta sessoes cuja data+hora ja passou (aula no passado)
+        try:
+            _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
+            _stime = str(s.get("startTime") or "")[:5].strip()
+            if _adate and len(_adate) >= 10 and _stime:
+                _aula_dt = _dt.fromisoformat(f"{_adate} {_stime}:00")
+                if _aula_dt < _agora:
+                    continue  # aula ja comecou/passou — descarta
+        except Exception:
+            pass
         # [FIX-C] filtra sessoes cuja janela de reserva ja fechou
         _bend = s.get("bookingEndTime")
         if _bend:
             try:
-                # bookingEndTime pode vir como "yyyy-MM-dd HH:mm:ss" ou ISO
-                _bdt = _dt.fromisoformat(str(_bend).replace("T", " ").split(".")[0])
+                _bend_str = str(_bend).replace("T", " ").split(".")[0].strip()
+                # Caso 1: vem so hora (ex: "00:00:20"). Combina com activityDate
+                if len(_bend_str) <= 8 and ":" in _bend_str:
+                    _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
+                    if _adate and len(_adate) >= 10:
+                        _bend_str = f"{_adate} {_bend_str}"
+                _bdt = _dt.fromisoformat(_bend_str)
                 if _bdt < _agora:
                     continue  # janela ja fechou — descarta
             except Exception:
