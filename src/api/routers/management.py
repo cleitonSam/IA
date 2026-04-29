@@ -260,7 +260,11 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
                   exemplos, palavras_proibidas, despedida_personalizada,
                   regras_formatacao, regras_seguranca,
                   emoji_tipo, emoji_cor,
-                  tts_ativo, tts_voz
+                  tts_ativo, tts_voz,
+                  agendamento_experimental_ativo, agendamento_provider,
+                  agendamento_dias_a_frente, agendamento_id_branch,
+                  agendamento_id_activities, agendamento_id_service,
+                  agendamento_texto_oferta, agendamento_coletar_email
            FROM personalidade_ia
            WHERE empresa_id = $1
            LIMIT 1""",
@@ -386,7 +390,11 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       emoji_tipo, emoji_cor,
                       tts_ativo, tts_voz,
                       oferecer_tour, estrategia_tour,
-                      tour_perguntar_primeira_visita, tour_mensagem_custom
+                      tour_perguntar_primeira_visita, tour_mensagem_custom,
+                      agendamento_experimental_ativo, agendamento_provider,
+                      agendamento_dias_a_frente, agendamento_id_branch,
+                      agendamento_id_activities, agendamento_id_service,
+                      agendamento_texto_oferta, agendamento_coletar_email
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -409,7 +417,7 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     result = []
     for r in rows:
         d = dict(r)
-        for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
+        for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem", "agendamento_id_activities"):
             if isinstance(d.get(json_field), str):
                 try:
                     d[json_field] = json.loads(d[json_field])
