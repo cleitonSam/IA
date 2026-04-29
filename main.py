@@ -4650,12 +4650,37 @@ async def processar_ia_e_responder(
         if not mensagens_acumuladas:
             return
 
-        # 🕒 Horário: apenas informativo — a IA NUNCA é bloqueada por horário.
-        # O horário já foi carregado antes do fluxo. Aqui só logamos se estamos fora.
-        if not _db_esta_no_horario:
+        # 🕒 [HORARIO-IA] Se IA tem horario configurado E esta FORA, BLOQUEIA resposta.
+        # Caso de uso: Fluxo de Triagem trata 8-17h, IA so opera 17-00h.
+        # Antes esse check era só informativo (IA respondia 24h). Agora respeita.
+        # Se nao tem horario configurado (None), IA responde sempre (default).
+        _ia_tem_horario_configurado = bool(_horario_config)  # dict ou string
+        if _ia_tem_horario_configurado and not _db_esta_no_horario:
+            # Tenta enviar mensagem custom de fora de horario (so 1x por conv/hora)
+            _msg_fora = (_pers_horario.get("mensagem_fora_horario") or "").strip()
+            _ja_avisado_key = f"ia_fora_horario_avisado:{empresa_id}:{conversation_id}"
+            _ja_avisado = await redis_client.get(_ja_avisado_key)
+            if _msg_fora and not _ja_avisado:
+                try:
+                    await enviar_mensagem_chatwoot(
+                        account_id, conversation_id, _msg_fora,
+                        _pers_horario.get("nome_ia") or "Atendente",
+                        integracao_chatwoot, empresa_id,
+                    )
+                    await redis_client.setex(_ja_avisado_key, 3600, "1")
+                except Exception as _ef:
+                    logger.debug(f"[HORARIO-IA] erro avisar: {_ef}")
             logger.info(
-                f"🕒 [Bot Core Monolith] IA fora do horário de atendimento para empresa {empresa_id}, "
-                f"conv {conversation_id} — IA continua respondendo normalmente (horário é apenas informativo)"
+                f"🕒 [HORARIO-IA] IA FORA do horario configurado pra empresa {empresa_id} "
+                f"conv {conversation_id} — IA NAO responde (horario respeitado). "
+                f"Config={_horario_config!r}"
+            )
+            return  # SAI sem responder
+        elif not _db_esta_no_horario:
+            # Sem horario configurado mas DB diz "fora" — apenas loga, segue
+            logger.info(
+                f"🕒 [Bot Core Monolith] IA sem horario configurado, _db_esta_no_horario=False — "
+                f"continua respondendo (horario nao definido = sempre disponivel)"
             )
 
         anexos = await processar_anexos_mensagens(mensagens_acumuladas)
