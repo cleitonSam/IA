@@ -3336,7 +3336,11 @@ async def finalizar_ab_test(
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PlanoCreate(BaseModel):
-    nome: str
+    """[SANITIZE-01] Modelo a prova de balas — aceita qualquer payload do frontend.
+    Ignora campos extras (id, unidade_nome, created_at, id_externo etc) que vem do GET."""
+    model_config = {"extra": "ignore"}  # ignora campos desconhecidos sem 422
+
+    nome: Optional[str] = ""  # tolera nome vazio (frontend ja valida)
     valor: Optional[float] = None
     valor_promocional: Optional[float] = None
     meses_promocionais: Optional[int] = None
@@ -3344,8 +3348,8 @@ class PlanoCreate(BaseModel):
     diferenciais: Optional[str] = None  # texto livre separado por vírgula
     link_venda: Optional[str] = None
     unidade_id: Optional[int] = None
-    ativo: bool = True
-    ordem: int = 0
+    ativo: Optional[bool] = True
+    ordem: Optional[int] = 0
     # [PRIORIDADE-01] Quanto mais alto, mais a IA puxa esse plano (0-10)
     prioridade: Optional[int] = 5
     motivo_prioridade: Optional[str] = None
@@ -3368,7 +3372,10 @@ class PlanoCreate(BaseModel):
         if v is None or v == "" or (isinstance(v, str) and not v.strip()):
             return None
         try:
-            return int(v) if not isinstance(v, int) else v
+            # aceita float "5.0" -> 5
+            if isinstance(v, str):
+                return int(float(v))
+            return int(v)
         except (TypeError, ValueError):
             return None
 
@@ -3377,12 +3384,36 @@ class PlanoCreate(BaseModel):
     def _clamp_prioridade(cls, v):
         if v is None:
             return 5
-        return max(0, min(10, int(v)))
+        try:
+            return max(0, min(10, int(v)))
+        except (TypeError, ValueError):
+            return 5
 
     @field_validator("ordem", mode="after")
     @classmethod
     def _ordem_default(cls, v):
-        return int(v) if v is not None else 0
+        try:
+            return int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    @field_validator("ativo", mode="before")
+    @classmethod
+    def _ativo_default(cls, v):
+        # Aceita None, "", null -> True (default)
+        if v is None or v == "":
+            return True
+        # Aceita "true"/"false" string
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "sim")
+        return bool(v)
+
+    @field_validator("nome", "descricao", "diferenciais", "link_venda", "motivo_prioridade", mode="before")
+    @classmethod
+    def _str_or_empty(cls, v):
+        if v is None:
+            return None
+        return str(v).strip() if not isinstance(v, str) else v.strip()
 
 
 @router.get("/planos")
