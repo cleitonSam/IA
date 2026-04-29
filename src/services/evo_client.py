@@ -334,6 +334,176 @@ async def _cache_set_json(key: str, value: Any, ttl: int) -> None:
         pass
 
 
+async def _carregar_integracao_franqueada(empresa_id: int, unidade_id: int) -> Optional[Dict[str, Any]]:
+    """[FRANQUEADA] Carrega credencial EVO escopada SOMENTE pra consulta de membros.
+    Prefere tipo='evo_franqueada' da unidade; se nao houver, faz fallback pra tipo='evo' da unidade.
+    Esta cred NAO e usada por workers/agendamento — so por verificar_membro_evo.
+    """
+    try:
+        import src.core.database as _database
+        if not _database.db_pool:
+            return None
+        # 1) Preferencia: cred franqueada especifica da unidade
+        row = await _database.db_pool.fetchrow(
+            """SELECT config FROM integracoes
+               WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id = $2 AND ativo = true
+               ORDER BY id DESC LIMIT 1""",
+            empresa_id, unidade_id,
+        )
+        if row and row["config"]:
+            cfg = row["config"]
+            if isinstance(cfg, str):
+                cfg = _json.loads(cfg)
+            return cfg
+        # 2) Fallback: cred geral 'evo' da unidade (quando matriz e franqueada compartilham)
+        row2 = await _database.db_pool.fetchrow(
+            """SELECT config FROM integracoes
+               WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2 AND ativo = true
+               ORDER BY id DESC LIMIT 1""",
+            empresa_id, unidade_id,
+        )
+        if row2 and row2["config"]:
+            cfg = row2["config"]
+            if isinstance(cfg, str):
+                cfg = _json.loads(cfg)
+            return cfg
+    except Exception as e:
+        logger.warning(f"[FRANQUEADA] erro carregar cred unidade={unidade_id}: {e}")
+    return None
+
+
+def _normalizar_telefone(t: str) -> str:
+    """Tira tudo que nao e digito. EVO aceita com ou sem DDI; mantem so digitos.
+    Ex: '+55 (11) 97680-4555' -> '5511976804555'."""
+    import re as _re
+    return _re.sub(r"\D", "", str(t or ""))
+
+
+async def verificar_membro_evo(
+    empresa_id: int,
+    telefone: str,
+    unidade_id: int,
+) -> Dict[str, Any]:
+    """[FRANQUEADA] Consulta GET /members?phone=X na credencial da unidade.
+    Retorna dict estruturado:
+      {
+        "encontrado": bool,
+        "id_membro": int|None,
+        "nome": str|None,
+        "ativo": bool|None,         # situacao do aluno (True = ativo, False = bloqueado/cancelado)
+        "telefone_normalizado": str,
+        "raw_status": int,           # http status da EVO
+        "erro": str|None,            # mensagem se algo falhou
+      }
+    Cache curto (5min) em Redis pra evitar martelar a EVO em rajada de webhooks.
+    """
+    fone_norm = _normalizar_telefone(telefone)
+    if not fone_norm or len(fone_norm) < 8:
+        return {"encontrado": False, "erro": "telefone_invalido", "telefone_normalizado": fone_norm}
+
+    # Tira DDI Brasil pra busca (EVO costuma cadastrar so DDD+numero)
+    fone_busca = fone_norm
+    if fone_busca.startswith("55") and len(fone_busca) > 11:
+        fone_busca = fone_busca[2:]
+
+    cache_key = f"evo:membro:{empresa_id}:{unidade_id}:{fone_busca}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    integracao = await _carregar_integracao_franqueada(empresa_id, unidade_id)
+    if not integracao:
+        out = {
+            "encontrado": False,
+            "erro": "integracao_franqueada_nao_configurada",
+            "telefone_normalizado": fone_norm,
+        }
+        await _cache_set_json(cache_key, out, 60)
+        return out
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return {
+            "encontrado": False,
+            "erro": "credenciais_incompletas",
+            "telefone_normalizado": fone_norm,
+        }
+
+    url = (
+        f"{_evo_api_base(integracao)}/members?phone={fone_busca}"
+        "&take=10&skip=0&onlyPersonal=false"
+        "&showActivityData=false&showMemberships=true&showsResponsibles=false"
+    )
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:membro:{empresa_id}:u{unidade_id}")
+    if resp is None:
+        return {
+            "encontrado": False,
+            "erro": "evo_sem_resposta",
+            "telefone_normalizado": fone_norm,
+        }
+
+    if resp.status_code == 401:
+        return {
+            "encontrado": False,
+            "erro": "credencial_invalida",
+            "raw_status": 401,
+            "telefone_normalizado": fone_norm,
+        }
+    if resp.status_code != 200:
+        return {
+            "encontrado": False,
+            "erro": f"http_{resp.status_code}",
+            "raw_status": resp.status_code,
+            "telefone_normalizado": fone_norm,
+        }
+
+    try:
+        data = resp.json() or []
+    except Exception:
+        data = []
+
+    items = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else []) or []
+    if not items:
+        out = {
+            "encontrado": False,
+            "raw_status": 200,
+            "telefone_normalizado": fone_norm,
+        }
+        await _cache_set_json(cache_key, out, 300)  # nao-encontrado: cache 5min
+        return out
+
+    # Pega o primeiro membro (telefone unico na maioria dos casos)
+    m = items[0] if isinstance(items[0], dict) else {}
+    # Campos comuns na resposta da EVO v2
+    id_membro = m.get("idMember") or m.get("id") or m.get("idClient")
+    nome = m.get("firstName") or m.get("name") or m.get("nameMember") or m.get("fullName")
+    if isinstance(nome, str):
+        nome = nome.strip() or None
+    # Situacao: campos possiveis "active" / "membershipStatus" / "status"
+    ativo_raw = m.get("active")
+    if ativo_raw is None:
+        # tenta inferir por memberships ativas
+        memberships = m.get("memberships") or []
+        if isinstance(memberships, list) and memberships:
+            ativo_raw = any(
+                str(mb.get("status") or mb.get("active") or "").lower() in ("active", "true", "ativo", "1")
+                for mb in memberships if isinstance(mb, dict)
+            )
+        else:
+            ativo_raw = True  # cadastrado mas sem dado de status -> assume ativo
+
+    out = {
+        "encontrado": True,
+        "id_membro": id_membro,
+        "nome": nome,
+        "ativo": bool(ativo_raw),
+        "raw_status": 200,
+        "telefone_normalizado": fone_norm,
+    }
+    await _cache_set_json(cache_key, out, 86400)  # encontrado: cache 24h
+    return out
+
+
 async def _carregar_qualquer_integracao_evo(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Pra DISCOVERY (branches/services/activities): tenta unidade_id especifico,
     depois global, depois QUALQUER integracao EVO ativa da empresa.

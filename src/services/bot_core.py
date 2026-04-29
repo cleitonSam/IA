@@ -1195,6 +1195,54 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
+        # ── [FRANQUEADA] Verifica se contato é aluno desta unidade e aplica etiqueta no Chatwoot ──
+        # Roda 1x por contato (cache 24h). Fire-and-forget: não bloqueia resposta.
+        try:
+            _u_id_franq = unidade.get("id") if unidade else None
+            if (
+                _u_id_franq
+                and contact_id
+                and contato_fone
+                and source == "chatwoot"
+            ):
+                _flag_key = f"aluno_check:{empresa_id}:{contact_id}:{_u_id_franq}"
+                _ja_checou = await redis_client.get(_flag_key)
+                if not _ja_checou:
+                    async def _check_e_aplicar_label():
+                        try:
+                            from src.services.evo_client import verificar_membro_evo
+                            from src.services.chatwoot_client import aplicar_label_contato_chatwoot
+                            from src.services.db_queries import carregar_integracao as _ci
+                            res_membro = await verificar_membro_evo(
+                                empresa_id, contato_fone, _u_id_franq
+                            )
+                            logger.info(
+                                f"[FRANQUEADA] check membro empresa={empresa_id} unid={_u_id_franq} "
+                                f"contato={contact_id}: {res_membro.get('encontrado')} "
+                                f"erro={res_membro.get('erro')}"
+                            )
+                            if res_membro.get("encontrado") and res_membro.get("ativo"):
+                                # Slug da unidade vira parte da label: aluno-{slug}
+                                _slug_unid = (slug or unidade.get("slug") or unidade.get("nome") or "").strip().lower()
+                                # Sanitiza pra slug Chatwoot (alfanum + dash)
+                                import re as _re_lab
+                                _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid).strip("-") or "geral"
+                                _label = f"aluno-{_slug_unid}"
+                                _integ_cw_lab = await _ci(empresa_id, 'chatwoot')
+                                if _integ_cw_lab:
+                                    await aplicar_label_contato_chatwoot(
+                                        account_id, contact_id, _label, _integ_cw_lab,
+                                        grupo_prefix="aluno-",
+                                    )
+                            # Cache flag (positivo ou negativo) por 24h
+                            await redis_client.setex(_flag_key, 86400, "1")
+                        except Exception as _e_franq:
+                            logger.debug(f"[FRANQUEADA] check falhou: {_e_franq}")
+                    # fire-and-forget — nao bloqueia resposta
+                    asyncio.create_task(_check_e_aplicar_label())
+        except Exception as _e_outer_franq:
+            logger.debug(f"[FRANQUEADA] outer guard falhou: {_e_outer_franq}")
+
         # ── DETECÇÃO DE NOME DO CLIENTE ──────────────────────────────
         # IA pergunta o nome na conversa. Quando o cliente responde,
         # detectamos aqui e salvamos no Redis + Chatwoot.
@@ -1537,8 +1585,44 @@ Convênios: {convenios_prompt}
                         continue
                     _extras_prompt += f"\n\n[{label}]\n{valor}"
          
+            # ── [STATUS DO CONTATO] Le labels do Chatwoot pra saber se cliente e aluno ──
+            _status_contato_bloco = ""
+            try:
+                if source == "chatwoot" and contact_id and account_id:
+                    from src.services.chatwoot_client import listar_labels_contato_chatwoot
+                    from src.services.db_queries import carregar_integracao as _ci_lbl
+                    _integ_cw_lbl = await _ci_lbl(empresa_id, 'chatwoot')
+                    if _integ_cw_lbl:
+                        _labels = await listar_labels_contato_chatwoot(
+                            account_id, contact_id, _integ_cw_lbl
+                        )
+                        _aluno_labels = [l for l in (_labels or []) if str(l).lower().startswith("aluno-")]
+                        if _aluno_labels:
+                            # Extrai a unidade do slug: aluno-saude -> saude
+                            _unid_aluno = _aluno_labels[0][len("aluno-"):].replace("-", " ").title()
+                            _status_contato_bloco = (
+                                f"[STATUS DO CONTATO]\n"
+                                f"- Este cliente JA E ALUNO ATIVO da unidade {_unid_aluno}.\n"
+                                f"- NAO ofereca aula experimental — ele ja treina aqui.\n"
+                                f"- NAO peca pra escolher unidade — use a unidade que ele ja frequenta.\n"
+                                f"- Cumprimente como amigo/aluno (ex: 'Oi! Bom te ver de novo!').\n"
+                                f"- Foque em ajudar com duvidas de aluno: faltas, treino, horarios, "
+                                f"renovacao de plano, segunda via de boleto. NAO empurre matricula."
+                            )
+                        else:
+                            _status_contato_bloco = (
+                                f"[STATUS DO CONTATO]\n"
+                                f"- Este contato NAO consta como aluno em nenhuma unidade.\n"
+                                f"- Trate como prospect: descubra interesse, ofereca aula experimental, "
+                                f"apresente planos."
+                            )
+            except Exception as _e_lbl:
+                logger.debug(f"[STATUS CONTATO] falhou ao ler labels: {_e_lbl}")
+
             # --- CONSTRUÇÃO MODULAR DO PROMPT ---
             blocos_prompt = []
+            if _status_contato_bloco:
+                blocos_prompt.append(_status_contato_bloco)
 
             # [FIX-K] CONTEXTO TEMPORAL — SEMPRE no topo. LLM e PESSIMO em calendar.
             # Agora calculamos hoje/amanha/proximos 7 dias em PT-BR no servidor e injetamos.

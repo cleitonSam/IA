@@ -51,6 +51,117 @@ def suavizar_personalizacao_nome(content: str, nome: Optional[str]) -> str:
     return txt.strip()
 
 
+def _chatwoot_url_token(integracao: dict):
+    """Extrai (url_base, token) do dict de integracao Chatwoot — suporta legado aninhado."""
+    if not isinstance(integracao, dict):
+        return None, None
+    nested = integracao.get('token') if isinstance(integracao.get('token'), dict) else None
+    if nested:
+        url_base = integracao.get('url') or nested.get('url')
+        token = nested.get('access_token') or nested.get('token')
+    else:
+        url_base = integracao.get('url') or integracao.get('base_url')
+        token = integracao.get('access_token') or integracao.get('token')
+    if isinstance(token, dict):
+        token = token.get('access_token') or token.get('token')
+    return (str(url_base).rstrip('/') if url_base else None, str(token) if token else None)
+
+
+async def listar_labels_contato_chatwoot(account_id: int, contact_id: int, integracao: dict) -> list:
+    """Retorna a lista de label slugs aplicadas ao CONTATO no Chatwoot.
+    Cache curto (60s) pra reduzir round-trips quando o bot consulta repetidamente."""
+    if not contact_id or not account_id:
+        return []
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return []
+    try:
+        from src.core.redis_client import redis_client as _rc
+        _ck = f"cw:labels:contact:{account_id}:{contact_id}"
+        _cached = await _rc.get(_ck)
+        if _cached:
+            try:
+                import json as _j
+                return _j.loads(_cached)
+            except Exception:
+                pass
+    except Exception:
+        _rc = None
+        _ck = None
+
+    headers = {"api_access_token": str(token)}
+    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}/labels"
+    try:
+        resp = await http_client.get(url, headers=headers, timeout=10.0)
+        if resp.status_code != 200:
+            return []
+        data = resp.json() or {}
+        # Chatwoot retorna {payload: ["aluno-saude", ...]} ou {data: {payload: [...]}}
+        payload = data.get("payload") if isinstance(data, dict) else None
+        if payload is None and isinstance(data.get("data"), dict):
+            payload = data["data"].get("payload")
+        labels = payload if isinstance(payload, list) else []
+        if _rc and _ck:
+            try:
+                import json as _j
+                await _rc.setex(_ck, 60, _j.dumps(labels))
+            except Exception:
+                pass
+        return labels
+    except Exception as e:
+        logger.warning(f"[CW labels] erro listar contato {contact_id}: {e}")
+        return []
+
+
+async def aplicar_label_contato_chatwoot(
+    account_id: int, contact_id: int, label_slug: str, integracao: dict,
+    grupo_prefix: str = "aluno-",
+) -> bool:
+    """Adiciona uma label ao contato no Chatwoot (idempotente).
+    O endpoint POST /contacts/{id}/labels SUBSTITUI a lista — entao buscamos primeiro
+    a lista atual, juntamos com a nova, e mandamos o conjunto completo.
+    Se grupo_prefix passado, REMOVE labels antigas que comecam com esse prefixo
+    (ex: cliente mudou de unidade -> remove aluno-saude antiga, aplica aluno-altino)."""
+    if not contact_id or not account_id or not label_slug:
+        return False
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return False
+
+    label_slug = str(label_slug).strip().lower()
+    if not label_slug:
+        return False
+
+    atuais = await listar_labels_contato_chatwoot(account_id, contact_id, integracao)
+    # Remove qualquer label do mesmo grupo (ex: aluno-*) — substitui pela nova
+    if grupo_prefix:
+        atuais = [l for l in atuais if not str(l).lower().startswith(grupo_prefix.lower())]
+    if label_slug in atuais:
+        # Ja tinha exatamente esta — nada a fazer (e nao removemos do mesmo grupo)
+        # Reaplica pra ter certeza
+        pass
+    novas = list(atuais) + [label_slug]
+
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}/labels"
+    try:
+        resp = await http_client.post(url, json={"labels": novas}, headers=headers, timeout=10.0)
+        if 200 <= resp.status_code < 300:
+            # Invalida cache de labels
+            try:
+                from src.core.redis_client import redis_client as _rc
+                await _rc.delete(f"cw:labels:contact:{account_id}:{contact_id}")
+            except Exception:
+                pass
+            logger.info(f"[CW labels] '{label_slug}' aplicada contato={contact_id} acc={account_id}")
+            return True
+        logger.warning(f"[CW labels] HTTP {resp.status_code} aplicar {label_slug}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[CW labels] erro aplicar {label_slug} contato {contact_id}: {e}")
+        return False
+
+
 async def atualizar_nome_contato_chatwoot(account_id: int, contact_id: int, nome: str, integracao: dict) -> bool:
     """Atualiza nome do contato no Chatwoot quando o nome válido é identificado."""
     if not contact_id or not nome_eh_valido(nome):

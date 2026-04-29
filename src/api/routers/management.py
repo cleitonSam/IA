@@ -1969,6 +1969,122 @@ async def update_evo_unit(
     return {"status": "success"}
 
 
+# ────────── EVO FRANQUEADA (consulta de aluno por telefone — escopo restrito) ──────────
+
+@router.get("/integrations/evo-franqueada/units")
+async def get_evo_franqueada_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
+    """Lista todas as unidades + config 'evo_franqueada' (cred SOMENTE pra consulta de aluno)."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    units = await _database.db_pool.fetch(
+        "SELECT id, nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
+        empresa_id
+    )
+    configs = await _database.db_pool.fetch(
+        "SELECT unidade_id, config, ativo FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id IS NOT NULL",
+        empresa_id
+    )
+    config_map = {}
+    for r in configs:
+        c = r["config"]
+        if isinstance(c, str):
+            try: c = json.loads(c)
+            except Exception: c = {}
+        config_map[str(r["unidade_id"])] = {"config": c, "ativo": r["ativo"]}
+
+    result = []
+    for u in units:
+        entry = config_map.get(str(u["id"]))
+        result.append({
+            "unidade_id": u["id"],
+            "unidade_nome": u["nome"],
+            "config": entry["config"] if entry else {"dns": "", "secret_key": ""},
+            "ativo": entry["ativo"] if entry else False,
+            "configurado": bool(entry and entry["config"].get("dns") and entry["config"].get("secret_key")),
+        })
+    return result
+
+
+@router.put("/integrations/evo-franqueada/unit/{unidade_id}")
+async def update_evo_franqueada_unit(
+    unidade_id: int,
+    body: IntegrationUpdate,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Salva a credencial 'evo_franqueada' de uma unidade.
+    Esta cred so e usada pra GET /members?phone=X — nao roda sync, agendar, discovery."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    # Garantia multi-tenant: unidade tem que pertencer a esta empresa
+    own = await _database.db_pool.fetchval(
+        "SELECT 1 FROM unidades WHERE id = $1 AND empresa_id = $2",
+        unidade_id, empresa_id
+    )
+    if not own:
+        raise HTTPException(status_code=403, detail="Unidade não pertence a esta empresa")
+
+    # Sanitiza config — guarda apenas dns + secret_key (escopo restrito)
+    safe_config = {
+        "dns": (body.config.get("dns") or "").strip(),
+        "secret_key": (body.config.get("secret_key") or "").strip(),
+        "api_url": body.config.get("api_url") or "https://evo-integracao-api.w12app.com.br/api/v2",
+    }
+    config_json = json.dumps(safe_config)
+
+    existing = await _database.db_pool.fetchval(
+        "SELECT id FROM integracoes WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id = $2",
+        empresa_id, unidade_id
+    )
+    if existing:
+        await _database.db_pool.execute(
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
+            config_json, body.ativo, existing
+        )
+    else:
+        await _database.db_pool.execute(
+            "INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at) VALUES ($1, 'evo_franqueada', $2::jsonb, $3, $4, NOW())",
+            empresa_id, config_json, body.ativo, unidade_id
+        )
+
+    # Invalida cache de membro consulta
+    try:
+        for k in await redis_client.keys(f"evo:membro:{empresa_id}:{unidade_id}:*"):
+            await redis_client.delete(k)
+    except Exception:
+        pass
+
+    return {"status": "success"}
+
+
+@router.get("/evo/verificar-membro")
+async def evo_verificar_membro_endpoint(
+    telefone: str,
+    unidade_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Endpoint de TESTE — chama verificar_membro_evo e retorna o dict.
+    Use pra validar a cred franqueada antes de plugar no fluxo do bot.
+    Ex: GET /management/evo/verificar-membro?telefone=11976804555&unidade_id=24"""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    # Garantia multi-tenant
+    own = await _database.db_pool.fetchval(
+        "SELECT 1 FROM unidades WHERE id = $1 AND empresa_id = $2",
+        unidade_id, empresa_id
+    )
+    if not own:
+        raise HTTPException(status_code=403, detail="Unidade não pertence a esta empresa")
+
+    from src.services.evo_client import verificar_membro_evo
+    return await verificar_membro_evo(empresa_id, telefone, unidade_id)
+
+
 @router.put("/integrations/{tipo}")
 async def update_integration(
     tipo: str,
