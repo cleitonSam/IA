@@ -113,6 +113,54 @@ async def listar_labels_contato_chatwoot(account_id: int, contact_id: int, integ
         return []
 
 
+async def garantir_label_existe_chatwoot(
+    account_id: int, label_slug: str, integracao: dict,
+    color: str = "#10b981", description: str = "",
+) -> bool:
+    """Cria a label no Chatwoot se ainda não existir (idempotente).
+    Necessario porque algumas versoes do Chatwoot nao auto-criam labels via /contacts/{id}/labels."""
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token or not account_id or not label_slug:
+        return False
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    label_slug = str(label_slug).strip().lower()
+
+    # Lista existentes
+    try:
+        resp_list = await http_client.get(
+            f"{url_base}/api/v1/accounts/{account_id}/labels",
+            headers={"api_access_token": str(token)},
+            timeout=10.0,
+        )
+        if resp_list.status_code == 200:
+            data = resp_list.json() or {}
+            payload = data.get("payload") if isinstance(data, dict) else None
+            if payload is None and isinstance(data.get("data"), dict):
+                payload = data["data"].get("payload")
+            existentes = {str(l.get("title", "")).lower() for l in (payload or []) if isinstance(l, dict)}
+            if label_slug in existentes:
+                return True  # ja existe
+    except Exception as e:
+        logger.debug(f"[CW labels] erro listar pra garantir: {e}")
+
+    # Cria
+    try:
+        resp = await http_client.post(
+            f"{url_base}/api/v1/accounts/{account_id}/labels",
+            json={"title": label_slug, "color": color, "description": description, "show_on_sidebar": True},
+            headers=headers,
+            timeout=10.0,
+        )
+        if 200 <= resp.status_code < 300:
+            logger.info(f"[CW labels] label '{label_slug}' criada (HTTP {resp.status_code})")
+            return True
+        logger.warning(f"[CW labels] erro criar label '{label_slug}': HTTP {resp.status_code} {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[CW labels] excecao criar label '{label_slug}': {e}")
+        return False
+
+
 async def aplicar_label_contato_chatwoot(
     account_id: int, contact_id: int, label_slug: str, integracao: dict,
     grupo_prefix: str = "aluno-",
@@ -121,7 +169,8 @@ async def aplicar_label_contato_chatwoot(
     O endpoint POST /contacts/{id}/labels SUBSTITUI a lista — entao buscamos primeiro
     a lista atual, juntamos com a nova, e mandamos o conjunto completo.
     Se grupo_prefix passado, REMOVE labels antigas que comecam com esse prefixo
-    (ex: cliente mudou de unidade -> remove aluno-saude antiga, aplica aluno-altino)."""
+    (ex: cliente mudou de unidade -> remove aluno-saude antiga, aplica aluno-altino).
+    [BLINDADO] Garante que a label EXISTE na conta antes de aplicar."""
     if not contact_id or not account_id or not label_slug:
         return False
     url_base, token = _chatwoot_url_token(integracao)
@@ -131,6 +180,10 @@ async def aplicar_label_contato_chatwoot(
     label_slug = str(label_slug).strip().lower()
     if not label_slug:
         return False
+
+    # [BLINDAGEM] Garante que a label existe na conta — algumas versoes do Chatwoot
+    # nao auto-criam quando aplicadas via POST /contacts/{id}/labels.
+    await garantir_label_existe_chatwoot(account_id, label_slug, integracao)
 
     atuais = await listar_labels_contato_chatwoot(account_id, contact_id, integracao)
     # Remove qualquer label do mesmo grupo (ex: aluno-*) — substitui pela nova
