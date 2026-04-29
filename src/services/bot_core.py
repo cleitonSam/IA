@@ -1204,9 +1204,14 @@ async def processar_ia_e_responder(
         # Roda 1x por contato (cache 24h). Fire-and-forget: não bloqueia resposta.
         try:
             _u_id_franq = unidade.get("id") if unidade else None
+            logger.info(
+                f"[FRANQUEADA-HOOK] entry empresa={empresa_id} conv={conversation_id} "
+                f"contact_id={contact_id} fone={contato_fone!r} source={source} unid_id={_u_id_franq}"
+            )
             if contact_id and contato_fone and source == "chatwoot":
                 _flag_key = f"aluno_check:{empresa_id}:{contact_id}"
                 _ja_checou = await redis_client.get(_flag_key)
+                logger.info(f"[FRANQUEADA-HOOK] flag_key={_flag_key} ja_checou={_ja_checou!r}")
                 if not _ja_checou:
                     async def _check_e_aplicar_label():
                         try:
@@ -1225,10 +1230,13 @@ async def processar_ia_e_responder(
                                 f"erro={res_membro.get('erro')}"
                             )
 
-                            if not (res_membro.get("encontrado") and res_membro.get("ativo")):
-                                # Cache negativo + sai
+                            if not res_membro.get("encontrado"):
+                                # Nao consta na EVO — cache negativo + sai (sem label)
                                 await redis_client.setex(_flag_key, 86400, "0")
                                 return
+                            # [AJUSTE] Se 'encontrado' mas 'ativo=false' (sem mensalidade ativa,
+                            # ou status nao retornado pelo EVO), AINDA aplica label de aluno —
+                            # historicamente e aluno. IA pode ler o status separado se precisar.
 
                             _integ_cw_lab = await _ci(empresa_id, 'chatwoot')
                             if not _integ_cw_lab:
@@ -1301,8 +1309,15 @@ async def processar_ia_e_responder(
                             logger.debug(f"[FRANQUEADA] check falhou: {_e_franq}")
                     # fire-and-forget — nao bloqueia resposta
                     asyncio.create_task(_check_e_aplicar_label())
+                else:
+                    logger.info(f"[FRANQUEADA-HOOK] SKIP — ja checou (flag={_ja_checou!r})")
+            else:
+                logger.info(
+                    f"[FRANQUEADA-HOOK] SKIP — falta dado: "
+                    f"contact_id={bool(contact_id)} fone={bool(contato_fone)} chatwoot={source == 'chatwoot'}"
+                )
         except Exception as _e_outer_franq:
-            logger.debug(f"[FRANQUEADA] outer guard falhou: {_e_outer_franq}")
+            logger.warning(f"[FRANQUEADA] outer guard falhou: {_e_outer_franq}")
 
         # ── DETECÇÃO DE NOME DO CLIENTE ──────────────────────────────
         # IA pergunta o nome na conversa. Quando o cliente responde,

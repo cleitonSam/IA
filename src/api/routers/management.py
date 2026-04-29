@@ -2046,6 +2046,30 @@ async def update_evo_franqueada_global(
     return {"status": "success"}
 
 
+@router.post("/evo/flush-aluno-cache")
+async def evo_flush_aluno_cache(token_payload: dict = Depends(get_current_user_token)):
+    """Limpa TODOS caches relacionados a verificacao de aluno (membro EVO + flag de check).
+    Use apos mudar a logica de status ou quando quer forcar re-consulta na proxima mensagem."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    deletadas = 0
+    try:
+        for k in await redis_client.keys(f"evo:membro:{empresa_id}:*"):
+            await redis_client.delete(k)
+            deletadas += 1
+        for k in await redis_client.keys(f"aluno_check:{empresa_id}:*"):
+            await redis_client.delete(k)
+            deletadas += 1
+        # Tambem limpa cache de labels do contato (Chatwoot)
+        for k in await redis_client.keys(f"cw:labels:contact:*"):
+            await redis_client.delete(k)
+            deletadas += 1
+    except Exception as e:
+        return {"status": "erro", "detalhe": str(e), "deletadas": deletadas}
+    return {"status": "ok", "deletadas": deletadas, "empresa_id": empresa_id}
+
+
 @router.get("/evo/verificar-membro-global")
 async def evo_verificar_membro_global_endpoint(
     telefone: str,
