@@ -333,9 +333,10 @@ async def update_personality(
             empresa_id
         )
 
-    # Invalida caches para forçar releitura imediata no bot e no webhook
-    await redis_client.delete(f"cfg:menu_triagem:{empresa_id}")
-    await redis_client.delete(f"cfg:pers:empresa:{empresa_id}")
+    # [CACHE-FIX] invalidate_personalidade cobre TUDO: pers + menu_triagem
+    # com wildcard :u:* (per-unit) + fluxo_triagem + global + reset de fluxos
+    # em andamento. Antes faltavam wildcards e fluxo_triagem ficava stale.
+    await invalidate_personalidade(empresa_id)
 
     # Sincroniza flag Redis de pausa com o campo ativo da personalidade
     if "ativo" in update_data:

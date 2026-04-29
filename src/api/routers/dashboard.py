@@ -789,8 +789,9 @@ async def criar_unidade(
             json.dumps(_norm_jsonb(body.palavras_chave, [])),
             body.foto_grade, body.link_tour_virtual
         )
-        from src.core.redis_client import redis_client
-        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
+        # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada
+        from src.services.cache_invalidation import invalidate_unidades
+        await invalidate_unidades(empresa_id)
         logger.info(f"✅ Unidade '{body.nome}' criada (id={row['id']}, empresa_id={empresa_id})")
         return {"id": row["id"], "slug": slug, "nome": body.nome, "empresa_id": empresa_id}
     except Exception as e:
@@ -1032,14 +1033,10 @@ async def atualizar_unidade(
             body.foto_grade, body.link_tour_virtual,
             unidade_id, empresa_id
         )
-        from src.core.redis_client import redis_client
-        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
-        # Limpa cache individual da unidade (usado pelo carregar_unidade do bot)
-        _slug_updated = body.nome.lower().replace(" ", "-") if body.nome else None
-        # Busca slug real do banco para garantir
-        _row_slug = await _database.db_pool.fetchval("SELECT slug FROM unidades WHERE id = $1", unidade_id)
-        if _row_slug:
-            await redis_client.delete(f"cfg:unidade:{empresa_id}:{_row_slug}:v2")
+        # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada (que pode
+        # virar stale se nome/slug muda — antes faltava)
+        from src.services.cache_invalidation import invalidate_unidades
+        await invalidate_unidades(empresa_id)
         return {"status": "success", "message": "Unidade atualizada"}
     except Exception as e:
         logger.error(f"Erro ao atualizar unidade: {e}")
@@ -1069,8 +1066,9 @@ async def excluir_unidade(
             "UPDATE unidades SET ativa = false, updated_at = NOW() WHERE id = $1 AND empresa_id = $2",
             unidade_id, empresa_id
         )
-        from src.core.redis_client import redis_client
-        await redis_client.delete(f"cfg:unidades:lista:empresa:{empresa_id}")
+        # [CACHE-FIX] invalidate_unidades cobre lista + por slug + FAQ
+        from src.services.cache_invalidation import invalidate_unidades
+        await invalidate_unidades(empresa_id)
         return {"status": "success", "message": "Unidade desativada"}
     except Exception as e:
         logger.error(f"Erro ao excluir unidade: {e}")
