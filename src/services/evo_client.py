@@ -829,6 +829,34 @@ async def agendar_aula_experimental_evo(
         except Exception as _ec:
             logger.debug(f"[FIX-B] re-check vaga falhou (seguindo): {_ec}")
 
+    # [FIX-G] Traduz id_activity por NOME no branch alvo.
+    # Cada filial tem ids LOCAIS — id_activity vindo de outra filial nao serve.
+    # Faz GET /activities com a credencial DESTA filial, acha pelo nome, usa id local.
+    id_activity_local = None
+    if activity_name:
+        try:
+            from src.utils.text_helpers import normalizar
+            _act_url = f"{_evo_api_base(integracao)}/activities"
+            _act_resp = await _evo_request(
+                "GET", _act_url, headers,
+                log_tag=f"EVO:act-translate:{empresa_id}:br:{branch}",
+            )
+            if _act_resp is not None and _act_resp.status_code == 200:
+                _acts = _act_resp.json() or []
+                _alvo = normalizar(str(activity_name)).strip(" .")
+                for _a in (_acts if isinstance(_acts, list) else []):
+                    _nome_a = normalizar(str(_a.get("name") or _a.get("nameActivity") or "")).strip(" .")
+                    if _nome_a == _alvo or (_nome_a and _alvo and (_alvo in _nome_a or _nome_a in _alvo)):
+                        id_activity_local = _a.get("idActivity") or _a.get("id")
+                        if id_activity_local:
+                            logger.info(
+                                f"[FIX-G] traduzido id_activity '{activity_name}' "
+                                f"→ {id_activity_local} (branch={branch}, era {id_activity})"
+                            )
+                            break
+        except Exception as _et:
+            logger.debug(f"[FIX-G] traducao falhou (seguindo): {_et}")
+
     url = f"{_evo_api_base(integracao)}/activities/schedule/experimental-class"
     params = {
         "idProspect": str(id_prospect),
@@ -838,8 +866,10 @@ async def agendar_aula_experimental_evo(
         "activityExist": "true",
         "idBranch": str(branch),
     }
-    if id_activity:
-        params["idActivity"] = str(id_activity)
+    # Prefere id traduzido pra esta filial; só usa o original se traducao falhou
+    _id_act_final = id_activity_local or id_activity
+    if _id_act_final:
+        params["idActivity"] = str(_id_act_final)
     if id_service:
         params["idService"] = str(id_service)
 
@@ -858,8 +888,42 @@ async def agendar_aula_experimental_evo(
         if isinstance(body, dict):
             msgs = body.get("mensagens") or []
             data = body
+        elif isinstance(body, list):
+            # EVO pode retornar lista de erros direto
+            data = {"errors": body}
     except Exception:
         msgs = [resp.text[:300]] if resp.text else []
+
+    # [FIX-G] Defesa: se 400 "Atividade nao encontrada", tenta SEM idActivity
+    # (deixa EVO resolver pelo nome via activityExist=true).
+    _texto_erro = ""
+    try:
+        _texto_erro = (resp.text or "").lower()
+    except Exception:
+        pass
+    if (
+        resp.status_code == 400
+        and ("atividade" in _texto_erro and ("nao encontrada" in _texto_erro or "não encontrada" in _texto_erro))
+        and "idActivity" in params
+    ):
+        logger.info(f"[FIX-G] retry sem idActivity (EVO recusou {params.get('idActivity')} no branch {branch})")
+        params.pop("idActivity", None)
+        resp2 = await _evo_request(
+            "POST", url, headers,
+            params=params,
+            log_tag=f"EVO:agendar-retry:{empresa_id}",
+        )
+        if resp2 is not None:
+            resp = resp2
+            msgs = []
+            data = None
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    msgs = body.get("mensagens") or []
+                    data = body
+            except Exception:
+                msgs = [resp.text[:300]] if resp.text else []
 
     if 200 <= resp.status_code < 300:
         # Invalida cache de horarios — vaga foi consumida
