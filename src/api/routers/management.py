@@ -405,19 +405,57 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     return result
 
 
+def _exemplos_para_jsonb(valor):
+    """Converte 'exemplos' do payload em JSON valido pro asyncpg mandar como jsonb.
+    A coluna no BD e jsonb e nao aceita string crua (string vazia da
+    'invalid input syntax for type json'). Aceita None/'', dict/list, ou
+    string livre (que vira ['texto'])."""
+    if valor is None:
+        return None
+    if isinstance(valor, str):
+        v = valor.strip()
+        if not v:
+            return None
+        try:
+            json.loads(v)
+            return v
+        except (json.JSONDecodeError, ValueError):
+            return json.dumps([valor])
+    if isinstance(valor, (list, dict)):
+        return json.dumps(valor)
+    return json.dumps(str(valor))
+
+
 @router.post("/personalities", status_code=201)
 async def create_personality(
     data: PersonalityCreate,
     token_payload: dict = Depends(get_current_user_token)
 ):
-    """Cria uma nova personalidade para a empresa."""
+    """Cria uma nova personalidade para a empresa.
+
+    Como existe constraint UNIQUE(empresa_id), so pode haver UMA personalidade
+    por empresa. Se ja existir, este POST redireciona para UPDATE da existente
+    (semantica de UPSERT) - o frontend nao precisa saber se e o primeiro save
+    ou edicao.
+    """
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    # UPSERT: se ja existe personalidade pra empresa, faz UPDATE
+    existing_id = await _database.db_pool.fetchval(
+        "SELECT id FROM personalidade_ia WHERE empresa_id = $1 LIMIT 1",
+        empresa_id
+    )
+    if existing_id:
+        logger.info(f"[UPSERT] Personalidade ja existe para empresa {empresa_id}, redirecionando para UPDATE id={existing_id}")
+        return await update_personality_by_id(existing_id, data, token_payload)
+
     try:
         horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
         horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
         menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
+        exemplos_json = _exemplos_para_jsonb(data.exemplos)
         row = await _database.db_pool.fetchrow(
             """INSERT INTO personalidade_ia
                (empresa_id, nome_ia, personalidade, instrucoes_base, tom_voz,
@@ -433,7 +471,7 @@ async def create_personality(
                 tts_ativo, tts_voz,
                 oferecer_tour,
                 created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW(),NOW())
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW(),NOW())
                RETURNING id""",
             empresa_id, data.nome_ia, data.personalidade, data.instrucoes_base,
             data.tom_voz, data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
@@ -442,7 +480,7 @@ async def create_personality(
             data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
             data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
             data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
-            data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
+            exemplos_json, data.palavras_proibidas, data.despedida_personalizada,
             data.regras_formatacao, data.regras_seguranca,
             data.emoji_tipo, data.emoji_cor,
             data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
@@ -496,6 +534,7 @@ async def update_personality_by_id(
     horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
     horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
     menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
+    exemplos_json = _exemplos_para_jsonb(data.exemplos)
     logger.info(f"💾 [Save Personalidade] pid={pid} empresa={empresa_id} | horario_atendimento_ia={horario_json}")
     _base_params = [
         data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
@@ -505,7 +544,7 @@ async def update_personality_by_id(
         data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
         data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
         data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
-        data.exemplos, data.palavras_proibidas, data.despedida_personalizada,
+        exemplos_json, data.palavras_proibidas, data.despedida_personalizada,
         data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
         data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
         data.oferecer_tour if data.oferecer_tour is not None else True,
@@ -520,7 +559,7 @@ async def update_personality_by_id(
                    scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
                    posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
                    contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
-                   exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
+                   exemplos=$27::jsonb, palavras_proibidas=$28, despedida_personalizada=$29,
                    regras_formatacao=$30, regras_seguranca=$31,
                    emoji_tipo=$32, emoji_cor=$33,
                    tts_ativo=$34, tts_voz=$35,
@@ -558,7 +597,7 @@ async def update_personality_by_id(
                        scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
                        posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
                        contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
-                       exemplos=$27, palavras_proibidas=$28, despedida_personalizada=$29,
+                       exemplos=$27::jsonb, palavras_proibidas=$28, despedida_personalizada=$29,
                        regras_formatacao=$30, regras_seguranca=$31,
                        emoji_tipo=$32, emoji_cor=$33,
                        tts_ativo=$34, tts_voz=$35,
