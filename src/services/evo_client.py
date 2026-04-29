@@ -258,45 +258,156 @@ async def _cache_set_json(key: str, value: Any, ttl: int) -> None:
         pass
 
 
+async def _carregar_qualquer_integracao_evo(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Pra DISCOVERY (branches/services/activities): tenta unidade_id especifico,
+    depois global, depois QUALQUER integracao EVO ativa da empresa.
+    Discovery retorna meta-info da academia que e igual entre unidades, entao
+    pegar credencial de qualquer unidade resolve quando nao ha integracao global."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if integracao:
+        return integracao
+
+    # Fallback: pega a primeira integracao ativa da empresa, ignorando unidade_id
+    try:
+        import src.core.database as _database
+        if not _database.db_pool:
+            return None
+        row = await _database.db_pool.fetchrow(
+            """SELECT config FROM integracoes
+               WHERE empresa_id = $1 AND tipo = 'evo' AND ativo = true
+               ORDER BY id DESC LIMIT 1""",
+            empresa_id,
+        )
+        if row and row["config"]:
+            cfg = row["config"]
+            if isinstance(cfg, str):
+                cfg = _json.loads(cfg)
+            logger.info(f"[EVO discovery] empresa={empresa_id} usando integracao fallback (qualquer unidade)")
+            return cfg
+    except Exception as e:
+        logger.warning(f"[EVO discovery] fallback falhou: {e}")
+    return None
+
+
 # ────────── DISCOVERY (branches / services / activities) ──────────
 
 async def listar_branches_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Lista filiais (branches) da academia. Para popular dropdown na UI.
-    Cache 10min — raramente muda. Retorna [{id, name, ...}] ou [] em erro."""
-    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
-    if not integracao:
-        return []
-    cache_key = f"evo:branches:{empresa_id}:{unidade_id or 'def'}"
+    """Lista TODAS as filiais EVO da empresa.
+    Cada credencial EVO geralmente representa UMA filial (multi-instance).
+    Itera por todas integracoes EVO ativas da empresa, deriva o idBranch
+    de cada uma via /activities (que sempre tem idBranch).
+    Retorna lista [{id, name, unidade_id}] — unidade_id ajuda a mapear no dashboard.
+    Cache 10min."""
+    cache_key = f"evo:branches:{empresa_id}:all"
     cached = await _cache_get_json(cache_key)
     if cached is not None:
         return cached
 
-    headers = await _get_evo_headers(integracao)
-    if not headers:
-        return []
-    url = f"{_evo_api_base(integracao)}/branches"
-    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:branches:{empresa_id}")
-    if resp is None or resp.status_code != 200:
-        return []
+    # Busca TODAS integracoes EVO ativas da empresa
     try:
-        data = resp.json() or []
-        normalizado = []
-        for b in data if isinstance(data, list) else []:
-            normalizado.append({
-                "id": b.get("idBranch") or b.get("id"),
-                "name": b.get("name") or b.get("nameBranch") or "Filial",
-            })
-        await _cache_set_json(cache_key, normalizado, _CACHE_DISCOVERY)
-        return normalizado
+        import src.core.database as _database
+        if not _database.db_pool:
+            return []
+        rows = await _database.db_pool.fetch(
+            """SELECT id, unidade_id, config FROM integracoes
+               WHERE empresa_id = $1 AND tipo = 'evo' AND ativo = true
+               ORDER BY id""",
+            empresa_id,
+        )
     except Exception as e:
-        logger.warning(f"⚠️ EVO branches parse: {e}")
+        logger.warning(f"[EVO branches] erro ao listar integracoes: {e}")
         return []
 
+    if not rows:
+        return []
+
+    # Coleta nomes das unidades (fallback de nome quando EVO nao expoe nome)
+    unidade_names: Dict[int, str] = {}
+    try:
+        urows = await _database.db_pool.fetch(
+            "SELECT id, nome FROM unidades WHERE empresa_id = $1",
+            empresa_id,
+        )
+        unidade_names = {u["id"]: u["nome"] for u in urows}
+    except Exception:
+        pass
+
+    normalizado: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    for row in rows:
+        cfg = row["config"]
+        if isinstance(cfg, str):
+            try:
+                cfg = _json.loads(cfg)
+            except Exception:
+                continue
+
+        unidade_id_db = row["unidade_id"]
+        headers = await _get_evo_headers(cfg)
+        if not headers:
+            continue
+
+        api_base = _evo_api_base(cfg)
+
+        # 1. Tenta /branches direto
+        bid: Optional[int] = None
+        nome_branch: Optional[str] = None
+        resp = await _evo_request("GET", f"{api_base}/branches", headers, log_tag=f"EVO:br:{row['id']}")
+        if resp is not None and resp.status_code == 200:
+            try:
+                data = resp.json() or []
+                if isinstance(data, list) and data:
+                    bid = data[0].get("idBranch") or data[0].get("id")
+                    nome_branch = data[0].get("name") or data[0].get("nameBranch")
+            except Exception:
+                pass
+
+        # 2. Fallback: deriva do /activities
+        if bid is None:
+            r = await _evo_request("GET", f"{api_base}/activities", headers, log_tag=f"EVO:der:{row['id']}")
+            if r is not None and r.status_code == 200:
+                try:
+                    items = r.json() or []
+                    for it in items if isinstance(items, list) else []:
+                        if it.get("idBranch") is not None:
+                            bid = int(it["idBranch"])
+                            nome_branch = it.get("nameBranch") or it.get("branchName")
+                            break
+                except Exception:
+                    pass
+
+        # 3. Fallback: usa idBranch do config se preenchido
+        if bid is None:
+            cfg_bid = cfg.get("idBranch")
+            if cfg_bid not in (None, ""):
+                try:
+                    bid = int(cfg_bid)
+                except Exception:
+                    pass
+
+        if bid is None or bid in seen_ids:
+            continue
+        seen_ids.add(bid)
+
+        # Nome amigavel: prefere o do EVO, depois o nome da unidade do nosso BD
+        nome_final = nome_branch or unidade_names.get(unidade_id_db) or f"Filial {bid}"
+
+        normalizado.append({
+            "id": bid,
+            "name": nome_final,
+            "unidade_id": unidade_id_db,  # ajuda a mapear unidade dashboard -> filial EVO
+        })
+
+    normalizado.sort(key=lambda x: x["id"])
+    await _cache_set_json(cache_key, normalizado, _CACHE_DISCOVERY)
+    logger.info(f"[EVO branches] empresa={empresa_id}: {len(normalizado)} filiais descobertas: {[b['id'] for b in normalizado]}")
+    return normalizado
 
 async def listar_services_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Lista servicos (planos/aulas) da academia.
     Util pra descobrir o idService da 'Aula Experimental'. Cache 10min."""
-    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    integracao = await _carregar_qualquer_integracao_evo(empresa_id, unidade_id)
     if not integracao:
         return []
     cache_key = f"evo:services:{empresa_id}:{unidade_id or 'def'}"
@@ -330,7 +441,7 @@ async def listar_services_evo(empresa_id: int, unidade_id: Optional[int] = None)
 async def listar_activities_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Lista atividades (modalidades) da academia.
     Pra whitelist de quais aulas a IA pode oferecer. Cache 10min."""
-    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    integracao = await _carregar_qualquer_integracao_evo(empresa_id, unidade_id)
     if not integracao:
         return []
     cache_key = f"evo:activities:{empresa_id}:{unidade_id or 'def'}"
