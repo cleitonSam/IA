@@ -256,6 +256,10 @@ async def instagram_receive(
                         menu_key = legacy_key
 
                 if menu_already_sent:
+                    logger.info(
+                        f"[MKT-05] Menu IG já enviado nas últimas {MENU_INACTIVITY_TTL}s — "
+                        f"renovando TTL e seguindo IA. sender={sender} key={menu_key}"
+                    )
                     await redis_client.expire(menu_key, MENU_INACTIVITY_TTL)
                 else:
                     try:
@@ -270,11 +274,36 @@ async def instagram_receive(
                                 )
                                 continue  # nao enfileira — menu ja respondeu
                             else:
-                                logger.warning(f"[MKT-05] Falha enviar menu IG sender={sender} — seguindo IA")
+                                # Falha ao enviar menu — NÃO segue pra IA. Sem isso, a IA
+                                # respondia "Boa tarde..." por cima do menu que deveria
+                                # aparecer, gerando UX confusa (sintoma do print do dia 29/04).
+                                logger.warning(
+                                    f"[MKT-05] Falha enviar menu IG sender={sender} — "
+                                    f"DESCARTANDO msg pra evitar IA responder no lugar do menu. "
+                                    f"Próxima msg do cliente vai tentar enviar o menu de novo."
+                                )
+                                continue  # nao enfileira — evita IA cobrir falha do menu
+                        else:
+                            logger.info(
+                                f"[MKT-05] Menu IG inativo/sem config — seguindo IA. "
+                                f"empresa={empresa_id} unidade={unidade_id}"
+                            )
                     except Exception as _me:
-                        logger.error(f"[MKT-05] Erro menu IG: {_me}")
+                        logger.error(f"[MKT-05] Erro menu IG: {_me} — seguindo IA")
 
             # ── Fim Menu/Fluxo — segue pipeline normal da IA ──
+
+            # Reaproveita nome real do BD se a conversa já existir, senão string
+            # vazia. NUNCA usar "Cliente Instagram" hardcoded — isso ativava o
+            # estado `aguardando_nome` no bot_core e refazia o fluxo de boas-vindas
+            # mesmo em conversas em andamento.
+            _nome_para_payload = ""
+            if conversa_existente:
+                _bd_nome = (conversa_existente.get("contato_nome") or "").strip()
+                if _bd_nome and _bd_nome.lower() not in (
+                    "cliente", "cliente instagram", "contato", "visitante", "lead", "user"
+                ):
+                    _nome_para_payload = _bd_nome
 
             job_data = {
                 "source": "instagram",
@@ -282,7 +311,7 @@ async def instagram_receive(
                 "unidade_id": str(unidade_id),
                 "phone": phone_key,
                 "content": content,
-                "nome_cliente": "Cliente Instagram",
+                "nome_cliente": _nome_para_payload,
                 "msg_id": str(msg_mid or ""),
                 "instance": str(recipient or ""),
                 "has_audio": "1" if has_audio else "",

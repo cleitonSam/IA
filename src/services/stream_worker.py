@@ -148,14 +148,20 @@ async def _process_job(msg_id: str, payload: dict):
             empresa_id = int(payload.get("empresa_id") or 0)
             logger.info(f"📥 Job recebido no Worker: empresa={empresa_id} source={source} msg_id={msg_id}")
 
-            if source == "uazapi":
+            if source in ("uazapi", "instagram"):
+                # Instagram usa phone_key = "ig:{sender_id}" como identificador,
+                # então o mesmo lookup por fone funciona — preserva nome real
+                # do BD em vez de re-aceitar fallback genérico do payload.
                 phone = payload.get("phone")
                 conversa = await buscar_conversa_por_fone(phone, empresa_id)
                 if not conversa:
                     temp_conv_id = int(time.time()) * -1
+                    # Não persiste nome vazio/fallback — deixa NULL pra IA preencher
+                    # quando o cliente realmente informar (regra do prompt).
+                    _payload_nome = (payload.get("nome_cliente") or "").strip() or None
                     await bd_iniciar_conversa(
-                        temp_conv_id, "uazapi", 0,
-                        contato_nome=payload.get("nome_cliente"),
+                        temp_conv_id, source, 0,
+                        contato_nome=_payload_nome,
                         empresa_id=empresa_id,
                         contato_fone=phone
                     )
@@ -163,11 +169,17 @@ async def _process_job(msg_id: str, payload: dict):
 
                 contato_fone = phone
 
-                account_id = conversa.get("account_id", 0)
-                conversation_id = conversa.get("conversation_id")
-                contact_id = conversa.get("contato_id")
-                slug = conversa.get("unidade_slug") or "uazapi"
-                nome_cliente = conversa.get("contato_nome")
+                account_id = conversa.get("account_id", 0) if conversa else 0
+                conversation_id = conversa.get("conversation_id") if conversa else 0
+                contact_id = conversa.get("contato_id") if conversa else None
+                slug = (conversa.get("unidade_slug") if conversa else None) or source
+                # Prioriza nome do BD; se não houver, usa o do payload (que pra
+                # Instagram agora vem vazio quando não há conversa anterior).
+                nome_cliente = (
+                    (conversa.get("contato_nome") if conversa else None)
+                    or (payload.get("nome_cliente") or "").strip()
+                    or None
+                )
             else:
                 # Fluxo Chatwoot clássico
                 account_id = int(payload.get("account_id") or 0)
