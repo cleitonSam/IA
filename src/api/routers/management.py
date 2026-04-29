@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, field_validator
 import src.core.database as _database
 from src.core.security import get_current_user_token
 from src.core.config import logger
@@ -3349,6 +3349,40 @@ class PlanoCreate(BaseModel):
     # [PRIORIDADE-01] Quanto mais alto, mais a IA puxa esse plano (0-10)
     prioridade: Optional[int] = 5
     motivo_prioridade: Optional[str] = None
+
+    # [SANITIZE-01] String vazia "" → None pra campos numericos opcionais
+    # (frontend manda "" quando user limpa o input em vez de null)
+    @field_validator("valor", "valor_promocional", mode="before")
+    @classmethod
+    def _empty_str_to_none_float(cls, v):
+        if v is None or v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            return float(v) if not isinstance(v, float) else v
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("meses_promocionais", "unidade_id", "ordem", "prioridade", mode="before")
+    @classmethod
+    def _empty_str_to_none_int(cls, v):
+        if v is None or v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            return int(v) if not isinstance(v, int) else v
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("prioridade", mode="after")
+    @classmethod
+    def _clamp_prioridade(cls, v):
+        if v is None:
+            return 5
+        return max(0, min(10, int(v)))
+
+    @field_validator("ordem", mode="after")
+    @classmethod
+    def _ordem_default(cls, v):
+        return int(v) if v is not None else 0
 
 
 @router.get("/planos")
