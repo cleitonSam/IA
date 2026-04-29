@@ -97,8 +97,10 @@ def detectar_tool_call(texto_resposta: str) -> Optional[Dict[str, Any]]:
 
 def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
     """Reduz a lista de horarios pra um formato que a IA consome bem
-    (max N itens, com numero pro cliente escolher)."""
-    selecao = horarios[:max_itens]
+    (max N itens, com numero pro cliente escolher).
+    [FIX] Filtra fora itens sem idActivitySession (EVO as vezes retorna null)."""
+    horarios_validos = [h for h in horarios if h.get("idActivitySession")]
+    selecao = horarios_validos[:max_itens]
     return {
         "total_disponiveis": len(horarios),
         "mostrando": len(selecao),
@@ -333,6 +335,27 @@ async def executar_tool(
                     id_activity = h.get("id_activity")
                     activity_name = h.get("nome_aula")
                     activity_date = h.get("data")  # formato "yyyy-MM-dd HH:mm"
+                    # [FIX] Se item escolhido nao tem id_session valido, IA escolheu errado
+                    if not id_session:
+                        return {
+                            "ok": False,
+                            "erro": "item_sem_id_session",
+                            "instrucao_ia": (
+                                f"A opcao numero {numero_escolha} nao pode ser agendada "
+                                "(sessao indisponivel na EVO). Sugira ao cliente uma das "
+                                "opcoes anteriores que voce ja mostrou (numeros validos)."
+                            ),
+                        }
+                else:
+                    return {
+                        "ok": False,
+                        "erro": "numero_fora_range",
+                        "instrucao_ia": (
+                            f"O numero {numero_escolha} nao corresponde a nenhuma das "
+                            f"{len(oferecidos)} opcoes mostradas. Confirme com o cliente "
+                            "qual horario ele quer (1 a {len(oferecidos)})."
+                        ),
+                    }
             except (ValueError, TypeError):
                 pass
 
