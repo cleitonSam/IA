@@ -4680,10 +4680,15 @@ async def processar_ia_e_responder(
             contato_fone = _contato_fone_local
             source = "chatwoot"  # este monolith e Chatwoot por design
             if contact_id and contato_fone and source == "chatwoot":
+                # [FIX] Cache flag removido — o hook agora roda SEMPRE (e idempotente):
+                #   - EVO tem cache proprio (5min/24h dependendo do resultado)
+                #   - Update de nome no Chatwoot e idempotente (so muda se diferente)
+                #   - Apply label so adiciona se nao tiver ja
+                # Isso garante que mudancas no codigo (nome formato, slug fix) re-aplicam
+                # sem precisar flush manual de cache.
                 _flag_key = f"aluno_check:{empresa_id}:{contact_id}"
-                _ja_checou = await redis_client.get(_flag_key)
-                logger.info(f"[FRANQUEADA-HOOK] flag_key={_flag_key} ja_checou={_ja_checou!r}")
-                if not _ja_checou:
+                logger.info(f"[FRANQUEADA-HOOK] rodando (cache flag desabilitado, sempre executa)")
+                if True:  # mantém indentação do bloco existente
                     async def _check_e_aplicar_label():
                         try:
                             from src.services.evo_client import verificar_membro_evo
@@ -4834,8 +4839,6 @@ async def processar_ia_e_responder(
                         except Exception as _e_franq:
                             logger.warning(f"[FRANQUEADA] check falhou: {_e_franq}", exc_info=True)
                     asyncio.create_task(_check_e_aplicar_label())
-                else:
-                    logger.info(f"[FRANQUEADA-HOOK] SKIP — ja checou (flag={_ja_checou!r})")
             else:
                 logger.info(
                     f"[FRANQUEADA-HOOK] SKIP — falta dado: "

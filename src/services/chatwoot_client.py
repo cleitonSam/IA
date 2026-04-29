@@ -185,6 +185,14 @@ async def aplicar_label_contato_chatwoot(
     # nao auto-criam quando aplicadas via POST /contacts/{id}/labels.
     await garantir_label_existe_chatwoot(account_id, label_slug, integracao)
 
+    # Cast pra int (Chatwoot reclama se vier string em alguns endpoints)
+    try:
+        account_id = int(account_id)
+        contact_id = int(contact_id)
+    except (TypeError, ValueError) as e:
+        logger.warning(f"[CW labels] ids invalidos: account={account_id!r} contact={contact_id!r} ({e})")
+        return False
+
     atuais = await listar_labels_contato_chatwoot(account_id, contact_id, integracao)
     # Remove qualquer label do mesmo grupo (ex: aluno-*) — substitui pela nova
     if grupo_prefix:
