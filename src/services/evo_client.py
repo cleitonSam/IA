@@ -1140,10 +1140,13 @@ async def listar_horarios_disponiveis_evo(
     from datetime import datetime as _dt
     _agora = _dt.now()
     normalizado = []
+    # [DEBUG] contador de descartes pra diagnosticar "nunca tem horario"
+    _desc = {"sem_vaga": 0, "passado": 0, "janela_fechada": 0, "ok": 0}
     for s in todas:
         cap = int(s.get("capacity") or 0)
         ocu = int(s.get("ocupation") or 0)
         if cap <= 0 or (cap - ocu) <= 0:
+            _desc["sem_vaga"] += 1
             continue
         # [FIX-D] descarta aulas no passado
         try:
@@ -1152,6 +1155,7 @@ async def listar_horarios_disponiveis_evo(
             if _adate and len(_adate) >= 10 and _stime:
                 _aula_dt = _dt.fromisoformat(f"{_adate} {_stime}:00")
                 if _aula_dt < _agora:
+                    _desc["passado"] += 1
                     continue
         except Exception:
             pass
@@ -1160,9 +1164,11 @@ async def listar_horarios_disponiveis_evo(
         # range a EVO recusa com "Horário da atividade excluído").
         _bs_dt, _be_dt = _calc_janela_booking(s)
         if _be_dt and _be_dt < _agora:
+            _desc["janela_fechada"] += 1
             continue  # janela ja fechou
         # NAO filtra se janela ainda nao abriu — preferimos mostrar e o agendar_aula
         # da mensagem clara "abre em XYZ" se cliente tentar antes da hora.
+        _desc["ok"] += 1
         normalizado.append({
             "idActivitySession": s.get("idAtividadeSessao") or s.get("idActivitySession"),
             "idActivity": s.get("idActivity"),
@@ -1181,11 +1187,23 @@ async def listar_horarios_disponiveis_evo(
     # Ordena por activityDate + startTime
     normalizado.sort(key=lambda x: (x.get("activityDate") or "", x.get("startTime") or ""))
 
+    # [DEBUG] log dos descartes pra debug "nunca tem horario"
+    logger.info(
+        f"[EVO horarios] empresa={empresa_id} branch={branch} dias={dias_a_frente} "
+        f"total_evo={len(todas)} | OK={_desc['ok']} | sem_vaga={_desc['sem_vaga']} "
+        f"passado={_desc['passado']} janela_fechada={_desc['janela_fechada']}"
+    )
+
     await _cache_set_json(cache_key, normalizado, _CACHE_HORARIOS)
 
     # Aplica filtro pelo helper unificado (mesma logica do cache hit)
     if filtro_id_activities:
+        _antes_filtro = len(normalizado)
         normalizado = await _aplicar_filtro_atividades(empresa_id, normalizado, list(filtro_id_activities))
+        logger.info(
+            f"[EVO horarios] filtro_id_activities={filtro_id_activities} "
+            f"-> de {_antes_filtro} restaram {len(normalizado)}"
+        )
 
     return normalizado
 

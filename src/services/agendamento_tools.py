@@ -339,6 +339,11 @@ async def executar_tool(
         # Usa idBranch da unidade resolvida (ou fallback pro da personalidade)
         id_branch = unidade_resolvida.get("id_branch_evo") or pers.get("agendamento_id_branch")
 
+        logger.info(
+            f"[AGEND-DEBUG] consultar_horarios empresa={empresa_id} "
+            f"unidade={unidade_resolvida['nome']!r} (id={unidade_resolvida['id']}) "
+            f"branch={id_branch} dias={dias} filtro_activities={filtro}"
+        )
         horarios = await listar_horarios_disponiveis_evo(
             empresa_id=empresa_id,
             unidade_id=unidade_resolvida["id"],
@@ -346,6 +351,7 @@ async def executar_tool(
             id_branch=id_branch,
             filtro_id_activities=filtro,
         )
+        logger.info(f"[AGEND-DEBUG] horarios retornados pos-filtros: {len(horarios)}")
 
         # Salva no estado pra IA poder referenciar por numero depois
         formatado = _fmt_horarios_para_ia(horarios)
