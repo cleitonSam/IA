@@ -1085,13 +1085,43 @@ def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None,
     idioma = p.get("idioma") or "Português do Brasil"
     blocos: List[str] = []
 
+    # [FIX-K] CONTEXTO TEMPORAL — espelha bot_core. LLM e pessimo em calendar.
+    try:
+        from datetime import datetime as _dt_pg, timedelta as _td_pg
+        from zoneinfo import ZoneInfo as _ZI_pg
+        _DIAS_PT_PG = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+                       "sexta-feira", "sábado", "domingo"]
+        _MESES_PT_PG = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+        _agora_pg = _dt_pg.now(_ZI_pg("America/Sao_Paulo"))
+        _prox_pg = []
+        for _ip in range(7):
+            _dp = _agora_pg + _td_pg(days=_ip)
+            _lbp = "HOJE" if _ip == 0 else ("AMANHA" if _ip == 1 else f"+{_ip}d")
+            _prox_pg.append(
+                f"  {_lbp:6s} = {_DIAS_PT_PG[_dp.weekday()]}, {_dp.day:02d}/{_dp.month:02d}/{_dp.year}"
+            )
+        blocos.append(
+            "[CONTEXTO TEMPORAL — DADOS REAIS DO SERVIDOR]\n"
+            f"- Agora: {_DIAS_PT_PG[_agora_pg.weekday()]}, {_agora_pg.day} de {_MESES_PT_PG[_agora_pg.month-1]} de {_agora_pg.year}, "
+            f"{_agora_pg.hour:02d}h{_agora_pg.minute:02d} (horário de São Paulo).\n"
+            "- Próximos 7 dias (use SEMPRE estes valores, NUNCA calcule sozinho):\n"
+            + "\n".join(_prox_pg) + "\n"
+            "- Quando o cliente disser 'amanhã', 'segunda', 'sexta que vem' etc, "
+            "use a data REAL desta tabela. NUNCA invente dia da semana — você sempre erra. "
+            "Quando mostrar uma data ao cliente, use o formato 'sexta-feira, 1 de maio às 09h00'."
+        )
+    except Exception:
+        pass
+
     # 1. Regras gerais (linguagem + comportamento base)
     blocos.append(
         f"[REGRAS GERAIS]\n"
         f"- Idioma obrigatório: {idioma}.\n"
         f"- NUNCA use inglês ou outros idiomas a menos que o cliente use.\n"
         f"- NUNCA mostre tags internas, avisos de sistema ou colunas técnicas.\n"
-        f"- NUNCA se apresente como IA ou robô."
+        f"- NUNCA se apresente como IA ou robô.\n"
+        f"- DATA/HORA: use SEMPRE o bloco [CONTEXTO TEMPORAL] acima. NUNCA chute weekday."
     )
 
     # 2. Identidade

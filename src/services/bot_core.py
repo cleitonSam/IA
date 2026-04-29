@@ -1540,13 +1540,40 @@ Convênios: {convenios_prompt}
             # --- CONSTRUÇÃO MODULAR DO PROMPT ---
             blocos_prompt = []
 
+            # [FIX-K] CONTEXTO TEMPORAL — SEMPRE no topo. LLM e PESSIMO em calendar.
+            # Agora calculamos hoje/amanha/proximos 7 dias em PT-BR no servidor e injetamos.
+            _DIAS_PT_FK = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+                           "sexta-feira", "sábado", "domingo"]
+            _MESES_PT_FK = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+                            "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+            _agora_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
+            _proximos_7 = []
+            for _i in range(7):
+                _d = _agora_sp + timedelta(days=_i)
+                _label = "HOJE" if _i == 0 else ("AMANHA" if _i == 1 else f"+{_i}d")
+                _proximos_7.append(
+                    f"  {_label:6s} = {_DIAS_PT_FK[_d.weekday()]}, {_d.day:02d}/{_d.month:02d}/{_d.year}"
+                )
+            _bloco_temporal = (
+                "[CONTEXTO TEMPORAL — DADOS REAIS DO SERVIDOR]\n"
+                f"- Agora: {_DIAS_PT_FK[_agora_sp.weekday()]}, {_agora_sp.day} de {_MESES_PT_FK[_agora_sp.month-1]} de {_agora_sp.year}, "
+                f"{_agora_sp.hour:02d}h{_agora_sp.minute:02d} (horário de São Paulo).\n"
+                "- Próximos 7 dias (use SEMPRE estes valores, NUNCA calcule sozinho):\n"
+                + "\n".join(_proximos_7) + "\n"
+                "- Quando o cliente disser 'amanhã', 'segunda', 'sexta que vem' etc, "
+                "use a data REAL desta tabela. NUNCA invente dia da semana — você sempre erra. "
+                "Quando mostrar uma data ao cliente, use o formato 'sexta-feira, 1 de maio às 09h00'."
+            )
+            blocos_prompt.append(_bloco_temporal)
+
             # 1. Cabeçalho de Regras e Idioma
             t_idioma = pers.get('idioma') or 'Português do Brasil'
             blocos_prompt.append(f"""[REGRAS GERAIS]
 - Idioma obrigatório: {t_idioma}.
 - NUNCA use inglês ou outros idiomas.
 - NUNCA mostre tags internas, avisos de sistema ou colunas técnicas.
-- NUNCA se apresente como IA ou robô.""")
+- NUNCA se apresente como IA ou robô.
+- DATA/HORA: use SEMPRE o bloco [CONTEXTO TEMPORAL] acima. NUNCA chute weekday.""")
 
             # 2. Identidade
             blocos_prompt.append(f"""[IDENTIDADE]
