@@ -5393,6 +5393,15 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                 try:
                     from src.services.evo_client import listar_vouchers_evo
                     _vouchers = await listar_vouchers_evo(empresa_id, only_valid=True, take=20)
+                    # Filtra os DESATIVADOS LOCALMENTE pelo admin
+                    try:
+                        _disabled = await redis_client.smembers(f"voucher_disabled:{empresa_id}")
+                        _disabled_ids = {int(x) for x in (_disabled or []) if str(x).isdigit()}
+                        if _disabled_ids:
+                            _vouchers = [v for v in _vouchers if int(v.get("id") or 0) not in _disabled_ids]
+                            logger.info(f"[VOUCHERS] {len(_disabled_ids)} desativados localmente, restaram {len(_vouchers)} pro IA")
+                    except Exception as _evd:
+                        logger.debug(f"[VOUCHERS] erro filtrar desativados: {_evd}")
                     if _vouchers:
                         # Detecta se ja oferecemos voucher nesta conversa (cache 24h)
                         _v_flag = await redis_client.get(f"voucher_oferecido:{empresa_id}:{conversation_id}")

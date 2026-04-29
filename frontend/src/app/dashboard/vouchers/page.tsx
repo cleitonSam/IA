@@ -35,6 +35,7 @@ type Voucher = {
   planos_detalhe?: PlanoDetalhe[];
   planos_nomes?: string[];
   valido_para?: string;
+  ativo_local?: boolean;  // toggle local (independente do status EVO)
 };
 
 export default function VouchersPage() {
@@ -62,6 +63,22 @@ export default function VouchersPage() {
   };
 
   useEffect(() => { fetchVouchers(); }, [filtroStatus]);
+
+  const toggleAtivoLocal = async (v: Voucher) => {
+    const novoAtivo = !(v.ativo_local !== false); // default true
+    try {
+      await axios.put(
+        `/api-backend/management/franqueada/voucher/${v.id}/toggle?ativo=${novoAtivo}`,
+        {}, getToken()
+      );
+      // Atualiza localmente sem refetch
+      setVouchers(prev => prev.map(x =>
+        x.id === v.id ? { ...x, ativo_local: novoAtivo } : x
+      ));
+    } catch (e: any) {
+      alert("Erro ao alterar voucher: " + (e?.response?.data?.detail || "?"));
+    }
+  };
 
   const testarVoucher = async () => {
     if (!testModal.voucher || !testIdMembership) return;
@@ -203,7 +220,11 @@ export default function VouchersPage() {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: i * 0.03 }}
                     className={`bg-slate-900/50 border rounded-3xl overflow-hidden transition-all ${
-                      ativo ? "border-white/5 hover:border-purple-400/30" : "border-amber-400/10 opacity-70 hover:opacity-100"
+                      v.ativo_local === false
+                        ? "border-slate-700/50 opacity-50 hover:opacity-90"
+                        : ativo
+                          ? "border-white/5 hover:border-purple-400/30"
+                          : "border-amber-400/10 opacity-70 hover:opacity-100"
                     }`}
                   >
                     <div className="p-6">
@@ -220,15 +241,31 @@ export default function VouchersPage() {
                             <p className="text-[10px] text-slate-500 mt-0.5 uppercase tracking-widest">ID: {v.id} · {v.tipo}</p>
                           </div>
                         </div>
-                        {ativo ? (
-                          <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1.5 rounded-full">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Ativo
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1.5 rounded-full">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Inativo
-                          </span>
-                        )}
+                        <div className="flex flex-col items-end gap-1.5">
+                          {/* Status EVO (vencido/disponivel) */}
+                          {ativo ? (
+                            <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1 rounded-full">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Válido
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1 rounded-full">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Vencido
+                            </span>
+                          )}
+                          {/* Toggle ativo LOCAL (controle do admin) */}
+                          <button type="button" onClick={() => toggleAtivoLocal(v)}
+                            title={v.ativo_local !== false ? "Clique pra IA NÃO usar este voucher" : "Clique pra IA voltar a usar este voucher"}
+                            className={`flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border transition-all ${
+                              v.ativo_local !== false
+                                ? "text-purple-400 bg-purple-400/10 border-purple-400/20 hover:bg-purple-400/20"
+                                : "text-slate-500 bg-slate-700/40 border-slate-600/30 hover:bg-slate-700/60"
+                            }`}>
+                            <span className={`relative inline-flex h-3 w-5 items-center rounded-full transition-all ${v.ativo_local !== false ? "bg-purple-400" : "bg-slate-600"}`}>
+                              <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-all ${v.ativo_local !== false ? "translate-x-2.5" : "translate-x-0.5"}`} />
+                            </span>
+                            {v.ativo_local !== false ? "IA Usa" : "IA Ignora"}
+                          </button>
+                        </div>
                       </div>
 
                       {/* Desconto destaque */}

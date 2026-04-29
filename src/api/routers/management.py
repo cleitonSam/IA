@@ -2110,6 +2110,32 @@ async def delete_label_team_map(
     return {"status": "success"}
 
 
+@router.put("/franqueada/voucher/{id_voucher}/toggle")
+async def toggle_voucher_ativo(
+    id_voucher: int,
+    ativo: bool,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Liga/desliga um voucher LOCALMENTE (sem mexer na EVO).
+    Quando desativado, a IA NAO vai oferecer esse cupom mesmo se EVO disser que e valido.
+    Estado guardado em Redis SET 'voucher_disabled:{empresa_id}'."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    set_key = f"voucher_disabled:{empresa_id}"
+    if ativo:
+        await redis_client.srem(set_key, str(id_voucher))
+    else:
+        await redis_client.sadd(set_key, str(id_voucher))
+    # Invalida cache de vouchers pra IA pegar o novo estado
+    try:
+        for k in await redis_client.keys(f"evo:vouchers:{empresa_id}:*"):
+            await redis_client.delete(k)
+    except Exception:
+        pass
+    return {"status": "success", "id_voucher": id_voucher, "ativo_local": ativo}
+
+
 @router.get("/franqueada/vouchers")
 async def listar_vouchers_endpoint(
     only_valid: bool = True,
@@ -2125,6 +2151,16 @@ async def listar_vouchers_endpoint(
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     from src.services.evo_client import listar_vouchers_evo
     vouchers = await listar_vouchers_evo(empresa_id, only_valid=only_valid, take=take)
+
+    # [TOGGLE LOCAL] Marca vouchers desativados localmente
+    try:
+        _disabled_set = await redis_client.smembers(f"voucher_disabled:{empresa_id}")
+        _disabled_ids = {int(x) for x in (_disabled_set or []) if str(x).isdigit()}
+    except Exception:
+        _disabled_ids = set()
+    for v in vouchers:
+        v["ativo_local"] = int(v.get("id") or 0) not in _disabled_ids
+
     if enrich and vouchers:
         # Cruza com 2 fontes em paralelo:
         #  1) Planos LOCAIS (cadastrados no painel — tem unidade vinculada)
