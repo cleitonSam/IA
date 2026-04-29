@@ -111,7 +111,9 @@ def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
                 "id_activity": h.get("idActivity"),
                 "nome_aula": h.get("name"),
                 "instrutor": h.get("instructor"),
-                "data": h.get("activityDate"),
+                "data": h.get("activityDate"),  # ISO date (so YYYY-MM-DD)
+                "start_time": h.get("startTime"),  # "HH:MM" — usado para montar datetime
+                "end_time": h.get("endTime"),
                 "horario": f"{h.get('startTime', '')}-{h.get('endTime', '')}",
                 "vagas_livres": h.get("vagas"),
                 "area": h.get("area"),
@@ -334,7 +336,14 @@ async def executar_tool(
                     id_session = h.get("id_activity_session")
                     id_activity = h.get("id_activity")
                     activity_name = h.get("nome_aula")
-                    activity_date = h.get("data")  # formato "yyyy-MM-dd HH:mm"
+                    # [FIX-H] EVO precisa de "yyyy-MM-dd HH:mm" — combina data+start_time.
+                    # h["data"] vem como "2026-04-30T00:00:00"; h["start_time"] como "07:00".
+                    _data_iso = str(h.get("data") or "")[:10]  # "yyyy-MM-dd"
+                    _hora_aula = str(h.get("start_time") or "")[:5]  # "HH:MM"
+                    if _data_iso and _hora_aula:
+                        activity_date = f"{_data_iso} {_hora_aula}"
+                    else:
+                        activity_date = h.get("data")  # fallback (vai falhar mas log mostra)
                     # [FIX] Se item escolhido nao tem id_session valido, IA escolheu errado
                     if not id_session:
                         return {

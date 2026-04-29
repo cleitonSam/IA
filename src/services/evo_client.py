@@ -780,6 +780,22 @@ async def agendar_aula_experimental_evo(
     if not headers:
         return {"ok": False, "status": 0, "mensagens": ["Credenciais EVO ausentes"]}
 
+    # [FIX-H] Normaliza activity_date para "yyyy-MM-dd HH:mm" (EVO exige).
+    # Aceita: "yyyy-MM-dd HH:mm", "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddT00:00:00 + start_time?"
+    if activity_date:
+        _ad = str(activity_date).strip().replace("T", " ")
+        # corta segundos se vier "yyyy-MM-dd HH:mm:ss"
+        if len(_ad) >= 19 and _ad[16] == ":":
+            _ad = _ad[:16]
+        # se so veio data sem hora ("yyyy-MM-dd" ou "yyyy-MM-dd 00:00"), AVISA — EVO vai falhar
+        if len(_ad) == 10 or _ad.endswith(" 00:00"):
+            logger.warning(
+                f"⚠️ [FIX-H] activity_date sem hora real ({activity_date!r}) — "
+                f"EVO provavelmente vai retornar 'Atividade nao encontrada'. "
+                f"Caller deve combinar data+startTime antes de chamar."
+            )
+        activity_date = _ad
+
     # [FIX-B] re-check de vaga ANTES de agendar (anti-race com outros agendamentos)
     # E [FIX-E] valida janela de booking — se ainda nao abriu OU ja fechou,
     # retorna mensagem clara pra IA explicar ao cliente.
