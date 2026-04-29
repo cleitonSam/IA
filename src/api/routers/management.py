@@ -259,27 +259,55 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
     
-    row = await _database.db_pool.fetchrow(
-        """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
-                  modelo_preferido as model_name, temperatura as temperature, max_tokens,
-                  ativo, usar_emoji, horario_atendimento_ia, horario_comercial, menu_triagem,
-                  idioma, objetivos_venda, metas_comerciais, script_vendas,
-                  scripts_objecoes, frases_fechamento, diferenciais,
-                  posicionamento, publico_alvo, restricoes, linguagem_proibida,
-                  contexto_empresa, contexto_extra, abordagem_proativa,
-                  exemplos, palavras_proibidas, despedida_personalizada,
-                  regras_formatacao, regras_seguranca,
-                  emoji_tipo, emoji_cor,
-                  tts_ativo, tts_voz,
-                  agendamento_experimental_ativo, agendamento_provider,
-                  agendamento_dias_a_frente, agendamento_id_branch,
-                  agendamento_id_activities, agendamento_id_service,
-                  agendamento_texto_oferta, agendamento_coletar_email
-           FROM personalidade_ia
-           WHERE empresa_id = $1
-           LIMIT 1""",
-        empresa_id
-    )
+    # [AUDIT-FIX] Inclui cenarios, usar_vouchers, vouchers_estrategia (com fallback se migration nao aplicada)
+    try:
+        row = await _database.db_pool.fetchrow(
+            """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                      modelo_preferido as model_name, temperatura as temperature, max_tokens,
+                      ativo, usar_emoji, horario_atendimento_ia, horario_comercial, menu_triagem,
+                      idioma, objetivos_venda, metas_comerciais, script_vendas,
+                      scripts_objecoes, frases_fechamento, diferenciais,
+                      posicionamento, publico_alvo, restricoes, linguagem_proibida,
+                      contexto_empresa, contexto_extra, abordagem_proativa,
+                      exemplos, palavras_proibidas, despedida_personalizada,
+                      regras_formatacao, regras_seguranca,
+                      emoji_tipo, emoji_cor,
+                      tts_ativo, tts_voz,
+                      agendamento_experimental_ativo, agendamento_provider,
+                      agendamento_dias_a_frente, agendamento_id_branch,
+                      agendamento_id_activities, agendamento_id_service,
+                      agendamento_texto_oferta, agendamento_coletar_email,
+                      COALESCE(cenarios, '[]'::jsonb) AS cenarios,
+                      COALESCE(usar_vouchers, false) AS usar_vouchers,
+                      vouchers_estrategia
+               FROM personalidade_ia
+               WHERE empresa_id = $1
+               LIMIT 1""",
+            empresa_id
+        )
+    except Exception as _e:
+        logger.warning(f"[GET /personality] Fallback (migration cenarios/vouchers pendente?): {_e}")
+        row = await _database.db_pool.fetchrow(
+            """SELECT id, nome_ia, personalidade, instrucoes_base, tom_voz,
+                      modelo_preferido as model_name, temperatura as temperature, max_tokens,
+                      ativo, usar_emoji, horario_atendimento_ia, horario_comercial, menu_triagem,
+                      idioma, objetivos_venda, metas_comerciais, script_vendas,
+                      scripts_objecoes, frases_fechamento, diferenciais,
+                      posicionamento, publico_alvo, restricoes, linguagem_proibida,
+                      contexto_empresa, contexto_extra, abordagem_proativa,
+                      exemplos, palavras_proibidas, despedida_personalizada,
+                      regras_formatacao, regras_seguranca,
+                      emoji_tipo, emoji_cor,
+                      tts_ativo, tts_voz,
+                      agendamento_experimental_ativo, agendamento_provider,
+                      agendamento_dias_a_frente, agendamento_id_branch,
+                      agendamento_id_activities, agendamento_id_service,
+                      agendamento_texto_oferta, agendamento_coletar_email
+               FROM personalidade_ia
+               WHERE empresa_id = $1
+               LIMIT 1""",
+            empresa_id
+        )
     if not row:
         # Retorna um objeto vazio mas estruturado se não existir
         return {
@@ -300,12 +328,15 @@ async def get_personality(token_payload: dict = Depends(get_current_user_token))
         }
     result = dict(row)
     # Deserializar campos JSONB que asyncpg pode retornar como string
-    for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
+    for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem", "cenarios", "agendamento_id_activities"):
         if isinstance(result.get(json_field), str):
             try:
                 result[json_field] = json.loads(result[json_field])
             except (json.JSONDecodeError, ValueError):
-                result[json_field] = None
+                result[json_field] = [] if json_field == "cenarios" else None
+    # Garante que cenarios seja sempre lista (nunca None) pro frontend nao quebrar
+    if result.get("cenarios") is None:
+        result["cenarios"] = []
     return result
 
 @router.post("/personality")
@@ -404,7 +435,10 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
                       agendamento_experimental_ativo, agendamento_provider,
                       agendamento_dias_a_frente, agendamento_id_branch,
                       agendamento_id_activities, agendamento_id_service,
-                      agendamento_texto_oferta, agendamento_coletar_email
+                      agendamento_texto_oferta, agendamento_coletar_email,
+                      COALESCE(cenarios, '[]'::jsonb) AS cenarios,
+                      COALESCE(usar_vouchers, false) AS usar_vouchers,
+                      vouchers_estrategia
                FROM personalidade_ia
                WHERE empresa_id = $1
                ORDER BY ativo DESC, id DESC""",
@@ -427,12 +461,14 @@ async def list_personalities(token_payload: dict = Depends(get_current_user_toke
     result = []
     for r in rows:
         d = dict(r)
-        for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem", "agendamento_id_activities"):
+        for json_field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem", "agendamento_id_activities", "cenarios"):
             if isinstance(d.get(json_field), str):
                 try:
                     d[json_field] = json.loads(d[json_field])
                 except (json.JSONDecodeError, ValueError):
-                    d[json_field] = None
+                    d[json_field] = [] if json_field == "cenarios" else None
+        if d.get("cenarios") is None:
+            d["cenarios"] = []
         result.append(d)
     return result
 
@@ -574,6 +610,32 @@ async def create_personality(
         except Exception as _ae:
             logger.warning(f"[AGEND-01] save POST falhou: {_ae}")
 
+        # [VOUCHER-01] Salva toggle + estrategia de vouchers (POST)
+        try:
+            await _database.db_pool.execute(
+                """UPDATE personalidade_ia SET
+                    usar_vouchers=$1, vouchers_estrategia=$2
+                   WHERE id=$3 AND empresa_id=$4""",
+                bool(data.usar_vouchers) if data.usar_vouchers is not None else False,
+                data.vouchers_estrategia,
+                new_id, empresa_id
+            )
+        except Exception as _ve:
+            logger.warning(f"[VOUCHER-01] save POST falhou (migration pendente?): {_ve}")
+
+        # [CENARIOS-01] Salva lista de cenarios SE/ENTAO (POST)
+        try:
+            cenarios_val = data.cenarios if data.cenarios is not None else []
+            if not isinstance(cenarios_val, list):
+                cenarios_val = []
+            await _database.db_pool.execute(
+                """UPDATE personalidade_ia SET cenarios=$1::jsonb
+                   WHERE id=$2 AND empresa_id=$3""",
+                json.dumps(cenarios_val), new_id, empresa_id
+            )
+        except Exception as _ce:
+            logger.warning(f"[CENARIOS-01] save POST falhou (migration pendente?): {_ce}")
+
         # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
         if data.ativo:
             await _database.db_pool.execute(
@@ -648,6 +710,9 @@ async def update_personality_by_id(
         "agendamento_id_service": "agendamento_id_service",
         "agendamento_texto_oferta": "agendamento_texto_oferta",
         "agendamento_coletar_email": "agendamento_coletar_email",
+        # [VOUCHER-01]
+        "usar_vouchers": "usar_vouchers",
+        "vouchers_estrategia": "vouchers_estrategia",
     }
 
     # Campos JSONB que precisam serializacao especial
@@ -657,6 +722,8 @@ async def update_personality_by_id(
         "menu_triagem": "menu_triagem::jsonb",
         "exemplos": "exemplos::jsonb",
         "agendamento_id_activities": "agendamento_id_activities::jsonb",
+        # [CENARIOS-01] lista de {id, cenario, acao, ordem, ativo}
+        "cenarios": "cenarios::jsonb",
     }
 
     sets = []
@@ -3619,13 +3686,13 @@ async def sync_planos(token_payload: dict = Depends(get_current_user_token)):
     return {"status": "success", "sincronizados": count}
 
 
-# ─── Chatwoot Teams ────────────────────────────────────────────────────────────
+# --- Chatwoot Teams ---
 
 @router.get("/chatwoot/teams")
 async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_token)):
     """
     Retorna a lista de times do Chatwoot para a empresa.
-    Usado pelo nó 'Transferir para Time' no editor de fluxo.
+    Usado pelo no 'Transferir para Time' no editor de fluxo.
     """
     import httpx as _httpx
 
@@ -3678,7 +3745,7 @@ async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_toke
             # Normaliza para [{id, name}]
             if isinstance(teams, list):
                 return [{"id": t.get("id"), "name": t.get("name", "")} for t in teams]
-            # Chatwoot às vezes envolve em {"payload": [...]}
+            # Chatwoot as vezes envolve em {"payload": [...]}
             payload = teams.get("payload") or teams.get("teams") or []
             return [{"id": t.get("id"), "name": t.get("name", "")} for t in payload]
     except _httpx.HTTPStatusError as e:
@@ -3688,9 +3755,9 @@ async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_toke
 
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # AGENDAMENTO DE AULA EXPERIMENTAL — Fase 1
-# ════════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class AgendarExperimentalRequest(BaseModel):
     unidade_id: Optional[int] = None
