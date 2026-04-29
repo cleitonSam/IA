@@ -56,11 +56,10 @@ export default function IntegrationsPage() {
   const [evoSaving, setEvoSaving] = useState(false);
   const [evoSuccess, setEvoSuccess] = useState(false);
 
-  // EVO Franqueada (consulta de aluno) per-unit state
-  const [frUnits, setFrUnits] = useState<EvoUnit[]>([]);
+  // EVO Franqueada (consulta de aluno) — 1 cred GLOBAL por empresa
   const [frLoading, setFrLoading] = useState(false);
-  const [frModal, setFrModal] = useState<{ open: boolean; unit: EvoUnit | null }>({ open: false, unit: null });
   const [frForm, setFrForm] = useState({ dns: "", secret_key: "", ativo: false });
+  const [frConfigurado, setFrConfigurado] = useState(false);
   const [frSaving, setFrSaving] = useState(false);
   const [frSuccess, setFrSuccess] = useState(false);
   const [frTesting, setFrTesting] = useState(false);
@@ -115,8 +114,16 @@ export default function IntegrationsPage() {
   useEffect(() => {
     if (activeTab !== "evo_franqueada" || isAdminMaster) return;
     setFrLoading(true);
-    axios.get("/api-backend/management/integrations/evo-franqueada/units", getToken())
-      .then(r => setFrUnits(Array.isArray(r.data) ? r.data : r.data?.data || []))
+    axios.get("/api-backend/management/integrations/evo-franqueada/global", getToken())
+      .then(r => {
+        const cfg = r.data?.config || {};
+        setFrForm({
+          dns: cfg.dns || "",
+          secret_key: cfg.secret_key || "",
+          ativo: !!r.data?.ativo,
+        });
+        setFrConfigurado(!!r.data?.configurado);
+      })
       .catch(console.error)
       .finally(() => setFrLoading(false));
   }, [activeTab, isAdminMaster]);
@@ -252,46 +259,30 @@ export default function IntegrationsPage() {
     finally { setSyncingId(null); }
   };
 
-  // ── Franqueada (consulta-only) ──
-  const openFranqueadaModal = (unit: EvoUnit) => {
-    setFrForm({
-      dns: unit.config.dns || "",
-      secret_key: unit.config.secret_key || "",
-      ativo: unit.ativo,
-    });
-    setFrModal({ open: true, unit });
-    setFrSuccess(false);
-    setFrTestResult(null);
-    setFrTestPhone("");
-  };
-
+  // ── Franqueada (consulta-only) — 1 cred GLOBAL ──
   const handleFranqueadaSave = async () => {
-    if (!frModal.unit) return;
     setFrSaving(true);
     try {
       await axios.put(
-        `/api-backend/management/integrations/evo-franqueada/unit/${frModal.unit.unidade_id}`,
+        "/api-backend/management/integrations/evo-franqueada/global",
         { config: { dns: frForm.dns.trim(), secret_key: frForm.secret_key.trim() }, ativo: frForm.ativo },
         getToken()
       );
       setFrSuccess(true);
-      setFrUnits(prev => prev.map(u =>
-        u.unidade_id === frModal.unit!.unidade_id
-          ? { ...u, config: { dns: frForm.dns.trim(), secret_key: frForm.secret_key.trim() }, ativo: frForm.ativo, configurado: !!(frForm.dns && frForm.secret_key) }
-          : u
-      ));
-      setTimeout(() => { setFrSuccess(false); }, 1400);
-    } catch { alert("Erro ao salvar credencial franqueada."); }
-    finally { setFrSaving(false); }
+      setFrConfigurado(!!(frForm.dns && frForm.secret_key));
+      setTimeout(() => setFrSuccess(false), 1500);
+    } catch (e: any) {
+      alert("Erro ao salvar: " + (e?.response?.data?.detail || e?.message || "desconhecido"));
+    } finally { setFrSaving(false); }
   };
 
   const handleFranqueadaTest = async () => {
-    if (!frModal.unit || !frTestPhone.trim()) return;
+    if (!frTestPhone.trim()) return;
     setFrTesting(true);
     setFrTestResult(null);
     try {
       const r = await axios.get(
-        `/api-backend/management/evo/verificar-membro?telefone=${encodeURIComponent(frTestPhone.trim())}&unidade_id=${frModal.unit.unidade_id}`,
+        `/api-backend/management/evo/verificar-membro-global?telefone=${encodeURIComponent(frTestPhone.trim())}`,
         getToken()
       );
       setFrTestResult(r.data);
@@ -304,11 +295,12 @@ export default function IntegrationsPage() {
   const tabs = [
     { id: "chatwoot", label: "Chatwoot", icon: MessageSquare },
     { id: "evo", label: "EVO W12", icon: Zap },
+    { id: "evo_franqueada", label: "Franqueada (Aluno)", icon: UserCheck },
+    { id: "etiquetas", label: "Etiquetas", icon: Tag },
     { id: "uazapi", label: "UazAPI", icon: Hash },
   ];
 
-  // Franqueada e Etiquetas viraram paginas dedicadas no sidebar (/dashboard/franqueada e /etiquetas)
-  const isCustomTab = (t: string) => t === "evo";
+  const isCustomTab = (t: string) => t === "evo" || t === "evo_franqueada" || t === "etiquetas";
 
   return (
     <div className="min-h-screen bg-[#020617] text-white flex">
@@ -360,10 +352,8 @@ export default function IntegrationsPage() {
                       {evoUnits.filter(u => u.configurado && u.ativo).length}
                     </span>
                   )}
-                  {tab.id === "evo_franqueada" && frUnits.filter(u => u.configurado && u.ativo).length > 0 && (
-                    <span className="bg-emerald-500 text-black text-[8px] font-black px-1.5 py-0.5 rounded-full ml-1">
-                      {frUnits.filter(u => u.configurado && u.ativo).length}
-                    </span>
+                  {tab.id === "evo_franqueada" && frConfigurado && frForm.ativo && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-1" />
                   )}
                   {tab.id === "etiquetas" && labels.length > 0 && (
                     <span className="bg-amber-400 text-black text-[8px] font-black px-1.5 py-0.5 rounded-full ml-1">
@@ -485,97 +475,141 @@ export default function IntegrationsPage() {
                 </motion.div>
               )}
 
-              {/* ── EVO FRANQUEADA: grid por unidade (consulta-only) ── */}
+              {/* ── EVO FRANQUEADA: 1 cred GLOBAL (admin) ── */}
               {activeTab === "evo_franqueada" && (
-                <motion.div key="evo_franqueada" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }}>
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <h3 className="text-xl font-black uppercase flex items-center gap-3">
-                        <UserCheck className="w-5 h-5 text-emerald-400" /> Franqueada — Verificação de Aluno
-                      </h3>
-                      <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-                        Cred SOMENTE pra consultar se o telefone do contato é aluno desta unidade (GET /members?phone=X).
-                        NÃO puxa planos, NÃO faz agendamento — escopo restrito a leitura de membro.
-                      </p>
-                    </div>
+                <motion.div key="evo_franqueada" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }}
+                  className="space-y-6 max-w-3xl">
+                  <div>
+                    <h3 className="text-xl font-black uppercase flex items-center gap-3">
+                      <UserCheck className="w-5 h-5 text-emerald-400" /> Franqueada — Verificação de Aluno
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-2 max-w-2xl">
+                      UMA credencial admin que serve TODAS as unidades. Usada SOMENTE pra
+                      <code className="text-emerald-400/80 font-mono mx-1">GET /members?phone=X</code>
+                      e identificar se o telefone do contato é aluno. Não puxa planos, não agenda.
+                    </p>
                   </div>
 
                   {frLoading ? (
                     <div className="flex items-center justify-center py-24">
                       <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
                     </div>
-                  ) : frUnits.length === 0 ? (
-                    <div className="text-center py-24 rounded-3xl border border-dashed border-white/5 bg-white/[0.01]">
-                      <Building2 className="w-10 h-10 text-slate-600 mx-auto mb-4" />
-                      <p className="text-slate-400 font-bold">Nenhuma unidade ativa encontrada.</p>
-                      <p className="text-slate-600 text-sm mt-1">Cadastre unidades no painel de Unidades primeiro.</p>
-                    </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                      {frUnits.map((unit, i) => (
-                        <motion.div
-                          key={unit.unidade_id}
-                          initial={{ opacity: 0, y: 16 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: i * 0.05 }}
-                          className="bg-slate-900/50 border border-white/5 hover:border-emerald-400/20 rounded-3xl overflow-hidden group transition-all duration-300"
-                        >
-                          <div className="p-6">
-                            <div className="flex items-start justify-between mb-4">
-                              <div className="w-12 h-12 rounded-2xl bg-emerald-400/10 border border-emerald-400/20 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                                <UserCheck className="w-6 h-6 text-emerald-400" />
-                              </div>
-                              {unit.configurado ? (
-                                unit.ativo
-                                  ? <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1.5 rounded-full">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Ativo
-                                    </span>
-                                  : <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2.5 py-1.5 rounded-full">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Pausado
-                                    </span>
-                              ) : (
-                                <span className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-slate-500 bg-white/5 border border-white/5 px-2.5 py-1.5 rounded-full">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" /> Não configurado
-                                </span>
-                              )}
-                            </div>
-                            <h3 className="text-base font-black uppercase tracking-tight group-hover:text-emerald-400 transition-colors mb-1 leading-tight">
-                              {unit.unidade_nome}
-                            </h3>
-                            <div className="mt-4 space-y-2 pt-4 border-t border-white/5">
-                              <div className="flex items-center gap-2 text-xs text-slate-500">
-                                <Globe className="w-3.5 h-3.5 text-emerald-400/40 shrink-0" />
-                                {unit.config.dns
-                                  ? <span className="font-mono text-slate-300">{unit.config.dns}.w12app.com.br</span>
-                                  : <span className="italic text-slate-600">Subdomínio não definido</span>}
-                              </div>
-                              <div className="flex items-center gap-2 text-xs text-slate-500">
-                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400/40 shrink-0" />
-                                {unit.config.secret_key
-                                  ? <span className="font-mono">{"•".repeat(12)}</span>
-                                  : <span className="italic text-slate-600">Chave não definida</span>}
-                              </div>
-                            </div>
+                    <>
+                      {/* Status */}
+                      <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-6 flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 rounded-2xl bg-emerald-400/10 border border-emerald-400/20 flex items-center justify-center">
+                            <UserCheck className="w-6 h-6 text-emerald-400" />
                           </div>
-                          <button onClick={() => openFranqueadaModal(unit)}
-                            className="w-full px-6 py-4 bg-white/[0.02] hover:bg-emerald-400/5 border-t border-white/5 text-[10px] font-black uppercase tracking-[0.25em] text-slate-500 hover:text-emerald-400 transition-all flex items-center justify-center gap-2">
-                            <Settings2 className="w-4 h-4" />
-                            {unit.configurado ? "Editar / Testar" : "Configurar Agora"}
-                          </button>
-                        </motion.div>
-                      ))}
-                    </div>
-                  )}
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Status</p>
+                            <p className={`text-sm font-black mt-1 ${
+                              frForm.ativo && frConfigurado ? "text-emerald-400"
+                              : frConfigurado ? "text-amber-400"
+                              : "text-slate-500"
+                            }`}>
+                              {frForm.ativo && frConfigurado ? "● Online — pronto pra consultar"
+                               : frConfigurado ? "○ Configurado mas pausado"
+                               : "○ Não configurado"}
+                            </p>
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => setFrForm({ ...frForm, ativo: !frForm.ativo })}
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all ${frForm.ativo ? "bg-emerald-400" : "bg-slate-700"}`}>
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${frForm.ativo ? "translate-x-6" : "translate-x-1"}`} />
+                        </button>
+                      </div>
 
-                  <div className="mt-8 p-5 bg-emerald-400/5 border border-emerald-400/10 rounded-2xl flex items-start gap-4">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-400/10 flex items-center justify-center flex-shrink-0">
-                      <UserCheck className="w-5 h-5 text-emerald-400" />
-                    </div>
-                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 italic leading-relaxed">
-                      Quando um cliente novo manda mensagem, o bot consulta a EVO desta unidade para verificar se ele já é aluno.
-                      Se for, aplica a etiqueta <span className="text-emerald-400 not-italic font-mono normal-case">aluno-{"{slug}"}</span> no contato do Chatwoot.
-                    </p>
-                  </div>
+                      {/* Credencial */}
+                      <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-8 space-y-6">
+                        <h4 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-2">
+                          Credencial Admin EVO (1 pra toda a rede)
+                        </h4>
+
+                        <div className="space-y-3">
+                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                            <Globe className="w-3 h-3 text-emerald-400" /> Subdomínio (DNS)
+                          </label>
+                          <div className="relative">
+                            <input type="text" value={frForm.dns}
+                              onChange={e => setFrForm({ ...frForm, dns: e.target.value })}
+                              className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-medium text-sm pr-44"
+                              placeholder="goodbe" />
+                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 font-mono">.w12app.com.br</span>
+                          </div>
+                          {frForm.dns && (
+                            <p className="text-[10px] text-emerald-400/70 font-mono pl-1">→ {frForm.dns}.w12app.com.br</p>
+                          )}
+                        </div>
+
+                        <div className="space-y-3">
+                          <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                            <ShieldCheck className="w-3 h-3 text-emerald-400" /> Secret Key
+                          </label>
+                          <div className="relative">
+                            <input
+                              type={showTokens["fr_secret"] ? "text" : "password"}
+                              value={frForm.secret_key}
+                              onChange={e => setFrForm({ ...frForm, secret_key: e.target.value })}
+                              className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-mono text-sm pr-14"
+                              placeholder="••••••••••••••••••" />
+                            <button type="button" onClick={() => toggleTokenVisibility("fr_secret")}
+                              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
+                              {showTokens["fr_secret"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-slate-600 italic pl-1">
+                            GUID admin da EVO. Esta cred só faz GET /members?phone=X.
+                          </p>
+                        </div>
+
+                        <motion.button whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}
+                          type="button" disabled={frSaving} onClick={handleFranqueadaSave}
+                          className="w-full bg-emerald-400 text-black px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)] disabled:opacity-50">
+                          {frSaving ? <><Loader2 className="w-5 h-5 animate-spin" />Salvando</>
+                            : frSuccess ? <><CheckCircle2 className="w-5 h-5" />Salvo!</>
+                            : <><Save className="w-5 h-5" />Salvar Credencial</>}
+                        </motion.button>
+                      </div>
+
+                      {/* Testar */}
+                      <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-8 space-y-4">
+                        <div className="flex items-center gap-3 mb-2">
+                          <Search className="w-5 h-5 text-emerald-400" />
+                          <h4 className="text-xs font-black uppercase tracking-widest text-slate-400">
+                            Testar (verificar se telefone é aluno)
+                          </h4>
+                        </div>
+                        <div className="flex gap-2">
+                          <input type="text" value={frTestPhone}
+                            onChange={e => setFrTestPhone(e.target.value)}
+                            className="flex-1 bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-3.5 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-mono text-sm"
+                            placeholder="11976804555" />
+                          <button type="button" disabled={frTesting || !frTestPhone.trim()} onClick={handleFranqueadaTest}
+                            className="px-6 py-3.5 bg-emerald-400/10 border border-emerald-400/20 rounded-2xl text-[10px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-400/15 transition-all disabled:opacity-40 flex items-center gap-2">
+                            {frTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                            {frTesting ? "..." : "Testar"}
+                          </button>
+                        </div>
+                        {frTestResult && (
+                          <pre className="mt-3 p-4 rounded-xl bg-black/40 border border-white/5 text-[11px] font-mono text-slate-300 overflow-auto whitespace-pre-wrap break-all max-h-80">
+                            {JSON.stringify(frTestResult, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+
+                      <div className="p-5 bg-emerald-400/5 border border-emerald-400/10 rounded-2xl flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-400/10 flex items-center justify-center flex-shrink-0">
+                          <UserCheck className="w-5 h-5 text-emerald-400" />
+                        </div>
+                        <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 italic leading-relaxed">
+                          Quando um cliente manda mensagem, o bot consulta a EVO usando esta credencial.
+                          Se for aluno, aplica a etiqueta <span className="text-emerald-400 not-italic font-mono normal-case">aluno-{"{slug-da-unidade}"}</span> no contato do Chatwoot.
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </motion.div>
               )}
 
@@ -1094,129 +1128,6 @@ export default function IntegrationsPage() {
                     : evoSuccess
                     ? <><CheckCircle2 className="w-4 h-4" /> Salvo!</>
                     : <><Save className="w-4 h-4" /> Salvar</>}
-                </motion.button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ── Modal Franqueada (consulta de aluno) ── */}
-      <AnimatePresence>
-        {frModal.open && frModal.unit && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-[#020617]/90 backdrop-blur-2xl"
-              onClick={() => setFrModal({ open: false, unit: null })} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 20 }}
-              className="bg-[#080f1e] border border-white/10 rounded-[2.5rem] w-full max-w-lg overflow-hidden relative shadow-2xl"
-            >
-              <div className="px-8 py-7 border-b border-white/5 flex items-center justify-between bg-slate-900/30 relative">
-                <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-emerald-400/30 to-transparent" />
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-400/10 flex items-center justify-center border border-emerald-400/20">
-                    <UserCheck className="w-6 h-6 text-emerald-400" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-black tracking-tight">Franqueada — Consulta Aluno</h2>
-                    <p className="text-slate-500 text-xs mt-0.5 font-bold uppercase tracking-widest">
-                      {frModal.unit.unidade_nome}
-                    </p>
-                  </div>
-                </div>
-                <motion.button whileHover={{ rotate: 90 }} onClick={() => setFrModal({ open: false, unit: null })}
-                  className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-white/5 text-slate-500 hover:text-white">
-                  <X className="w-5 h-5" />
-                </motion.button>
-              </div>
-
-              <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto custom-scrollbar">
-                <div className="flex items-center justify-between bg-slate-900/50 border border-white/5 rounded-2xl px-5 py-4">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Integração Ativa</p>
-                    <p className={`text-[9px] font-black uppercase mt-0.5 ${frForm.ativo ? "text-emerald-400" : "text-slate-600"}`}>
-                      {frForm.ativo ? "● Online" : "○ Pausada"}
-                    </p>
-                  </div>
-                  <button type="button" onClick={() => setFrForm({ ...frForm, ativo: !frForm.ativo })}
-                    className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all ${frForm.ativo ? "bg-emerald-400" : "bg-slate-700"}`}>
-                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-all shadow ${frForm.ativo ? "translate-x-6" : "translate-x-1"}`} />
-                  </button>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                    <Globe className="w-3 h-3 text-emerald-400" /> Subdomínio (DNS)
-                  </label>
-                  <div className="relative">
-                    <input type="text" value={frForm.dns}
-                      onChange={e => setFrForm({ ...frForm, dns: e.target.value })}
-                      className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-medium text-sm pr-40"
-                      placeholder="goodbe" />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 font-mono">.w12app.com.br</span>
-                  </div>
-                  {frForm.dns && (
-                    <p className="text-[10px] text-emerald-400/60 font-mono pl-1">→ {frForm.dns}.w12app.com.br</p>
-                  )}
-                </div>
-
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                    <ShieldCheck className="w-3 h-3 text-emerald-400" /> Secret Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showTokens["fr_secret"] ? "text" : "password"}
-                      value={frForm.secret_key}
-                      onChange={e => setFrForm({ ...frForm, secret_key: e.target.value })}
-                      className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-4 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-mono text-sm pr-14"
-                      placeholder="••••••••••••••••••" />
-                    <button type="button" onClick={() => toggleTokenVisibility("fr_secret")}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors p-1">
-                      {showTokens["fr_secret"] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-slate-600 italic pl-1">Usada SOMENTE pra GET /members?phone=X. Não puxa planos nem agenda.</p>
-                </div>
-
-                {/* ── Bloco de teste (telefone) ── */}
-                <div className="space-y-3 p-5 rounded-2xl bg-slate-900/40 border border-white/5">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                    <Search className="w-3 h-3 text-emerald-400" /> Testar telefone (verificar se é aluno)
-                  </label>
-                  <div className="flex gap-2">
-                    <input type="text" value={frTestPhone}
-                      onChange={e => setFrTestPhone(e.target.value)}
-                      className="flex-1 bg-slate-900/60 border border-white/8 rounded-2xl px-5 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-400/40 transition-all font-mono text-sm"
-                      placeholder="11976804555" />
-                    <button type="button" disabled={frTesting || !frTestPhone.trim()} onClick={handleFranqueadaTest}
-                      className="px-5 py-3 bg-emerald-400/10 border border-emerald-400/20 rounded-2xl text-[10px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-400/15 transition-all disabled:opacity-40 flex items-center gap-2">
-                      {frTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                      {frTesting ? "..." : "Testar"}
-                    </button>
-                  </div>
-                  {frTestResult && (
-                    <pre className="mt-3 p-4 rounded-xl bg-black/40 border border-white/5 text-[11px] font-mono text-slate-300 overflow-auto whitespace-pre-wrap break-all">
-                      {JSON.stringify(frTestResult, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              </div>
-
-              <div className="px-8 py-6 border-t border-white/5 bg-slate-900/30 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setFrModal({ open: false, unit: null })}
-                  className="px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white transition-all">
-                  Fechar
-                </button>
-                <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-                  type="button" disabled={frSaving} onClick={handleFranqueadaSave}
-                  className="bg-emerald-400 text-black px-8 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] flex items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)] disabled:opacity-50">
-                  {frSaving ? <><Loader2 className="w-4 h-4 animate-spin" />Salvando</>
-                    : frSuccess ? <><CheckCircle2 className="w-4 h-4" />Salvo</>
-                    : <><Save className="w-4 h-4" />Salvar</>}
                 </motion.button>
               </div>
             </motion.div>
