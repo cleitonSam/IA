@@ -1195,17 +1195,14 @@ async def processar_ia_e_responder(
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
-        # ── [FRANQUEADA] Verifica se contato é aluno desta unidade e aplica etiqueta no Chatwoot ──
+        # ── [FRANQUEADA] Verifica se contato é aluno e aplica etiqueta no Chatwoot ──
+        # Cred franqueada GLOBAL (1 cred serve todas unidades) — verifica_membro nao precisa de unit_id.
+        # Label aplicada usa o slug da unidade que o cliente esta conversando AGORA (se houver).
         # Roda 1x por contato (cache 24h). Fire-and-forget: não bloqueia resposta.
         try:
             _u_id_franq = unidade.get("id") if unidade else None
-            if (
-                _u_id_franq
-                and contact_id
-                and contato_fone
-                and source == "chatwoot"
-            ):
-                _flag_key = f"aluno_check:{empresa_id}:{contact_id}:{_u_id_franq}"
+            if contact_id and contato_fone and source == "chatwoot":
+                _flag_key = f"aluno_check:{empresa_id}:{contact_id}"
                 _ja_checou = await redis_client.get(_flag_key)
                 if not _ja_checou:
                     async def _check_e_aplicar_label():
@@ -1214,17 +1211,16 @@ async def processar_ia_e_responder(
                             from src.services.chatwoot_client import aplicar_label_contato_chatwoot
                             from src.services.db_queries import carregar_integracao as _ci
                             res_membro = await verificar_membro_evo(
-                                empresa_id, contato_fone, _u_id_franq
+                                empresa_id, contato_fone, unidade_id=_u_id_franq
                             )
                             logger.info(
-                                f"[FRANQUEADA] check membro empresa={empresa_id} unid={_u_id_franq} "
+                                f"[FRANQUEADA] check membro empresa={empresa_id} unid={_u_id_franq or 'global'} "
                                 f"contato={contact_id}: {res_membro.get('encontrado')} "
                                 f"erro={res_membro.get('erro')}"
                             )
                             if res_membro.get("encontrado") and res_membro.get("ativo"):
-                                # Slug da unidade vira parte da label: aluno-{slug}
-                                _slug_unid = (slug or unidade.get("slug") or unidade.get("nome") or "").strip().lower()
-                                # Sanitiza pra slug Chatwoot (alfanum + dash)
+                                # Slug da unidade da conversa atual vira parte da label
+                                _slug_unid = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "") or "").strip().lower()
                                 import re as _re_lab
                                 _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid).strip("-") or "geral"
                                 _label = f"aluno-{_slug_unid}"

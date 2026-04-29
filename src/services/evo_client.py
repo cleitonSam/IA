@@ -334,41 +334,61 @@ async def _cache_set_json(key: str, value: Any, ttl: int) -> None:
         pass
 
 
-async def _carregar_integracao_franqueada(empresa_id: int, unidade_id: int) -> Optional[Dict[str, Any]]:
+async def _carregar_integracao_franqueada(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """[FRANQUEADA] Carrega credencial EVO escopada SOMENTE pra consulta de membros.
-    Prefere tipo='evo_franqueada' da unidade; se nao houver, faz fallback pra tipo='evo' da unidade.
+    Ordem de preferencia:
+      1) GLOBAL da empresa (tipo='evo_franqueada', unidade_id IS NULL) — caso de 1 cred unica que serve todas
+      2) Da unidade especifica (tipo='evo_franqueada', unidade_id=X) — legado/per-unit
+      3) Fallback: cred geral 'evo' da unidade (matriz)
     Esta cred NAO e usada por workers/agendamento — so por verificar_membro_evo.
     """
     try:
         import src.core.database as _database
         if not _database.db_pool:
             return None
-        # 1) Preferencia: cred franqueada especifica da unidade
-        row = await _database.db_pool.fetchrow(
+
+        # 1) Cred GLOBAL da empresa (1 cred pra todas unidades — modelo preferido)
+        row_global = await _database.db_pool.fetchrow(
             """SELECT config FROM integracoes
-               WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id = $2 AND ativo = true
+               WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id IS NULL AND ativo = true
                ORDER BY id DESC LIMIT 1""",
-            empresa_id, unidade_id,
+            empresa_id,
         )
-        if row and row["config"]:
-            cfg = row["config"]
+        if row_global and row_global["config"]:
+            cfg = row_global["config"]
             if isinstance(cfg, str):
                 cfg = _json.loads(cfg)
             return cfg
-        # 2) Fallback: cred geral 'evo' da unidade (quando matriz e franqueada compartilham)
-        row2 = await _database.db_pool.fetchrow(
-            """SELECT config FROM integracoes
-               WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2 AND ativo = true
-               ORDER BY id DESC LIMIT 1""",
-            empresa_id, unidade_id,
-        )
-        if row2 and row2["config"]:
-            cfg = row2["config"]
-            if isinstance(cfg, str):
-                cfg = _json.loads(cfg)
-            return cfg
+
+        # 2) Cred per-unit (legado, se ainda existir)
+        if unidade_id:
+            row_unit = await _database.db_pool.fetchrow(
+                """SELECT config FROM integracoes
+                   WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id = $2 AND ativo = true
+                   ORDER BY id DESC LIMIT 1""",
+                empresa_id, unidade_id,
+            )
+            if row_unit and row_unit["config"]:
+                cfg = row_unit["config"]
+                if isinstance(cfg, str):
+                    cfg = _json.loads(cfg)
+                return cfg
+
+        # 3) Fallback: cred 'evo' da unidade (matriz multilocation)
+        if unidade_id:
+            row_evo = await _database.db_pool.fetchrow(
+                """SELECT config FROM integracoes
+                   WHERE empresa_id = $1 AND tipo = 'evo' AND unidade_id = $2 AND ativo = true
+                   ORDER BY id DESC LIMIT 1""",
+                empresa_id, unidade_id,
+            )
+            if row_evo and row_evo["config"]:
+                cfg = row_evo["config"]
+                if isinstance(cfg, str):
+                    cfg = _json.loads(cfg)
+                return cfg
     except Exception as e:
-        logger.warning(f"[FRANQUEADA] erro carregar cred unidade={unidade_id}: {e}")
+        logger.warning(f"[FRANQUEADA] erro carregar cred empresa={empresa_id} unidade={unidade_id}: {e}")
     return None
 
 
@@ -382,7 +402,7 @@ def _normalizar_telefone(t: str) -> str:
 async def verificar_membro_evo(
     empresa_id: int,
     telefone: str,
-    unidade_id: int,
+    unidade_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """[FRANQUEADA] Consulta GET /members?phone=X na credencial da unidade.
     Retorna dict estruturado:
@@ -406,7 +426,8 @@ async def verificar_membro_evo(
     if fone_busca.startswith("55") and len(fone_busca) > 11:
         fone_busca = fone_busca[2:]
 
-    cache_key = f"evo:membro:{empresa_id}:{unidade_id}:{fone_busca}"
+    # Cache global por empresa+telefone (1 cred unica serve todas unidades)
+    cache_key = f"evo:membro:{empresa_id}:{unidade_id or 'global'}:{fone_busca}"
     cached = await _cache_get_json(cache_key)
     if cached is not None:
         return cached
@@ -434,7 +455,7 @@ async def verificar_membro_evo(
         "&take=10&skip=0&onlyPersonal=false"
         "&showActivityData=false&showMemberships=true&showsResponsibles=false"
     )
-    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:membro:{empresa_id}:u{unidade_id}")
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:membro:{empresa_id}:u{unidade_id or 'global'}")
     if resp is None:
         return {
             "encontrado": False,

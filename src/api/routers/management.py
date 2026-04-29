@@ -1971,6 +1971,96 @@ async def update_evo_unit(
 
 # ────────── EVO FRANQUEADA (consulta de aluno por telefone — escopo restrito) ──────────
 
+@router.get("/integrations/evo-franqueada/global")
+async def get_evo_franqueada_global(token_payload: dict = Depends(get_current_user_token)):
+    """Retorna a credencial GLOBAL franqueada da empresa (1 cred serve todas unidades)."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    row = await _database.db_pool.fetchrow(
+        """SELECT config, ativo FROM integracoes
+           WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id IS NULL
+           ORDER BY id DESC LIMIT 1""",
+        empresa_id,
+    )
+    if not row:
+        return {"config": {"dns": "", "secret_key": ""}, "ativo": False, "configurado": False}
+    cfg = row["config"]
+    if isinstance(cfg, str):
+        try: cfg = json.loads(cfg)
+        except Exception: cfg = {}
+    return {
+        "config": {
+            "dns": cfg.get("dns", "") or "",
+            "secret_key": cfg.get("secret_key", "") or "",
+            "api_url": cfg.get("api_url", "") or "",
+        },
+        "ativo": row["ativo"],
+        "configurado": bool(cfg.get("dns") and cfg.get("secret_key")),
+    }
+
+
+@router.put("/integrations/evo-franqueada/global")
+async def update_evo_franqueada_global(
+    body: IntegrationUpdate,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Salva a credencial GLOBAL franqueada (1 cred serve todas unidades).
+    Esta cred so e usada pra GET /members?phone=X — nao roda sync, agendar, discovery."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    safe_config = {
+        "dns": (body.config.get("dns") or "").strip(),
+        "secret_key": (body.config.get("secret_key") or "").strip(),
+        "api_url": body.config.get("api_url") or "https://evo-integracao-api.w12app.com.br/api/v2",
+    }
+    config_json = json.dumps(safe_config)
+
+    existing = await _database.db_pool.fetchval(
+        """SELECT id FROM integracoes
+           WHERE empresa_id = $1 AND tipo = 'evo_franqueada' AND unidade_id IS NULL""",
+        empresa_id,
+    )
+    if existing:
+        await _database.db_pool.execute(
+            "UPDATE integracoes SET config = $1::jsonb, ativo = $2, updated_at = NOW() WHERE id = $3",
+            config_json, body.ativo, existing
+        )
+    else:
+        await _database.db_pool.execute(
+            """INSERT INTO integracoes (empresa_id, tipo, config, ativo, unidade_id, created_at)
+               VALUES ($1, 'evo_franqueada', $2::jsonb, $3, NULL, NOW())""",
+            empresa_id, config_json, body.ativo,
+        )
+
+    # Invalida cache de membro (todos)
+    try:
+        for k in await redis_client.keys(f"evo:membro:{empresa_id}:*"):
+            await redis_client.delete(k)
+    except Exception:
+        pass
+
+    return {"status": "success"}
+
+
+@router.get("/evo/verificar-membro-global")
+async def evo_verificar_membro_global_endpoint(
+    telefone: str,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Endpoint de TESTE — chama verificar_membro_evo SEM unidade_id (usa cred global).
+    Ex: GET /management/evo/verificar-membro-global?telefone=11976804555"""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.evo_client import verificar_membro_evo
+    return await verificar_membro_evo(empresa_id, telefone, unidade_id=None)
+
+
 @router.get("/integrations/evo-franqueada/units")
 async def get_evo_franqueada_per_unit_list(token_payload: dict = Depends(get_current_user_token)):
     """Lista todas as unidades + config 'evo_franqueada' (cred SOMENTE pra consulta de aluno)."""
