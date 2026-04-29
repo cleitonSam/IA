@@ -737,22 +737,22 @@ export default function UnitsPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <Field label="Planos & Preços (JSON)" icon={ListChecks}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
-                            value={typeof formData.planos === "object" ? JSON.stringify(formData.planos, null, 2) : formData.planos}
-                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, planos: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, planos: e.target.value })); } }}
+                            value={formData.planos == null ? "" : (typeof formData.planos === "object" ? JSON.stringify(formData.planos, null, 2) : String(formData.planos))}
+                            onChange={e => { const v = e.target.value; if (!v.trim()) { setFormData((prev: any) => ({ ...prev, planos: {} })); return; } try { setFormData((prev: any) => ({ ...prev, planos: JSON.parse(v) })); } catch { setFormData((prev: any) => ({ ...prev, planos: v })); } }}
                             placeholder={'{"Basico": 99.90, "Premium": 159.90}'}
                           />
                         </Field>
                         <Field label="Formas de Pagamento" icon={CreditCard}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
-                            value={typeof formData.formas_pagamento === "object" ? JSON.stringify(formData.formas_pagamento, null, 2) : formData.formas_pagamento}
-                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, formas_pagamento: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, formas_pagamento: e.target.value })); } }}
+                            value={formData.formas_pagamento == null ? "" : (typeof formData.formas_pagamento === "object" ? JSON.stringify(formData.formas_pagamento, null, 2) : String(formData.formas_pagamento))}
+                            onChange={e => { const v = e.target.value; if (!v.trim()) { setFormData((prev: any) => ({ ...prev, formas_pagamento: {} })); return; } try { setFormData((prev: any) => ({ ...prev, formas_pagamento: JSON.parse(v) })); } catch { setFormData((prev: any) => ({ ...prev, formas_pagamento: v })); } }}
                             placeholder={'{"Cartão": true, "Pix": true}'}
                           />
                         </Field>
                         <Field label="Infraestrutura" icon={Shield}>
                           <textarea rows={6} className={`${textareaClass} font-mono text-xs text-[#00d2ff]/80`}
-                            value={typeof formData.infraestrutura === "object" ? JSON.stringify(formData.infraestrutura, null, 2) : formData.infraestrutura}
-                            onChange={e => { try { setFormData((prev: any) => ({ ...prev, infraestrutura: JSON.parse(e.target.value) })); } catch { setFormData((prev: any) => ({ ...prev, infraestrutura: e.target.value })); } }}
+                            value={formData.infraestrutura == null ? "" : (typeof formData.infraestrutura === "object" ? JSON.stringify(formData.infraestrutura, null, 2) : String(formData.infraestrutura))}
+                            onChange={e => { const v = e.target.value; if (!v.trim()) { setFormData((prev: any) => ({ ...prev, infraestrutura: {} })); return; } try { setFormData((prev: any) => ({ ...prev, infraestrutura: JSON.parse(v) })); } catch { setFormData((prev: any) => ({ ...prev, infraestrutura: v })); } }}
                           />
                         </Field>
                         <Field label="Convênios Parceiros" icon={HeartHandshake}>

@@ -802,8 +802,8 @@ async def criar_unidade(
         logger.info(f"✅ Unidade '{body.nome}' criada (id={row['id']}, empresa_id={empresa_id})")
         return {"id": row["id"], "slug": slug, "nome": body.nome, "empresa_id": empresa_id}
     except Exception as e:
-        logger.error(f"Erro ao criar unidade: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao criar unidade")
+        logger.error(f"Erro ao criar unidade: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)[:200]}")
 
 @router.post("/unidades/upload")
 async def upload_unidade_foto(
@@ -1024,8 +1024,8 @@ async def atualizar_unidade(
                 servicos = $19::jsonb, palavras_chave = $20::jsonb,
                 foto_grade = $21, link_tour_virtual = $22,
                 updated_at = NOW(),
-                diaria_disponivel = $26, diaria_valor = $27, diaria_observacao = $28
-            WHERE id = $29 AND empresa_id = $30
+                diaria_disponivel = $23, diaria_valor = $24, diaria_observacao = $25
+            WHERE id = $26 AND empresa_id = $27
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
@@ -1048,8 +1048,8 @@ async def atualizar_unidade(
         await invalidate_unidades(empresa_id)
         return {"status": "success", "message": "Unidade atualizada"}
     except Exception as e:
-        logger.error(f"Erro ao atualizar unidade: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao atualizar unidade")
+        logger.error(f"Erro ao atualizar unidade {unidade_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)[:200]}")
 
 
 @router.delete("/unidades/{unidade_id}")
