@@ -7,15 +7,14 @@ import {
   Sparkles, Target, Cpu, Thermometer, Send, Bot, PlayCircle,
   Mic2, MessageSquare, Clock, TrendingUp, ShieldAlert, ListChecks,
   AlertCircle, AlertTriangle, Search, ChevronRight, Zap, X, RotateCcw, Copy,
-  Eye, FileText, LayoutTemplate, AlignLeft, AlignCenter, AlignJustify
-} from "lucide-react";
+  Eye, FileText, LayoutTemplate, AlignLeft, AlignCenter, AlignJustify, Calendar} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
-type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios" | "voz";
+type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios" | "voz" | "agendamento";
 type TabKey = "config" | "playground";
 
 interface PlaygroundMsg { role: string; content: string; timestamp: number; }
@@ -56,6 +55,15 @@ interface Personality {
   tour_perguntar_primeira_visita: boolean;
   tour_mensagem_custom: string;
   comprimento_resposta?: string;
+  // [AGEND-01] Agendamento de aula experimental
+  agendamento_experimental_ativo?: boolean;
+  agendamento_provider?: string;
+  agendamento_dias_a_frente?: number;
+  agendamento_id_branch?: number | null;
+  agendamento_id_activities?: number[] | null;
+  agendamento_id_service?: number | null;
+  agendamento_texto_oferta?: string;
+  agendamento_coletar_email?: boolean;
 }
 
 interface PromptPreviewData {
@@ -119,6 +127,15 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   tour_perguntar_primeira_visita: true,
   tour_mensagem_custom: "",
   comprimento_resposta: "normal",
+  // [AGEND-01]
+  agendamento_experimental_ativo: false,
+  agendamento_provider: "evo",
+  agendamento_dias_a_frente: 5,
+  agendamento_id_branch: null,
+  agendamento_id_activities: [],
+  agendamento_id_service: null,
+  agendamento_texto_oferta: "",
+  agendamento_coletar_email: false,
 };
 
 const MODELS = [
@@ -154,6 +171,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: React.ReactNode; desc: s
   { key: "seguranca",  label: "Segurança",   icon: <ShieldAlert className="w-4 h-4" />,desc: "Restrições" },
   { key: "horarios",   label: "Horários",    icon: <Clock className="w-4 h-4" />,      desc: "Atendimento" },
   { key: "voz",        label: "Voz IA",      icon: <Mic2 className="w-4 h-4" />,       desc: "Áudio & TTS" },
+  { key: "agendamento",label: "Agendamento", icon: <Calendar className="w-4 h-4" />,   desc: "Aula experimental" },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -662,6 +680,7 @@ export default function PersonalityPage() {
     seguranca:  !!(fd.restricoes || fd.palavras_proibidas),
     horarios:   !!(fd.horario_atendimento_ia),
     voz:        !!(fd.tts_voz),
+    agendamento:!!(fd.agendamento_experimental_ativo),
   };
 
   const iClass = "w-full bg-[#0d1f3a] border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-slate-500 focus:outline-none focus:border-[#00d2ff]/60 focus:bg-[#0d1f3a] transition-all text-sm leading-relaxed";
@@ -1715,6 +1734,190 @@ export default function PersonalityPage() {
                               </div>
                             </>)}
                           </>)}
+                          {activeSection === "agendamento" && (<>
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <h3 className="text-lg font-bold text-white flex items-center gap-2"><Calendar className="w-5 h-5 text-[#00d2ff]" /> Agendamento de Aula Experimental</h3>
+                                <p className="text-xs text-slate-400 mt-1">A IA pode oferecer e agendar aulas experimentais direto no chat (integração EVO).</p>
+                              </div>
+                            </div>
+
+                            <div className={card}>
+                              <label className="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!fd.agendamento_experimental_ativo}
+                                  onChange={e => setFormData({...formData, agendamento_experimental_ativo: e.target.checked})}
+                                  className="w-5 h-5 accent-[#00d2ff]"
+                                />
+                                <div>
+                                  <p className="text-sm font-semibold text-white">Ativar agendamento de aula experimental</p>
+                                  <p className="text-xs text-slate-400">Quando ligado, a IA pode listar horários e agendar via EVO.</p>
+                                </div>
+                              </label>
+                            </div>
+
+                            {fd.agendamento_experimental_ativo && (<>
+                              <div className={card}>
+                                <label className={lClass}>Provedor</label>
+                                <select
+                                  value={fd.agendamento_provider || "evo"}
+                                  onChange={e => setFormData({...formData, agendamento_provider: e.target.value})}
+                                  className={iClass}
+                                >
+                                  <option value="evo">EVO (W12)</option>
+                                </select>
+                              </div>
+
+                              <div className={card}>
+                                <label className={lClass}>Dias para frente que a IA mostra horários</label>
+                                <input
+                                  type="number" min={1} max={14}
+                                  value={fd.agendamento_dias_a_frente ?? 5}
+                                  onChange={e => setFormData({...formData, agendamento_dias_a_frente: parseInt(e.target.value || "5")})}
+                                  className={iClass}
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Recomendado: 5 dias. Max: 14.</p>
+                              </div>
+
+                              <div className={card}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className={lClass}>Configuração técnica EVO</label>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        const r = await axios.get('/api-backend/management/agendamento/discovery', getConfig());
+                                        const d = r.data || {};
+                                        const hasBranches = (d.branches || []).length > 0;
+                                        const hasServices = (d.services || []).length > 0;
+                                        const hasActs = (d.activities || []).length > 0;
+                                        if (!hasBranches && !hasServices && !hasActs) {
+                                          alert('Não conseguiu descobrir IDs. Verifique se a integração EVO está configurada para sua empresa.');
+                                          return;
+                                        }
+                                        // Salva no estado pra o select usar
+                                        (window as any).__evoDiscovery = d;
+                                        // Trigger re-render
+                                        setFormData(p => ({...p}));
+                                        alert(`Encontrado: ${(d.branches||[]).length} filiais, ${(d.services||[]).length} serviços, ${(d.activities||[]).length} atividades.`);
+                                      } catch (e: any) {
+                                        alert('Erro: ' + (e?.response?.data?.detail || e?.message || 'desconhecido'));
+                                      }
+                                    }}
+                                    className="text-xs px-3 py-1.5 rounded-lg bg-[#00d2ff]/10 text-[#00d2ff] border border-[#00d2ff]/30 hover:bg-[#00d2ff]/20"
+                                  >
+                                    🔍 Descobrir IDs automaticamente
+                                  </button>
+                                </div>
+                                <p className="text-xs text-slate-500 mb-3">Clique em "Descobrir" e depois selecione abaixo. Se não souber, deixe em branco para usar o padrão da integração.</p>
+
+                                <label className="block text-xs text-slate-400 mb-1 mt-3">ID da Filial (idBranch)</label>
+                                <input
+                                  type="number"
+                                  value={fd.agendamento_id_branch ?? ""}
+                                  onChange={e => setFormData({...formData, agendamento_id_branch: e.target.value ? parseInt(e.target.value) : null})}
+                                  placeholder="ex: 1 (deixe vazio = usa da integração)"
+                                  className={iClass}
+                                />
+                                {(window as any).__evoDiscovery?.branches?.length > 0 && (
+                                  <select
+                                    onChange={e => setFormData({...formData, agendamento_id_branch: e.target.value ? parseInt(e.target.value) : null})}
+                                    className={`${iClass} mt-1`}
+                                    value={fd.agendamento_id_branch ?? ""}
+                                  >
+                                    <option value="">— escolher filial descoberta —</option>
+                                    {((window as any).__evoDiscovery?.branches || []).map((b: any) => (
+                                      <option key={b.id} value={b.id}>{b.id} — {b.name}</option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                <label className="block text-xs text-slate-400 mb-1 mt-3">ID do Serviço &quot;Aula Experimental&quot;</label>
+                                <input
+                                  type="number"
+                                  value={fd.agendamento_id_service ?? ""}
+                                  onChange={e => setFormData({...formData, agendamento_id_service: e.target.value ? parseInt(e.target.value) : null})}
+                                  placeholder="ex: 12"
+                                  className={iClass}
+                                />
+                                {(window as any).__evoDiscovery?.services?.length > 0 && (
+                                  <select
+                                    onChange={e => setFormData({...formData, agendamento_id_service: e.target.value ? parseInt(e.target.value) : null})}
+                                    className={`${iClass} mt-1`}
+                                    value={fd.agendamento_id_service ?? ""}
+                                  >
+                                    <option value="">— escolher serviço descoberto —</option>
+                                    {((window as any).__evoDiscovery?.services || []).map((s: any) => (
+                                      <option key={s.id} value={s.id}>{s.id} — {s.name}{s.value ? ` (R$ ${s.value})` : ''}</option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                <label className="block text-xs text-slate-400 mb-1 mt-3">Atividades permitidas (IDs separados por vírgula)</label>
+                                <input
+                                  type="text"
+                                  value={(fd.agendamento_id_activities || []).join(",")}
+                                  onChange={e => setFormData({...formData, agendamento_id_activities: e.target.value.split(",").map(x => parseInt(x.trim())).filter(x => !isNaN(x))})}
+                                  placeholder="ex: 2,5,7 (vazio = todas)"
+                                  className={iClass}
+                                />
+                                {(window as any).__evoDiscovery?.activities?.length > 0 && (
+                                  <div className="mt-2 max-h-40 overflow-y-auto p-2 bg-black/20 rounded-lg">
+                                    <p className="text-xs text-slate-500 mb-2">Atividades disponíveis:</p>
+                                    {((window as any).__evoDiscovery?.activities || []).map((a: any) => {
+                                      const lista = fd.agendamento_id_activities || [];
+                                      const checked = lista.includes(a.id);
+                                      return (
+                                        <label key={a.id} className="flex items-center gap-2 text-xs text-slate-300 mb-1 cursor-pointer">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={e => {
+                                              const novo = e.target.checked
+                                                ? [...lista, a.id]
+                                                : lista.filter((x: number) => x !== a.id);
+                                              setFormData({...formData, agendamento_id_activities: novo});
+                                            }}
+                                            className="accent-[#00d2ff]"
+                                          />
+                                          <span>{a.id} — {a.name}</span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className={card}>
+                                <label className={lClass}>Texto custom de oferta (opcional)</label>
+                                <textarea
+                                  rows={3}
+                                  value={fd.agendamento_texto_oferta || ""}
+                                  onChange={e => setFormData({...formData, agendamento_texto_oferta: e.target.value})}
+                                  placeholder="ex: Quer experimentar uma aula gratuita? Posso te mostrar os horários disponíveis!"
+                                  className={taClass}
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Se vazio, IA usa frase padrão.</p>
+                              </div>
+
+                              <div className={card}>
+                                <label className="flex items-center gap-3 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!fd.agendamento_coletar_email}
+                                    onChange={e => setFormData({...formData, agendamento_coletar_email: e.target.checked})}
+                                    className="w-5 h-5 accent-[#00d2ff]"
+                                  />
+                                  <div>
+                                    <p className="text-sm font-semibold text-white">Pedir email do cliente</p>
+                                    <p className="text-xs text-slate-400">Por padrão pede só nome+telefone. Marque se quiser email também (mais fricção, mas dado mais completo).</p>
+                                  </div>
+                                </label>
+                              </div>
+                            </>)}
+                          </>)}
+
 
                         </motion.div>
                       </AnimatePresence>

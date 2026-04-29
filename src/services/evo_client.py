@@ -1,9 +1,16 @@
 import asyncio
 import base64
+import json as _json
 import httpx
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 from src.core.config import logger
+from src.core.redis_client import redis_client
 from src.services.db_queries import carregar_integracao
+
+# Cache TTLs (segundos)
+_CACHE_DISCOVERY = 600    # branches/services/activities raramente mudam — 10min
+_CACHE_HORARIOS = 120     # horarios mudam por concorrencia — 2min
 
 # Número máximo de retentativas para chamadas à EVO API
 _EVO_MAX_RETRIES = 3
@@ -221,3 +228,303 @@ async def criar_prospect_evo(
     else:
         logger.error(f"❌ EVO API ({resp.status_code}): {resp.text[:400]}")
         return False
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# AGENDAMENTO DE AULA EXPERIMENTAL — Fase 1
+# ════════════════════════════════════════════════════════════════════════════
+
+def _evo_api_base(integracao: Dict[str, Any]) -> str:
+    """URL base v1 da EVO (compatibilidade com integracoes antigas v2)."""
+    api = integracao.get("api_url", "https://evo-integracao-api.w12app.com.br/api/v2")
+    return api.replace("/v2", "/v1")
+
+
+async def _cache_get_json(key: str) -> Any:
+    try:
+        raw = await redis_client.get(key)
+        if raw:
+            return _json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
+async def _cache_set_json(key: str, value: Any, ttl: int) -> None:
+    try:
+        await redis_client.setex(key, ttl, _json.dumps(value, default=str))
+    except Exception:
+        pass
+
+
+# ────────── DISCOVERY (branches / services / activities) ──────────
+
+async def listar_branches_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Lista filiais (branches) da academia. Para popular dropdown na UI.
+    Cache 10min — raramente muda. Retorna [{id, name, ...}] ou [] em erro."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if not integracao:
+        return []
+    cache_key = f"evo:branches:{empresa_id}:{unidade_id or 'def'}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return []
+    url = f"{_evo_api_base(integracao)}/branches"
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:branches:{empresa_id}")
+    if resp is None or resp.status_code != 200:
+        return []
+    try:
+        data = resp.json() or []
+        normalizado = []
+        for b in data if isinstance(data, list) else []:
+            normalizado.append({
+                "id": b.get("idBranch") or b.get("id"),
+                "name": b.get("name") or b.get("nameBranch") or "Filial",
+            })
+        await _cache_set_json(cache_key, normalizado, _CACHE_DISCOVERY)
+        return normalizado
+    except Exception as e:
+        logger.warning(f"⚠️ EVO branches parse: {e}")
+        return []
+
+
+async def listar_services_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Lista servicos (planos/aulas) da academia.
+    Util pra descobrir o idService da 'Aula Experimental'. Cache 10min."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if not integracao:
+        return []
+    cache_key = f"evo:services:{empresa_id}:{unidade_id or 'def'}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return []
+    url = f"{_evo_api_base(integracao)}/service"
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:services:{empresa_id}")
+    if resp is None or resp.status_code != 200:
+        return []
+    try:
+        data = resp.json() or []
+        normalizado = []
+        for s in data if isinstance(data, list) else []:
+            normalizado.append({
+                "id": s.get("idService") or s.get("id"),
+                "name": s.get("nameService") or s.get("name") or "Servico",
+                "value": s.get("value"),
+            })
+        await _cache_set_json(cache_key, normalizado, _CACHE_DISCOVERY)
+        return normalizado
+    except Exception as e:
+        logger.warning(f"⚠️ EVO services parse: {e}")
+        return []
+
+
+async def listar_activities_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Lista atividades (modalidades) da academia.
+    Pra whitelist de quais aulas a IA pode oferecer. Cache 10min."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if not integracao:
+        return []
+    cache_key = f"evo:activities:{empresa_id}:{unidade_id or 'def'}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return []
+    url = f"{_evo_api_base(integracao)}/activities"
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:activities:{empresa_id}")
+    if resp is None or resp.status_code != 200:
+        return []
+    try:
+        data = resp.json() or []
+        normalizado = []
+        for a in data if isinstance(data, list) else []:
+            normalizado.append({
+                "id": a.get("idActivity") or a.get("id"),
+                "name": a.get("name") or a.get("nameActivity") or "Atividade",
+            })
+        await _cache_set_json(cache_key, normalizado, _CACHE_DISCOVERY)
+        return normalizado
+    except Exception as e:
+        logger.warning(f"⚠️ EVO activities parse: {e}")
+        return []
+
+
+# ────────── AGENDAR / LISTAR HORARIOS ──────────
+
+async def listar_horarios_disponiveis_evo(
+    empresa_id: int,
+    unidade_id: Optional[int] = None,
+    dias_a_frente: int = 5,
+    id_branch: Optional[int] = None,
+    filtro_id_activities: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Lista sessoes com vagas pros proximos N dias.
+    A EVO nao suporta range nativo — fazemos N requests em paralelo (1 por dia)
+    e agregamos. Cache de 2min por (empresa, unidade, branch, dias).
+    Filtra opcionalmente por whitelist de id_activities (vazio = todas).
+    Retorna lista normalizada."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if not integracao:
+        return []
+    branch = id_branch or integracao.get("idBranch")
+    if not branch:
+        logger.warning(f"⚠️ EVO horarios: idBranch ausente empresa={empresa_id}")
+        return []
+
+    cache_key = f"evo:horarios:{empresa_id}:{branch}:{dias_a_frente}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        # Aplica filtro mesmo no cache
+        if filtro_id_activities:
+            allow = set(int(x) for x in filtro_id_activities)
+            cached = [s for s in cached if int(s.get("idActivity") or 0) in allow]
+        return cached
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return []
+    url = f"{_evo_api_base(integracao)}/activities/schedule"
+
+    hoje = datetime.now().date()
+    datas = [(hoje + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(int(dias_a_frente))]
+
+    async def _fetch_dia(data_str):
+        resp = await _evo_request(
+            "GET", url, headers,
+            params={
+                "date": data_str,
+                "onlyAvailables": "true",
+                "idBranch": str(branch),
+                "take": "200",
+            },
+            log_tag=f"EVO:sched:{data_str}",
+        )
+        if resp is None or resp.status_code != 200:
+            return []
+        try:
+            return resp.json() or []
+        except Exception:
+            return []
+
+    resultados = await asyncio.gather(*[_fetch_dia(d) for d in datas], return_exceptions=True)
+
+    todas = []
+    for r in resultados:
+        if isinstance(r, list):
+            todas.extend(r)
+
+    normalizado = []
+    for s in todas:
+        cap = int(s.get("capacity") or 0)
+        ocu = int(s.get("ocupation") or 0)
+        if cap <= 0 or (cap - ocu) <= 0:
+            continue
+        normalizado.append({
+            "idActivitySession": s.get("idAtividadeSessao") or s.get("idActivitySession"),
+            "idActivity": s.get("idActivity"),
+            "name": s.get("name"),
+            "instructor": s.get("instructor") or s.get("instructorName") or "",
+            "area": s.get("area") or "",
+            "activityDate": s.get("activityDate"),
+            "startTime": s.get("startTime"),
+            "endTime": s.get("endTime"),
+            "capacity": cap,
+            "ocupation": ocu,
+            "vagas": cap - ocu,
+            "bookingEndTime": s.get("bookingEndTime"),
+        })
+
+    # Ordena por activityDate + startTime
+    normalizado.sort(key=lambda x: (x.get("activityDate") or "", x.get("startTime") or ""))
+
+    await _cache_set_json(cache_key, normalizado, _CACHE_HORARIOS)
+
+    # Aplica filtro depois de cachear (cache fica completo, filtro e por chamada)
+    if filtro_id_activities:
+        allow = set(int(x) for x in filtro_id_activities)
+        normalizado = [s for s in normalizado if int(s.get("idActivity") or 0) in allow]
+
+    return normalizado
+
+
+async def agendar_aula_experimental_evo(
+    empresa_id: int,
+    unidade_id: Optional[int],
+    id_prospect: int,
+    activity_date: str,         # "yyyy-MM-dd HH:mm"
+    activity_name: str,         # nome da modalidade (ex: "Pilates Studio")
+    service_name: str = "Aula Experimental",
+    id_activity: Optional[int] = None,
+    id_service: Optional[int] = None,
+    id_branch: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Agenda uma aula experimental para o prospect.
+    Retorna {ok: bool, status: int, mensagens: [str], data: {...}}.
+    Apos sucesso, invalida cache de horarios pra refletir nova ocupacao."""
+    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    if not integracao:
+        return {"ok": False, "status": 0, "mensagens": ["Integracao EVO nao configurada"]}
+
+    branch = id_branch or integracao.get("idBranch")
+    if not branch:
+        return {"ok": False, "status": 0, "mensagens": ["idBranch nao definido"]}
+
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return {"ok": False, "status": 0, "mensagens": ["Credenciais EVO ausentes"]}
+
+    url = f"{_evo_api_base(integracao)}/activities/schedule/experimental-class"
+    params = {
+        "idProspect": str(id_prospect),
+        "activityDate": activity_date,
+        "activity": activity_name,
+        "service": service_name,
+        "activityExist": "true",
+        "idBranch": str(branch),
+    }
+    if id_activity:
+        params["idActivity"] = str(id_activity)
+    if id_service:
+        params["idService"] = str(id_service)
+
+    resp = await _evo_request(
+        "POST", url, headers,
+        params=params,
+        log_tag=f"EVO:agendar:{empresa_id}",
+    )
+    if resp is None:
+        return {"ok": False, "status": 0, "mensagens": ["Sem resposta da EVO (timeout)"]}
+
+    msgs = []
+    data = None
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            msgs = body.get("mensagens") or []
+            data = body
+    except Exception:
+        msgs = [resp.text[:300]] if resp.text else []
+
+    if 200 <= resp.status_code < 300:
+        # Invalida cache de horarios — vaga foi consumida
+        try:
+            for k in await redis_client.keys(f"evo:horarios:{empresa_id}:{branch}:*"):
+                await redis_client.delete(k)
+        except Exception:
+            pass
+        logger.info(f"✅ EVO agendamento OK empresa={empresa_id} prospect={id_prospect} sess={params.get('activity')} @ {activity_date}")
+        return {"ok": True, "status": resp.status_code, "mensagens": msgs, "data": data}
+
+    logger.warning(f"❌ EVO agendamento falhou {resp.status_code}: {msgs or resp.text[:200]}")
+    return {"ok": False, "status": resp.status_code, "mensagens": msgs or [f"HTTP {resp.status_code}"], "data": data}

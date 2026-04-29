@@ -10,6 +10,10 @@ from src.core.redis_client import redis_client
 import json
 import asyncio
 from src.services.db_queries import listar_unidades_ativas, buscar_planos_ativos, formatar_planos_para_prompt
+from src.services.evo_client import (
+    listar_branches_evo, listar_services_evo, listar_activities_evo,
+    listar_horarios_disponiveis_evo, agendar_aula_experimental_evo, criar_prospect_evo,
+)
 from src.utils.rate_limit import rate_limit_empresa
 
 # [CACHE-01] Invalidacao centralizada — toda mutacao (PUT/POST/DELETE) deve chamar
@@ -77,6 +81,15 @@ class PersonalityUpdate(BaseModel):
     tour_mensagem_custom: Optional[str] = None
     comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
     mensagem_fora_horario: Optional[str] = None  # [HORA-01] mensagem custom fora do horario
+    # [AGEND-01] Agendamento de aula experimental (Fase 1)
+    agendamento_experimental_ativo: Optional[bool] = False
+    agendamento_provider: Optional[str] = "evo"
+    agendamento_dias_a_frente: Optional[int] = 5
+    agendamento_id_branch: Optional[int] = None
+    agendamento_id_activities: Optional[Any] = None
+    agendamento_id_service: Optional[int] = None
+    agendamento_texto_oferta: Optional[str] = ""
+    agendamento_coletar_email: Optional[bool] = False
 
 # Campos string do PersonalityCreate — definido fora da classe para evitar
 # conflito com atributos privados do Pydantic V2 (prefixo _)
@@ -427,6 +440,25 @@ def _exemplos_para_jsonb(valor):
     return json.dumps(str(valor))
 
 
+
+def _agend_id_acts_to_json(valor):
+    """Converte agendamento_id_activities (lista, csv string, ou JSON string) em JSON valido."""
+    import json as _j
+    if isinstance(valor, list):
+        return _j.dumps(valor)
+    if isinstance(valor, str) and valor.strip():
+        try:
+            _j.loads(valor)
+            return valor
+        except Exception:
+            return _j.dumps([int(x.strip()) for x in valor.split(",") if x.strip().isdigit()])
+    return "[]"
+
+
+def _save_agendamento_personalidade_sync_helper():
+    pass
+
+
 @router.post("/personalities", status_code=201)
 async def create_personality(
     data: PersonalityCreate,
@@ -501,6 +533,28 @@ async def create_personality(
             )
         except Exception:
             pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
+        # [AGEND-01] Salva campos de agendamento experimental (POST)
+        try:
+            await _database.db_pool.execute(
+                """UPDATE personalidade_ia SET
+                    agendamento_experimental_ativo=$1, agendamento_provider=$2,
+                    agendamento_dias_a_frente=$3, agendamento_id_branch=$4,
+                    agendamento_id_activities=$5::jsonb, agendamento_id_service=$6,
+                    agendamento_texto_oferta=$7, agendamento_coletar_email=$8
+                   WHERE id=$9 AND empresa_id=$10""",
+                bool(data.agendamento_experimental_ativo),
+                data.agendamento_provider or "evo",
+                int(data.agendamento_dias_a_frente or 5),
+                data.agendamento_id_branch,
+                _agend_id_acts_to_json(data.agendamento_id_activities),
+                data.agendamento_id_service,
+                data.agendamento_texto_oferta or "",
+                bool(data.agendamento_coletar_email),
+                new_id, empresa_id
+            )
+        except Exception as _ae:
+            logger.warning(f"[AGEND-01] save POST falhou: {_ae}")
 
         # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
         if data.ativo:
@@ -629,6 +683,28 @@ async def update_personality_by_id(
         )
     except Exception:
         pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+
+    # [AGEND-01] Salva campos de agendamento experimental (PUT)
+    try:
+        await _database.db_pool.execute(
+            """UPDATE personalidade_ia SET
+                agendamento_experimental_ativo=$1, agendamento_provider=$2,
+                agendamento_dias_a_frente=$3, agendamento_id_branch=$4,
+                agendamento_id_activities=$5::jsonb, agendamento_id_service=$6,
+                agendamento_texto_oferta=$7, agendamento_coletar_email=$8
+               WHERE id=$9 AND empresa_id=$10""",
+            bool(data.agendamento_experimental_ativo),
+            data.agendamento_provider or "evo",
+            int(data.agendamento_dias_a_frente or 5),
+            data.agendamento_id_branch,
+            _agend_id_acts_to_json(data.agendamento_id_activities),
+            data.agendamento_id_service,
+            data.agendamento_texto_oferta or "",
+            bool(data.agendamento_coletar_email),
+            pid, empresa_id
+        )
+    except Exception as _ae:
+        logger.warning(f"[AGEND-01] save PUT falhou: {_ae}")
 
     # [HORA-01] Salva mensagem_fora_horario separadamente (migration pode estar pendente)
     if data.mensagem_fora_horario is not None:
@@ -2546,3 +2622,108 @@ async def get_chatwoot_teams(token_payload: dict = Depends(get_current_user_toke
         raise HTTPException(status_code=502, detail=f"Chatwoot retornou {e.response.status_code}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Erro ao consultar times: {e}")
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# AGENDAMENTO DE AULA EXPERIMENTAL — Fase 1
+# ════════════════════════════════════════════════════════════════════════════
+
+class AgendarExperimentalRequest(BaseModel):
+    unidade_id: Optional[int] = None
+    nome: str
+    sobrenome: Optional[str] = ""
+    telefone: str
+    email: Optional[str] = None
+    id_activity_session: int
+    id_activity: int
+    activity_name: str
+    activity_date: str  # yyyy-MM-dd HH:mm
+    service_name: Optional[str] = "Aula Experimental"
+    id_service: Optional[int] = None
+
+
+@router.get("/agendamento/discovery")
+async def agendamento_discovery(
+    unidade_id: Optional[int] = None,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Descobre branches, services e activities da EVO para popular dropdowns."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa nao vinculada")
+    try:
+        import asyncio as _aio
+        branches, services, activities = await _aio.gather(
+            listar_branches_evo(empresa_id, unidade_id),
+            listar_services_evo(empresa_id, unidade_id),
+            listar_activities_evo(empresa_id, unidade_id),
+        )
+        return {
+            "branches": branches, "services": services, "activities": activities,
+            "ok": bool(branches or services or activities),
+        }
+    except Exception as e:
+        logger.error(f"discovery EVO erro: {e}")
+        return {"branches": [], "services": [], "activities": [], "ok": False, "error": str(e)[:200]}
+
+
+@router.get("/agendamento/horarios")
+async def agendamento_horarios(
+    unidade_id: Optional[int] = None,
+    dias: int = Query(5, ge=1, le=14),
+    id_branch: Optional[int] = None,
+    id_activities: Optional[str] = None,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Lista sessoes disponiveis pra agendamento (proximos N dias)."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa nao vinculada")
+    filtro = None
+    if id_activities:
+        try:
+            filtro = [int(x.strip()) for x in id_activities.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="id_activities deve ser CSV de inteiros")
+    try:
+        horarios = await listar_horarios_disponiveis_evo(
+            empresa_id, unidade_id, dias_a_frente=dias,
+            id_branch=id_branch, filtro_id_activities=filtro,
+        )
+        return {"total": len(horarios), "horarios": horarios}
+    except Exception as e:
+        logger.error(f"horarios EVO erro: {e}")
+        raise HTTPException(status_code=502, detail=f"Erro ao consultar horarios: {e}")
+
+
+@router.post("/agendamento/experimental")
+async def agendamento_experimental(
+    body: AgendarExperimentalRequest,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Cria prospect (se nao existe) e agenda aula experimental."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa nao vinculada")
+    lead_data = {
+        "name": f"{body.nome} {body.sobrenome or ''}".strip(),
+        "email": body.email,
+        "cellphone": body.telefone,
+        "notes": "Agendamento experimental via dashboard",
+    }
+    id_prospect = await criar_prospect_evo(empresa_id, body.unidade_id, lead_data)
+    if not id_prospect or id_prospect is True:
+        return {"ok": False, "etapa": "criar_prospect", "mensagens": ["Falha criar prospect na EVO"]}
+    res = await agendar_aula_experimental_evo(
+        empresa_id=empresa_id, unidade_id=body.unidade_id,
+        id_prospect=int(id_prospect), activity_date=body.activity_date,
+        activity_name=body.activity_name, service_name=body.service_name or "Aula Experimental",
+        id_activity=body.id_activity, id_service=body.id_service,
+    )
+    return {
+        "ok": res.get("ok", False), "etapa": "agendar",
+        "id_prospect": id_prospect, "id_activity_session": body.id_activity_session,
+        "status": res.get("status"), "mensagens": res.get("mensagens", []),
+        "data": res.get("data"),
+    }
