@@ -212,10 +212,16 @@ export default function PlanosPage() {
                   {/* Badge unidade */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1">
-                      <span className="text-xs font-semibold text-[#00d2ff]/70 uppercase tracking-wider">
-                        {plano.unidade_nome || "Global"}
-                      </span>
-                      <h3 className="text-base font-bold mt-0.5 leading-tight">{plano.nome}</h3>
+                      {plano.unidade_nome ? (
+                        <span className="inline-flex items-center gap-1.5 text-[10px] font-black text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-1 rounded-full uppercase tracking-widest">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> {plano.unidade_nome}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-[10px] font-black text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-1 rounded-full uppercase tracking-widest">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Global (todas)
+                        </span>
+                      )}
+                      <h3 className="text-base font-bold mt-2 leading-tight">{plano.nome}</h3>
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <button
@@ -362,17 +368,41 @@ export default function PlanosPage() {
 
                 {/* Unidade */}
                 <div>
-                  <label className={labelClass}>Unidade (deixe vazio para global)</label>
-                  <select
-                    className={inputClass + " appearance-none"}
-                    value={formData.unidade_id ?? ""}
-                    onChange={e => setFormData(p => ({ ...p, unidade_id: e.target.value ? parseInt(e.target.value) : null }))}
-                  >
-                    <option value="">Global (todas as unidades)</option>
-                    {unidades.map(u => (
-                      <option key={u.id} value={u.id}>{u.nome}</option>
-                    ))}
-                  </select>
+                  <label className={labelClass + " flex items-center gap-2"}>
+                    Unidade
+                    <span className="text-[10px] font-normal text-amber-400 normal-case">
+                      ⚠️ Selecione a unidade ou deixe Global
+                    </span>
+                  </label>
+                  <div className="relative">
+                    <select
+                      className={inputClass + " appearance-none pr-12 cursor-pointer"}
+                      value={formData.unidade_id ?? ""}
+                      onChange={e => setFormData(p => ({ ...p, unidade_id: e.target.value ? parseInt(e.target.value) : null }))}
+                      style={{ backgroundImage: "none" }}
+                    >
+                      <option value="">— Global (todas as unidades) —</option>
+                      {unidades.map(u => (
+                        <option key={u.id} value={u.id}>{u.nome}</option>
+                      ))}
+                    </select>
+                    {/* Seta visivel — substitui o appearance-none do native select */}
+                    <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[#00d2ff]">
+                      <span className="text-[10px] font-black uppercase tracking-widest">Clique</span>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </div>
+                  {formData.unidade_id ? (
+                    <p className="text-[10px] text-emerald-400 font-bold mt-1.5 pl-1 flex items-center gap-1">
+                      ✓ Vinculado à unidade: {unidades.find(u => u.id === formData.unidade_id)?.nome || "?"}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-slate-500 italic mt-1.5 pl-1">
+                      Plano será aplicado em TODAS as unidades (global)
+                    </p>
+                  )}
                 </div>
 
                 {/* Link venda */}
