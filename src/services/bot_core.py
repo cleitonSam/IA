@@ -560,13 +560,20 @@ def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
 async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
-    Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
-    em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
+    Janela extensível: cada nova mensagem reseta o deadline em +EXTENSAO_POR_MSG
+    para capturar rajadas longas (ex: usuário digita várias msgs lentas no WhatsApp).
+    Garante hard cap (HARD_LIMIT) para nunca travar a resposta indefinidamente.
     """
     chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
 
+    JANELA_INICIAL = 5.0     # primeira janela após chamar a coleta
+    EXTENSAO_POR_MSG = 3.0   # ao receber msg nova, espera +3s pela próxima
+    HARD_LIMIT = 15.0        # nunca espera mais que 15s no total
+    QUIETUDE_MIN = 6         # checks vazios consecutivos (~3s) antes de declarar fim de rajada
+
     mensagens_acumuladas: List[str] = []
-    deadline = time.time() + 3.0  # janela de 3s para juntar rajada WhatsApp
+    inicio = time.time()
+    deadline = inicio + JANELA_INICIAL
     _checks_vazios = 0
 
     while True:
@@ -578,7 +585,10 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
         if lote:
             mensagens_acumuladas.extend(lote)
             _checks_vazios = 0
-            if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
+            # Estende deadline para capturar próxima msg da rajada (respeitando hard cap)
+            novo_deadline = time.time() + EXTENSAO_POR_MSG
+            deadline = min(novo_deadline, inicio + HARD_LIMIT)
+            if len(mensagens_acumuladas) >= 8 or time.time() >= inicio + HARD_LIMIT:
                 break
             await asyncio.sleep(0.5)
             continue
@@ -586,12 +596,15 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
         _checks_vazios += 1
         if time.time() >= deadline:
             break
-        if mensagens_acumuladas and _checks_vazios >= 4:
-            # Já tem msgs e buffer ficou vazio 4x seguidas — rajada acabou
+        if mensagens_acumuladas and _checks_vazios >= QUIETUDE_MIN:
+            # Já tem msgs e buffer ficou vazio QUIETUDE_MIN vezes seguidas — rajada acabou
             break
         await asyncio.sleep(0.5)
 
-    logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
+    logger.info(
+        f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id} "
+        f"(esperou {time.time() - inicio:.1f}s)"
+    )
     return mensagens_acumuladas
 
 
@@ -1015,9 +1028,11 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Aguarda período para acumular rajada de mensagens (WhatsApp = msgs curtas em sequência)
-        # Janela de 4s: captura rajadas típicas de WhatsApp (2-4 msgs em sequência)
-        await asyncio.sleep(4.0)
+        # ⏱️ Pré-espera curta: a coalescência principal acontece dentro de
+        # coletar_mensagens_buffer, que agora tem janela extensível por msg
+        # (até HARD_LIMIT=15s). Mantemos só 1.5s aqui para reduzir latência
+        # e permitir que mensagens "in flight" cheguem ao buffer.
+        await asyncio.sleep(1.5)
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id, empresa_id)
         if not mensagens_acumuladas:

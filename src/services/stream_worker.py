@@ -390,6 +390,10 @@ async def _process_job(msg_id: str, payload: dict):
                                 source=source,
                                 contato_fone=contato_fone
                             )
+                            # Grace period: aguarda mensagens que possam ter chegado
+                            # entre o término do processamento e o release do lock
+                            # (race comum quando worker B falha lock e a msg fica órfã).
+                            await asyncio.sleep(2.0)
                             if await redis_client.llen(f"{empresa_id}:buffet:{conversation_id}") == 0:
                                 break
                             logger.info(f"🔄 Novas mensagens no buffet para conv {conversation_id}, continuando loop.")
