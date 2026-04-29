@@ -41,6 +41,9 @@ class CriarUnidadeRequest(BaseModel):
     palavras_chave: Optional[Any] = None
     foto_grade: Optional[str] = None
     link_tour_virtual: Optional[str] = None
+    diaria_disponivel: Optional[bool] = False
+    diaria_valor: Optional[float] = None
+    diaria_observacao: Optional[str] = None
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -766,11 +769,14 @@ async def criar_unidade(
                 estado, endereco, numero, telefone_principal, whatsapp, site,
                 instagram, link_matricula, horarios, modalidades, planos,
                 formas_pagamento, convenios, infraestrutura, servicos, palavras_chave,
-                foto_grade, link_tour_virtual, ativa, created_at, updated_at
+                foto_grade, link_tour_virtual,
+                diaria_disponivel, diaria_valor, diaria_observacao,
+                ativa, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
                 $14, $15, $16, $17, $18::jsonb, $19::jsonb, $20::jsonb,
                 $21::jsonb, $22::jsonb, $23::jsonb, $24, $25,
+                $26, $27, $28,
                 true, NOW(), NOW()
             )
             RETURNING id
@@ -787,7 +793,8 @@ async def criar_unidade(
             json.dumps(_norm_jsonb(body.infraestrutura, {})),
             json.dumps(_norm_jsonb(body.servicos, {})),
             json.dumps(_norm_jsonb(body.palavras_chave, [])),
-            body.foto_grade, body.link_tour_virtual
+            body.foto_grade, body.link_tour_virtual,
+            bool(body.diaria_disponivel), body.diaria_valor, body.diaria_observacao
         )
         # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada
         from src.services.cache_invalidation import invalidate_unidades
@@ -1016,8 +1023,9 @@ async def atualizar_unidade(
                 formas_pagamento = $16::jsonb, convenios = $17::jsonb, infraestrutura = $18::jsonb,
                 servicos = $19::jsonb, palavras_chave = $20::jsonb,
                 foto_grade = $21, link_tour_virtual = $22,
-                updated_at = NOW()
-            WHERE id = $23 AND empresa_id = $24
+                updated_at = NOW(),
+                diaria_disponivel = $26, diaria_valor = $27, diaria_observacao = $28
+            WHERE id = $29 AND empresa_id = $30
             """,
             body.nome, body.nome_abreviado, body.cidade, body.bairro,
             body.estado, body.endereco, body.numero, body.telefone_principal,
@@ -1031,6 +1039,7 @@ async def atualizar_unidade(
             json.dumps(_norm_jsonb(body.servicos, {})),
             json.dumps(_norm_jsonb(body.palavras_chave, [])),
             body.foto_grade, body.link_tour_virtual,
+            bool(body.diaria_disponivel), body.diaria_valor, body.diaria_observacao,
             unidade_id, empresa_id
         )
         # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada (que pode

@@ -590,7 +590,9 @@ async def update_personality_by_id(
     data: PersonalityCreate,
     token_payload: dict = Depends(get_current_user_token)
 ):
-    """Atualiza uma personalidade pelo ID."""
+    """[MERGE-safe] Atualiza uma personalidade pelo ID.
+    SO atualiza campos enviados explicitamente no payload (exclude_unset).
+    Isso evita o bug onde PUT incompleto resetava campos nao enviados pra default."""
     empresa_id = token_payload.get("empresa_id")
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada")
@@ -599,164 +601,124 @@ async def update_personality_by_id(
     )
     if not existing:
         raise HTTPException(status_code=404, detail="Personalidade não encontrada")
-    horario_json = json.dumps(data.horario_atendimento_ia) if data.horario_atendimento_ia is not None else None
-    horario_comercial_json = json.dumps(data.horario_comercial) if data.horario_comercial is not None else None
-    menu_json = json.dumps(data.menu_triagem) if data.menu_triagem is not None else None
-    exemplos_json = _exemplos_para_jsonb(data.exemplos)
-    logger.info(f"💾 [Save Personalidade] pid={pid} empresa={empresa_id} | horario_atendimento_ia={horario_json}")
-    _base_params = [
-        data.nome_ia, data.personalidade, data.instrucoes_base, data.tom_voz,
-        data.model_name, data.temperature, data.max_tokens, data.ativo, data.usar_emoji,
-        horario_json, horario_comercial_json, menu_json,
-        data.idioma, data.objetivos_venda, data.metas_comerciais, data.script_vendas,
-        data.scripts_objecoes, data.frases_fechamento, data.diferenciais,
-        data.posicionamento, data.publico_alvo, data.restricoes, data.linguagem_proibida,
-        data.contexto_empresa, data.contexto_extra, data.abordagem_proativa,
-        exemplos_json, data.palavras_proibidas, data.despedida_personalizada,
-        data.regras_formatacao, data.regras_seguranca, data.emoji_tipo, data.emoji_cor,
-        data.tts_ativo if data.tts_ativo is not None else True, data.tts_voz or "Kore",
-        data.oferecer_tour if data.oferecer_tour is not None else True,
-    ]
+
+    # [MERGE-SAFE] Pega so campos que vieram explicitamente no PUT
     try:
-        await _database.db_pool.execute(
-            """UPDATE personalidade_ia
-               SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
-                   modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
-                   horario_atendimento_ia=$10::jsonb, horario_comercial=$11::jsonb, menu_triagem=$12::jsonb,
-                   idioma=$13, objetivos_venda=$14, metas_comerciais=$15, script_vendas=$16,
-                   scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
-                   posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
-                   contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
-                   exemplos=$27::jsonb, palavras_proibidas=$28, despedida_personalizada=$29,
-                   regras_formatacao=$30, regras_seguranca=$31,
-                   emoji_tipo=$32, emoji_cor=$33,
-                   tts_ativo=$34, tts_voz=$35,
-                   oferecer_tour=$36,
-                   estrategia_tour=$37, tour_perguntar_primeira_visita=$38,
-                   tour_mensagem_custom=$39,
-                   updated_at=NOW()
-               WHERE id=$40 AND empresa_id=$41""",
-            *_base_params,
-            data.estrategia_tour or "smart",
-            data.tour_perguntar_primeira_visita if data.tour_perguntar_primeira_visita is not None else True,
-            data.tour_mensagem_custom,
-            pid, empresa_id
-        )
-    except Exception:
-        # Fallback: colunas tour strategy podem não existir ainda (migration pendente)
-        # Tenta criar as colunas automaticamente e salva sem elas
-        try:
-            await _database.db_pool.execute(
-                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS estrategia_tour TEXT DEFAULT 'smart'"
-            )
-            await _database.db_pool.execute(
-                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS tour_perguntar_primeira_visita BOOLEAN DEFAULT TRUE"
-            )
-            await _database.db_pool.execute(
-                "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS tour_mensagem_custom TEXT"
-            )
-            # Retry com campos novos
-            await _database.db_pool.execute(
-                """UPDATE personalidade_ia
-                   SET nome_ia=$1, personalidade=$2, instrucoes_base=$3, tom_voz=$4,
-                       modelo_preferido=$5, temperatura=$6, max_tokens=$7, ativo=$8, usar_emoji=$9,
-                       horario_atendimento_ia=$10::jsonb, horario_comercial=$11::jsonb, menu_triagem=$12::jsonb,
-                       idioma=$13, objetivos_venda=$14, metas_comerciais=$15, script_vendas=$16,
-                       scripts_objecoes=$17, frases_fechamento=$18, diferenciais=$19,
-                       posicionamento=$20, publico_alvo=$21, restricoes=$22, linguagem_proibida=$23,
-                       contexto_empresa=$24, contexto_extra=$25, abordagem_proativa=$26,
-                       exemplos=$27::jsonb, palavras_proibidas=$28, despedida_personalizada=$29,
-                       regras_formatacao=$30, regras_seguranca=$31,
-                       emoji_tipo=$32, emoji_cor=$33,
-                       tts_ativo=$34, tts_voz=$35,
-                       oferecer_tour=$36,
-                       estrategia_tour=$37, tour_perguntar_primeira_visita=$38,
-                       tour_mensagem_custom=$39,
-                       updated_at=NOW()
-                   WHERE id=$40 AND empresa_id=$41""",
-                *_base_params,
-                data.estrategia_tour or "smart",
-                data.tour_perguntar_primeira_visita if data.tour_perguntar_primeira_visita is not None else True,
-                data.tour_mensagem_custom,
-                pid, empresa_id
-            )
-            logger.info(f"✅ Colunas tour strategy criadas automaticamente e personalidade salva")
-        except Exception as e2:
-            logger.error(f"Erro ao atualizar personalidade {pid}: {e2}")
-            raise HTTPException(status_code=500, detail=f"Erro ao salvar: {str(e2)}")
+        enviados = data.model_dump(exclude_unset=True)  # Pydantic v2
+    except AttributeError:
+        enviados = data.dict(exclude_unset=True)  # Pydantic v1
 
-    # Salva comprimento_resposta separadamente (resiliência se migration pendente)
+    # Mapeia nome do field do Pydantic -> nome da coluna no BD
+    field_to_col = {
+        "nome_ia": "nome_ia", "personalidade": "personalidade",
+        "instrucoes_base": "instrucoes_base", "tom_voz": "tom_voz",
+        "model_name": "modelo_preferido", "temperature": "temperatura",
+        "max_tokens": "max_tokens", "ativo": "ativo", "usar_emoji": "usar_emoji",
+        "idioma": "idioma", "objetivos_venda": "objetivos_venda",
+        "metas_comerciais": "metas_comerciais", "script_vendas": "script_vendas",
+        "scripts_objecoes": "scripts_objecoes", "frases_fechamento": "frases_fechamento",
+        "diferenciais": "diferenciais", "posicionamento": "posicionamento",
+        "publico_alvo": "publico_alvo", "restricoes": "restricoes",
+        "linguagem_proibida": "linguagem_proibida",
+        "contexto_empresa": "contexto_empresa", "contexto_extra": "contexto_extra",
+        "abordagem_proativa": "abordagem_proativa",
+        "palavras_proibidas": "palavras_proibidas",
+        "despedida_personalizada": "despedida_personalizada",
+        "regras_formatacao": "regras_formatacao",
+        "regras_seguranca": "regras_seguranca",
+        "emoji_tipo": "emoji_tipo", "emoji_cor": "emoji_cor",
+        "estilo_comunicacao": "estilo_comunicacao",
+        "saudacao_personalizada": "saudacao_personalizada",
+        "regras_atendimento": "regras_atendimento",
+        "tts_ativo": "tts_ativo", "tts_voz": "tts_voz",
+        "oferecer_tour": "oferecer_tour", "estrategia_tour": "estrategia_tour",
+        "tour_perguntar_primeira_visita": "tour_perguntar_primeira_visita",
+        "tour_mensagem_custom": "tour_mensagem_custom",
+        "comprimento_resposta": "comprimento_resposta",
+        "mensagem_fora_horario": "mensagem_fora_horario",
+        "agendamento_experimental_ativo": "agendamento_experimental_ativo",
+        "agendamento_provider": "agendamento_provider",
+        "agendamento_dias_a_frente": "agendamento_dias_a_frente",
+        "agendamento_id_branch": "agendamento_id_branch",
+        "agendamento_id_service": "agendamento_id_service",
+        "agendamento_texto_oferta": "agendamento_texto_oferta",
+        "agendamento_coletar_email": "agendamento_coletar_email",
+    }
+
+    # Campos JSONB que precisam serializacao especial
+    json_fields = {
+        "horario_atendimento_ia": "horario_atendimento_ia::jsonb",
+        "horario_comercial": "horario_comercial::jsonb",
+        "menu_triagem": "menu_triagem::jsonb",
+        "exemplos": "exemplos::jsonb",
+        "agendamento_id_activities": "agendamento_id_activities::jsonb",
+    }
+
+    sets = []
+    params = []
+    n = 1
+    for field, val in enviados.items():
+        if field == "id":
+            continue
+        if field in field_to_col:
+            sets.append(f"{field_to_col[field]} = ${n}")
+            params.append(val)
+            n += 1
+        elif field in ("horario_atendimento_ia", "horario_comercial", "menu_triagem"):
+            sets.append(f"{field} = ${n}::jsonb")
+            params.append(json.dumps(val) if val is not None else None)
+            n += 1
+        elif field == "exemplos":
+            sets.append(f"exemplos = ${n}::jsonb")
+            params.append(_exemplos_para_jsonb(val))
+            n += 1
+        elif field == "agendamento_id_activities":
+            sets.append(f"agendamento_id_activities = ${n}::jsonb")
+            if isinstance(val, list):
+                params.append(json.dumps(val))
+            elif isinstance(val, str) and val.strip():
+                try:
+                    json.loads(val)
+                    params.append(val)
+                except Exception:
+                    params.append(json.dumps([int(x.strip()) for x in val.split(",") if x.strip().isdigit()]))
+            else:
+                params.append("[]")
+            n += 1
+
+    if not sets:
+        # Nada pra atualizar (PUT vazio)
+        return {"status": "success", "message": "Nenhum campo enviado pra atualizar"}
+
+    sets.append("updated_at = NOW()")
+    params.extend([pid, empresa_id])
+    sql = f"UPDATE personalidade_ia SET {', '.join(sets)} WHERE id = ${n} AND empresa_id = ${n+1}"
+
+    logger.info(f"💾 [Save Personalidade MERGE] pid={pid} empresa={empresa_id} | {len(enviados)} campos enviados")
+
     try:
-        comprimento = data.comprimento_resposta or "normal"
-        if comprimento not in ("concisa", "normal", "detalhada"):
-            comprimento = "normal"
-        await _database.db_pool.execute(
-            "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2 AND empresa_id=$3",
-            comprimento, pid, empresa_id
-        )
-    except Exception:
-        pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
+        await _database.db_pool.execute(sql, *params)
+    except Exception as e:
+        logger.error(f"Erro PUT personalidade pid={pid}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar: {str(e)[:200]}")
 
-    # [AGEND-01] Salva campos de agendamento experimental (PUT)
-    try:
-        await _database.db_pool.execute(
-            """UPDATE personalidade_ia SET
-                agendamento_experimental_ativo=$1, agendamento_provider=$2,
-                agendamento_dias_a_frente=$3, agendamento_id_branch=$4,
-                agendamento_id_activities=$5::jsonb, agendamento_id_service=$6,
-                agendamento_texto_oferta=$7, agendamento_coletar_email=$8
-               WHERE id=$9 AND empresa_id=$10""",
-            bool(data.agendamento_experimental_ativo),
-            data.agendamento_provider or "evo",
-            int(data.agendamento_dias_a_frente or 5),
-            data.agendamento_id_branch,
-            _agend_id_acts_to_json(data.agendamento_id_activities),
-            data.agendamento_id_service,
-            data.agendamento_texto_oferta or "",
-            bool(data.agendamento_coletar_email),
-            pid, empresa_id
-        )
-    except Exception as _ae:
-        logger.warning(f"[AGEND-01] save PUT falhou: {_ae}")
-
-    # [HORA-01] Salva mensagem_fora_horario separadamente (migration pode estar pendente)
-    if data.mensagem_fora_horario is not None:
-        try:
-            await _database.db_pool.execute(
-                "UPDATE personalidade_ia SET mensagem_fora_horario=$1 WHERE id=$2 AND empresa_id=$3",
-                data.mensagem_fora_horario.strip() or None, pid, empresa_id,
-            )
-        except Exception:
-            try:
-                # Cria coluna se nao existir (migration pendente)
-                await _database.db_pool.execute(
-                    "ALTER TABLE personalidade_ia ADD COLUMN IF NOT EXISTS mensagem_fora_horario TEXT"
-                )
-                await _database.db_pool.execute(
-                    "UPDATE personalidade_ia SET mensagem_fora_horario=$1 WHERE id=$2 AND empresa_id=$3",
-                    data.mensagem_fora_horario.strip() or None, pid, empresa_id,
-                )
-            except Exception as _e:
-                logger.warning(f"[HORA-01] nao conseguiu salvar mensagem_fora_horario: {_e}")
-
-    # Se esta foi marcada como ativa, desativa todas as outras da mesma empresa
-    if data.ativo:
+    # Se ativou, desativa as outras da empresa
+    if enviados.get("ativo") is True:
         await _database.db_pool.execute(
             "UPDATE personalidade_ia SET ativo = false WHERE empresa_id = $1 AND id != $2",
             empresa_id, pid
         )
-    # [CACHE-01] Invalidacao completa — inclui personalidade, menu, fluxo, global
+
+    # Sincroniza pause flag se ativo veio
+    if "ativo" in enviados:
+        paused_key = f"ia:chatwoot:paused:{empresa_id}"
+        if not enviados["ativo"]:
+            await redis_client.set(paused_key, "1")
+        else:
+            await redis_client.delete(paused_key)
+            logger.info(f"▶️ IA reativada via personalidade (id={pid}) para empresa {empresa_id}")
+
     await invalidate_personalidade(empresa_id)
-
-    # Sincroniza flag Redis de pausa com o campo ativo da personalidade
-    paused_key = f"ia:chatwoot:paused:{empresa_id}"
-    if not data.ativo:
-        await redis_client.set(paused_key, "1")
-        logger.info(f"⏸️ IA pausada via personalidade (id={pid}) para empresa {empresa_id}")
-    else:
-        await redis_client.delete(paused_key)
-        logger.info(f"▶️ IA reativada via personalidade (id={pid}) para empresa {empresa_id}")
-
     return {"status": "success"}
 
 
