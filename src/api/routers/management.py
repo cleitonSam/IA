@@ -2697,10 +2697,7 @@ async def list_planos(token_payload: dict = Depends(get_current_user_token)):
 
 
 def _diferenciais_para_array(valor):
-    """Converte 'diferenciais' do payload em list[str] que o asyncpg envia
-    como text[] pro Postgres. O frontend manda string livre separada por
-    vírgula (ex: 'aula gratis, sem fidelidade') ou já uma lista. A coluna
-    no BD é text[], então não dá pra mandar string crua."""
+    """[INTERNO] Converte 'diferenciais' em list[str] (pra envio quando coluna for TEXT[])."""
     if valor is None:
         return None
     if isinstance(valor, list):
@@ -2710,11 +2707,59 @@ def _diferenciais_para_array(valor):
     return [str(valor)]
 
 
+_DIFER_COLTYPE_CACHE = {"tipo": None}
+
+
+async def _diferenciais_coltype():
+    """Detecta uma vez se a coluna planos.diferenciais é TEXT ou TEXT[].
+    Cache em memoria pra nao consultar information_schema toda chamada."""
+    if _DIFER_COLTYPE_CACHE["tipo"] is not None:
+        return _DIFER_COLTYPE_CACHE["tipo"]
+    try:
+        row = await _database.db_pool.fetchrow(
+            """SELECT data_type, udt_name FROM information_schema.columns
+               WHERE table_name = 'planos' AND column_name = 'diferenciais'"""
+        )
+        if row:
+            # data_type='ARRAY' ou udt_name='_text' indicam TEXT[]
+            tipo = "array" if (row["data_type"] == "ARRAY" or str(row["udt_name"]).startswith("_")) else "text"
+        else:
+            tipo = "text"
+    except Exception:
+        tipo = "text"
+    _DIFER_COLTYPE_CACHE["tipo"] = tipo
+    logger.info(f"[planos.diferenciais] coluna detectada como tipo='{tipo}'")
+    return tipo
+
+
+async def _diferenciais_para_coluna(valor):
+    """Retorna o valor no formato certo conforme a coluna seja TEXT (str) ou TEXT[] (list)."""
+    arr = _diferenciais_para_array(valor)
+    if arr is None:
+        return None
+    tipo = await _diferenciais_coltype()
+    if tipo == "array":
+        return arr
+    # TEXT — junta com virgula
+    return ", ".join(arr) if arr else None
+
+
 @router.post("/planos", status_code=201)
 async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+
+    # Validacao multi-tenant: se passou unidade_id, ela tem que ser desta empresa
+    if body.unidade_id is not None:
+        own = await _database.db_pool.fetchval(
+            "SELECT 1 FROM unidades WHERE id = $1 AND empresa_id = $2",
+            body.unidade_id, empresa_id
+        )
+        if not own:
+            raise HTTPException(status_code=400, detail=f"Unidade {body.unidade_id} não pertence a esta empresa")
+
+    diferenciais_val = await _diferenciais_para_coluna(body.diferenciais)
     try:
         await _database.db_pool.execute(
             """
@@ -2725,12 +2770,18 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
             """,
             empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
             body.meses_promocionais, body.descricao,
-            _diferenciais_para_array(body.diferenciais),
+            diferenciais_val,
             body.link_venda, body.ativo, body.ordem
         )
+    except asyncpg.UniqueViolationError as e:
+        logger.warning(f"Plano duplicado empresa={empresa_id}: {e}")
+        raise HTTPException(status_code=409, detail=f"Já existe um plano com esses dados ({e}).")
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PG ao criar plano empresa={empresa_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro PG: {type(e).__name__}: {str(e)[:200]}")
     except Exception as e:
-        logger.error(f"Erro ao criar plano para empresa {empresa_id}: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao salvar plano. Tente novamente.")
+        logger.error(f"Erro ao criar plano para empresa {empresa_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)[:200]}")
     # [CACHE-01] Invalida cache de planos (proxima consulta vai re-ler do banco)
     await invalidate_planos(empresa_id)
     return {"status": "success"}
@@ -2741,6 +2792,16 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
         raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+
+    if body.unidade_id is not None:
+        own = await _database.db_pool.fetchval(
+            "SELECT 1 FROM unidades WHERE id = $1 AND empresa_id = $2",
+            body.unidade_id, empresa_id
+        )
+        if not own:
+            raise HTTPException(status_code=400, detail=f"Unidade {body.unidade_id} não pertence a esta empresa")
+
+    diferenciais_val = await _diferenciais_para_coluna(body.diferenciais)
     try:
         result = await _database.db_pool.execute(
             """
@@ -2751,16 +2812,19 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
             WHERE id=$11 AND empresa_id=$12
             """,
             body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
-            body.descricao, _diferenciais_para_array(body.diferenciais), body.link_venda, body.unidade_id,
+            body.descricao, diferenciais_val, body.link_venda, body.unidade_id,
             body.ativo, body.ordem, plano_id, empresa_id
         )
         if result == "UPDATE 0":
             raise HTTPException(status_code=404, detail="Plano não encontrado")
     except HTTPException:
         raise
+    except asyncpg.PostgresError as e:
+        logger.error(f"Erro PG ao atualizar plano {plano_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro PG: {type(e).__name__}: {str(e)[:200]}")
     except Exception as e:
-        logger.error(f"Erro ao atualizar plano {plano_id}: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao atualizar plano. Tente novamente.")
+        logger.error(f"Erro ao atualizar plano {plano_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)[:200]}")
     # [CACHE-01] Invalida cache de planos (proxima consulta vai re-ler do banco)
     await invalidate_planos(empresa_id)
     return {"status": "success"}
