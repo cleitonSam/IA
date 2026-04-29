@@ -161,6 +161,44 @@ async def garantir_label_existe_chatwoot(
         return False
 
 
+async def aplicar_label_conversa_chatwoot(
+    account_id: int, conversation_id: int, label_slug: str, integracao: dict,
+) -> bool:
+    """Aplica label numa CONVERSA do Chatwoot. Endpoint diferente do contato:
+    POST /api/v1/accounts/{acc}/conversations/{conv_id}/labels
+    A label de conversa aparece na barra superior da conversa (chip colorido).
+    Conversa-level e o que aparece na lista de etiquetas que o atendente ve."""
+    if not conversation_id or not account_id or not label_slug:
+        return False
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return False
+    label_slug = str(label_slug).strip().lower()
+    if not label_slug:
+        return False
+
+    # Garante que a label existe
+    await garantir_label_existe_chatwoot(account_id, label_slug, integracao)
+
+    try:
+        account_id = int(account_id)
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return False
+
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    url = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/labels"
+    payload = {"labels": [label_slug]}
+    logger.info(f"[CW labels CONV] POST {url} body={payload}")
+    try:
+        resp = await http_client.post(url, json=payload, headers=headers, timeout=10.0)
+        logger.info(f"[CW labels CONV] resp HTTP={resp.status_code} body={resp.text[:300]!r}")
+        return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"[CW labels CONV] erro: {e}")
+        return False
+
+
 async def aplicar_label_contato_chatwoot(
     account_id: int, contact_id: int, label_slug: str, integracao: dict,
     grupo_prefix: str = "aluno-",

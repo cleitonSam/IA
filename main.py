@@ -4829,11 +4829,16 @@ async def processar_ia_e_responder(
                             except Exception as _ex_e:
                                 logger.debug(f"[FRANQUEADA] busca label existente falhou: {_ex_e}")
 
+                            # Aplica em AMBOS: contato (persistente, ficha) + conversa (visivel barra)
+                            from src.services.chatwoot_client import aplicar_label_conversa_chatwoot
                             await aplicar_label_contato_chatwoot(
                                 account_id, contact_id, _label, _integ_cw_lab,
                                 grupo_prefix="aluno-",
                             )
-                            logger.info(f"[FRANQUEADA] label '{_label}' aplicada contato={contact_id}")
+                            await aplicar_label_conversa_chatwoot(
+                                account_id, conversation_id, _label, _integ_cw_lab,
+                            )
+                            logger.info(f"[FRANQUEADA] label '{_label}' aplicada contato={contact_id} + conv={conversation_id}")
 
                             await redis_client.setex(_flag_key, 86400, "1")
                         except Exception as _e_franq:
