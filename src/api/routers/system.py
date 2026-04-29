@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from typing import Optional
 from datetime import datetime
@@ -11,11 +11,27 @@ from src.core.config import (
 )
 import src.core.database as _database
 from src.core.redis_client import redis_client
-from src.core.security import cb_llm
+from src.core.security import cb_llm, get_current_user_token
 from src.utils.redis_helper import delete_tenant_cache
 from src.services.db_queries import sincronizar_planos_evo
 
 router = APIRouter()
+
+
+def _ensure_tenant_scope(token_payload: dict, requested_empresa_id):
+    """Garante isolamento tenant: usuario so acessa dados da propria empresa.
+    admin_master pode passar empresa_id explicito (ou ver tudo se None).
+    Demais perfis: forca empresa_id = empresa_id do token."""
+    user_empresa = token_payload.get("empresa_id")
+    perfil = token_payload.get("perfil")
+    if perfil == "admin_master":
+        return requested_empresa_id  # None = ver tudo
+    if not user_empresa:
+        raise HTTPException(status_code=401, detail="Usuario sem empresa associada")
+    if requested_empresa_id is not None and requested_empresa_id != user_empresa:
+        raise HTTPException(status_code=403, detail="Acesso negado a dados de outra empresa")
+    return user_empresa
+
 
 @router.get("/metrics")
 async def metrics_endpoint():
@@ -39,8 +55,12 @@ async def metrics_endpoint():
 async def metricas_diagnostico(
     empresa_id: Optional[int] = None,
     data: Optional[str] = None,
-    dias: int = 7
+    dias: int = 7,
+    token_payload: dict = Depends(get_current_user_token),
 ):
+    # [SEC] era publico - agora exige JWT e forca scope ao tenant
+    empresa_id = _ensure_tenant_scope(token_payload, empresa_id)
+
     if not _database.db_pool:
         raise HTTPException(status_code=503, detail="Banco de dados indisponível")
 
@@ -218,7 +238,12 @@ async def health_check():
     )
 
 @router.get("/sync-planos/{empresa_id}")
-async def sync_planos_manual(empresa_id: int):
+async def sync_planos_manual(
+    empresa_id: int,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    # [SEC] era publico - agora exige JWT e bloqueia cross-tenant
+    _ensure_tenant_scope(token_payload, empresa_id)
     count = await sincronizar_planos_evo(empresa_id)
     await delete_tenant_cache(empresa_id, "planos:ativos:todos")
     return {"status": "ok", "sincronizados": count}

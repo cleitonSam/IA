@@ -455,9 +455,10 @@ async def create_personality(
             comprimento = data.comprimento_resposta or "normal"
             if comprimento not in ("concisa", "normal", "detalhada"):
                 comprimento = "normal"
+            # [SEC] defense-in-depth: bloqueia IDOR cross-tenant
             await _database.db_pool.execute(
-                "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2",
-                comprimento, new_id
+                "UPDATE personalidade_ia SET comprimento_resposta=$1 WHERE id=$2 AND empresa_id=$3",
+                comprimento, new_id, empresa_id
             )
         except Exception:
             pass  # Campo pode não existir antes da migration s2t3u4v5w6x7
@@ -2041,11 +2042,17 @@ async def delete_followup_template(template_id: int, token_payload: dict = Depen
     )
     if not exists:
         raise HTTPException(status_code=404, detail="Template não encontrado")
+    # [SEC] defense-in-depth: filtrar empresa_id na escrita evita
+    # cross-tenant DELETE/UPDATE caso o SELECT tenha bug ou race.
     await _database.db_pool.execute(
-        "UPDATE followups SET status = 'cancelado', updated_at = NOW() WHERE template_id = $1 AND status = 'pendente'",
-        template_id
+        "UPDATE followups SET status = 'cancelado', updated_at = NOW() "
+        "WHERE template_id = $1 AND empresa_id = $2 AND status = 'pendente'",
+        template_id, empresa_id
     )
-    await _database.db_pool.execute("DELETE FROM templates_followup WHERE id = $1", template_id)
+    await _database.db_pool.execute(
+        "DELETE FROM templates_followup WHERE id = $1 AND empresa_id = $2",
+        template_id, empresa_id
+    )
     return {"status": "deleted"}
 
 
