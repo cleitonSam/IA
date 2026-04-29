@@ -4934,6 +4934,8 @@ async def processar_ia_e_responder(
                             from src.services.chatwoot_client import (
                                 aplicar_label_conversa_chatwoot,
                                 atribuir_time_conversa_chatwoot,
+                                criar_nota_interna_chatwoot,
+                                atualizar_atributos_contato_chatwoot,
                             )
                             for _lbl in _labels_aplicar:
                                 _grupo = "aluno-" if _lbl.startswith("aluno-") else None
@@ -4947,28 +4949,34 @@ async def processar_ia_e_responder(
                             )
                             logger.info(f"[FRANQUEADA] labels {_labels_aplicar} aplicadas contato={contact_id} + conv={conversation_id}")
 
-                            # ── [TEAM-ROUTE] Atribui conversa ao time da unidade conforme etiqueta ──
-                            # Mapeamento configurado pelo cliente (Goodbe Chatwoot account 12).
-                            # Se uma conversa tiver mais de uma label aluno-*, usa a primeira que casar.
-                            # Mapping OFICIAL (nomenclatura como o cliente cadastrou no Chatwoot)
-                            _LABEL_TEAM_MAP = {
-                                "aluno-altino":     5,
-                                "aluno-belenzinho": 10,
-                                "aluno-campestre":  9,
-                                "aluno-ipiranga":   8,
-                                "aluno-jardins":    11,
-                                "aluno-nações":     6,  # com cedilha (oficial)
-                                "aluno-saude":      7,  # SEM acento (oficial)
-                            }
-                            # Match accent-insensitive — normaliza para comparar
+                            # ── [TEAM-ROUTE] Atribui conversa ao time conforme etiqueta ──
+                            # Mapeamento vem da tabela mapeamento_label_time (editavel via API).
+                            # Cache 10 min em Redis.
                             import unicodedata as _ud
                             def _norm_acc(s: str) -> str:
                                 return "".join(c for c in _ud.normalize("NFD", str(s).lower()) if _ud.category(c) != "Mn")
-                            _team_map_normalizado = {_norm_acc(k): v for k, v in _LABEL_TEAM_MAP.items()}
+
+                            _team_map = {}
+                            try:
+                                _cache_map_key = f"label_team_map:{empresa_id}"
+                                _cached_map = await redis_client.get(_cache_map_key)
+                                if _cached_map:
+                                    import json as _jm
+                                    _team_map = _jm.loads(_cached_map)
+                                else:
+                                    _rows_map = await db_pool.fetch(
+                                        "SELECT label, team_id FROM mapeamento_label_time WHERE empresa_id=$1 AND ativo=true",
+                                        empresa_id,
+                                    )
+                                    _team_map = {_norm_acc(r["label"]): r["team_id"] for r in _rows_map}
+                                    import json as _jm
+                                    await redis_client.setex(_cache_map_key, 600, _jm.dumps(_team_map))
+                            except Exception as _em:
+                                logger.debug(f"[FRANQUEADA] erro carregar label_team_map do BD: {_em}")
                             _team_id_alvo = None
                             _label_que_casou = None
                             for _lbl in _labels_aplicar:
-                                _team_id_alvo = _team_map_normalizado.get(_norm_acc(_lbl))
+                                _team_id_alvo = _team_map.get(_norm_acc(_lbl))
                                 if _team_id_alvo:
                                     _label_que_casou = _lbl
                                     break
@@ -4988,6 +4996,54 @@ async def processar_ia_e_responder(
                                     f"[FRANQUEADA] nenhuma label aluno-* mapeada pra time — sem atribuicao "
                                     f"(labels tentadas: {_labels_aplicar})"
                                 )
+
+                            # ── [NOTA INTERNA] Cria nota privada no Chatwoot com dados EVO ──
+                            # Atendente abre a conversa e ja ve tudo do aluno. Roda 1x por contato (cache 7d).
+                            try:
+                                _nota_flag = f"nota_evo_aplicada:{empresa_id}:{contact_id}"
+                                if not await redis_client.get(_nota_flag):
+                                    _conteudo_nota = (
+                                        f"🤖 *[BOT identificou via EVO]*\n\n"
+                                        f"• Aluno: {res_membro.get('nome_completo') or res_membro.get('first_name') or '?'}\n"
+                                        f"• ID EVO: {res_membro.get('id_membro') or '?'}\n"
+                                        f"• Unidade: {res_membro.get('branch_name') or '?'}\n"
+                                        f"• Status: {res_membro.get('status_raw') or '?'}\n"
+                                    )
+                                    if res_membro.get("plano"):
+                                        _conteudo_nota += f"• Plano: {res_membro['plano']}\n"
+                                    if res_membro.get("last_access_date"):
+                                        _conteudo_nota += f"• Última visita: {str(res_membro['last_access_date'])[:10]}\n"
+                                    if res_membro.get("register_date"):
+                                        _conteudo_nota += f"• Cadastro desde: {str(res_membro['register_date'])[:10]}\n"
+                                    if res_membro.get("consultor"):
+                                        _conteudo_nota += f"• Consultor: {res_membro['consultor']}\n"
+                                    if res_membro.get("email"):
+                                        _conteudo_nota += f"• Email: {res_membro['email']}\n"
+                                    await criar_nota_interna_chatwoot(
+                                        account_id, conversation_id, _conteudo_nota, _integ_cw_lab,
+                                    )
+                                    await redis_client.setex(_nota_flag, 86400 * 7, "1")
+                            except Exception as _en:
+                                logger.debug(f"[FRANQUEADA] erro criar nota: {_en}")
+
+                            # ── [CUSTOM ATTRS] Salva dados EVO como atributos do contato (sidebar) ──
+                            try:
+                                _attrs = {
+                                    "evo_id_membro": res_membro.get("id_membro"),
+                                    "evo_unidade": res_membro.get("branch_name"),
+                                    "evo_status": res_membro.get("status_raw"),
+                                    "evo_plano": res_membro.get("plano"),
+                                    "evo_ultimo_acesso": str(res_membro.get("last_access_date") or "")[:10] or None,
+                                    "evo_consultor": res_membro.get("consultor"),
+                                }
+                                # Tira chaves None/vazias
+                                _attrs = {k: v for k, v in _attrs.items() if v not in (None, "")}
+                                if _attrs:
+                                    await atualizar_atributos_contato_chatwoot(
+                                        account_id, contact_id, _attrs, _integ_cw_lab,
+                                    )
+                            except Exception as _ea:
+                                logger.debug(f"[FRANQUEADA] erro custom attrs: {_ea}")
 
                             await redis_client.setex(_flag_key, 86400, "1")
                         except Exception as _e_franq:
@@ -5264,11 +5320,52 @@ NUNCA ofereça ajuda de navegação como "posso te ensinar a chegar", "te passo 
             _ano            = _agora_prompt.year
             _hora_atual     = _agora_prompt.strftime("%H:%M")
 
+            # ── [STATUS DO CONTATO] Le labels do Chatwoot pra IA adaptar tom ──
+            _bloco_status_contato = ""
+            try:
+                if contact_id and account_id and integracao_chatwoot:
+                    from src.services.chatwoot_client import listar_labels_contato_chatwoot as _lst
+                    _lbls_contato = await _lst(int(account_id), int(contact_id), integracao_chatwoot)
+                    _aluno_lbls = [l for l in (_lbls_contato or []) if str(l).lower().startswith("aluno-")]
+                    _is_inadimplente = "inadimplentes" in [str(l).lower() for l in (_lbls_contato or [])]
+                    if _aluno_lbls:
+                        _unid_aluno = _aluno_lbls[0][len("aluno-"):].replace("-", " ").title()
+                        if _is_inadimplente:
+                            _bloco_status_contato = (
+                                f"\n[STATUS DO CONTATO — IMPORTANTE]\n"
+                                f"- Cliente JÁ É ALUNO da unidade {_unid_aluno}, mas o status é INATIVO (sem mensalidade ativa).\n"
+                                f"- TOM: empático, acolhedor — 'que saudade de te ver treinando', 'tudo bem?'\n"
+                                f"- NÃO ofereça aula experimental (já é aluno).\n"
+                                f"- OFEREÇA REATIVAÇÃO da matrícula: condição especial, retorno sem taxa, etc.\n"
+                                f"- Se cliente tem dúvidas administrativas (boleto, cancelamento), encaminhe ao gerente da unidade.\n"
+                                f"- NÃO insista em vendas se cliente disser 'só queria info' — respeite o tempo dele.\n"
+                            )
+                        else:
+                            _bloco_status_contato = (
+                                f"\n[STATUS DO CONTATO — IMPORTANTE]\n"
+                                f"- Cliente JÁ É ALUNO ATIVO da unidade {_unid_aluno}.\n"
+                                f"- TOM: amigável, próximo — 'oi! tudo bem?', cumprimente como conhecido.\n"
+                                f"- NÃO ofereça aula experimental (já treina aqui).\n"
+                                f"- NÃO peça pra escolher unidade (já sabemos qual).\n"
+                                f"- FOQUE em ajudar com: dúvidas de aluno, faltas, treino, segunda via boleto, mudança de plano, congelamento.\n"
+                                f"- Se for dúvida administrativa, pode encaminhar pro gerente da unidade.\n"
+                                f"- NÃO empurre matrícula nova — ele já é nosso!\n"
+                            )
+                    else:
+                        _bloco_status_contato = (
+                            f"\n[STATUS DO CONTATO]\n"
+                            f"- Contato NÃO consta como aluno na nossa base.\n"
+                            f"- Trate como PROSPECT: descubra interesse, ofereça aula experimental, apresente planos.\n"
+                        )
+            except Exception as _esc:
+                logger.debug(f"[STATUS CONTATO] erro carregar labels: {_esc}")
+
             prompt_sistema = f"""
 IDIOMA OBRIGATÓRIO: Responda SEMPRE em português do Brasil.
 NUNCA use inglês ou qualquer outro idioma — nem uma palavra, nem no meio de frases.
 NUNCA avalie respostas com frases como "is perfect", "that's great", "perfect answer" ou similares.
 Você é um atendente — apenas responda o cliente diretamente.
+{_bloco_status_contato}
 
 DATA E HORA ATUAL (use sempre que o cliente perguntar sobre dia, data, hora ou horário de funcionamento):
 - Hoje é {_dia_semana_pt}, {_dia_mes} de {_mes_pt} de {_ano}

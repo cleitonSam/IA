@@ -536,6 +536,27 @@ async def verificar_membro_evo(
         else:
             ativo_raw = True  # cadastrado mas sem dado de status -> assume ativo
 
+    # Campos extras pra nota interna / atributos
+    register_date = m.get("registerDate") or m.get("conversionDate")
+    last_access = m.get("lastAccessDate")
+    employee_consultant = m.get("nameEmployeeConsultant") or ""
+    if isinstance(employee_consultant, str): employee_consultant = employee_consultant.strip()
+    instructor = m.get("nameEmployeeInstructor") or ""
+    personal = m.get("nameEmployeePersonalTrainer") or ""
+    # Email do contato
+    _email = None
+    for _c in (m.get("contacts") or []):
+        if isinstance(_c, dict) and (_c.get("contactType") or "").lower() in ("email", "e-mail"):
+            _email = _c.get("description")
+            break
+    # Plano (do primeiro membership)
+    _plano = None
+    _memberships = m.get("memberships") or []
+    if isinstance(_memberships, list) and _memberships:
+        _mb = _memberships[0]
+        if isinstance(_mb, dict):
+            _plano = _mb.get("name") or _mb.get("nameMembership") or _mb.get("displayName")
+
     out = {
         "encontrado": True,
         "id_branch": id_branch,
@@ -543,6 +564,13 @@ async def verificar_membro_evo(
         "first_name": first_name,
         "last_name": last_name,
         "nome_completo": nome_completo,
+        "register_date": register_date,
+        "last_access_date": last_access,
+        "consultor": employee_consultant or None,
+        "instrutor": instructor or None,
+        "personal": personal or None,
+        "email": _email,
+        "plano": _plano,
         "status_raw": status_str or None,
         "id_membro": id_membro,
         "nome": nome,

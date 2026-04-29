@@ -245,6 +245,9 @@ async def executar_tool(
     contato_fone: Optional[str],
     pers: Dict[str, Any],
     unidade_id: Optional[int] = None,
+    contact_id_chatwoot: Optional[int] = None,
+    account_id_chatwoot: Optional[int] = None,
+    integracao_chatwoot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Executa uma tool e retorna resultado estruturado.
     pers = dict da personalidade (pra ler config de agendamento).
@@ -254,6 +257,32 @@ async def executar_tool(
         return {"ok": False, "erro": "Agendamento experimental nao esta ativo nesta personalidade."}
 
     name = (name or "").strip().lower()
+
+    # ── [GUARD ALUNO] Bloqueia consultar_horarios/agendar_aula se contato JA E ALUNO ──
+    # Aula experimental e pra prospect — quem ja treina aqui nao precisa.
+    if name in ("consultar_horarios", "listar_horarios", "ver_horarios", "agendar_aula", "agendar_experimental", "confirmar_agendamento"):
+        if contact_id_chatwoot and account_id_chatwoot and integracao_chatwoot:
+            try:
+                from src.services.chatwoot_client import listar_labels_contato_chatwoot
+                _lbls = await listar_labels_contato_chatwoot(
+                    int(account_id_chatwoot), int(contact_id_chatwoot), integracao_chatwoot
+                )
+                _eh_aluno = any(str(l).lower().startswith("aluno-") for l in (_lbls or []))
+                if _eh_aluno:
+                    logger.info(f"[AGEND-GUARD] cliente ja e aluno — bloqueia {name}")
+                    return {
+                        "ok": False,
+                        "erro": "ja_e_aluno",
+                        "instrucao_ia": (
+                            "Este cliente ja e ALUNO da academia — nao oferte aula experimental. "
+                            "Responda ao cliente naturalmente que ele ja treina aqui e que aula experimental "
+                            "e pra novos prospects. Se quiser experimentar uma modalidade nova ou trazer um amigo, "
+                            "pode falar com a unidade. Senao, ofereca ajudar com outra coisa "
+                            "(treino, falta, mudanca de plano, segunda via)."
+                        ),
+                    }
+            except Exception as _eg:
+                logger.debug(f"[AGEND-GUARD] erro verificar aluno: {_eg}")
 
     # ─── consultar_horarios ───
     if name in ("consultar_horarios", "listar_horarios", "ver_horarios"):

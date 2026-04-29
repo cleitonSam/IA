@@ -2046,6 +2046,152 @@ async def update_evo_franqueada_global(
     return {"status": "success"}
 
 
+# ────────── MAPEAMENTO LABEL → TEAM (configuracao por empresa) ──────────
+
+@router.get("/franqueada/label-team")
+async def list_label_team_map(token_payload: dict = Depends(get_current_user_token)):
+    """Lista mapeamento label -> team_id da empresa."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    rows = await _database.db_pool.fetch(
+        "SELECT id, label, team_id, ativo FROM mapeamento_label_time WHERE empresa_id=$1 ORDER BY label",
+        empresa_id,
+    )
+    return [dict(r) for r in rows]
+
+
+class LabelTeamMap(BaseModel):
+    label: str
+    team_id: int
+    ativo: bool = True
+
+
+@router.post("/franqueada/label-team")
+async def upsert_label_team_map(
+    body: LabelTeamMap, token_payload: dict = Depends(get_current_user_token)
+):
+    """Cria ou atualiza mapeamento label -> team_id."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    await _database.db_pool.execute("""
+        INSERT INTO mapeamento_label_time (empresa_id, label, team_id, ativo)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (empresa_id, lower(label)) DO UPDATE
+            SET team_id=EXCLUDED.team_id, ativo=EXCLUDED.ativo, updated_at=NOW()
+    """, empresa_id, body.label.strip().lower(), body.team_id, body.ativo)
+    # Invalida cache
+    try:
+        await redis_client.delete(f"label_team_map:{empresa_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.delete("/franqueada/label-team/{label}")
+async def delete_label_team_map(
+    label: str, token_payload: dict = Depends(get_current_user_token)
+):
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    await _database.db_pool.execute(
+        "DELETE FROM mapeamento_label_time WHERE empresa_id=$1 AND lower(label)=lower($2)",
+        empresa_id, label,
+    )
+    try:
+        await redis_client.delete(f"label_team_map:{empresa_id}")
+    except Exception:
+        pass
+    return {"status": "success"}
+
+
+@router.post("/franqueada/limpar-labels-obsoletas")
+async def franqueada_limpar_labels_obsoletas(
+    dry_run: bool = True,
+    limit: int = 100,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """[CRON] Re-checa contatos com label aluno-* na EVO e remove a label se nao constar mais.
+    Mantem inadimplentes — so remove se NAO foi achado no EVO.
+    dry_run=true (default): so reporta o que faria. Roda agendado tipo 1x por noite.
+    """
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.db_queries import carregar_integracao
+    integ_cw = await carregar_integracao(empresa_id, 'chatwoot')
+    if not integ_cw:
+        return {"status": "erro", "motivo": "chatwoot_nao_configurado"}
+    from src.services.chatwoot_client import _chatwoot_url_token
+    url_base, token = _chatwoot_url_token(integ_cw)
+    account_id = integ_cw.get("account_id") or integ_cw.get("accountId")
+    if not url_base or not token or not account_id:
+        return {"status": "erro", "motivo": "config_chatwoot_incompleto"}
+
+    import httpx
+    from src.services.evo_client import verificar_membro_evo
+
+    # Lista todas as labels aluno-*
+    headers = {"api_access_token": str(token)}
+    async with httpx.AsyncClient() as client:
+        rl = await client.get(f"{url_base}/api/v1/accounts/{account_id}/labels", headers=headers, timeout=10.0)
+    if rl.status_code != 200:
+        return {"status": "erro", "motivo": f"chatwoot_HTTP_{rl.status_code}"}
+    labels_payload = (rl.json() or {}).get("payload", [])
+    aluno_labels = [str(l.get("title", "")) for l in labels_payload if isinstance(l, dict) and str(l.get("title", "")).lower().startswith("aluno-")]
+
+    relatorio = {"checados": 0, "removidos": [], "mantidos": [], "erros": [], "dry_run": dry_run}
+
+    # Pra cada label, lista contatos vinculados
+    for label_title in aluno_labels:
+        try:
+            async with httpx.AsyncClient() as client:
+                rc = await client.get(
+                    f"{url_base}/api/v1/accounts/{account_id}/labels/{label_title}/contacts",
+                    headers=headers, timeout=15.0,
+                )
+            if rc.status_code != 200:
+                relatorio["erros"].append({"label": label_title, "http": rc.status_code})
+                continue
+            contatos = (rc.json() or {}).get("payload", [])
+            for c in contatos[:limit]:
+                if not isinstance(c, dict):
+                    continue
+                fone = c.get("phone_number") or ""
+                cid = c.get("id")
+                if not fone or not cid:
+                    continue
+                relatorio["checados"] += 1
+                # Verifica se ainda esta no EVO
+                res = await verificar_membro_evo(empresa_id, fone, unidade_id=None)
+                if not res.get("encontrado"):
+                    # Remove label
+                    relatorio["removidos"].append({"contact_id": cid, "fone": fone, "label": label_title})
+                    if not dry_run:
+                        try:
+                            atuais = c.get("labels") or []
+                            novas = [l for l in atuais if str(l).lower() != label_title.lower()]
+                            async with httpx.AsyncClient() as cl:
+                                await cl.post(
+                                    f"{url_base}/api/v1/accounts/{account_id}/contacts/{cid}/labels",
+                                    json={"labels": novas},
+                                    headers={**headers, "Content-Type": "application/json"},
+                                    timeout=10.0,
+                                )
+                        except Exception as _ed:
+                            relatorio["erros"].append({"contact_id": cid, "erro_remove": str(_ed)})
+                else:
+                    relatorio["mantidos"].append({"contact_id": cid, "fone": fone})
+        except Exception as e:
+            relatorio["erros"].append({"label": label_title, "erro": str(e)})
+
+    relatorio["status"] = "ok"
+    return relatorio
+
+
 @router.post("/evo/flush-aluno-cache")
 async def evo_flush_aluno_cache(token_payload: dict = Depends(get_current_user_token)):
     """Limpa TODOS caches relacionados a verificacao de aluno (membro EVO + flag de check).

@@ -161,6 +161,74 @@ async def garantir_label_existe_chatwoot(
         return False
 
 
+async def criar_nota_interna_chatwoot(
+    account_id: int, conversation_id: int, conteudo: str, integracao: dict,
+) -> bool:
+    """Cria uma NOTA INTERNA na conversa do Chatwoot (privada, atendentes veem mas cliente nao).
+    POST /api/v1/accounts/{acc}/conversations/{conv_id}/messages
+    Body: {"content": "...", "private": true, "message_type": "outgoing"}
+    """
+    if not conversation_id or not account_id or not conteudo:
+        return False
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return False
+    try:
+        account_id = int(account_id)
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return False
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    url = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+    payload = {"content": str(conteudo)[:5000], "private": True, "message_type": "outgoing"}
+    try:
+        resp = await http_client.post(url, json=payload, headers=headers, timeout=10.0)
+        if 200 <= resp.status_code < 300:
+            logger.info(f"[CW nota] criada conv={conversation_id} ({len(conteudo)} chars)")
+            return True
+        logger.warning(f"[CW nota] HTTP {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[CW nota] erro: {e}")
+        return False
+
+
+async def atualizar_atributos_contato_chatwoot(
+    account_id: int, contact_id: int, atributos: dict, integracao: dict,
+) -> bool:
+    """Atualiza additional_attributes (custom fields) do contato no Chatwoot.
+    Aparecem no sidebar da conversa em "Conversation Information".
+    PATCH /api/v1/accounts/{acc}/contacts/{id} com {"additional_attributes": {...}}
+    """
+    if not contact_id or not account_id or not atributos:
+        return False
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return False
+    try:
+        account_id = int(account_id)
+        contact_id = int(contact_id)
+    except (TypeError, ValueError):
+        return False
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}"
+    payload = {"additional_attributes": atributos}
+    try:
+        resp = await http_client.patch(url, json=payload, headers=headers, timeout=10.0)
+        if 200 <= resp.status_code < 300:
+            logger.info(f"[CW attrs] atributos atualizados contato={contact_id} keys={list(atributos.keys())}")
+            return True
+        # Tenta PUT como fallback (algumas versoes Chatwoot)
+        resp2 = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
+        if 200 <= resp2.status_code < 300:
+            return True
+        logger.warning(f"[CW attrs] HTTP {resp.status_code}/{resp2.status_code}: {resp2.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[CW attrs] erro: {e}")
+        return False
+
+
 async def atribuir_time_conversa_chatwoot(
     account_id: int, conversation_id: int, team_id: int, integracao: dict,
 ) -> bool:
