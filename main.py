@@ -4715,8 +4715,10 @@ async def processar_ia_e_responder(
                                 return
 
                             _first_name = (res_membro.get("first_name") or "").strip()
+                            _id_membro_evo = res_membro.get("id_membro")
                             if _first_name:
-                                _nome_atualizar = _first_name.title()
+                                _nome_base = _first_name.title()
+                                _nome_atualizar = f"{_nome_base} - {_id_membro_evo}" if _id_membro_evo else _nome_base
                                 try:
                                     await atualizar_nome_contato_chatwoot(
                                         account_id, contact_id, _nome_atualizar, _integ_cw_lab
