@@ -662,9 +662,42 @@ async def listar_horarios_disponiveis_evo(
     await _cache_set_json(cache_key, normalizado, _CACHE_HORARIOS)
 
     # Aplica filtro depois de cachear (cache fica completo, filtro e por chamada)
+    # [FIX-cross-filial] IDs de atividade sao LOCAIS por filial na EVO.
+    # Configurar [32,39,...] na personalidade so funciona na filial onde foram
+    # descobertos. Solucao: traduzir IDs configurados pra NOMES (via discovery
+    # global) e filtrar por nome — funciona em qualquer filial.
     if filtro_id_activities:
-        allow = set(int(x) for x in filtro_id_activities)
-        normalizado = [s for s in normalizado if int(s.get("idActivity") or 0) in allow]
+        allow_ids = set(int(x) for x in filtro_id_activities if str(x).isdigit())
+
+        # Tenta resolver nomes equivalentes via discovery cache
+        nomes_permitidos: set = set()
+        try:
+            from src.utils.text_helpers import normalizar
+            # Pega lista global de activities (discovery, ja cachada)
+            todas_atividades = await listar_activities_evo(empresa_id, unidade_id)
+            for a in todas_atividades:
+                if a.get("id") in allow_ids and a.get("name"):
+                    nomes_permitidos.add(normalizar(a["name"]).strip(" ."))
+        except Exception:
+            pass
+
+        if nomes_permitidos:
+            # Filtra por nome (mais robusto cross-filial)
+            from src.utils.text_helpers import normalizar
+            filtrado = []
+            for s in normalizado:
+                nome_norm = normalizar(s.get("name") or "").strip(" .")
+                if nome_norm in nomes_permitidos or any(n in nome_norm for n in nomes_permitidos):
+                    filtrado.append(s)
+            # Se filtro por nome retornou algo, usa ele. Senao (nomes nao bateram),
+            # tenta filtro por ID original como fallback
+            if filtrado:
+                normalizado = filtrado
+            else:
+                normalizado = [s for s in normalizado if int(s.get("idActivity") or 0) in allow_ids]
+        else:
+            # Sem nomes resolvidos, usa filtro por ID puro (comportamento original)
+            normalizado = [s for s in normalizado if int(s.get("idActivity") or 0) in allow_ids]
 
     return normalizado
 
