@@ -2051,7 +2051,7 @@ async def evo_verificar_membro_global_endpoint(
     telefone: str,
     token_payload: dict = Depends(get_current_user_token),
 ):
-    """Endpoint de TESTE — chama verificar_membro_evo SEM unidade_id (usa cred global).
+    """Endpoint de TESTE (somente leitura) — chama verificar_membro_evo SEM unidade_id.
     Ex: GET /management/evo/verificar-membro-global?telefone=11976804555"""
     empresa_id = await _resolve_empresa_id(token_payload)
     if not empresa_id:
@@ -2059,6 +2059,100 @@ async def evo_verificar_membro_global_endpoint(
 
     from src.services.evo_client import verificar_membro_evo
     return await verificar_membro_evo(empresa_id, telefone, unidade_id=None)
+
+
+@router.post("/evo/aplicar-aluno-test")
+async def evo_aplicar_aluno_test(
+    telefone: str,
+    contact_id: int,
+    flush_cache: bool = True,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Endpoint de TESTE FULL FLOW — verifica membro + aplica label + atualiza nome no Chatwoot.
+    Use pra testar end-to-end SEM precisar mandar mensagem real.
+    flush_cache=true (default) limpa cache de membro+flag pra forcar re-consulta na EVO.
+    Ex: POST /management/evo/aplicar-aluno-test?telefone=11994919351&contact_id=12345"""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+
+    from src.services.evo_client import verificar_membro_evo
+    from src.services.chatwoot_client import aplicar_label_contato_chatwoot, atualizar_nome_contato_chatwoot
+    from src.services.db_queries import carregar_integracao
+    from src.utils.text_helpers import normalizar
+    import re as _re
+
+    # Flush cache de membro + flag de "ja_checou" pra forçar consulta limpa
+    if flush_cache:
+        try:
+            for k in await redis_client.keys(f"evo:membro:{empresa_id}:*"):
+                await redis_client.delete(k)
+            for k in await redis_client.keys(f"aluno_check:{empresa_id}:{contact_id}*"):
+                await redis_client.delete(k)
+        except Exception as e:
+            logger.debug(f"[test-aplicar] flush cache falhou: {e}")
+
+    res = await verificar_membro_evo(empresa_id, telefone, unidade_id=None)
+    if not res.get("encontrado"):
+        return {"status": "skip", "motivo": "nao_encontrado_evo", "evo_response": res}
+
+    integ_cw = await carregar_integracao(empresa_id, 'chatwoot')
+    if not integ_cw:
+        return {"status": "erro", "motivo": "integracao_chatwoot_ausente", "evo_response": res}
+
+    # Pega account_id da integracao Chatwoot
+    account_id = integ_cw.get("account_id") or integ_cw.get("accountId")
+    if not account_id:
+        return {"status": "erro", "motivo": "account_id_chatwoot_ausente", "evo_response": res}
+
+    acoes = []
+
+    # 1) Atualiza nome
+    first_name = (res.get("first_name") or "").strip()
+    if first_name:
+        nome_atualizar = first_name.title()
+        try:
+            ok_nome = await atualizar_nome_contato_chatwoot(int(account_id), contact_id, nome_atualizar, integ_cw)
+            acoes.append({"acao": "atualizar_nome", "valor": nome_atualizar, "ok": bool(ok_nome)})
+        except Exception as e:
+            acoes.append({"acao": "atualizar_nome", "erro": str(e)})
+
+    # 2) Resolve unidade pelo branchName
+    branch_evo = (res.get("branch_name") or "").strip()
+    slug_unid = None
+    try:
+        rows = await _database.db_pool.fetch(
+            "SELECT id, nome, slug FROM unidades WHERE empresa_id=$1 AND ativa=true",
+            empresa_id,
+        )
+        alvo = normalizar(branch_evo).strip(" .")
+        for r in rows:
+            nome_norm = normalizar(r["nome"] or "").strip(" .")
+            if nome_norm == alvo or alvo in nome_norm or nome_norm in alvo:
+                slug_unid = (r["slug"] or r["nome"]).strip().lower()
+                acoes.append({"acao": "resolver_unidade", "branch_evo": branch_evo, "match_db_id": r["id"], "slug": slug_unid})
+                break
+        if not slug_unid:
+            acoes.append({"acao": "resolver_unidade", "branch_evo": branch_evo, "match": None})
+    except Exception as e:
+        acoes.append({"acao": "resolver_unidade", "erro": str(e)})
+
+    if not slug_unid:
+        slug_unid = "geral"
+
+    slug_unid = _re.sub(r"[^a-z0-9]+", "-", slug_unid).strip("-") or "geral"
+    label = f"aluno-{slug_unid}"
+
+    # 3) Aplica label
+    try:
+        ok_label = await aplicar_label_contato_chatwoot(
+            int(account_id), contact_id, label, integ_cw, grupo_prefix="aluno-"
+        )
+        acoes.append({"acao": "aplicar_label", "label": label, "ok": bool(ok_label)})
+    except Exception as e:
+        acoes.append({"acao": "aplicar_label", "label": label, "erro": str(e)})
+
+    return {"status": "ok", "evo_response": res, "acoes": acoes}
 
 
 @router.get("/integrations/evo-franqueada/units")

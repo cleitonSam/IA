@@ -510,9 +510,23 @@ async def verificar_membro_evo(
     branch_name = m.get("branchName") or ""
     if isinstance(branch_name, str): branch_name = branch_name.strip()
 
-    # Situacao: campos possiveis "active" / "membershipStatus" / "status"
-    ativo_raw = m.get("active")
-    if ativo_raw is None:
+    # ── Situacao do aluno ──
+    # Ordem de prioridade: status (string EVO) -> active (bool) -> memberships -> accessBlocked
+    # EVO retorna "status": "Active" pra alunos com cadastro ativo.
+    status_str = str(m.get("status") or "").strip().lower()
+    membership_status_str = str(m.get("membershipStatus") or "").strip().lower()
+    access_blocked = m.get("accessBlocked")
+    ativo_raw = None
+
+    if status_str:
+        ativo_raw = status_str in ("active", "ativo", "true", "1")
+    elif m.get("active") is not None:
+        ativo_raw = bool(m.get("active"))
+    elif membership_status_str:
+        ativo_raw = membership_status_str in ("active", "ativo", "true", "1")
+    elif access_blocked is not None:
+        ativo_raw = not bool(access_blocked)
+    else:
         memberships = m.get("memberships") or []
         if isinstance(memberships, list) and memberships:
             ativo_raw = any(
@@ -529,6 +543,7 @@ async def verificar_membro_evo(
         "first_name": first_name,
         "last_name": last_name,
         "nome_completo": nome_completo,
+        "status_raw": status_str or None,
         "id_membro": id_membro,
         "nome": nome,
         "ativo": bool(ativo_raw),
