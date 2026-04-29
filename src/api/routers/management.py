@@ -3443,6 +3443,89 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
     return {"status": "success"}
 
 
+@router.get("/planos/{plano_id}/prioridade-unidades")
+async def list_plano_prioridade_unidades(
+    plano_id: int, token_payload: dict = Depends(get_current_user_token)
+):
+    """Lista overrides de prioridade por unidade pra um plano."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    # Multi-tenant: confere se plano e da empresa
+    own = await _database.db_pool.fetchval(
+        "SELECT 1 FROM planos WHERE id = $1 AND empresa_id = $2", plano_id, empresa_id
+    )
+    if not own:
+        raise HTTPException(status_code=403, detail="Plano não pertence a esta empresa")
+    try:
+        rows = await _database.db_pool.fetch("""
+            SELECT u.id AS unidade_id, u.nome AS unidade_nome,
+                   ppu.prioridade, ppu.motivo
+            FROM unidades u
+            LEFT JOIN plano_prioridade_unidade ppu
+                ON ppu.unidade_id = u.id AND ppu.plano_id = $1
+            WHERE u.empresa_id = $2 AND u.ativa = true
+            ORDER BY u.nome
+        """, plano_id, empresa_id)
+        return [dict(r) for r in rows]
+    except Exception as e:
+        # Fallback se tabela nao existe ainda (migration pendente)
+        logger.warning(f"[plano-prio-unidade] tabela ausente: {e}")
+        rows = await _database.db_pool.fetch(
+            "SELECT id AS unidade_id, nome AS unidade_nome FROM unidades WHERE empresa_id = $1 AND ativa = true ORDER BY nome",
+            empresa_id,
+        )
+        return [{**dict(r), "prioridade": None, "motivo": None} for r in rows]
+
+
+class PlanoPrioUnidade(BaseModel):
+    unidade_id: int
+    prioridade: int
+    motivo: Optional[str] = None
+
+
+@router.put("/planos/{plano_id}/prioridade-unidades")
+async def upsert_plano_prioridade_unidades(
+    plano_id: int,
+    overrides: list[PlanoPrioUnidade],
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Upsert em batch — substitui TODOS os overrides do plano com a lista enviada.
+    Pra remover override de uma unidade, omite ela da lista (ou seta prioridade=null)."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    own = await _database.db_pool.fetchval(
+        "SELECT 1 FROM planos WHERE id = $1 AND empresa_id = $2", plano_id, empresa_id
+    )
+    if not own:
+        raise HTTPException(status_code=403, detail="Plano não pertence a esta empresa")
+
+    # Apaga overrides existentes do plano e re-insere (idempotente, simples)
+    async with _database.db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM plano_prioridade_unidade WHERE plano_id = $1", plano_id
+            )
+            for ov in overrides:
+                # Valida unidade da empresa
+                _own_u = await conn.fetchval(
+                    "SELECT 1 FROM unidades WHERE id = $1 AND empresa_id = $2",
+                    ov.unidade_id, empresa_id,
+                )
+                if not _own_u:
+                    continue
+                _prio = max(0, min(10, int(ov.prioridade or 5)))
+                await conn.execute("""
+                    INSERT INTO plano_prioridade_unidade
+                        (empresa_id, plano_id, unidade_id, prioridade, motivo, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                """, empresa_id, plano_id, ov.unidade_id, _prio, ov.motivo)
+    # Invalida cache de planos
+    await invalidate_planos(empresa_id)
+    return {"status": "success", "overrides_aplicados": len(overrides)}
+
+
 @router.put("/planos/{plano_id}")
 async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = Depends(get_current_user_token)):
     empresa_id = await _resolve_empresa_id(token_payload)

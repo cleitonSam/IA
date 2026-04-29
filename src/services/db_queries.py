@@ -494,26 +494,57 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
     if cached is not None:
         return cached
 
-    query = """
+    # [PRIORIDADE-UNIDADE] LEFT JOIN com plano_prioridade_unidade pra usar
+    # override se existir (especifico da unidade), senao usa prioridade default do plano.
+    if unidade_id:
+        query_com_prio = """
+            SELECT p.*,
+                   COALESCE(ppu.prioridade, p.prioridade, 5) AS prioridade_efetiva,
+                   COALESCE(ppu.motivo, p.motivo_prioridade) AS motivo_prioridade_efetivo,
+                   ppu.prioridade AS prioridade_override
+            FROM planos p
+            LEFT JOIN plano_prioridade_unidade ppu
+                ON ppu.plano_id = p.id AND ppu.unidade_id = $2
+            WHERE p.empresa_id = $1 AND p.ativo = true
+              AND p.link_venda IS NOT NULL AND p.link_venda != ''
+              AND (p.unidade_id = $2 OR p.unidade_id IS NULL)
+            ORDER BY COALESCE(ppu.prioridade, p.prioridade, 5) DESC, p.ordem, p.nome
+        """
+        params = [empresa_id, unidade_id]
+    else:
+        query_com_prio = """
+            SELECT * FROM planos
+            WHERE empresa_id = $1 AND ativo = true
+              AND link_venda IS NOT NULL AND link_venda != ''
+            ORDER BY COALESCE(prioridade, 5) DESC, ordem, nome
+        """
+        params = [empresa_id]
+
+    # Query legado fallback (sem prioridade)
+    query_legado = """
         SELECT * FROM planos
         WHERE empresa_id = $1 AND ativo = true
           AND link_venda IS NOT NULL AND link_venda != ''
     """
-    params = [empresa_id]
+    params_leg = [empresa_id]
     if unidade_id:
-        query += " AND (unidade_id = $2 OR unidade_id IS NULL)"
-        params.append(unidade_id)
-    # [PRIORIDADE] Ordena por prioridade DESC se coluna existir, senao ordem
-    query_com_prio = query + " ORDER BY COALESCE(prioridade, 5) DESC, ordem, nome"
-    query_legado = query + " ORDER BY ordem, nome"
+        query_legado += " AND (unidade_id = $2 OR unidade_id IS NULL)"
+        params_leg.append(unidade_id)
+    query_legado += " ORDER BY ordem, nome"
 
     try:
         rows = await _database.db_pool.fetch(query_com_prio, *params)
     except Exception as _euc:
-        # Fallback se coluna prioridade nao existir (migration pendente)
         logger.warning(f"[buscar_planos_ativos] fallback sem prioridade: {_euc}")
-        rows = await _database.db_pool.fetch(query_legado, *params)
+        rows = await _database.db_pool.fetch(query_legado, *params_leg)
     planos = [dict(r) for r in rows]
+    # Se temos prioridade efetiva (vem do override), substitui
+    for p in planos:
+        if 'prioridade_efetiva' in p:
+            p['prioridade'] = p.pop('prioridade_efetiva')
+            p.pop('prioridade_override', None)
+        if 'motivo_prioridade_efetivo' in p:
+            p['motivo_prioridade'] = p.pop('motivo_prioridade_efetivo')
 
     if not planos and force_sync:
         logger.info(f"🔄 Nenhum plano ativo no banco para empresa {empresa_id} unidade {unidade_id}. Tentando sincronizar da API...")
