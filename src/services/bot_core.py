@@ -1196,8 +1196,11 @@ async def processar_ia_e_responder(
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
 
         # ── [FRANQUEADA] Verifica se contato é aluno e aplica etiqueta no Chatwoot ──
-        # Cred franqueada GLOBAL (1 cred serve todas unidades) — verifica_membro nao precisa de unit_id.
-        # Label aplicada usa o slug da unidade que o cliente esta conversando AGORA (se houver).
+        # Fluxo:
+        #   1) GET /members?phone=X (cred admin global)
+        #   2) Se aluno -> resolve unidade pelo branchName retornado pela EVO (NAO da conversa)
+        #   3) Atualiza nome do contato no Chatwoot com firstName do EVO
+        #   4) Aplica label aluno-{slug} da unidade resolvida
         # Roda 1x por contato (cache 24h). Fire-and-forget: não bloqueia resposta.
         try:
             _u_id_franq = unidade.get("id") if unidade else None
@@ -1208,29 +1211,91 @@ async def processar_ia_e_responder(
                     async def _check_e_aplicar_label():
                         try:
                             from src.services.evo_client import verificar_membro_evo
-                            from src.services.chatwoot_client import aplicar_label_contato_chatwoot
+                            from src.services.chatwoot_client import aplicar_label_contato_chatwoot, atualizar_nome_contato_chatwoot
                             from src.services.db_queries import carregar_integracao as _ci
+                            from src.utils.text_helpers import normalizar
                             res_membro = await verificar_membro_evo(
                                 empresa_id, contato_fone, unidade_id=_u_id_franq
                             )
                             logger.info(
-                                f"[FRANQUEADA] check membro empresa={empresa_id} unid={_u_id_franq or 'global'} "
-                                f"contato={contact_id}: {res_membro.get('encontrado')} "
+                                f"[FRANQUEADA] check empresa={empresa_id} contato={contact_id} "
+                                f"-> encontrado={res_membro.get('encontrado')} "
+                                f"branch={res_membro.get('branch_name')!r} "
+                                f"nome={res_membro.get('first_name')!r} "
                                 f"erro={res_membro.get('erro')}"
                             )
-                            if res_membro.get("encontrado") and res_membro.get("ativo"):
-                                # Slug da unidade da conversa atual vira parte da label
-                                _slug_unid = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "") or "").strip().lower()
-                                import re as _re_lab
-                                _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid).strip("-") or "geral"
-                                _label = f"aluno-{_slug_unid}"
-                                _integ_cw_lab = await _ci(empresa_id, 'chatwoot')
-                                if _integ_cw_lab:
-                                    await aplicar_label_contato_chatwoot(
-                                        account_id, contact_id, _label, _integ_cw_lab,
-                                        grupo_prefix="aluno-",
+
+                            if not (res_membro.get("encontrado") and res_membro.get("ativo")):
+                                # Cache negativo + sai
+                                await redis_client.setex(_flag_key, 86400, "0")
+                                return
+
+                            _integ_cw_lab = await _ci(empresa_id, 'chatwoot')
+                            if not _integ_cw_lab:
+                                logger.warning("[FRANQUEADA] integracao Chatwoot ausente — nao aplica label")
+                                await redis_client.setex(_flag_key, 86400, "1")
+                                return
+
+                            # 1) Atualiza nome do contato com firstName do EVO
+                            _first_name = (res_membro.get("first_name") or "").strip()
+                            if _first_name:
+                                _nome_atualizar = _first_name.title()
+                                try:
+                                    await atualizar_nome_contato_chatwoot(
+                                        account_id, contact_id, _nome_atualizar, _integ_cw_lab
                                     )
-                            # Cache flag (positivo ou negativo) por 24h
+                                    logger.info(f"[FRANQUEADA] nome contato={contact_id} atualizado p/ '{_nome_atualizar}'")
+                                except Exception as _en:
+                                    logger.debug(f"[FRANQUEADA] atualizar nome falhou: {_en}")
+
+                            # 2) Resolve unidade pelo branchName retornado pela EVO
+                            _branch_evo = (res_membro.get("branch_name") or "").strip()
+                            _id_branch_evo = res_membro.get("id_branch")
+                            _slug_unid = None
+                            try:
+                                import src.core.database as _database
+                                if _database.db_pool and _branch_evo:
+                                    rows = await _database.db_pool.fetch(
+                                        "SELECT id, nome, slug FROM unidades WHERE empresa_id=$1 AND ativa=true",
+                                        empresa_id,
+                                    )
+                                    _alvo = normalizar(_branch_evo).strip(" .")
+                                    _melhor = None
+                                    for r in rows:
+                                        _nome_norm = normalizar(r["nome"] or "").strip(" .")
+                                        # Match: igual, OU branchName CONTIDO no nome da unidade, OU vice-versa
+                                        if (_nome_norm == _alvo
+                                            or _alvo in _nome_norm
+                                            or _nome_norm in _alvo):
+                                            _melhor = r
+                                            break
+                                    if _melhor:
+                                        _slug_unid = (_melhor["slug"] or _melhor["nome"]).strip().lower()
+                                        logger.info(
+                                            f"[FRANQUEADA] branchName '{_branch_evo}' (EVO id={_id_branch_evo}) "
+                                            f"-> unidade DB id={_melhor['id']} slug='{_slug_unid}'"
+                                        )
+                            except Exception as _eu:
+                                logger.debug(f"[FRANQUEADA] resolver unidade pelo branchName falhou: {_eu}")
+
+                            # Fallback: se nao casou, usa unidade da conversa atual
+                            if not _slug_unid:
+                                _slug_unid = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "")).strip().lower()
+                                if _slug_unid:
+                                    logger.info(f"[FRANQUEADA] usando fallback slug da conversa: '{_slug_unid}'")
+
+                            # Sanitiza pra slug Chatwoot (alfanum + dash)
+                            import re as _re_lab
+                            _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid or "geral").strip("-") or "geral"
+                            _label = f"aluno-{_slug_unid}"
+
+                            # 3) Aplica label
+                            await aplicar_label_contato_chatwoot(
+                                account_id, contact_id, _label, _integ_cw_lab,
+                                grupo_prefix="aluno-",
+                            )
+                            logger.info(f"[FRANQUEADA] label '{_label}' aplicada contato={contact_id}")
+
                             await redis_client.setex(_flag_key, 86400, "1")
                         except Exception as _e_franq:
                             logger.debug(f"[FRANQUEADA] check falhou: {_e_franq}")

@@ -497,13 +497,22 @@ async def verificar_membro_evo(
     m = items[0] if isinstance(items[0], dict) else {}
     # Campos comuns na resposta da EVO v2
     id_membro = m.get("idMember") or m.get("id") or m.get("idClient")
-    nome = m.get("firstName") or m.get("name") or m.get("nameMember") or m.get("fullName")
-    if isinstance(nome, str):
-        nome = nome.strip() or None
+    first_name = m.get("firstName") or m.get("registerName") or m.get("nameMember") or ""
+    last_name = m.get("lastName") or m.get("registerLastName") or ""
+    if isinstance(first_name, str): first_name = first_name.strip()
+    if isinstance(last_name, str): last_name = last_name.strip()
+    # Nome completo capitalizado (EVO geralmente devolve em UPPERCASE)
+    nome_completo = f"{first_name} {last_name}".strip().title() if (first_name or last_name) else None
+    nome = first_name.title() if first_name else nome_completo
+
+    # Branch (qual unidade ele e aluno)
+    id_branch = m.get("idBranch")
+    branch_name = m.get("branchName") or ""
+    if isinstance(branch_name, str): branch_name = branch_name.strip()
+
     # Situacao: campos possiveis "active" / "membershipStatus" / "status"
     ativo_raw = m.get("active")
     if ativo_raw is None:
-        # tenta inferir por memberships ativas
         memberships = m.get("memberships") or []
         if isinstance(memberships, list) and memberships:
             ativo_raw = any(
@@ -515,6 +524,11 @@ async def verificar_membro_evo(
 
     out = {
         "encontrado": True,
+        "id_branch": id_branch,
+        "branch_name": branch_name,
+        "first_name": first_name,
+        "last_name": last_name,
+        "nome_completo": nome_completo,
         "id_membro": id_membro,
         "nome": nome,
         "ativo": bool(ativo_raw),
