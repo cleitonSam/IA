@@ -4728,6 +4728,31 @@ async def processar_ia_e_responder(
                             _branch_evo = (res_membro.get("branch_name") or "").strip()
                             _id_branch_evo = res_membro.get("id_branch")
                             _slug_unid = None
+
+                            # [SLUG-CLEAN] Extrai a parte util do branchName, removendo:
+                            # - prefixo da rede (ex: "GOODBE - BELENZINHO" -> "BELENZINHO")
+                            # - prefixo do slug DB (ex: "goodbe-belenzinho" -> "belenzinho")
+                            import re as _re_lab
+                            def _limpar_slug(s: str) -> str:
+                                if not s: return ""
+                                s = str(s).lower()
+                                # Remove prefixos comuns de rede (qualquer coisa antes de " - " ou " – ")
+                                if " - " in s:
+                                    s = s.split(" - ", 1)[1]
+                                elif " – " in s:
+                                    s = s.split(" – ", 1)[1]
+                                # Slug-ifica
+                                s = _re_lab.sub(r"[^a-z0-9]+", "-", s).strip("-")
+                                # Remove prefixo "goodbe-", "redfitness-" etc se vier do slug DB
+                                # (heuristica: se primeiro token <= 8 chars e nao e nome conhecido de bairro)
+                                _partes = s.split("-")
+                                if len(_partes) > 1:
+                                    _primeiro = _partes[0]
+                                    # Se for prefixo de marca conhecido, remove
+                                    if _primeiro in ("goodbe", "redfitness", "red", "fitness", "academia"):
+                                        s = "-".join(_partes[1:])
+                                return s.strip("-") or ""
+
                             try:
                                 rows = await _database.db_pool.fetch(
                                     "SELECT id, nome, slug FROM unidades WHERE empresa_id=$1 AND ativa=true",
@@ -4741,22 +4766,61 @@ async def processar_ia_e_responder(
                                         _melhor = r
                                         break
                                 if _melhor:
-                                    _slug_unid = (_melhor["slug"] or _melhor["nome"]).strip().lower()
+                                    # Prefere extrair do nome ORIGINAL (limpando prefixo de rede)
+                                    _slug_unid = _limpar_slug(_melhor["nome"]) or _limpar_slug(_melhor["slug"])
                                     logger.info(
                                         f"[FRANQUEADA] branchName '{_branch_evo}' (EVO id={_id_branch_evo}) "
-                                        f"-> unidade DB id={_melhor['id']} slug='{_slug_unid}'"
+                                        f"-> unidade DB id={_melhor['id']} nome='{_melhor['nome']}' slug_limpo='{_slug_unid}'"
                                     )
                             except Exception as _eu:
                                 logger.debug(f"[FRANQUEADA] resolver unidade pelo branchName falhou: {_eu}")
 
                             if not _slug_unid:
-                                _slug_unid = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "")).strip().lower()
+                                # Fallback 1: usa o branchName direto (ja limpo)
+                                _slug_unid = _limpar_slug(_branch_evo)
                                 if _slug_unid:
-                                    logger.info(f"[FRANQUEADA] usando fallback slug da conversa: '{_slug_unid}'")
+                                    logger.info(f"[FRANQUEADA] fallback usando branchName limpo: '{_slug_unid}'")
 
-                            import re as _re_lab
-                            _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid or "geral").strip("-") or "geral"
+                            if not _slug_unid:
+                                # Fallback 2: usa slug da conversa
+                                _raw_conv = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "")).strip()
+                                _slug_unid = _limpar_slug(_raw_conv)
+                                if _slug_unid:
+                                    logger.info(f"[FRANQUEADA] fallback slug da conversa limpo: '{_slug_unid}'")
+
+                            _slug_unid = _slug_unid or "geral"
                             _label = f"aluno-{_slug_unid}"
+
+                            # [PRIORIZA EXISTENTES] Se ja existe label parecida no Chatwoot
+                            # (ex: 'aluno-belenzinho' criada manualmente), USA ela em vez de criar nova.
+                            try:
+                                from src.services.chatwoot_client import _chatwoot_url_token as _cw_ut
+                                _u_b, _t_t = _cw_ut(_integ_cw_lab)
+                                _acc = _integ_cw_lab.get("account_id") or _integ_cw_lab.get("accountId")
+                                if _u_b and _t_t and _acc:
+                                    import httpx as _hx
+                                    async with _hx.AsyncClient() as _c:
+                                        _rl = await _c.get(
+                                            f"{_u_b}/api/v1/accounts/{_acc}/labels",
+                                            headers={"api_access_token": str(_t_t)}, timeout=8.0,
+                                        )
+                                    if _rl.status_code == 200:
+                                        _dl = _rl.json() or {}
+                                        _pl = _dl.get("payload") or (_dl.get("data") or {}).get("payload") or []
+                                        _existentes = [str(l.get("title", "")).lower() for l in _pl if isinstance(l, dict)]
+                                        # Se existe alguma label aluno-* que termina com nosso slug, usa ela
+                                        for _ex in _existentes:
+                                            if _ex.startswith("aluno-") and (
+                                                _ex == _label or
+                                                _ex.endswith(_slug_unid) or
+                                                _slug_unid.endswith(_ex.replace("aluno-", ""))
+                                            ):
+                                                if _ex != _label:
+                                                    logger.info(f"[FRANQUEADA] usando label EXISTENTE '{_ex}' em vez de criar '{_label}'")
+                                                    _label = _ex
+                                                break
+                            except Exception as _ex_e:
+                                logger.debug(f"[FRANQUEADA] busca label existente falhou: {_ex_e}")
 
                             await aplicar_label_contato_chatwoot(
                                 account_id, contact_id, _label, _integ_cw_lab,
@@ -5215,17 +5279,21 @@ REGRAS CRÍTICAS — ANTI-ALUCINAÇÃO (OBRIGATÓRIO):
 
 FLUXO DE VENDEDOR REAL (OBRIGATÓRIO):
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo:
-1. Responda a pergunta do cliente de forma direta e curta
+1. Responda a pergunta do cliente de forma direta e curta — SEMPRE com DADOS REAIS desta unidade
 2. Depois da resposta, faça UMA pergunta de descoberta que avança a conversa
-Exemplos:
-  Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
-  Cliente: "Qual o horário?" → "Nosso horário é seg-sex 06h às 23h 😊 Você já treina ou está começando agora?"
-  Cliente: "Quanto custa?" → "Temos planos a partir de R$X! Qual seu objetivo principal — musculação, cardio, ou os dois?"
+
+Padrão de resposta (use SEMPRE os DADOS REAIS — NUNCA invente valores):
+- "Tem diária?" → consulte se a unidade tem diária. Se sim, informe o valor REAL. Se não, explique que essa unidade não trabalha com diária. Pergunte o objetivo do cliente.
+- "Qual o horário?" → use o horário REAL desta unidade (acima, em INFORMAÇÕES DA UNIDADE / STATUS DA UNIDADE AGORA). NUNCA invente "seg-sex 06h às 23h" se não bate com os dados.
+- "Quanto custa?" → use os planos REAIS configurados (na seção PLANOS). Não cite valor genérico.
+
 REGRAS do fluxo:
 - Resposta + pergunta na MESMA mensagem, sempre
 - A pergunta deve descobrir algo sobre o cliente (objetivo, frequência, localização)
+- NUNCA invente valores, horários, modalidades ou ofertas — use APENAS os DADOS configurados
 - NUNCA adicione dados que o cliente NÃO pediu (ex: não jogue horários se pediu preço)
 - Se o cliente já respondeu uma descoberta, avance para a próxima etapa (mostrar plano, agendar visita)
+- Use emojis APENAS se a Personalidade IA permitir. Se não, texto puro.
 
 REGRAS DE TOM (OBRIGATÓRIO):
 - NUNCA comece resposta com "Olá" se já houve troca de mensagens — vá direto ao ponto
