@@ -205,8 +205,12 @@ async def aplicar_label_contato_chatwoot(
 
     headers = {"api_access_token": str(token), "Content-Type": "application/json"}
     url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}/labels"
+    payload = {"labels": novas}
+    logger.info(f"[CW labels] POST {url} body={payload}")
     try:
-        resp = await http_client.post(url, json={"labels": novas}, headers=headers, timeout=10.0)
+        resp = await http_client.post(url, json=payload, headers=headers, timeout=10.0)
+        # LOG COMPLETO da resposta pra debug
+        logger.info(f"[CW labels] resp HTTP={resp.status_code} body={resp.text[:400]!r}")
         if 200 <= resp.status_code < 300:
             # Invalida cache de labels
             try:
@@ -214,9 +218,35 @@ async def aplicar_label_contato_chatwoot(
                 await _rc.delete(f"cw:labels:contact:{account_id}:{contact_id}")
             except Exception:
                 pass
-            logger.info(f"[CW labels] '{label_slug}' aplicada contato={contact_id} acc={account_id}")
+            # ── VERIFICACAO: re-le as labels do contato pra confirmar que aplicou ──
+            try:
+                _verif_url = f"{url_base}/api/v1/accounts/{account_id}/contacts/{contact_id}/labels"
+                _verif = await http_client.get(_verif_url, headers={"api_access_token": str(token)}, timeout=8.0)
+                if _verif.status_code == 200:
+                    _vd = _verif.json() or {}
+                    _vp = _vd.get("payload") or (_vd.get("data") or {}).get("payload") or []
+                    if isinstance(_vp, list) and label_slug in [str(x).lower() for x in _vp]:
+                        logger.info(f"[CW labels] ✅ VERIFICADO: '{label_slug}' presente nas labels do contato {contact_id}: {_vp}")
+                        return True
+                    else:
+                        logger.warning(
+                            f"[CW labels] ⚠️ POST disse 200 mas label '{label_slug}' NAO esta nas labels do contato. "
+                            f"Labels atuais: {_vp}. Pode ser bug de versao Chatwoot — testando endpoint alternativo..."
+                        )
+                        # FALLBACK: tenta a sintaxe alternativa que algumas versoes do Chatwoot usam
+                        # (com 'add' ou via PUT em vez de POST)
+                        try:
+                            _alt_resp = await http_client.put(url, json=payload, headers=headers, timeout=10.0)
+                            logger.info(f"[CW labels] PUT alternativo HTTP={_alt_resp.status_code} body={_alt_resp.text[:300]!r}")
+                            if 200 <= _alt_resp.status_code < 300:
+                                return True
+                        except Exception as _epp:
+                            logger.debug(f"[CW labels] PUT alternativo falhou: {_epp}")
+                        return False
+            except Exception as _ev:
+                logger.debug(f"[CW labels] verificacao pos-aplicar falhou: {_ev}")
             return True
-        logger.warning(f"[CW labels] HTTP {resp.status_code} aplicar {label_slug}: {resp.text[:200]}")
+        logger.warning(f"[CW labels] HTTP {resp.status_code} aplicar {label_slug}: {resp.text[:300]}")
         return False
     except Exception as e:
         logger.warning(f"[CW labels] erro aplicar {label_slug} contato {contact_id}: {e}")
