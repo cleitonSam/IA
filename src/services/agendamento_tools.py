@@ -498,7 +498,7 @@ FLUXO RECOMENDADO:
    em qual UNIDADE ele quer treinar (esta empresa tem MULTIPLAS unidades).
    Liste as unidades pra ele escolher.
 2. Cliente escolhe unidade -> use:
-   <TOOL>{"name": "consultar_horarios", "args": {"unidade": "Nome da Unidade"}}</TOOL>
+   <TOOL>{{"name": "consultar_horarios", "args": {{"unidade": "Nome da Unidade"}}}}</TOOL>
    Use o nome EXATO ou o bairro pra match — sistema resolve.
    Se voce ja chamou uma vez nesta conversa com a unidade escolhida, nao
    precisa passar de novo (ja fica salvo no estado).
