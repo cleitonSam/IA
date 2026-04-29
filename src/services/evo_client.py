@@ -266,6 +266,51 @@ async def criar_prospect_evo(
 # AGENDAMENTO DE AULA EXPERIMENTAL — Fase 1
 # ════════════════════════════════════════════════════════════════════════════
 
+
+def _calc_janela_booking(s):
+    """Retorna (booking_start_dt, booking_end_dt) combinando hora+data corretamente.
+    bookingStartTime/EndTime vem como hora pura (ex: '15:00:00') e precisa combinar
+    com activityDate considerando que se start > startTime da aula, abre dia ANTERIOR."""
+    from datetime import datetime as _dt2, timedelta as _td2
+    _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
+    _stime = str(s.get("startTime") or "")[:5].strip()
+    if not _adate or len(_adate) < 10 or not _stime:
+        return None, None
+    try:
+        _aula_dt = _dt2.fromisoformat(f"{_adate} {_stime}:00")
+    except Exception:
+        return None, None
+
+    _bstart = str(s.get("bookingStartTime") or "").strip()
+    _bend = str(s.get("bookingEndTime") or "").strip()
+    bstart_dt = bend_dt = None
+
+    if _bstart and ":" in _bstart and len(_bstart) <= 8:
+        try:
+            _bs_t = _dt2.fromisoformat(f"{_adate} {_bstart[:8]}").time()
+            if _bs_t > _aula_dt.time():
+                # janela abre no dia ANTERIOR
+                bstart_dt = _dt2.combine((_aula_dt - _td2(days=1)).date(), _bs_t)
+            else:
+                bstart_dt = _dt2.fromisoformat(f"{_adate} {_bstart[:8]}")
+        except Exception:
+            pass
+
+    if _bend and ":" in _bend and len(_bend) <= 8:
+        try:
+            _be_t = _dt2.fromisoformat(f"{_adate} {_bend[:8]}").time()
+            # bookingEnd geralmente é antes do startTime ou logo apos meia-noite
+            if _be_t > _aula_dt.time():
+                # fim depois da hora da aula? combina com dia anterior
+                bend_dt = _dt2.combine((_aula_dt - _td2(days=1)).date(), _be_t)
+            else:
+                bend_dt = _dt2.fromisoformat(f"{_adate} {_bend[:8]}")
+        except Exception:
+            pass
+
+    return bstart_dt, bend_dt
+
+
 def _evo_api_base(integracao: Dict[str, Any]) -> str:
     """URL base v1 da EVO (compatibilidade com integracoes antigas v2)."""
     api = integracao.get("api_url", "https://evo-integracao-api.w12app.com.br/api/v2")
@@ -659,31 +704,24 @@ async def listar_horarios_disponiveis_evo(
         ocu = int(s.get("ocupation") or 0)
         if cap <= 0 or (cap - ocu) <= 0:
             continue
-        # [FIX-D] descarta sessoes cuja data+hora ja passou (aula no passado)
+        # [FIX-D] descarta aulas no passado
         try:
             _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
             _stime = str(s.get("startTime") or "")[:5].strip()
             if _adate and len(_adate) >= 10 and _stime:
                 _aula_dt = _dt.fromisoformat(f"{_adate} {_stime}:00")
                 if _aula_dt < _agora:
-                    continue  # aula ja comecou/passou — descarta
+                    continue
         except Exception:
             pass
-        # [FIX-C] filtra sessoes cuja janela de reserva ja fechou
-        _bend = s.get("bookingEndTime")
-        if _bend:
-            try:
-                _bend_str = str(_bend).replace("T", " ").split(".")[0].strip()
-                # Caso 1: vem so hora (ex: "00:00:20"). Combina com activityDate
-                if len(_bend_str) <= 8 and ":" in _bend_str:
-                    _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
-                    if _adate and len(_adate) >= 10:
-                        _bend_str = f"{_adate} {_bend_str}"
-                _bdt = _dt.fromisoformat(_bend_str)
-                if _bdt < _agora:
-                    continue  # janela ja fechou — descarta
-            except Exception:
-                pass  # se nao parseou, deixa passar
+        # [FIX-F] descarta sessoes cuja janela de booking nao esta ABERTA agora
+        # (filial Goodbe abre janela 15h antes e fecha à meia-noite — fora desse
+        # range a EVO recusa com "Horário da atividade excluído").
+        _bs_dt, _be_dt = _calc_janela_booking(s)
+        if _be_dt and _be_dt < _agora:
+            continue  # janela ja fechou
+        # NAO filtra se janela ainda nao abriu — preferimos mostrar e o agendar_aula
+        # da mensagem clara "abre em XYZ" se cliente tentar antes da hora.
         normalizado.append({
             "idActivitySession": s.get("idAtividadeSessao") or s.get("idActivitySession"),
             "idActivity": s.get("idActivity"),
@@ -743,8 +781,8 @@ async def agendar_aula_experimental_evo(
         return {"ok": False, "status": 0, "mensagens": ["Credenciais EVO ausentes"]}
 
     # [FIX-B] re-check de vaga ANTES de agendar (anti-race com outros agendamentos)
-    # Se a sessao ja encheu desde que a IA listou, retorna erro especifico
-    # pra IA poder dizer "esse horario acabou de encher, escolhe outro?".
+    # E [FIX-E] valida janela de booking — se ainda nao abriu OU ja fechou,
+    # retorna mensagem clara pra IA explicar ao cliente.
     if id_activity:
         try:
             _check_url = f"{_evo_api_base(integracao)}/activities/schedule/detail"
@@ -758,16 +796,37 @@ async def agendar_aula_experimental_evo(
                 _cap = int(_det.get("capacity") or 0)
                 _ocu = int(_det.get("ocupation") or 0)
                 if _cap > 0 and _ocu >= _cap:
-                    logger.info(f"⚠️ EVO: sessao {id_activity} encheu antes do agendamento (cap={_cap} ocu={_ocu})")
+                    logger.info(f"⚠️ EVO: sessao {id_activity} encheu antes do agendamento")
                     return {
                         "ok": False, "status": 409,
-                        "mensagens": [
-                            "Esse horario acabou de encher (alguem reservou a ultima vaga). Escolha outro horario."
-                        ],
+                        "mensagens": ["Esse horario acabou de encher (alguem reservou a ultima vaga). Escolha outro horario."],
                         "vaga_perdida": True,
                     }
+                # [FIX-E] checa janela usando helper unificado
+                from datetime import datetime as _dt2
+                _agora2 = _dt2.now()
+                _bs_dt2, _be_dt2 = _calc_janela_booking(_det)
+                if _bs_dt2 and _agora2 < _bs_dt2:
+                    _quando = _bs_dt2.strftime("%d/%m as %Hh%M")
+                    return {
+                        "ok": False, "status": 425,
+                        "mensagens": [f"A janela de reserva pra esse horario abre em {_quando}."],
+                        "janela_nao_abriu": True,
+                        "abre_em": _bs_dt2.isoformat(),
+                        "instrucao_ia": (
+                            f"A janela de reserva da EVO so abre em {_quando}. "
+                            "Diga ao cliente que pode tentar a partir desse horario, "
+                            "ou escolha outra aula cuja janela ja esta aberta."
+                        ),
+                    }
+                if _be_dt2 and _agora2 > _be_dt2:
+                    return {
+                        "ok": False, "status": 410,
+                        "mensagens": ["A janela de reserva pra esse horario ja fechou."],
+                        "janela_fechada": True,
+                        "instrucao_ia": "A janela ja fechou. Sugira outra opcao ao cliente.",
+                    }
         except Exception as _ec:
-            # Se o re-check falhar, segue tentando o agendamento mesmo assim
             logger.debug(f"[FIX-B] re-check vaga falhou (seguindo): {_ec}")
 
     url = f"{_evo_api_base(integracao)}/activities/schedule/experimental-class"
