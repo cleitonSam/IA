@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardSidebar from "@/components/DashboardSidebar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 interface Unit {
   id: number;
@@ -82,6 +83,25 @@ const emptyForm = {
   link_tour_virtual: "",
 };
 
+// [BLINDAGEM] Coerce qualquer valor pra um JSON object/array seguro
+// Casos cobertos: null, undefined, "", "{}", "[]", "{\"k\":1}", objeto direto, array direto
+function safeParseJson<T = any>(value: any, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value === "object") return value as T;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed == null) return fallback;
+      return parsed as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 export default function UnitsPage() {
   const [units, setUnits] = useState<Unit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -139,12 +159,12 @@ export default function UnitsPage() {
           link_matricula: data.link_matricula || "",
           horarios: data.horarios || "",
           modalidades: data.modalidades || "",
-          planos: data.planos || {},
-          formas_pagamento: data.formas_pagamento || {},
-          convenios: data.convenios || {},
-          infraestrutura: data.infraestrutura || {},
-          servicos: data.servicos || {},
-          palavras_chave: data.palavras_chave || [],
+          planos: safeParseJson(data.planos, {}),
+          formas_pagamento: safeParseJson(data.formas_pagamento, {}),
+          convenios: safeParseJson(data.convenios, {}),
+          infraestrutura: safeParseJson(data.infraestrutura, {}),
+          servicos: safeParseJson(data.servicos, {}),
+          palavras_chave: safeParseJson(data.palavras_chave, []),
           foto_grade: data.foto_grade || "",
           link_tour_virtual: data.link_tour_virtual || "",
         });
@@ -167,16 +187,28 @@ export default function UnitsPage() {
     setSaving(true);
     setSuccess(false);
     try {
+      // [BLINDAGEM] Normaliza JSON antes de enviar — se user digitou string invalida no
+      // textarea, mandamos {} em vez de string crua (backend espera dict/list).
+      const payload = {
+        ...formData,
+        planos: safeParseJson(formData.planos, {}),
+        formas_pagamento: safeParseJson(formData.formas_pagamento, {}),
+        convenios: safeParseJson(formData.convenios, {}),
+        infraestrutura: safeParseJson(formData.infraestrutura, {}),
+        servicos: safeParseJson(formData.servicos, {}),
+        palavras_chave: safeParseJson(formData.palavras_chave, []),
+      };
       if (editingUnit) {
-        await axios.put(`/api-backend/dashboard/unidades/${editingUnit.id}`, formData, getConfig());
+        await axios.put(`/api-backend/dashboard/unidades/${editingUnit.id}`, payload, getConfig());
       } else {
-        await axios.post("/api-backend/dashboard/unidades", formData, getConfig());
+        await axios.post("/api-backend/dashboard/unidades", payload, getConfig());
       }
       setSuccess(true);
       setTimeout(() => { setSuccess(false); setIsModalOpen(false); fetchUnits(); }, 1500);
-    } catch (e) {
-      console.error("Erro ao salvar:", e);
-      alert("Erro ao salvar alterações.");
+    } catch (err: any) {
+      console.error("[unidades] Erro ao salvar:", err);
+      const detalhe = err?.response?.data?.detail || err?.message || "Erro desconhecido";
+      alert("Erro ao salvar alterações:\n\n" + detalhe);
     } finally {
       setSaving(false);
     }
@@ -438,6 +470,22 @@ export default function UnitsPage() {
       {/* Modal */}
       <AnimatePresence>
         {isModalOpen && (
+          <ErrorBoundary
+            fallback={
+              <div className="fixed inset-0 z-[200] flex items-center justify-center p-8 bg-[#020617]/95 backdrop-blur-xl">
+                <div className="max-w-md text-center space-y-4 bg-slate-900 border border-red-500/30 rounded-3xl p-8">
+                  <h3 className="text-xl font-black text-red-400">Erro no editor da unidade</h3>
+                  <p className="text-sm text-slate-400">Ocorreu um erro inesperado neste modal. Os dados na lista NÃO foram afetados.</p>
+                  <p className="text-[10px] text-slate-500 italic">Abra o Console do navegador (F12) para ver o erro detalhado e me passe.</p>
+                  <button
+                    onClick={() => { setIsModalOpen(false); window.location.reload(); }}
+                    className="px-6 py-3 bg-cyan-600 hover:bg-cyan-500 rounded-2xl font-bold text-sm">
+                    Fechar e recarregar
+                  </button>
+                </div>
+              </div>
+            }
+          >
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <motion.div
               initial={{ opacity: 0 }}
@@ -840,6 +888,7 @@ export default function UnitsPage() {
               </div>
             </motion.div>
           </div>
+          </ErrorBoundary>
         )}
       </AnimatePresence>
 
