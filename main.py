@@ -2019,7 +2019,8 @@ async def resolver_contexto_atendimento(
             slug = novo_slug
             mudou_unidade = True
             await bd_registrar_evento_funil(
-                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1
+                conversation_id, "mudanca_unidade", f"Contexto alterado para {slug}", score_incremento=1,
+                empresa_id=empresa_id,
             )
 
     return {"slug": slug, "mudou_unidade": mudou_unidade, "primeira_mensagem": primeira_mensagem}
@@ -3669,9 +3670,6 @@ async def bd_iniciar_conversa(
         """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id, contato_telefone)
 
         # 2) se não atualizou nenhuma linha, insere nova conversa
-        # [BLINDADO] Como pode existir constraint UNIQUE no conversation_id sozinho
-        # (legado de migration nao aplicada), tentamos INSERT primeiro, e se der duplicate,
-        # forcamos UPDATE no registro existente (mesmo que seja de outra empresa — corrige).
         if str(_updated).endswith(" 0"):
             try:
                 await db_pool.execute("""
@@ -3681,25 +3679,37 @@ async def bd_iniciar_conversa(
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'ativa', $7)
                 """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
-            except asyncpg.exceptions.UniqueViolationError:
-                # Conversa ja existe (provavelmente em outra empresa devido a unique global legado)
-                # FORCA update sem filtro de empresa pra recuperar o registro
-                logger.warning(
-                    f"[bd_iniciar_conversa] duplicate em conversation_id={conversation_id} "
-                    f"(provavelmente legado UNIQUE conversation_id-only). Forcando update SEM filtro empresa."
+            except asyncpg.exceptions.UniqueViolationError as _ue:
+                # [MULTI-TENANT CRITICO] Duplicate detectada — NUNCA sobrescrever dados de outra empresa.
+                # Causa: indice UNIQUE legado em conversation_id sozinho (sem empresa_id).
+                # Investiga PRA QUAL empresa pertence o registro existente:
+                _ja_existe = await db_pool.fetchrow(
+                    "SELECT id, empresa_id, account_id, contato_telefone FROM conversas WHERE conversation_id = $1",
+                    conversation_id,
                 )
-                await db_pool.execute("""
-                    UPDATE conversas
-                       SET account_id       = $2,
-                           contato_id       = COALESCE($3, contato_id),
-                           contato_nome     = $4,
-                           empresa_id       = $5,
-                           unidade_id       = $6,
-                           contato_telefone = COALESCE($7, contato_telefone),
-                           status           = 'ativa',
-                           updated_at       = NOW()
-                     WHERE conversation_id = $1
-                """, conversation_id, account_id, contato_id, contato_nome, empresa_id, unidade_id, contato_telefone)
+                if _ja_existe and _ja_existe["empresa_id"] == empresa_id:
+                    # Mesma empresa — race condition, atualiza com filtro de empresa (seguro)
+                    await db_pool.execute("""
+                        UPDATE conversas
+                           SET account_id = $2, contato_id = COALESCE($3, contato_id),
+                               contato_nome = $4, unidade_id = $5,
+                               contato_telefone = COALESCE($7, contato_telefone),
+                               status = 'ativa', updated_at = NOW()
+                         WHERE conversation_id = $1 AND empresa_id = $6
+                    """, conversation_id, account_id, contato_id, contato_nome, unidade_id, empresa_id, contato_telefone)
+                    logger.info(f"[bd_iniciar_conversa] race condition resolvida (mesma empresa {empresa_id})")
+                else:
+                    # Empresas DIFERENTES — NUNCA sobrescreve. Loga como ERROR critico.
+                    # Causa: indice UNIQUE conversation_id-only que nao deveria existir.
+                    # Solucao: migration z9z9z9z9z9z9 dropa o indice legado.
+                    logger.error(
+                        f"❌ [MULTI-TENANT BLOCK] conv {conversation_id} ja existe na empresa "
+                        f"{_ja_existe['empresa_id'] if _ja_existe else '?'} (account={_ja_existe['account_id'] if _ja_existe else '?'}). "
+                        f"Tentativa de criar mesma conv_id na empresa {empresa_id} BLOQUEADA pra nao misturar dados. "
+                        f"FIX: rodar migration z9z9z9z9z9z9 que dropa unique legado."
+                    )
+                    # NAO lancamos exception — mensagem e processada pela IA mas nao persiste no historico
+                    # ate o admin rodar a migration. Multi-tenant > completude de log.
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar conversa {conversation_id}: {type(e).__name__}: {e}")
 
@@ -3795,14 +3805,26 @@ async def bd_registrar_primeira_resposta(conversation_id: int, empresa_id: int):
 @retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3), retry_error_callback=log_db_error)
 async def bd_registrar_evento_funil(
     conversation_id: int, tipo_evento: str,
-    descricao: str, score_incremento: int = 5
+    descricao: str, score_incremento: int = 5,
+    empresa_id: int = None,  # [MULTI-TENANT] passar SEMPRE — sem ele, usa fallback inseguro
 ):
     if not db_pool:
         return
     try:
-        conversa = await db_pool.fetchrow(
-            "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id
-        )
+        # [MULTI-TENANT] Se empresa_id passado, filtra. Senao, loga warning (legado).
+        if empresa_id is not None:
+            conversa = await db_pool.fetchrow(
+                "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1 AND empresa_id = $2",
+                conversation_id, empresa_id,
+            )
+        else:
+            logger.warning(
+                f"[bd_registrar_evento_funil] chamado SEM empresa_id pra conv={conversation_id} — "
+                f"caller deve passar empresa_id explicito"
+            )
+            conversa = await db_pool.fetchrow(
+                "SELECT id, empresa_id FROM conversas WHERE conversation_id = $1", conversation_id,
+            )
         if not conversa:
             return
         conversa_id = conversa['id']
@@ -5784,11 +5806,13 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
                 if link_plano in resposta_texto or "matricular" in resposta_texto.lower():
                     await bd_registrar_evento_funil(
-                        conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2
+                        conversation_id, "link_matricula_enviado", "Link enviado via IA", score_incremento=2,
+                        empresa_id=empresa_id,
                     )
                 if tel_banco and tel_banco in resposta_texto:
                     await bd_registrar_evento_funil(
-                        conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3
+                        conversation_id, "solicitacao_telefone", "IA forneceu telefone", score_incremento=3,
+                        empresa_id=empresa_id,
                     )
 
         # --- Tour Virtual: detecta e limpa tag <SEND_VIDEO> ---
@@ -5816,7 +5840,8 @@ RESPONDA com a mensagem diretamente — texto puro, sem JSON, sem ```código```,
 
         if any(k in novo_estado for k in ("interessado", "conversao", "matricula", "animado")):
             await bd_registrar_evento_funil(
-                conversation_id, "interesse_detectado", f"Estado: {novo_estado}"
+                conversation_id, "interesse_detectado", f"Estado: {novo_estado}",
+                empresa_id=empresa_id,
             )
 
         try:
@@ -6693,7 +6718,8 @@ async def chatwoot_webhook(
                         contato_telefone=_telefone_contato
                     )
                     await bd_registrar_evento_funil(
-                        id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3
+                        id_conv, "unidade_escolhida", f"Cliente escolheu {slug}", 3,
+                        empresa_id=empresa_id,
                     )
 
                     # Envia confirmação humanizada com dados da unidade
