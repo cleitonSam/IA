@@ -4872,18 +4872,28 @@ async def processar_ia_e_responder(
                                         _dl = _rl.json() or {}
                                         _pl = _dl.get("payload") or (_dl.get("data") or {}).get("payload") or []
                                         _existentes = [str(l.get("title", "")).lower() for l in _pl if isinstance(l, dict)]
+                                        # [ACCENT-INSENSITIVE] Normaliza acentos pra comparacao.
+                                        # 'nacoes' (slug que vem do regex) bate com 'nações' (label oficial).
+                                        import unicodedata as _ud_lab
+                                        def _na(s):
+                                            return "".join(c for c in _ud_lab.normalize("NFD", str(s).lower()) if _ud_lab.category(c) != "Mn")
+                                        _slug_norm = _na(_slug_unid)
+                                        _slug_norm_tokens = _slug_norm.split("-")
                                         # Procura aluno-* cujo sufixo apareca no nosso slug — escolhe MAIS CURTO
                                         _candidatos = []
                                         for _ex in _existentes:
                                             if not _ex.startswith("aluno-"):
                                                 continue
-                                            _ex_suf = _ex[len("aluno-"):]
-                                            if _ex == _label:
+                                            _ex_suf_norm = _na(_ex[len("aluno-"):])
+                                            if _na(_ex) == _na(_label):
                                                 _candidatos.append(_ex)
                                             # sufixo da existente aparece como token no nosso slug
-                                            elif _ex_suf in _slug_unid.split("-") or _slug_unid.startswith(_ex_suf + "-") or _slug_unid == _ex_suf:
+                                            elif (
+                                                _ex_suf_norm in _slug_norm_tokens
+                                                or _slug_norm.startswith(_ex_suf_norm + "-")
+                                                or _slug_norm == _ex_suf_norm
+                                            ):
                                                 _candidatos.append(_ex)
-                                            # nosso slug e prefixo de uma existente — nao usa (e mais especifica)
                                         if _candidatos:
                                             # Pega a label MAIS CURTA dentre os matches
                                             _melhor_label = min(_candidatos, key=len)
@@ -4921,7 +4931,10 @@ async def processar_ia_e_responder(
 
                             # Aplica TODAS as labels (aluno-X + opcional inadimplentes) em AMBOS:
                             # contato (persistente, ficha) + conversa (visivel barra superior)
-                            from src.services.chatwoot_client import aplicar_label_conversa_chatwoot
+                            from src.services.chatwoot_client import (
+                                aplicar_label_conversa_chatwoot,
+                                atribuir_time_conversa_chatwoot,
+                            )
                             for _lbl in _labels_aplicar:
                                 _grupo = "aluno-" if _lbl.startswith("aluno-") else None
                                 await aplicar_label_contato_chatwoot(
@@ -4933,6 +4946,48 @@ async def processar_ia_e_responder(
                                 account_id, conversation_id, _labels_aplicar, _integ_cw_lab,
                             )
                             logger.info(f"[FRANQUEADA] labels {_labels_aplicar} aplicadas contato={contact_id} + conv={conversation_id}")
+
+                            # ── [TEAM-ROUTE] Atribui conversa ao time da unidade conforme etiqueta ──
+                            # Mapeamento configurado pelo cliente (Goodbe Chatwoot account 12).
+                            # Se uma conversa tiver mais de uma label aluno-*, usa a primeira que casar.
+                            # Mapping OFICIAL (nomenclatura como o cliente cadastrou no Chatwoot)
+                            _LABEL_TEAM_MAP = {
+                                "aluno-altino":     5,
+                                "aluno-belenzinho": 10,
+                                "aluno-campestre":  9,
+                                "aluno-ipiranga":   8,
+                                "aluno-jardins":    11,
+                                "aluno-nações":     6,  # com cedilha (oficial)
+                                "aluno-saude":      7,  # SEM acento (oficial)
+                            }
+                            # Match accent-insensitive — normaliza para comparar
+                            import unicodedata as _ud
+                            def _norm_acc(s: str) -> str:
+                                return "".join(c for c in _ud.normalize("NFD", str(s).lower()) if _ud.category(c) != "Mn")
+                            _team_map_normalizado = {_norm_acc(k): v for k, v in _LABEL_TEAM_MAP.items()}
+                            _team_id_alvo = None
+                            _label_que_casou = None
+                            for _lbl in _labels_aplicar:
+                                _team_id_alvo = _team_map_normalizado.get(_norm_acc(_lbl))
+                                if _team_id_alvo:
+                                    _label_que_casou = _lbl
+                                    break
+                            if _team_id_alvo:
+                                try:
+                                    _ok_team = await atribuir_time_conversa_chatwoot(
+                                        account_id, conversation_id, _team_id_alvo, _integ_cw_lab,
+                                    )
+                                    logger.info(
+                                        f"[FRANQUEADA] time {_team_id_alvo} atribuido a conv={conversation_id} "
+                                        f"(label='{_label_que_casou}', ok={_ok_team})"
+                                    )
+                                except Exception as _et:
+                                    logger.warning(f"[FRANQUEADA] erro atribuir time: {_et}")
+                            else:
+                                logger.info(
+                                    f"[FRANQUEADA] nenhuma label aluno-* mapeada pra time — sem atribuicao "
+                                    f"(labels tentadas: {_labels_aplicar})"
+                                )
 
                             await redis_client.setex(_flag_key, 86400, "1")
                         except Exception as _e_franq:
