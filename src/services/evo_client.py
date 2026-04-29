@@ -582,6 +582,149 @@ async def verificar_membro_evo(
     return out
 
 
+# ────────── VOUCHERS (cred franqueada global) ──────────
+
+async def listar_vouchers_evo(
+    empresa_id: int,
+    only_valid: bool = True,
+    take: int = 50,
+) -> list:
+    """Lista vouchers da EVO usando cred franqueada GLOBAL.
+    Retorna lista normalizada com campos uteis pra IA decidir.
+    only_valid=True passa filtro valid=true na query (so vouchers ativos).
+    Cache 10min em Redis (vouchers raramente mudam).
+    """
+    cache_key = f"evo:vouchers:{empresa_id}:{int(only_valid)}:{take}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    integracao = await _carregar_integracao_franqueada(empresa_id)
+    if not integracao:
+        return []
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return []
+
+    params = {"take": str(take), "skip": "0"}
+    if only_valid:
+        params["valid"] = "true"
+
+    url = f"{_evo_api_base(integracao)}/voucher"
+    resp = await _evo_request("GET", url, headers, params=params, log_tag=f"EVO:vouchers:{empresa_id}")
+    if resp is None or resp.status_code != 200:
+        logger.warning(f"[EVO vouchers] empresa={empresa_id} HTTP={resp.status_code if resp else 'None'}")
+        return []
+    try:
+        data = resp.json() or []
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = data.get("data", []) if isinstance(data, dict) else []
+
+    from datetime import datetime as _dt
+    _agora = _dt.now()
+    normalizado = []
+    for v in data:
+        if not isinstance(v, dict):
+            continue
+        # Filtros de qualidade: valid, nao vencido, com vagas (se limited)
+        if v.get("overdue") is True:
+            continue
+        if v.get("limited") and (v.get("available") or 0) <= 0:
+            continue
+        # Parse expiration
+        _exp = v.get("expirationDate")
+        if _exp:
+            try:
+                _exp_dt = _dt.fromisoformat(str(_exp).replace("Z", ""))
+                if _exp_dt < _agora:
+                    continue
+            except Exception:
+                pass
+
+        # Desconto efetivo (mensal preferido)
+        desc_mensal = v.get("monthyDiscount") or {}
+        desc_anual = v.get("yearlyDiscount") or {}
+        desc_servico = v.get("serviceDiscount") or {}
+        _desc = None
+        _tipo_desc = None
+        for d_obj, label in [(desc_mensal, "mensal"), (desc_anual, "anual"), (desc_servico, "servico")]:
+            if isinstance(d_obj, dict) and d_obj.get("value"):
+                _desc = {
+                    "tipo": d_obj.get("typeDiscountMembership") or d_obj.get("typeDiscountService") or "percentage",
+                    "valor": d_obj.get("value"),
+                    "meses": d_obj.get("numberMounths") or d_obj.get("numberMonths"),
+                }
+                _tipo_desc = label
+                break
+
+        normalizado.append({
+            "id": v.get("idVoucher"),
+            "nome": v.get("nameVoucher"),
+            "tipo": v.get("typeVoucher"),  # Membership / Service
+            "limited": v.get("limited"),
+            "available": v.get("available"),
+            "used": v.get("used"),
+            "expira_em": str(v.get("expirationDate") or "")[:10] or None,
+            "id_memberships": v.get("idMemberships") or [],  # planos vinculados (vazio = todos)
+            "site_disponivel": v.get("siteAvailable"),
+            "desconto": _desc,
+            "tipo_desconto": _tipo_desc,
+        })
+
+    await _cache_set_json(cache_key, normalizado, 600)  # 10 min
+    return normalizado
+
+
+async def validar_voucher_evo(
+    empresa_id: int,
+    voucher_code: str,
+    id_membership: int = 0,
+    id_service: int = 0,
+    id_branch: int = 0,
+) -> dict:
+    """Valida um voucher pra um plano especifico via POST /voucher/voucher-verify.
+    Se 200: voucher aplicavel, retorna detalhes do desconto.
+    Se 400: voucher invalido, errors[].value explica por que.
+    """
+    if not voucher_code:
+        return {"ok": False, "erro": "voucher_vazio"}
+    integracao = await _carregar_integracao_franqueada(empresa_id)
+    if not integracao:
+        return {"ok": False, "erro": "integracao_franqueada_nao_configurada"}
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return {"ok": False, "erro": "credenciais_incompletas"}
+
+    url = f"{_evo_api_base(integracao)}/voucher/voucher-verify"
+    payload = {
+        "voucher": str(voucher_code),
+        "idMembership": int(id_membership or 0),
+        "idService": int(id_service or 0),
+        "idBranch": int(id_branch or 0),
+    }
+    resp = await _evo_request("POST", url, headers, json=payload, log_tag=f"EVO:voucher-verify:{empresa_id}")
+    if resp is None:
+        return {"ok": False, "erro": "evo_sem_resposta"}
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "dados": body, "status": resp.status_code}
+
+    # Extrai erro especifico
+    msg = "voucher_invalido"
+    if isinstance(body, dict):
+        errs = body.get("errors") or []
+        if isinstance(errs, list) and errs:
+            _e = errs[0] if isinstance(errs[0], dict) else {}
+            msg = str(_e.get("value") or _e.get("description") or msg)
+    return {"ok": False, "erro": msg, "status": resp.status_code}
+
+
 async def _carregar_qualquer_integracao_evo(empresa_id: int, unidade_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Pra DISCOVERY (branches/services/activities): tenta unidade_id especifico,
     depois global, depois QUALQUER integracao EVO ativa da empresa.

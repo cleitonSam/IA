@@ -157,6 +157,9 @@ class PersonalityCreate(BaseModel):
     tour_mensagem_custom: Optional[str] = None
     comprimento_resposta: Optional[str] = "normal"  # 'concisa' | 'normal' | 'detalhada'
     mensagem_fora_horario: Optional[str] = None  # [HORA-01] mensagem custom fora do horario
+    # [VOUCHER-01] Toggle pra IA usar vouchers de desconto da EVO franqueada
+    usar_vouchers: Optional[bool] = False
+    vouchers_estrategia: Optional[str] = None
 
     model_config = {"extra": "allow"}
 
@@ -2105,6 +2108,73 @@ async def delete_label_team_map(
     except Exception:
         pass
     return {"status": "success"}
+
+
+@router.get("/franqueada/vouchers")
+async def listar_vouchers_endpoint(
+    only_valid: bool = True,
+    take: int = 50,
+    enrich: bool = True,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Lista vouchers da EVO + cruza com planos da empresa pra mostrar NOMES dos planos.
+    enrich=True (default): faz JOIN dos idMemberships com tabela planos.
+    Use na pagina /dashboard/vouchers."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    from src.services.evo_client import listar_vouchers_evo
+    vouchers = await listar_vouchers_evo(empresa_id, only_valid=only_valid, take=take)
+    if enrich and vouchers:
+        # Cross-reference com tabela planos pra trazer nome+unidade
+        try:
+            rows = await _database.db_pool.fetch(
+                """SELECT p.id_externo, p.nome, p.valor, p.valor_promocional, p.unidade_id, u.nome AS unidade_nome
+                   FROM planos p LEFT JOIN unidades u ON u.id = p.unidade_id
+                   WHERE p.empresa_id = $1 AND p.ativo = true""",
+                empresa_id,
+            )
+            _plano_map = {}
+            for r in rows:
+                _id_ext = r["id_externo"]
+                if _id_ext is None:
+                    continue
+                try:
+                    _plano_map[int(_id_ext)] = {
+                        "id_externo": int(_id_ext),
+                        "nome": r["nome"],
+                        "valor": float(r["valor"]) if r["valor"] is not None else None,
+                        "unidade_nome": r["unidade_nome"],
+                    }
+                except (ValueError, TypeError):
+                    pass
+            for v in vouchers:
+                _ids = v.get("id_memberships") or []
+                v["planos_detalhe"] = [_plano_map[int(i)] for i in _ids if int(i) in _plano_map]
+                v["planos_nomes"] = [p["nome"] for p in v["planos_detalhe"]]
+                # Se nao tem planos vinculados, vale pra TODOS
+                v["valido_para"] = "Todos os planos" if not _ids else (
+                    ", ".join(v["planos_nomes"]) if v["planos_nomes"] else f"Planos id {_ids} (não cadastrados localmente)"
+                )
+        except Exception as _ee:
+            logger.debug(f"[vouchers enrich] erro: {_ee}")
+    return {"vouchers": vouchers, "total": len(vouchers)}
+
+
+@router.post("/franqueada/voucher-verify")
+async def validar_voucher_endpoint(
+    voucher: str,
+    id_membership: int = 0,
+    id_service: int = 0,
+    id_branch: int = 0,
+    token_payload: dict = Depends(get_current_user_token),
+):
+    """Valida um voucher pra um plano antes de oferecer ao cliente."""
+    empresa_id = await _resolve_empresa_id(token_payload)
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada")
+    from src.services.evo_client import validar_voucher_evo
+    return await validar_voucher_evo(empresa_id, voucher, id_membership, id_service, id_branch)
 
 
 @router.post("/franqueada/limpar-labels-obsoletas")

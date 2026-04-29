@@ -5388,6 +5388,66 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
             else:
                 prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
 
+            # ── [VOUCHERS] Se Personalidade IA permite, lista vouchers validos da EVO ──
+            if pers.get("usar_vouchers"):
+                try:
+                    from src.services.evo_client import listar_vouchers_evo
+                    _vouchers = await listar_vouchers_evo(empresa_id, only_valid=True, take=20)
+                    if _vouchers:
+                        # Detecta se ja oferecemos voucher nesta conversa (cache 24h)
+                        _v_flag = await redis_client.get(f"voucher_oferecido:{empresa_id}:{conversation_id}")
+                        _ja_ofereceu = bool(_v_flag)
+
+                        _bloco_v = "\n[VOUCHERS DE DESCONTO — DISPONÍVEIS NA REDE]\n"
+                        _bloco_v += "Você TEM acesso a estes vouchers de desconto. Use ESTRATEGICAMENTE pra fechar venda:\n\n"
+                        for _v in _vouchers[:10]:
+                            _desc = _v.get("desconto") or {}
+                            _val = _desc.get("valor")
+                            _tipo_desc = _desc.get("tipo")
+                            _meses = _desc.get("meses")
+                            _planos_v = _v.get("id_memberships") or []
+                            _bloco_v += f"• *{_v.get('nome')}* — "
+                            if _val and _tipo_desc == "percentage":
+                                _bloco_v += f"{_val}% off"
+                            elif _val:
+                                _bloco_v += f"R${_val} off"
+                            if _meses:
+                                _bloco_v += f" por {_meses} mês(es)"
+                            if _planos_v:
+                                _bloco_v += f" — só vale pros planos id {_planos_v}"
+                            else:
+                                _bloco_v += " — vale pra qualquer plano"
+                            _bloco_v += f" — expira: {_v.get('expira_em') or 'sem prazo'}\n"
+
+                        _estrategia_custom = (pers.get("vouchers_estrategia") or "").strip()
+                        _bloco_v += "\n[REGRAS DE USO INTELIGENTE — OBRIGATÓRIAS]\n"
+                        if _ja_ofereceu:
+                            _bloco_v += "⚠️ NESTA CONVERSA VOCÊ JÁ OFERECEU UM VOUCHER. Não ofereça outro a menos que o cliente peça mais desconto.\n\n"
+                        _bloco_v += (
+                            "OFEREÇA voucher quando:\n"
+                            "- Cliente reclamou do valor / pediu desconto explícito\n"
+                            "- Cliente disse 'vou pensar' depois de ver o preço (sinal de objeção de valor)\n"
+                            "- Cliente comparou com concorrente\n"
+                            "- Cliente hesitou claramente após apresentar plano\n\n"
+                            "NÃO OFEREÇA quando:\n"
+                            "- Cliente está em saudação / conversa casual\n"
+                            "- Cliente AINDA NÃO foi qualificado (não sabe nem o objetivo dele)\n"
+                            "- Cliente JÁ É ALUNO ATIVO (vide STATUS DO CONTATO acima)\n"
+                            "- Cliente já demonstrou que valor não é problema\n"
+                            "- Você JÁ ofereceu voucher nesta conversa\n\n"
+                            "COMO OFERECER:\n"
+                            "- Mencione o nome do voucher e o desconto efetivo (ex: 'usando o cupom DRTULIO você tem 20% off no primeiro mês')\n"
+                            "- Crie urgência sutil mencionando expiração se for em breve\n"
+                            "- Se voucher é restrito a um plano, garanta oferecer com aquele plano específico\n"
+                            "- NUNCA invente código de voucher — use APENAS os listados acima\n"
+                            "- Se cliente confirmar interesse, diga que o consultor da unidade aplica o desconto na hora da matrícula\n"
+                        )
+                        if _estrategia_custom:
+                            _bloco_v += f"\n[ESTRATÉGIA CUSTOMIZADA DA MARCA]\n{_estrategia_custom}\n"
+                        prompt_sistema += _bloco_v
+                except Exception as _ev:
+                    logger.debug(f"[VOUCHERS] erro injetar bloco: {_ev}")
+
             _foto_grade = unidade.get("foto_grade")
             _modalidades_texto = unidade.get("modalidades") or ""
             if _foto_grade or _modalidades_texto:
