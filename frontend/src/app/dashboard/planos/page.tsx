@@ -337,9 +337,9 @@ export default function PlanosPage() {
                   <div>
                     <label className={labelClass}>Valor (R$)</label>
                     <input
-                      type="number" step="0.01" min="0"
+                      type="number" step="0.01"
                       className={inputClass}
-                      placeholder="99.90"
+                      placeholder="opcional"
                       value={formData.valor ?? ""}
                       onChange={e => setFormData(p => ({ ...p, valor: e.target.value ? parseFloat(e.target.value) : null }))}
                     />
@@ -347,9 +347,9 @@ export default function PlanosPage() {
                   <div>
                     <label className={labelClass}>Valor Promo (R$)</label>
                     <input
-                      type="number" step="0.01" min="0"
+                      type="number" step="0.01"
                       className={inputClass}
-                      placeholder="79.90"
+                      placeholder="opcional"
                       value={formData.valor_promocional ?? ""}
                       onChange={e => setFormData(p => ({ ...p, valor_promocional: e.target.value ? parseFloat(e.target.value) : null }))}
                     />
@@ -361,9 +361,9 @@ export default function PlanosPage() {
                   <div>
                     <label className={labelClass}>Meses Promoção</label>
                     <input
-                      type="number" min="1"
+                      type="number"
                       className={inputClass}
-                      placeholder="3"
+                      placeholder="opcional"
                       value={formData.meses_promocionais ?? ""}
                       onChange={e => setFormData(p => ({ ...p, meses_promocionais: e.target.value ? parseInt(e.target.value) : null }))}
                     />
@@ -371,11 +371,11 @@ export default function PlanosPage() {
                   <div>
                     <label className={labelClass}>Ordem</label>
                     <input
-                      type="number" min="0"
+                      type="number"
                       className={inputClass}
                       placeholder="0"
-                      value={formData.ordem}
-                      onChange={e => setFormData(p => ({ ...p, ordem: parseInt(e.target.value) || 0 }))}
+                      value={formData.ordem ?? ""}
+                      onChange={e => setFormData(p => ({ ...p, ordem: e.target.value ? parseInt(e.target.value) : 0 }))}
                     />
                   </div>
                 </div>
