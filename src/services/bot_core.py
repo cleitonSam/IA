@@ -65,6 +65,11 @@ from src.services.chatwoot_client import (
     escalar_para_humano,
 )
 from src.services.evo_client import verificar_status_membro_evo, criar_prospect_evo
+from src.services.agendamento_tools import (
+    construir_bloco_prompt_agendamento,
+    detectar_tool_call,
+    executar_tool as _agend_executar_tool,
+)
 import src.services.chatwoot_client as _chatwoot_module
 from src.services.workers import (
     _log_worker_task_result, worker_sync_planos, sync_planos_manual,
@@ -1694,6 +1699,11 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             except Exception as _ab_err:
                 logger.debug(f"A/B test lookup falhou (não crítico): {_ab_err}")
 
+            # [AGEND-02] Bloco de agendamento — so injeta se ativo na personalidade
+            _bloco_agend = construir_bloco_prompt_agendamento(pers)
+            if _bloco_agend:
+                blocos_prompt.append(_bloco_agend)
+
             prompt_sistema = truncar_contexto(blocos_prompt, max_tokens=12000)
 
             conteudo_usuario = []
@@ -1875,6 +1885,53 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_bruta = response.choices[0].message.content
                         if resposta_bruta:
                             logger.info(f"✅ LLM: Resposta recebida ({len(resposta_bruta)} chars). Final: '{resposta_bruta[-20:]}'")
+
+                        # ═══ [AGEND-02] Loop de TOOL CALL ═══
+                        # Se a IA respondeu com <TOOL>...</TOOL>, executa e re-chama o LLM
+                        # com o resultado como mensagem do "system" intermediario.
+                        # Max 3 iteracoes pra evitar loop infinito.
+                        if pers.get("agendamento_experimental_ativo"):
+                            _tool_iters = 0
+                            _msgs_tool = [
+                                {"role": "system", "content": prompt_sistema},
+                                {"role": "user", "content": user_content},
+                            ]
+                            while _tool_iters < 3:
+                                _tool_call = detectar_tool_call(resposta_bruta or "")
+                                if not _tool_call:
+                                    break
+                                _tool_iters += 1
+                                logger.info(f"🛠️ [AGEND-02] tool_call iter={_tool_iters}: {_tool_call.get('name')} args={_tool_call.get('args')}")
+                                _resultado = await _agend_executar_tool(
+                                    name=_tool_call.get("name", ""),
+                                    args=_tool_call.get("args") or {},
+                                    empresa_id=empresa_id,
+                                    conversation_id=conversation_id,
+                                    contato_fone=contato_fone,
+                                    pers=pers,
+                                    unidade_id=None,  # pega da integracao
+                                )
+                                # Incorpora resultado e re-chama LLM
+                                _msgs_tool.append({"role": "assistant", "content": resposta_bruta})
+                                _msgs_tool.append({
+                                    "role": "system",
+                                    "content": f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n{__import__('json').dumps(_resultado, ensure_ascii=False, default=str)}\n\nAgora responda ao cliente em texto natural seguindo a 'instrucao_ia' se presente. NAO use mais <TOOL> nesta resposta — fale diretamente com o cliente.",
+                                })
+                                try:
+                                    response = await asyncio.wait_for(
+                                        cliente_ia.chat.completions.create(
+                                            model=modelo_escolhido,
+                                            messages=_msgs_tool,
+                                            temperature=temperature,
+                                            max_tokens=max_tokens,
+                                        ),
+                                        timeout=25,
+                                    )
+                                    resposta_bruta = response.choices[0].message.content
+                                    logger.info(f"🛠️ [AGEND-02] LLM apos tool {_tool_iters}: {len(resposta_bruta or '')} chars")
+                                except Exception as _et:
+                                    logger.warning(f"[AGEND-02] re-chamada LLM apos tool falhou: {_et}")
+                                    break
                         # ── Budget Tracker: captura uso de tokens (fire-and-forget) ──
                         try:
                             _usage = getattr(response, "usage", None)
