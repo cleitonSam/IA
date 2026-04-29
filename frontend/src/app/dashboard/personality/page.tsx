@@ -64,6 +64,9 @@ interface Personality {
   agendamento_id_service?: number | null;
   agendamento_texto_oferta?: string;
   agendamento_coletar_email?: boolean;
+  // [VOUCHER-01] Vouchers de desconto da EVO franqueada
+  usar_vouchers?: boolean;
+  vouchers_estrategia?: string;
 }
 
 interface PromptPreviewData {
@@ -136,6 +139,9 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   agendamento_id_service: null,
   agendamento_texto_oferta: "",
   agendamento_coletar_email: false,
+  // [VOUCHER-01]
+  usar_vouchers: false,
+  vouchers_estrategia: "",
 };
 
 const MODELS = [
@@ -401,6 +407,9 @@ export default function PersonalityPage() {
       tour_perguntar_primeira_visita: p.tour_perguntar_primeira_visita ?? true,
       tour_mensagem_custom: p.tour_mensagem_custom || "",
       comprimento_resposta: p.comprimento_resposta || "normal",
+      // [VOUCHER-01]
+      usar_vouchers: p.usar_vouchers ?? false,
+      vouchers_estrategia: p.vouchers_estrategia || "",
     });
   };
 
@@ -1155,6 +1164,7 @@ export default function PersonalityPage() {
                               {[
                                 { key: "ativo", label: "Atendimento Ativo", desc: "IA responde clientes", color: "bg-emerald-500" },
                                 { key: "usar_emoji", label: "Usar Emojis", desc: "Mensagens com emojis", color: "bg-[#00d2ff]" },
+                                { key: "usar_vouchers", label: "Usar Vouchers", desc: "IA oferta cupons EVO estrategicamente", color: "bg-purple-500" },
                               ].map(({ key, label, desc, color }) => (
                                 <div key={key} className={`${card} !py-4 !space-y-0 flex items-center justify-between`}>
                                   <div>
@@ -1169,6 +1179,35 @@ export default function PersonalityPage() {
                                 </div>
                               ))}
                             </div>
+
+                            {/* Estratégia de vouchers — só aparece quando usar_vouchers=true */}
+                            {fd.usar_vouchers && (
+                              <div className={card + " border-purple-500/20"}>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-purple-400 text-base">🎫</span>
+                                  <p className="text-xs font-black uppercase tracking-widest text-purple-400">
+                                    Estratégia de Vouchers (opcional)
+                                  </p>
+                                </div>
+                                <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
+                                  Diretriz customizada da MARCA pra IA usar com cupons. Ex: tom de voz, momentos preferidos, restrições.
+                                  A IA já tem regras inteligentes embutidas — esta é uma camada extra opcional.
+                                </p>
+                                <textarea
+                                  rows={5}
+                                  className="w-full bg-slate-900/60 border border-white/8 rounded-2xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-purple-400/40 text-sm"
+                                  placeholder="Ex: Só ofereça vouchers depois de o cliente conhecer pelo menos 2 planos. Use tom de gentileza ('como sinal do nosso desejo de te ter conosco'). Priorize voucher de maior desconto se cliente tiver objeção forte de preço. Não combine voucher com diária."
+                                  value={fd.vouchers_estrategia || ""}
+                                  onChange={e => setFormData({ ...formData, vouchers_estrategia: e.target.value })}
+                                />
+                                <a
+                                  href="/dashboard/vouchers"
+                                  className="text-[10px] text-purple-400 hover:text-purple-300 mt-2 inline-flex items-center gap-1 underline"
+                                >
+                                  Ver vouchers cadastrados na EVO →
+                                </a>
+                              </div>
+                            )}
                           </>)}
 
                           {/* ─ VENDAS ─ */}

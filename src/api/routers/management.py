@@ -2126,36 +2126,69 @@ async def listar_vouchers_endpoint(
     from src.services.evo_client import listar_vouchers_evo
     vouchers = await listar_vouchers_evo(empresa_id, only_valid=only_valid, take=take)
     if enrich and vouchers:
-        # Cross-reference com tabela planos pra trazer nome+unidade
+        # Cruza com 2 fontes em paralelo:
+        #  1) Planos LOCAIS (cadastrados no painel — tem unidade vinculada)
+        #  2) Memberships da EVO (busca direto na API — fonte de verdade pros nomes)
         try:
-            rows = await _database.db_pool.fetch(
+            from src.services.evo_client import listar_memberships_evo
+            rows_local = await _database.db_pool.fetch(
                 """SELECT p.id_externo, p.nome, p.valor, p.valor_promocional, p.unidade_id, u.nome AS unidade_nome
                    FROM planos p LEFT JOIN unidades u ON u.id = p.unidade_id
                    WHERE p.empresa_id = $1 AND p.ativo = true""",
                 empresa_id,
             )
-            _plano_map = {}
-            for r in rows:
+            _plano_local = {}
+            for r in rows_local:
                 _id_ext = r["id_externo"]
                 if _id_ext is None:
                     continue
                 try:
-                    _plano_map[int(_id_ext)] = {
+                    _plano_local[int(_id_ext)] = {
                         "id_externo": int(_id_ext),
                         "nome": r["nome"],
                         "valor": float(r["valor"]) if r["valor"] is not None else None,
                         "unidade_nome": r["unidade_nome"],
+                        "fonte": "local",
                     }
                 except (ValueError, TypeError):
                     pass
+
+            # Memberships da EVO (fonte de verdade quando local nao tem)
+            _membs_evo = await listar_memberships_evo(empresa_id)
+
             for v in vouchers:
                 _ids = v.get("id_memberships") or []
-                v["planos_detalhe"] = [_plano_map[int(i)] for i in _ids if int(i) in _plano_map]
-                v["planos_nomes"] = [p["nome"] for p in v["planos_detalhe"]]
-                # Se nao tem planos vinculados, vale pra TODOS
-                v["valido_para"] = "Todos os planos" if not _ids else (
-                    ", ".join(v["planos_nomes"]) if v["planos_nomes"] else f"Planos id {_ids} (não cadastrados localmente)"
-                )
+                _detalhe = []
+                for _id in _ids:
+                    try:
+                        _id_int = int(_id)
+                    except (ValueError, TypeError):
+                        continue
+                    # Prefere local (tem unidade), senao usa EVO
+                    if _id_int in _plano_local:
+                        _detalhe.append(_plano_local[_id_int])
+                    elif _id_int in _membs_evo:
+                        _evo_p = _membs_evo[_id_int]
+                        _detalhe.append({
+                            "id_externo": _id_int,
+                            "nome": _evo_p["nome"],
+                            "valor": _evo_p["valor"],
+                            "unidade_nome": None,
+                            "tipo_contrato": _evo_p.get("tipo_contrato"),
+                            "duration_type": _evo_p.get("duration_type"),
+                            "fonte": "evo",
+                        })
+                    else:
+                        _detalhe.append({
+                            "id_externo": _id_int,
+                            "nome": f"Plano {_id_int}",
+                            "valor": None,
+                            "unidade_nome": None,
+                            "fonte": "desconhecido",
+                        })
+                v["planos_detalhe"] = _detalhe
+                v["planos_nomes"] = [p["nome"] for p in _detalhe]
+                v["valido_para"] = "Todos os planos" if not _ids else ", ".join(v["planos_nomes"])
         except Exception as _ee:
             logger.debug(f"[vouchers enrich] erro: {_ee}")
     return {"vouchers": vouchers, "total": len(vouchers)}

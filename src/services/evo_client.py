@@ -677,6 +677,56 @@ async def listar_vouchers_evo(
     return normalizado
 
 
+async def listar_memberships_evo(empresa_id: int) -> dict:
+    """Lista TODOS os memberships (planos) da EVO via cred franqueada.
+    Retorna dict {idMembership: {nome, valor, duracao, tipo_contrato}}.
+    Cache 30min — planos raramente mudam.
+    """
+    cache_key = f"evo:memberships:{empresa_id}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    integracao = await _carregar_integracao_franqueada(empresa_id)
+    if not integracao:
+        return {}
+    headers = await _get_evo_headers(integracao)
+    if not headers:
+        return {}
+
+    url = f"{_evo_api_base(integracao)}/membership?take=200&skip=0&active=true"
+    resp = await _evo_request("GET", url, headers, log_tag=f"EVO:memberships:{empresa_id}")
+    if resp is None or resp.status_code != 200:
+        logger.warning(f"[EVO memberships] HTTP={resp.status_code if resp else 'None'}")
+        return {}
+    try:
+        data = resp.json() or []
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = data.get("data", []) if isinstance(data, dict) else []
+
+    out = {}
+    for m in data:
+        if not isinstance(m, dict):
+            continue
+        _id = m.get("idMembership") or m.get("id")
+        if not _id:
+            continue
+        out[int(_id)] = {
+            "id": int(_id),
+            "nome": m.get("displayName") or m.get("nameMembership") or m.get("name") or f"Plano {_id}",
+            "valor": float(m.get("value") or 0),
+            "valor_promocional": m.get("valuePromotionalPeriod"),
+            "duracao": m.get("duration"),  # ex: 1, 12
+            "duration_type": m.get("durationType"),  # ex: "Monthly", "Yearly"
+            "tipo_contrato": m.get("salesType") or m.get("recurrenceType") or "",  # ex: "Monthly recurrence"
+            "id_branch": m.get("idBranch"),
+        }
+    await _cache_set_json(cache_key, out, 1800)  # 30min
+    return out
+
+
 async def validar_voucher_evo(
     empresa_id: int,
     voucher_code: str,
