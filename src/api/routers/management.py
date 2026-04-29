@@ -1386,13 +1386,17 @@ async def personality_playground(
                     unidade_id=None,
                 )
                 msgs.append({"role": "assistant", "content": reply})
+                # [FIX-Gemini] usar role='user' em vez de 'system' — Gemini retorna
+                # content=None se receber 'system' no meio da conversa apos um
+                # 'assistant'. Formato conversacional funciona melhor.
                 msgs.append({
-                    "role": "system",
+                    "role": "user",
                     "content": (
-                        f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n"
+                        f"[Sistema retornou da ferramenta '{_tool_call.get('name')}']\n"
                         f"{json.dumps(_resultado, ensure_ascii=False, default=str)}\n\n"
-                        "Agora responda ao cliente em texto natural seguindo a 'instrucao_ia' se presente. "
-                        "NAO use mais <TOOL> nesta resposta — fale diretamente."
+                        "Agora gere uma resposta em portugues natural pro cliente "
+                        "(sem usar <TOOL>, sem mencionar 'sistema' ou 'ferramenta'). "
+                        "Se ha 'instrucao_ia' no resultado, siga ela."
                     ),
                 })
                 try:
@@ -1538,12 +1542,13 @@ async def personality_playground_stream(
                     )
                     msgs.append({"role": "assistant", "content": reply_buf})
                     msgs.append({
-                        "role": "system",
+                        "role": "user",
                         "content": (
-                            f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n"
+                            f"[Sistema retornou da ferramenta '{_tool_call.get('name')}']\n"
                             f"{json.dumps(_resultado, ensure_ascii=False, default=str)}\n\n"
-                            "Agora responda em texto natural seguindo a 'instrucao_ia' se presente. "
-                            "NAO use mais <TOOL> nesta resposta."
+                            "Agora gere uma resposta em portugues natural pro cliente "
+                            "(sem usar <TOOL>, sem mencionar 'sistema' ou 'ferramenta'). "
+                            "Se ha 'instrucao_ia' no resultado, siga ela."
                         ),
                     })
                     # Stream da resposta final apos tool

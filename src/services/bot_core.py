@@ -1948,10 +1948,12 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                                     unidade_id=unidade.get("id") if isinstance(unidade, dict) else None,
                                 )
                                 # Incorpora resultado e re-chama LLM
+                                # [FIX-Gemini] role=user em vez de system — Gemini retorna
+                                # content=None se receber system no meio apos assistant.
                                 _msgs_tool.append({"role": "assistant", "content": resposta_bruta})
                                 _msgs_tool.append({
-                                    "role": "system",
-                                    "content": f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n{__import__('json').dumps(_resultado, ensure_ascii=False, default=str)}\n\nAgora responda ao cliente em texto natural seguindo a 'instrucao_ia' se presente. NAO use mais <TOOL> nesta resposta — fale diretamente com o cliente.",
+                                    "role": "user",
+                                    "content": f"[Sistema retornou da ferramenta '{_tool_call.get('name')}']\n{__import__('json').dumps(_resultado, ensure_ascii=False, default=str)}\n\nAgora gere resposta em portugues natural pro cliente (sem usar <TOOL>, sem mencionar 'sistema' ou 'ferramenta'). Se ha 'instrucao_ia', siga ela.",
                                 })
                                 try:
                                     response = await asyncio.wait_for(
