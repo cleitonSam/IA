@@ -14,6 +14,11 @@ from src.services.evo_client import (
     listar_branches_evo, listar_services_evo, listar_activities_evo,
     listar_horarios_disponiveis_evo, agendar_aula_experimental_evo, criar_prospect_evo,
 )
+from src.services.agendamento_tools import (
+    construir_bloco_prompt_agendamento as _agend_bloco_prompt,
+    detectar_tool_call as _agend_detectar_tool,
+    executar_tool as _agend_executar_tool,
+)
 from src.utils.rate_limit import rate_limit_empresa
 
 # [CACHE-01] Invalidacao centralizada — toda mutacao (PUT/POST/DELETE) deve chamar
@@ -1168,6 +1173,11 @@ def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None,
     if regras_atend.strip():
         blocos.append(f"[REGRAS DE ATENDIMENTO]\n{regras_atend}")
 
+    # [AGEND-02 Playground] Bloco de agendamento — espelha o bot_core
+    _bloco_agend = _agend_bloco_prompt(p)
+    if _bloco_agend:
+        blocos.append(_bloco_agend)
+
     # 9.5 Fluxo de Vendedor Real (proatividade)
     blocos.append("""[FLUXO DE VENDEDOR — OBRIGATÓRIO]
 Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo SEMPRE:
@@ -1354,6 +1364,50 @@ async def personality_playground(
             timeout=30
         )
         reply = response.choices[0].message.content or ""
+
+        # [AGEND-02 Playground] Loop de TOOL CALL — executa <TOOL>...</TOOL>
+        # e re-chama o LLM com o resultado. Max 3 iteracoes.
+        if p.get("agendamento_experimental_ativo"):
+            _pg_conv_id = -(int(p.get("id") or 0))  # id sintetico estavel
+            _tool_iters = 0
+            while _tool_iters < 3:
+                _tool_call = _agend_detectar_tool(reply or "")
+                if not _tool_call:
+                    break
+                _tool_iters += 1
+                logger.info(f"🛠️ [PG-AGEND] tool_call iter={_tool_iters}: {_tool_call.get('name')}")
+                _resultado = await _agend_executar_tool(
+                    name=_tool_call.get("name", ""),
+                    args=_tool_call.get("args") or {},
+                    empresa_id=empresa_id,
+                    conversation_id=_pg_conv_id,
+                    contato_fone=None,
+                    pers=p,
+                    unidade_id=None,
+                )
+                msgs.append({"role": "assistant", "content": reply})
+                msgs.append({
+                    "role": "system",
+                    "content": (
+                        f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n"
+                        f"{json.dumps(_resultado, ensure_ascii=False, default=str)}\n\n"
+                        "Agora responda ao cliente em texto natural seguindo a 'instrucao_ia' se presente. "
+                        "NAO use mais <TOOL> nesta resposta — fale diretamente."
+                    ),
+                })
+                try:
+                    response = await asyncio.wait_for(
+                        cliente_ia.chat.completions.create(
+                            model=model, messages=msgs,
+                            temperature=temperature, max_tokens=max_tokens,
+                        ),
+                        timeout=30,
+                    )
+                    reply = response.choices[0].message.content or ""
+                except Exception as _et:
+                    logger.warning(f"[PG-AGEND] re-chamada apos tool falhou: {_et}")
+                    break
+
         return {
             "reply": reply,
             "model": model,
@@ -1450,24 +1504,87 @@ async def personality_playground_stream(
 
     nome_ia = p.get("nome_ia") or "Assistente"
 
+    # [AGEND-02 PG-Stream] Quando agendamento ativo, primeiro buffer pra detectar
+    # tool call. Se houver, executa e refaz o stream com resultado. Caso contrario,
+    # stream normal token a token.
+    _agend_ativo = bool(p.get("agendamento_experimental_ativo"))
+
     async def event_generator():
         try:
-            stream = await asyncio.wait_for(
-                cliente_ia.chat.completions.create(
-                    model=model,
-                    messages=msgs,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                ),
-                timeout=30
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    payload = json.dumps({"token": delta.content}, ensure_ascii=False)
-                    yield f"data: {payload}\n\n"
-            # Evento final
+            if _agend_ativo:
+                # Buffer primeira resposta inteira pra detectar <TOOL>
+                resp1 = await asyncio.wait_for(
+                    cliente_ia.chat.completions.create(
+                        model=model, messages=msgs,
+                        temperature=temperature, max_tokens=max_tokens,
+                    ),
+                    timeout=30,
+                )
+                reply_buf = resp1.choices[0].message.content or ""
+
+                # Se tem tool call, executa e re-chama LLM em modo stream
+                _tool_call = _agend_detectar_tool(reply_buf)
+                if _tool_call:
+                    _pg_conv_id = -(int(p.get("id") or 0))
+                    logger.info(f"🛠️ [PG-Stream-AGEND] tool: {_tool_call.get('name')}")
+                    _resultado = await _agend_executar_tool(
+                        name=_tool_call.get("name", ""),
+                        args=_tool_call.get("args") or {},
+                        empresa_id=empresa_id,
+                        conversation_id=_pg_conv_id,
+                        contato_fone=None,
+                        pers=p,
+                        unidade_id=None,
+                    )
+                    msgs.append({"role": "assistant", "content": reply_buf})
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            f"RESULTADO DA FERRAMENTA {_tool_call.get('name')}:\n"
+                            f"{json.dumps(_resultado, ensure_ascii=False, default=str)}\n\n"
+                            "Agora responda em texto natural seguindo a 'instrucao_ia' se presente. "
+                            "NAO use mais <TOOL> nesta resposta."
+                        ),
+                    })
+                    # Stream da resposta final apos tool
+                    stream2 = await asyncio.wait_for(
+                        cliente_ia.chat.completions.create(
+                            model=model, messages=msgs,
+                            temperature=temperature, max_tokens=max_tokens,
+                            stream=True,
+                        ),
+                        timeout=30,
+                    )
+                    async for chunk in stream2:
+                        delta = chunk.choices[0].delta if chunk.choices else None
+                        if delta and delta.content:
+                            payload = json.dumps({"token": delta.content}, ensure_ascii=False)
+                            yield f"data: {payload}\n\n"
+                else:
+                    # Sem tool — stream do buffer em chunks pra simular streaming
+                    for i in range(0, len(reply_buf), 20):
+                        payload = json.dumps({"token": reply_buf[i:i+20]}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
+                        await asyncio.sleep(0.02)
+            else:
+                # Sem agendamento — stream normal direto do LLM
+                stream = await asyncio.wait_for(
+                    cliente_ia.chat.completions.create(
+                        model=model,
+                        messages=msgs,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=True,
+                    ),
+                    timeout=30
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta and delta.content:
+                        payload = json.dumps({"token": delta.content}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
+
+            # Evento final (comum aos 3 caminhos)
             done_payload = json.dumps({"done": True, "model": model, "nome_ia": nome_ia}, ensure_ascii=False)
             yield f"data: {done_payload}\n\n"
         except asyncio.TimeoutError:
