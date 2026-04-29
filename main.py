@@ -685,12 +685,27 @@ def calcular_status_aberto_fechado(horarios: Any) -> dict:
 
     # Tenta extrair horários no formato HH:MM ou HHh ou HH:MM-HH:MM
     # Padrões comuns: "06:00 às 23:00", "6h-23h", "06:00-23:00", "das 9h às 13h"
-    padrao = re.findall(r'(\d{1,2})[h:](\d{0,2})', h_norm)
+    # [BLINDADO] Se vier multilinha (várias entradas dia/horário), pega só a primeira linha
+    # com horário válido — evita misturar 06h-21h de seg-sex com 08h-14h de sábado
+    _h_para_parse = h_norm
+    if "\n" in h_norm:
+        for _linha in h_norm.split("\n"):
+            if re.search(r'\d{1,2}[h:]\d{0,2}.*\d{1,2}[h:]\d{0,2}', _linha):
+                _h_para_parse = _linha
+                break
+    padrao = re.findall(r'(\d{1,2})[h:](\d{0,2})', _h_para_parse)
+    # Filtra horas inválidas (>23) e minutos inválidos (>59)
+    padrao = [(h, m) for (h, m) in padrao if int(h) < 24 and (not m or int(m) < 60)]
     if len(padrao) >= 2:
         h_abre = int(padrao[0][0])
         m_abre = int(padrao[0][1]) if padrao[0][1] else 0
         h_fecha = int(padrao[1][0])
         m_fecha = int(padrao[1][1]) if padrao[1][1] else 0
+        # Defesa: se h_fecha < h_abre, troca (provável typo no input)
+        if h_fecha < h_abre:
+            h_abre, h_fecha = h_fecha, h_abre
+            m_abre, m_fecha = m_fecha, m_abre
+        logger.info(f"[STATUS HORARIO] parse '{h_norm[:80]}' -> {h_abre:02d}:{m_abre:02d} às {h_fecha:02d}:{m_fecha:02d} (agora={hora_atual})")
 
         abertura_str = f"{h_abre:02d}:{m_abre:02d}"
         fechamento_str = f"{h_fecha:02d}:{m_fecha:02d}"
@@ -4783,6 +4798,11 @@ async def processar_ia_e_responder(
         end_banco = extrair_endereco_unidade(unidade)
         hor_banco = unidade.get('horarios')
         _status_horario = calcular_status_aberto_fechado(hor_banco)
+        logger.info(
+            f"[STATUS HORARIO] conv={conversation_id} unidade={unidade.get('nome', '?')!r} "
+            f"hor_banco_type={type(hor_banco).__name__} aberto={_status_horario.get('aberto')} "
+            f"texto={_status_horario.get('status_texto', '')[:120]!r}"
+        )
         _raw_link = unidade.get('link_matricula') or ''
         link_mat = _raw_link if _raw_link.startswith('http') else (unidade.get('site') if (unidade.get('site') or '').startswith('http') else '')
         tel_banco = extrair_telefone_unidade(unidade)
@@ -5252,12 +5272,15 @@ GUARDRAIL DE ESCOPO (POLÍTICA META — OBRIGATÓRIO):
 - NUNCA forneça conselhos médicos, jurídicos, financeiros pessoais ou psicológicos.
 - Em caso de dúvida sobre o escopo, prefira transferir para atendente humano a responder algo fora do escopo.
 
-EXEMPLO DE MENSAGEM BEM FORMATADA:
-"Temos sim! A diária custa *R$40* 💪
-
-{'Se quiser, pode vir treinar hoje mesmo — estamos abertos até às ' + (_status_horario.get("hora_fechamento") or "23h") + '.' if _status_horario.get("aberto") else 'Hoje já encerramos, mas amanhã você pode vir treinar!'}
-
-Você pretende treinar só hoje ou está pensando em começar academia?"
+FORMATO DA RESPOSTA (orientação, NÃO copie literal):
+- Use os DADOS REAIS da unidade (planos, valores, horários) — NUNCA invente.
+- Quando responder sobre horário, OLHE PRIMEIRO o STATUS DA UNIDADE AGORA acima:
+  * Se STATUS diz "ABERTA" → diga que está aberta e até que horas fecha hoje.
+  * Se STATUS diz "AINDA NÃO ABRIU" → diga a que horas abre.
+  * Se STATUS diz "JÁ FECHOU" → diga que encerrou e ofereça amanhã.
+  * Se STATUS diz "FECHADA HOJE" → diga que hoje está fechado e ofereça outro dia.
+- NUNCA escreva "Hoje já encerramos" sem ter visto STATUS = JÁ FECHOU.
+- Estilo: 2-4 linhas, encerrar com 1 pergunta de descoberta (objetivo, frequência, urgência).
 {aviso_mudanca}
 
 DADOS DO ATENDIMENTO:
