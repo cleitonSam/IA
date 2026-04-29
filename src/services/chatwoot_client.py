@@ -161,6 +161,37 @@ async def garantir_label_existe_chatwoot(
         return False
 
 
+async def atribuir_time_conversa_chatwoot(
+    account_id: int, conversation_id: int, team_id: int, integracao: dict,
+) -> bool:
+    """Atribui a conversa a um time/equipe do Chatwoot.
+    POST /api/v1/accounts/{acc}/conversations/{conv_id}/assignments
+    Body: {"team_id": N}
+    """
+    if not conversation_id or not account_id or not team_id:
+        return False
+    url_base, token = _chatwoot_url_token(integracao)
+    if not url_base or not token:
+        return False
+    try:
+        account_id = int(account_id)
+        conversation_id = int(conversation_id)
+        team_id = int(team_id)
+    except (TypeError, ValueError):
+        return False
+    headers = {"api_access_token": str(token), "Content-Type": "application/json"}
+    url = f"{url_base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/assignments"
+    payload = {"team_id": team_id}
+    logger.info(f"[CW assign] POST {url} body={payload}")
+    try:
+        resp = await http_client.post(url, json=payload, headers=headers, timeout=10.0)
+        logger.info(f"[CW assign] resp HTTP={resp.status_code} body={resp.text[:200]!r}")
+        return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"[CW assign] erro: {e}")
+        return False
+
+
 async def aplicar_label_conversa_chatwoot(
     account_id: int, conversation_id: int, label_slug, integracao: dict,
 ) -> bool:
