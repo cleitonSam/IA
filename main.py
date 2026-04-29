@@ -5413,6 +5413,43 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
             else:
                 prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
 
+            # ── [CENARIOS] Playbook 'SE X ENTAO Y' configurado pelo admin ──
+            try:
+                _cenarios_raw = pers.get("cenarios")
+                if isinstance(_cenarios_raw, str):
+                    try:
+                        _cenarios_raw = json.loads(_cenarios_raw)
+                    except Exception:
+                        _cenarios_raw = []
+                if isinstance(_cenarios_raw, list) and _cenarios_raw:
+                    _cenarios_ativos = [
+                        c for c in _cenarios_raw
+                        if isinstance(c, dict) and c.get("ativo") is not False
+                        and (c.get("cenario") or "").strip()
+                        and (c.get("acao") or "").strip()
+                    ]
+                    if _cenarios_ativos:
+                        prompt_sistema += "\n\n[CENÁRIOS DE AÇÃO — SIGA SEMPRE]\n"
+                        prompt_sistema += "Quando uma situação abaixo ocorrer, EXECUTE A AÇÃO correspondente:\n\n"
+                        for _i, _c in enumerate(_cenarios_ativos, 1):
+                            _cen = (_c.get("cenario") or "").strip()
+                            _acao = (_c.get("acao") or "").strip()
+                            prompt_sistema += f"📌 CENÁRIO {_i}: {_cen}\n   → AÇÃO:\n"
+                            for _ln in _acao.split("\n"):
+                                _ln = _ln.strip()
+                                if _ln:
+                                    prompt_sistema += f"      {_ln}\n"
+                            prompt_sistema += "\n"
+                        prompt_sistema += (
+                            "[REGRAS DOS CENÁRIOS]\n"
+                            "- Esses cenários são MAIS IMPORTANTES que regras gerais — siga ao pé da letra\n"
+                            "- Se um cenário pedir pra agendar/transferir/encaminhar, EXECUTE\n"
+                            "- Se um cenário não se aplica à conversa atual, IGNORE\n"
+                            "- NUNCA invente cenários ou ações fora desta lista\n"
+                        )
+            except Exception as _ec:
+                logger.debug(f"[CENARIOS] erro injetar: {_ec}")
+
             # ── [VOUCHERS] Se Personalidade IA permite, lista vouchers validos da EVO ──
             if pers.get("usar_vouchers"):
                 try:

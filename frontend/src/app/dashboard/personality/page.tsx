@@ -14,7 +14,7 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type DiaKey = "segunda" | "terca" | "quarta" | "quinta" | "sexta" | "sabado" | "domingo";
-type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios" | "voz" | "agendamento";
+type SectionKey = "identidade" | "engine" | "vendas" | "branding" | "contexto" | "seguranca" | "horarios" | "voz" | "agendamento" | "cenarios";
 type TabKey = "config" | "playground";
 
 interface PlaygroundMsg { role: string; content: string; timestamp: number; }
@@ -67,6 +67,8 @@ interface Personality {
   // [VOUCHER-01] Vouchers de desconto da EVO franqueada
   usar_vouchers?: boolean;
   vouchers_estrategia?: string;
+  // [CENARIOS-01] Lista de {id, cenario, acao, ordem, ativo}
+  cenarios?: Array<{ id?: string; cenario: string; acao: string; ordem?: number; ativo?: boolean }>;
 }
 
 interface PromptPreviewData {
@@ -142,6 +144,8 @@ const EMPTY_FORM: Omit<Personality, "id"> = {
   // [VOUCHER-01]
   usar_vouchers: false,
   vouchers_estrategia: "",
+  // [CENARIOS-01]
+  cenarios: [],
 };
 
 const MODELS = [
@@ -178,6 +182,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: React.ReactNode; desc: s
   { key: "horarios",   label: "Horários",    icon: <Clock className="w-4 h-4" />,      desc: "Atendimento" },
   { key: "voz",        label: "Voz IA",      icon: <Mic2 className="w-4 h-4" />,       desc: "Áudio & TTS" },
   { key: "agendamento",label: "Agendamento", icon: <Calendar className="w-4 h-4" />,   desc: "Aula experimental" },
+  { key: "cenarios",   label: "Cenários",    icon: <ListChecks className="w-4 h-4" />, desc: "Playbook SE → ENTÃO" },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -410,6 +415,8 @@ export default function PersonalityPage() {
       // [VOUCHER-01]
       usar_vouchers: p.usar_vouchers ?? false,
       vouchers_estrategia: p.vouchers_estrategia || "",
+      // [CENARIOS-01]
+      cenarios: Array.isArray(p.cenarios) ? p.cenarios : [],
     });
   };
 
@@ -1955,6 +1962,121 @@ export default function PersonalityPage() {
                                 </label>
                               </div>
                             </>)}
+                          </>)}
+
+                          {/* ─ CENÁRIOS ─ */}
+                          {activeSection === "cenarios" && (<>
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                                  <ListChecks className="w-5 h-5 text-amber-400" /> Cenários — SE ↔ ENTÃO
+                                </h3>
+                                <p className="text-xs text-slate-400 mt-1">
+                                  Playbook de situações e ações pra IA seguir. Ex: "se cliente quer agendar antes de fechar → realizar agendamento".
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const novo = {
+                                    id: `cen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                                    cenario: "",
+                                    acao: "",
+                                    ordem: (fd.cenarios?.length || 0) + 1,
+                                    ativo: true,
+                                  };
+                                  setFormData({ ...formData, cenarios: [...(fd.cenarios || []), novo] });
+                                }}
+                                className="px-4 py-2.5 rounded-2xl bg-amber-400/10 border border-amber-400/20 text-amber-400 text-xs font-black uppercase tracking-widest hover:bg-amber-400/20 flex items-center gap-2"
+                              >
+                                + Novo Cenário
+                              </button>
+                            </div>
+
+                            {(!fd.cenarios || fd.cenarios.length === 0) ? (
+                              <div className="text-center py-16 rounded-3xl border border-dashed border-white/5 bg-white/[0.01]">
+                                <ListChecks className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+                                <p className="text-slate-400 font-bold">Nenhum cenário configurado.</p>
+                                <p className="text-slate-600 text-sm mt-1">Adicione cenários pra a IA saber EXATAMENTE como agir em situações chave.</p>
+                              </div>
+                            ) : (
+                              <div className="space-y-4">
+                                {(fd.cenarios || []).map((c: any, idx: number) => (
+                                  <div key={c.id || idx} className={`${card} ${c.ativo === false ? "opacity-50" : ""}`}>
+                                    <div className="flex items-start justify-between mb-3 gap-3">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] font-black bg-amber-400/10 text-amber-400 px-2 py-1 rounded-full uppercase tracking-widest">
+                                          Cenário #{idx + 1}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          title={c.ativo === false ? "Ativar" : "Desativar"}
+                                          onClick={() => {
+                                            const lst = [...(fd.cenarios || [])];
+                                            lst[idx] = { ...lst[idx], ativo: !(lst[idx].ativo === false ? false : true) };
+                                            setFormData({ ...formData, cenarios: lst });
+                                          }}
+                                          className={`text-[10px] font-black px-3 py-1.5 rounded-xl uppercase tracking-widest ${
+                                            c.ativo === false ? "bg-slate-700 text-slate-400" : "bg-emerald-400/10 text-emerald-400 border border-emerald-400/20"
+                                          }`}
+                                        >
+                                          {c.ativo === false ? "Inativo" : "Ativo"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          title="Remover"
+                                          onClick={() => {
+                                            if (!confirm("Remover este cenário?")) return;
+                                            const lst = (fd.cenarios || []).filter((_: any, i: number) => i !== idx);
+                                            setFormData({ ...formData, cenarios: lst });
+                                          }}
+                                          className="text-[10px] text-red-400 hover:bg-red-400/10 p-1.5 rounded-xl border border-red-400/20"
+                                        >
+                                          🗑️
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Cenário</label>
+                                    <textarea
+                                      rows={2}
+                                      placeholder="Ex: Lead quer agendar aula experimental antes de fechar"
+                                      value={c.cenario || ""}
+                                      onChange={e => {
+                                        const lst = [...(fd.cenarios || [])];
+                                        lst[idx] = { ...lst[idx], cenario: e.target.value };
+                                        setFormData({ ...formData, cenarios: lst });
+                                      }}
+                                      className={taClass + " text-sm"}
+                                    />
+
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 mt-3">Ação (passo a passo)</label>
+                                    <textarea
+                                      rows={4}
+                                      placeholder={"Ex:\n1. Realizar o agendamento da aula experimental\n2. Em caso de dificuldade, atribuir ao time central de atendimento"}
+                                      value={c.acao || ""}
+                                      onChange={e => {
+                                        const lst = [...(fd.cenarios || [])];
+                                        lst[idx] = { ...lst[idx], acao: e.target.value };
+                                        setFormData({ ...formData, cenarios: lst });
+                                      }}
+                                      className={taClass + " text-sm"}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="mt-6 p-5 bg-amber-400/5 border border-amber-400/10 rounded-2xl">
+                              <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 italic leading-relaxed">
+                                💡 <span className="text-amber-400 not-italic">Como a IA usa:</span> esses cenários são injetados no prompt como "SE X ENTÃO Y". A IA os trata como REGRA DE OURO — sempre que o contexto da conversa bater com um cenário, executa a ação correspondente.
+                              </p>
+                              <p className="text-[10px] text-slate-500 mt-2 italic">
+                                Exemplos úteis: "cliente quer cancelar matrícula" → "transferir pra retenção"; "cliente fala que tá com dor" → "encaminhar pra avaliação física"; "cliente menciona promo concorrente" → "oferecer voucher"; etc.
+                              </p>
+                            </div>
                           </>)}
 
 

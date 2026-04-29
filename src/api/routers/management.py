@@ -160,6 +160,8 @@ class PersonalityCreate(BaseModel):
     # [VOUCHER-01] Toggle pra IA usar vouchers de desconto da EVO franqueada
     usar_vouchers: Optional[bool] = False
     vouchers_estrategia: Optional[str] = None
+    # [CENARIOS-01] Playbook de cenarios "SE X ENTAO Y" — lista de {id, cenario, acao, ordem, ativo}
+    cenarios: Optional[Any] = None
 
     model_config = {"extra": "allow"}
 
