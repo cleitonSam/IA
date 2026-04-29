@@ -291,6 +291,73 @@ async def _carregar_qualquer_integracao_evo(empresa_id: int, unidade_id: Optiona
 
 # ────────── DISCOVERY (branches / services / activities) ──────────
 
+
+async def _carregar_integracao_por_branch(empresa_id: int, id_branch: int) -> Optional[Dict[str, Any]]:
+    """Pra HORARIOS/AGENDAR: busca a credencial EVO da filial especifica.
+    Itera todas integracoes EVO da empresa, descobre qual filial cada uma serve
+    (via /activities), e retorna a que bate com id_branch. Cache de 10min.
+
+    Necessario porque cada credencial Goodbe = 1 filial; se passar credencial
+    da filial 3 querendo agendar na filial 5, EVO retorna sessoes da filial errada."""
+    cache_key = f"evo:cred_by_branch:{empresa_id}:{id_branch}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return cached if cached else None  # cache pode ter {} pra indicar nao-encontrado
+
+    try:
+        import src.core.database as _database
+        if not _database.db_pool:
+            return None
+        rows = await _database.db_pool.fetch(
+            """SELECT id, unidade_id, config FROM integracoes
+               WHERE empresa_id = $1 AND tipo = 'evo' AND ativo = true
+               ORDER BY id""",
+            empresa_id,
+        )
+    except Exception as e:
+        logger.warning(f"[EVO cred-by-branch] erro: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    for row in rows:
+        cfg = row["config"]
+        if isinstance(cfg, str):
+            try:
+                cfg = _json.loads(cfg)
+            except Exception:
+                continue
+        # Atalho: se cfg ja tem idBranch igual, usa direto
+        cfg_bid = cfg.get("idBranch")
+        if cfg_bid not in (None, "") and str(cfg_bid) == str(id_branch):
+            await _cache_set_json(cache_key, cfg, _CACHE_DISCOVERY)
+            return cfg
+
+        # Fallback: descobre via /activities
+        headers = await _get_evo_headers(cfg)
+        if not headers:
+            continue
+        api_base = _evo_api_base(cfg)
+        r = await _evo_request("GET", f"{api_base}/activities", headers, log_tag=f"EVO:byBr:{row['id']}")
+        if r is None or r.status_code != 200:
+            continue
+        try:
+            items = r.json() or []
+            for it in items if isinstance(items, list) else []:
+                if it.get("idBranch") and int(it["idBranch"]) == int(id_branch):
+                    logger.info(f"[EVO cred-by-branch] empresa={empresa_id} branch={id_branch} -> integracao_id={row['id']}")
+                    await _cache_set_json(cache_key, cfg, _CACHE_DISCOVERY)
+                    return cfg
+        except Exception:
+            continue
+
+    # Marca como nao-encontrado pra evitar re-iterar (cache curto)
+    await _cache_set_json(cache_key, {}, 60)
+    logger.warning(f"[EVO cred-by-branch] empresa={empresa_id} branch={id_branch} NAO encontrado")
+    return None
+
+
 async def listar_branches_evo(empresa_id: int, unidade_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Lista TODAS as filiais EVO da empresa.
     Cada credencial EVO geralmente representa UMA filial (multi-instance).
@@ -485,12 +552,33 @@ async def listar_horarios_disponiveis_evo(
     e agregamos. Cache de 2min por (empresa, unidade, branch, dias).
     Filtra opcionalmente por whitelist de id_activities (vazio = todas).
     Retorna lista normalizada."""
-    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    # [FIX] Se id_branch fornecido, busca credencial DA filial X.
+    # Senao, fallback pra qualquer credencial EVO da empresa.
+    integracao = None
+    if id_branch:
+        integracao = await _carregar_integracao_por_branch(empresa_id, int(id_branch))
     if not integracao:
+        integracao = await _carregar_qualquer_integracao_evo(empresa_id, unidade_id)
+    if not integracao:
+        logger.warning(f"⚠️ EVO horarios: nenhuma credencial encontrada empresa={empresa_id} branch={id_branch}")
         return []
     branch = id_branch or integracao.get("idBranch")
     if not branch:
-        logger.warning(f"⚠️ EVO horarios: idBranch ausente empresa={empresa_id}")
+        # Ultima tentativa: descobrir branch via /activities
+        try:
+            _hdr = await _get_evo_headers(integracao)
+            if _hdr:
+                _r = await _evo_request("GET", f"{_evo_api_base(integracao)}/activities", _hdr, log_tag="EVO:detect-br")
+                if _r is not None and _r.status_code == 200:
+                    _items = _r.json() or []
+                    for _it in _items if isinstance(_items, list) else []:
+                        if _it.get("idBranch") is not None:
+                            branch = int(_it["idBranch"])
+                            break
+        except Exception:
+            pass
+    if not branch:
+        logger.warning(f"⚠️ EVO horarios: nao consegui determinar idBranch empresa={empresa_id}")
         return []
 
     cache_key = f"evo:horarios:{empresa_id}:{branch}:{dias_a_frente}"
@@ -595,7 +683,12 @@ async def agendar_aula_experimental_evo(
     """Agenda uma aula experimental para o prospect.
     Retorna {ok: bool, status: int, mensagens: [str], data: {...}}.
     Apos sucesso, invalida cache de horarios pra refletir nova ocupacao."""
-    integracao = await carregar_integracao(empresa_id, "evo", unidade_id=unidade_id)
+    # [FIX] Quando agendando em filial X, busca credencial DA filial X
+    integracao = None
+    if id_branch:
+        integracao = await _carregar_integracao_por_branch(empresa_id, int(id_branch))
+    if not integracao:
+        integracao = await _carregar_qualquer_integracao_evo(empresa_id, unidade_id)
     if not integracao:
         return {"ok": False, "status": 0, "mensagens": ["Integracao EVO nao configurada"]}
 

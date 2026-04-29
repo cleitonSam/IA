@@ -119,6 +119,91 @@ def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
     }
 
 
+# ─── RESOLVEDOR de unidade ─────────────────────────────────────────────────
+
+async def _resolver_unidade(empresa_id: int, unidade_nome: Optional[str] = None,
+                             unidade_id: Optional[int] = None) -> Optional[dict]:
+    """Resolve unidade por id ou por nome (busca difusa).
+    Retorna dict {id, nome, id_branch_evo} ou None."""
+    try:
+        import src.core.database as _database
+        if not _database.db_pool:
+            return None
+
+        # Busca todas as unidades + idBranch da integracao EVO
+        rows = await _database.db_pool.fetch(
+            """SELECT u.id, u.nome, u.cidade, u.bairro,
+                      i.config AS evo_config
+               FROM unidades u
+               LEFT JOIN integracoes i ON i.unidade_id = u.id
+                                       AND i.tipo = 'evo' AND i.ativo = true
+               WHERE u.empresa_id = $1 AND u.ativa = true
+               ORDER BY u.id""",
+            empresa_id,
+        )
+
+        unidades_lista = []
+        for r in rows:
+            cfg = r["evo_config"]
+            if isinstance(cfg, str):
+                try:
+                    cfg = json.loads(cfg)
+                except Exception:
+                    cfg = {}
+            cfg = cfg or {}
+            unidades_lista.append({
+                "id": r["id"],
+                "nome": r["nome"],
+                "cidade": r["cidade"],
+                "bairro": r["bairro"],
+                "id_branch_evo": cfg.get("idBranch"),
+            })
+
+        # 1. Match por id direto
+        if unidade_id:
+            for u in unidades_lista:
+                if u["id"] == int(unidade_id):
+                    return u
+
+        # 2. Match por nome (difuso — substring case-insensitive normalizado)
+        if unidade_nome:
+            from src.utils.text_helpers import normalizar
+            alvo = normalizar(unidade_nome).strip()
+            # Match exato primeiro
+            for u in unidades_lista:
+                if normalizar(u["nome"]).strip() == alvo:
+                    return u
+            # Match contains
+            for u in unidades_lista:
+                nome_norm = normalizar(u["nome"])
+                if alvo in nome_norm or any(part and part in nome_norm for part in alvo.split()):
+                    return u
+            # Match por bairro/cidade
+            for u in unidades_lista:
+                if alvo in normalizar(u.get("bairro") or "") or alvo in normalizar(u.get("cidade") or ""):
+                    return u
+
+        return None
+    except Exception as e:
+        logger.warning(f"[AGEND] _resolver_unidade erro: {e}")
+        return None
+
+
+async def listar_unidades_resumo(empresa_id: int) -> list:
+    """Lista resumida das unidades da empresa pra IA referenciar pelo nome."""
+    try:
+        import src.core.database as _database
+        if not _database.db_pool:
+            return []
+        rows = await _database.db_pool.fetch(
+            "SELECT id, nome, cidade, bairro FROM unidades WHERE empresa_id=$1 AND ativa=true ORDER BY nome",
+            empresa_id,
+        )
+        return [{"id": r["id"], "nome": r["nome"], "cidade": r["cidade"], "bairro": r["bairro"]} for r in rows]
+    except Exception:
+        return []
+
+
 # ─── EXECUTOR de tool ──────────────────────────────────────────────────────
 
 async def executar_tool(
@@ -142,7 +227,6 @@ async def executar_tool(
     # ─── consultar_horarios ───
     if name in ("consultar_horarios", "listar_horarios", "ver_horarios"):
         dias = int(args.get("dias") or pers.get("agendamento_dias_a_frente") or 5)
-        id_branch = pers.get("agendamento_id_branch")
         id_acts_raw = pers.get("agendamento_id_activities") or []
         if isinstance(id_acts_raw, str):
             try:
@@ -151,9 +235,53 @@ async def executar_tool(
                 id_acts_raw = []
         filtro = [int(x) for x in id_acts_raw if str(x).isdigit()] if id_acts_raw else None
 
+        # ─── Resolve unidade (nome ou id) ───
+        unidade_nome_arg = args.get("unidade") or args.get("unidade_nome")
+        unidade_id_arg = args.get("unidade_id")
+        unidade_resolvida = None
+        # 1. Tenta args explicitos
+        if unidade_nome_arg or unidade_id_arg:
+            unidade_resolvida = await _resolver_unidade(
+                empresa_id, unidade_nome=unidade_nome_arg, unidade_id=unidade_id_arg
+            )
+        # 2. Tenta unidade_id da conversa (cenario WhatsApp por unidade)
+        if not unidade_resolvida and unidade_id:
+            unidade_resolvida = await _resolver_unidade(empresa_id, unidade_id=unidade_id)
+        # 3. Tenta unidade do estado da conversa (escolhida em msg anterior)
+        if not unidade_resolvida:
+            estado_atual = await carregar_estado_agendamento(empresa_id, conversation_id)
+            uid_estado = estado_atual.get("unidade_id_escolhida")
+            if uid_estado:
+                unidade_resolvida = await _resolver_unidade(empresa_id, unidade_id=uid_estado)
+
+        # Se nao tem unidade resolvida, pede pra IA perguntar ao cliente
+        if not unidade_resolvida:
+            unids = await listar_unidades_resumo(empresa_id)
+            return {
+                "ok": False,
+                "precisa_escolher_unidade": True,
+                "unidades_disponiveis": unids,
+                "instrucao_ia": (
+                    "Antes de consultar horarios, pergunte ao cliente em qual UNIDADE ele quer treinar. "
+                    "Lista de opcoes:\n"
+                    + "\n".join(f"  • {u['nome']}" + (f" ({u['bairro']})" if u.get('bairro') else "") for u in unids)
+                    + "\nDepois que o cliente escolher, chame consultar_horarios de novo passando args.unidade='Nome da Unidade'."
+                ),
+            }
+
+        # Salva unidade escolhida no estado pra proximas chamadas
+        estado_pre = await carregar_estado_agendamento(empresa_id, conversation_id)
+        estado_pre["unidade_id_escolhida"] = unidade_resolvida["id"]
+        estado_pre["unidade_nome_escolhida"] = unidade_resolvida["nome"]
+        estado_pre["id_branch_escolhido"] = unidade_resolvida.get("id_branch_evo")
+        await salvar_estado_agendamento(empresa_id, conversation_id, estado_pre)
+
+        # Usa idBranch da unidade resolvida (ou fallback pro da personalidade)
+        id_branch = unidade_resolvida.get("id_branch_evo") or pers.get("agendamento_id_branch")
+
         horarios = await listar_horarios_disponiveis_evo(
             empresa_id=empresa_id,
-            unidade_id=unidade_id,
+            unidade_id=unidade_resolvida["id"],
             dias_a_frente=dias,
             id_branch=id_branch,
             filtro_id_activities=filtro,
@@ -244,14 +372,21 @@ async def executar_tool(
                 ),
             }
 
-        # 2. Cria prospect na EVO
+        # Pega unidade escolhida do estado da conversa (setada no consultar_horarios)
+        _u_id_para_agend = unidade_id  # unidade da conversa (se tiver)
+        _id_branch_para_agend = pers.get("agendamento_id_branch")  # fallback
+        if not _u_id_para_agend:
+            _u_id_para_agend = estado.get("unidade_id_escolhida")
+            _id_branch_para_agend = estado.get("id_branch_escolhido") or _id_branch_para_agend
+
+        # 2. Cria prospect na EVO (na unidade certa)
         lead_data = {
             "name": nome,
             "email": email,
             "cellphone": telefone,
-            "notes": "Aula experimental via IA WhatsApp",
+            "notes": f"Aula experimental via IA — unidade {estado.get('unidade_nome_escolhida') or _u_id_para_agend}",
         }
-        id_prospect = await criar_prospect_evo(empresa_id, unidade_id, lead_data)
+        id_prospect = await criar_prospect_evo(empresa_id, _u_id_para_agend, lead_data)
         if not id_prospect or id_prospect is True:
             return {
                 "ok": False,
@@ -259,16 +394,17 @@ async def executar_tool(
                 "instrucao_ia": "Diga ao cliente que houve um erro tecnico e que voce vai pedir pro time entrar em contato.",
             }
 
-        # 3. Agenda a aula
+        # 3. Agenda a aula (na credencial DA unidade escolhida)
         res = await agendar_aula_experimental_evo(
             empresa_id=empresa_id,
-            unidade_id=unidade_id,
+            unidade_id=_u_id_para_agend,
             id_prospect=int(id_prospect),
             activity_date=str(activity_date),
             activity_name=str(activity_name),
             service_name="Aula Experimental",
             id_activity=int(id_activity) if id_activity else None,
             id_service=pers.get("agendamento_id_service"),
+            id_branch=_id_branch_para_agend,
         )
 
         if res.get("ok"):
@@ -358,9 +494,16 @@ FERRAMENTAS DISPONIVEIS:
    Dados minimos pra agendar: {dados_min}.
 
 FLUXO RECOMENDADO:
-1. Cliente quer agendar -> use <TOOL>consultar_horarios</TOOL>
-2. Sistema retorna a lista, voce mostra ao cliente em texto natural
-   (max 5-7 opcoes, com numeracao). Pergunte qual ele prefere.
+1. Cliente quer agendar/conhecer -> ANTES de consultar horarios, pergunte
+   em qual UNIDADE ele quer treinar (esta empresa tem MULTIPLAS unidades).
+   Liste as unidades pra ele escolher.
+2. Cliente escolhe unidade -> use:
+   <TOOL>{"name": "consultar_horarios", "args": {"unidade": "Nome da Unidade"}}</TOOL>
+   Use o nome EXATO ou o bairro pra match — sistema resolve.
+   Se voce ja chamou uma vez nesta conversa com a unidade escolhida, nao
+   precisa passar de novo (ja fica salvo no estado).
+3. Sistema retorna a lista, voce mostra ao cliente em texto natural
+   (max 5-7 opcoes, com numeracao). Pergunte qual horario ele prefere.
 3. Cliente escolhe (ex: "a numero 2" ou "a das 9h").
    Se voce ja tem o nome dele do contexto, va para o passo 5.
    Se nao, pergunte o nome (e telefone se faltar).
