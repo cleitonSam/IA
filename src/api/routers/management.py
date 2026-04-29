@@ -3306,9 +3306,28 @@ async def list_planos(token_payload: dict = Depends(get_current_user_token)):
             """,
             empresa_id
         )
+    except asyncpg.exceptions.UndefinedColumnError as _euc:
+        # [FALLBACK] Migration de prioridade nao aplicada — usa query legada
+        logger.warning(
+            f"[planos] coluna prioridade ausente — fallback. Rode migration p1r2i3o4r5i6. ({_euc})"
+        )
+        rows = await _database.db_pool.fetch(
+            """
+            SELECT p.id, p.nome, p.valor, p.valor_promocional, p.meses_promocionais,
+                   p.descricao, p.diferenciais, p.link_venda, p.unidade_id,
+                   p.ativo, p.ordem, p.id_externo,
+                   u.nome AS unidade_nome
+            FROM planos p
+            LEFT JOIN unidades u ON u.id = p.unidade_id
+            WHERE p.empresa_id = $1
+            ORDER BY p.ordem, p.nome
+            LIMIT 500
+            """,
+            empresa_id
+        )
     except Exception as e:
-        logger.error(f"Erro ao listar planos para empresa {empresa_id}: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao carregar planos.")
+        logger.error(f"Erro ao listar planos para empresa {empresa_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)[:200]}")
     return [dict(r) for r in rows]
 
 
@@ -3380,20 +3399,36 @@ async def create_plano(body: PlanoCreate, token_payload: dict = Depends(get_curr
     # Sanitiza prioridade entre 0 e 10
     _prio = max(0, min(10, int(body.prioridade or 5)))
     try:
-        await _database.db_pool.execute(
-            """
-            INSERT INTO planos
-                (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
-                 descricao, diferenciais, link_venda, ativo, ordem,
-                 prioridade, motivo_prioridade, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-            """,
-            empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
-            body.meses_promocionais, body.descricao,
-            diferenciais_val,
-            body.link_venda, body.ativo, body.ordem,
-            _prio, body.motivo_prioridade,
-        )
+        try:
+            await _database.db_pool.execute(
+                """
+                INSERT INTO planos
+                    (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
+                     descricao, diferenciais, link_venda, ativo, ordem,
+                     prioridade, motivo_prioridade, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+                """,
+                empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
+                body.meses_promocionais, body.descricao,
+                diferenciais_val,
+                body.link_venda, body.ativo, body.ordem,
+                _prio, body.motivo_prioridade,
+            )
+        except asyncpg.exceptions.UndefinedColumnError:
+            # Migration nao aplicada — fallback sem prioridade
+            logger.warning("[planos INSERT] coluna prioridade ausente — INSERT legado")
+            await _database.db_pool.execute(
+                """
+                INSERT INTO planos
+                    (empresa_id, unidade_id, nome, valor, valor_promocional, meses_promocionais,
+                     descricao, diferenciais, link_venda, ativo, ordem, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+                """,
+                empresa_id, body.unidade_id, body.nome, body.valor, body.valor_promocional,
+                body.meses_promocionais, body.descricao,
+                diferenciais_val,
+                body.link_venda, body.ativo, body.ordem
+            )
     except asyncpg.UniqueViolationError as e:
         logger.warning(f"Plano duplicado empresa={empresa_id}: {e}")
         raise HTTPException(status_code=409, detail=f"Já existe um plano com esses dados ({e}).")
@@ -3425,22 +3460,37 @@ async def update_plano(plano_id: int, body: PlanoCreate, token_payload: dict = D
     diferenciais_val = await _diferenciais_para_coluna(body.diferenciais)
     _prio = max(0, min(10, int(body.prioridade or 5)))
     try:
-        result = await _database.db_pool.execute(
-            """
-            UPDATE planos
-            SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
-                descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
-                ativo=$9, ordem=$10,
-                prioridade=$11, motivo_prioridade=$12,
-                updated_at=NOW()
-            WHERE id=$13 AND empresa_id=$14
-            """,
-            body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
-            body.descricao, diferenciais_val, body.link_venda, body.unidade_id,
-            body.ativo, body.ordem,
-            _prio, body.motivo_prioridade,
-            plano_id, empresa_id
-        )
+        try:
+            result = await _database.db_pool.execute(
+                """
+                UPDATE planos
+                SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
+                    descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
+                    ativo=$9, ordem=$10,
+                    prioridade=$11, motivo_prioridade=$12,
+                    updated_at=NOW()
+                WHERE id=$13 AND empresa_id=$14
+                """,
+                body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
+                body.descricao, diferenciais_val, body.link_venda, body.unidade_id,
+                body.ativo, body.ordem,
+                _prio, body.motivo_prioridade,
+                plano_id, empresa_id
+            )
+        except asyncpg.exceptions.UndefinedColumnError:
+            logger.warning("[planos UPDATE] coluna prioridade ausente — UPDATE legado")
+            result = await _database.db_pool.execute(
+                """
+                UPDATE planos
+                SET nome=$1, valor=$2, valor_promocional=$3, meses_promocionais=$4,
+                    descricao=$5, diferenciais=$6, link_venda=$7, unidade_id=$8,
+                    ativo=$9, ordem=$10, updated_at=NOW()
+                WHERE id=$11 AND empresa_id=$12
+                """,
+                body.nome, body.valor, body.valor_promocional, body.meses_promocionais,
+                body.descricao, diferenciais_val, body.link_venda, body.unidade_id,
+                body.ativo, body.ordem, plano_id, empresa_id
+            )
         if result == "UPDATE 0":
             raise HTTPException(status_code=404, detail="Plano não encontrado")
     except HTTPException:

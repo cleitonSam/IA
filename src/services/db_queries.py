@@ -503,10 +503,16 @@ async def buscar_planos_ativos(empresa_id: int, unidade_id: int = None, force_sy
     if unidade_id:
         query += " AND (unidade_id = $2 OR unidade_id IS NULL)"
         params.append(unidade_id)
-    # [PRIORIDADE] Ordena por prioridade DESC (10=carro-chefe primeiro), depois ordem, depois nome
-    query += " ORDER BY COALESCE(prioridade, 5) DESC, ordem, nome"
+    # [PRIORIDADE] Ordena por prioridade DESC se coluna existir, senao ordem
+    query_com_prio = query + " ORDER BY COALESCE(prioridade, 5) DESC, ordem, nome"
+    query_legado = query + " ORDER BY ordem, nome"
 
-    rows = await _database.db_pool.fetch(query, *params)
+    try:
+        rows = await _database.db_pool.fetch(query_com_prio, *params)
+    except Exception as _euc:
+        # Fallback se coluna prioridade nao existir (migration pendente)
+        logger.warning(f"[buscar_planos_ativos] fallback sem prioridade: {_euc}")
+        rows = await _database.db_pool.fetch(query_legado, *params)
     planos = [dict(r) for r in rows]
 
     if not planos and force_sync:
