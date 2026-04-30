@@ -1172,25 +1172,28 @@ async def listar_horarios_disponiveis_evo(
             _desc["sem_vaga"] += 1
             continue
         # [FIX-D] descarta aulas no passado
+        # [REGRA-1H] Bot oferece aulas que comecam em pelo menos 1h.
+        # Substitui o filtro antigo "passado" e "janela_fechada" por uma regra unica:
+        # - aula no futuro com >= 1h ate o inicio = OK (bot pode oferecer)
+        # - aula em menos de 1h ou ja passou = descarta
+        # - bookingEndTime da EVO eh ignorado (a regra de negocio e nossa, mais
+        #   permissiva: cliente pode reservar ate 1h antes mesmo se a EVO fechou janela)
+        _aula_dt = None
         try:
+            from datetime import timedelta as _td_1h
             _adate = str(s.get("activityDate") or "")[:10].replace("T", "").strip()
             _stime = str(s.get("startTime") or "")[:5].strip()
             if _adate and len(_adate) >= 10 and _stime:
                 _aula_dt = _dt.fromisoformat(f"{_adate} {_stime}:00")
-                if _aula_dt < _agora:
-                    _desc["passado"] += 1
+                if _aula_dt < _agora + _td_1h(hours=1):
+                    # Aula passada OU comecando em menos de 1h → descarta
+                    if _aula_dt < _agora:
+                        _desc["passado"] += 1
+                    else:
+                        _desc["janela_fechada"] += 1  # reusa bucket pra log
                     continue
         except Exception:
             pass
-        # [FIX-F] descarta sessoes cuja janela de booking nao esta ABERTA agora
-        # (filial Goodbe abre janela 15h antes e fecha à meia-noite — fora desse
-        # range a EVO recusa com "Horário da atividade excluído").
-        _bs_dt, _be_dt = _calc_janela_booking(s)
-        if _be_dt and _be_dt < _agora:
-            _desc["janela_fechada"] += 1
-            continue  # janela ja fechou
-        # NAO filtra se janela ainda nao abriu — preferimos mostrar e o agendar_aula
-        # da mensagem clara "abre em XYZ" se cliente tentar antes da hora.
         _desc["ok"] += 1
         normalizado.append({
             "idActivitySession": s.get("idAtividadeSessao") or s.get("idActivitySession"),
@@ -1303,30 +1306,38 @@ async def agendar_aula_experimental_evo(
                         "mensagens": ["Esse horario acabou de encher (alguem reservou a ultima vaga). Escolha outro horario."],
                         "vaga_perdida": True,
                     }
-                # [FIX-E] checa janela usando helper unificado
-                from datetime import datetime as _dt2
+                # [REGRA-1H] Aceita agendamento ate 1h antes do inicio da aula.
+                # Ignora bookingStartTime/EndTime da EVO — nossa regra eh mais permissiva.
+                from datetime import datetime as _dt2, timedelta as _td2
                 _agora2 = _dt2.now()
-                _bs_dt2, _be_dt2 = _calc_janela_booking(_det)
-                if _bs_dt2 and _agora2 < _bs_dt2:
-                    _quando = _bs_dt2.strftime("%d/%m as %Hh%M")
-                    return {
-                        "ok": False, "status": 425,
-                        "mensagens": [f"A janela de reserva pra esse horario abre em {_quando}."],
-                        "janela_nao_abriu": True,
-                        "abre_em": _bs_dt2.isoformat(),
-                        "instrucao_ia": (
-                            f"A janela de reserva da EVO so abre em {_quando}. "
-                            "Diga ao cliente que pode tentar a partir desse horario, "
-                            "ou escolha outra aula cuja janela ja esta aberta."
-                        ),
-                    }
-                if _be_dt2 and _agora2 > _be_dt2:
-                    return {
-                        "ok": False, "status": 410,
-                        "mensagens": ["A janela de reserva pra esse horario ja fechou."],
-                        "janela_fechada": True,
-                        "instrucao_ia": "A janela ja fechou. Sugira outra opcao ao cliente.",
-                    }
+                _aula_dt2 = None
+                try:
+                    _ad = str(_det.get("activityDate") or "")[:10].replace("T", "").strip()
+                    _st = str(_det.get("startTime") or "")[:5].strip()
+                    if _ad and len(_ad) >= 10 and _st:
+                        _aula_dt2 = _dt2.fromisoformat(f"{_ad} {_st}:00")
+                except Exception:
+                    pass
+                if _aula_dt2:
+                    if _aula_dt2 < _agora2:
+                        return {
+                            "ok": False, "status": 410,
+                            "mensagens": ["Essa aula ja comecou — nao da pra agendar."],
+                            "ja_passou": True,
+                            "instrucao_ia": "A aula escolhida ja comecou. Ofereca outro horario futuro.",
+                        }
+                    if _aula_dt2 < _agora2 + _td2(hours=1):
+                        _quando = _aula_dt2.strftime("%H:%M")
+                        return {
+                            "ok": False, "status": 410,
+                            "mensagens": [f"Essa aula comeca em menos de 1h ({_quando}). Pra reservar, escolha outro horario com mais antecedencia."],
+                            "muito_proximo": True,
+                            "instrucao_ia": (
+                                "A aula que o cliente escolheu comeca em menos de 1 hora — "
+                                "nossa regra exige no minimo 1h de antecedencia pra agendar. "
+                                "Ofereca outro horario futuro pelo menos 1h a frente."
+                            ),
+                        }
         except Exception as _ec:
             logger.debug(f"[FIX-B] re-check vaga falhou (seguindo): {_ec}")
 
