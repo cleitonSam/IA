@@ -1168,10 +1168,15 @@ def _resumo_unidade_playground(u: dict) -> str:
 
 def _build_playground_prompt(p: dict, faq_text: str = "", unidades: list = None, planos: list = None) -> str:
     """
-    Constrói o system prompt completo a partir dos campos da personalidade salva.
-    Espelha fielmente a estrutura de blocos do bot_core.py para garantir que o
-    Playground se comporte identicamente à IA em produção.
+    [LEGACY-WRAPPER] Mantido por compat. Delega ao builder compartilhado.
+    Garante que Playground e bot real (WhatsApp) gerem o MESMO prompt.
     """
+    from src.services.prompt_builder import build_base_prompt
+    return build_base_prompt(p, faq_text=faq_text, unidades=unidades, planos=planos)
+
+
+def _build_playground_prompt_LEGACY(p: dict, faq_text: str = "", unidades: list = None, planos: list = None) -> str:
+    """[NAO USAR] Versao antiga, mantida apenas pra referencia."""
     nome   = p.get("nome_ia") or "Assistente"
     idioma = p.get("idioma") or "Português do Brasil"
     blocos: List[str] = []

@@ -5407,8 +5407,28 @@ REGRA CRÍTICA SOBRE HORÁRIO DE FUNCIONAMENTO:
 
 Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
 """
+            # [PROMPT-SHARED] Injeta blocos completos do builder unificado.
+            # Garante que WhatsApp tenha TODOS os blocos da personalidade que o
+            # Playground tem (script_vendas, objecoes, fechamento, posicionamento,
+            # diferenciais, abordagem_proativa, exemplos, despedida etc).
+            # Sem isso, IA do WhatsApp respondia "menos redonda" que a do Playground.
+            try:
+                from src.services.prompt_builder import build_base_prompt
+                _shared_unidades = [unidade] if isinstance(unidade, dict) and unidade.get("nome") else []
+                _shared_block = build_base_prompt(
+                    pers,
+                    faq_text="",  # main.py tem fluxo próprio de FAQ
+                    unidades=_shared_unidades,
+                    planos=None,  # main.py injeta planos em outro ponto
+                    incluir_contexto_temporal=False,  # já temos acima
+                    incluir_agendamento=False,  # injetado em outro ponto do main.py
+                )
+                prompt_sistema += "\n\n" + _shared_block
+            except Exception as _ep:
+                logger.debug(f"[PROMPT-SHARED] erro injetar blocos compartilhados: {_ep}")
+
             if slug:
-                prompt_sistema += f"Você está atendendo agora pela unidade: {nome_unidade}.\n"
+                prompt_sistema += f"\n\nVocê está atendendo agora pela unidade: {nome_unidade}.\n"
                 prompt_sistema += "Se o cliente perguntar sobre OUTRA unidade da rede, responda normalmente usando as informações que você tem. Não diga que 'não pode' falar de outra unidade.\n"
             else:
                 prompt_sistema += "Você é um consultor global da marca Red Fitness. Você atende todas as unidades da rede. Quando o cliente não especificar uma unidade, pergunte qual das nossas unidades ele gostaria de conhecer.\n"
