@@ -1097,7 +1097,6 @@ export default function UnitsPage() {
                   whileTap={{ scale: 0.98 }}
                   form="unitForm"
                   type="submit"
-                  type="submit"
                   disabled={saving || loadingUnit}
                   className="bg-[#00d2ff] text-black px-12 py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center gap-3 transition-all shadow-[0_0_25px_rgba(0,210,255,0.25)] disabled:opacity-50"
                 >
