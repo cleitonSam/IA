@@ -56,6 +56,7 @@ class CriarUnidadeRequest(BaseModel):
     promo_cor: Optional[str] = "#ff3366"
     promo_emoji: Optional[str] = "🔥"
     promo_observacoes: Optional[str] = None      # texto extra livre pra IA
+    promo_voucher_id: Optional[int] = None       # ID do voucher EVO vinculado
 
     model_config = {"extra": "ignore"}  # tolera campos extras (id, slug, created_at)
 
@@ -854,8 +855,9 @@ async def criar_unidade(
                     promo_ativa=$1, promo_nome=$2, promo_chamada=$3, promo_desconto=$4,
                     promo_desconto_tipo=$5, promo_brinde=$6,
                     promo_validade_inicio=$7, promo_validade_fim=$8,
-                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11
-                WHERE id=$12 AND empresa_id=$13
+                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11,
+                    promo_voucher_id=$12
+                WHERE id=$13 AND empresa_id=$14
                 """,
                 bool(body.promo_ativa) if body.promo_ativa is not None else False,
                 body.promo_nome, body.promo_chamada, body.promo_desconto,
@@ -865,6 +867,7 @@ async def criar_unidade(
                 body.promo_cor or "#ff3366",
                 body.promo_emoji or "🔥",
                 body.promo_observacoes,
+                body.promo_voucher_id,
                 row["id"], empresa_id
             )
         except Exception as _pe:
@@ -1037,7 +1040,8 @@ async def get_unidade(
                    promo_brinde, promo_validade_inicio, promo_validade_fim,
                    COALESCE(promo_cor, '#ff3366') AS promo_cor,
                    COALESCE(promo_emoji, '🔥') AS promo_emoji,
-                   promo_observacoes
+                   promo_observacoes,
+                   promo_voucher_id
             FROM unidades
             WHERE id = $1 AND empresa_id = $2
             """,
@@ -1162,8 +1166,9 @@ async def atualizar_unidade(
                     promo_ativa=$1, promo_nome=$2, promo_chamada=$3, promo_desconto=$4,
                     promo_desconto_tipo=$5, promo_brinde=$6,
                     promo_validade_inicio=$7, promo_validade_fim=$8,
-                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11
-                WHERE id=$12 AND empresa_id=$13
+                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11,
+                    promo_voucher_id=$12
+                WHERE id=$13 AND empresa_id=$14
                 """,
                 bool(body.promo_ativa) if body.promo_ativa is not None else False,
                 body.promo_nome, body.promo_chamada,
@@ -1175,6 +1180,7 @@ async def atualizar_unidade(
                 body.promo_cor or "#ff3366",
                 body.promo_emoji or "🔥",
                 body.promo_observacoes,
+                body.promo_voucher_id,
                 unidade_id, empresa_id
             )
         except Exception as _pe:

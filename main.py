@@ -5567,12 +5567,46 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                                 _bloco_p += f"⏰ Válido até {_fim_d.strftime('%d/%m/%Y')}\n"
                         if _obs:
                             _bloco_p += f"📝 Observações: {_obs}\n"
+
+                        # [PROMO-VOUCHER] Se promo tem voucher EVO vinculado, busca dados do voucher
+                        _voucher_id = unidade.get("promo_voucher_id")
+                        if _voucher_id:
+                            try:
+                                from src.services.evo_client import listar_vouchers_evo
+                                _all_vouch = await listar_vouchers_evo(empresa_id, only_valid=False, take=100)
+                                _v = next((x for x in _all_vouch if int(x.get("id") or 0) == int(_voucher_id)), None)
+                                if _v:
+                                    _v_desc = _v.get("desconto") or {}
+                                    _v_val = _v_desc.get("valor")
+                                    _v_tipo = _v_desc.get("tipo")
+                                    _v_meses = _v_desc.get("meses")
+                                    _v_exp = _v.get("expira_em") or "sem prazo"
+                                    _v_planos = _v.get("id_memberships") or []
+                                    _bloco_p += "\n🎟️ VOUCHER VINCULADO À PROMO:\n"
+                                    _bloco_p += f"   • Nome: {_v.get('nome')}\n"
+                                    if _v_val and _v_tipo == "percentage":
+                                        _bloco_p += f"   • Desconto efetivo: {_v_val}% off"
+                                    elif _v_val:
+                                        _bloco_p += f"   • Desconto efetivo: R${_v_val} off"
+                                    if _v_meses:
+                                        _bloco_p += f" por {_v_meses} mês(es)"
+                                    _bloco_p += "\n"
+                                    if _v_planos:
+                                        _bloco_p += f"   • Vale pros planos id: {_v_planos}\n"
+                                    else:
+                                        _bloco_p += "   • Vale pra qualquer plano\n"
+                                    _bloco_p += f"   • Expira: {_v_exp}\n"
+                            except Exception as _ev:
+                                logger.debug(f"[PROMO-VOUCHER] erro buscar voucher {_voucher_id}: {_ev}")
+
                         _bloco_p += (
                             "\n[REGRAS DE USO DA PROMO — OBRIGATÓRIAS]\n"
                             "- Mencione a promoção quando o lead mostrar interesse em planos/valores\n"
                             "- Se cliente reclamar do valor, traga a promo como solução IMEDIATA\n"
                             "- Crie URGÊNCIA real usando a validade (especialmente nos últimos dias)\n"
                             "- O brinde é um diferencial — destaque-o pra fechar\n"
+                            "- Se TEM voucher vinculado acima: APRESENTE o nome do voucher quando cliente aceitar a promo, "
+                            "explicando que o consultor aplica o desconto na hora da matrícula\n"
                             "- NUNCA invente promo. Use APENAS o que está acima\n"
                         )
                         prompt_sistema += _bloco_p
@@ -7380,6 +7414,7 @@ async def metricas_diagnostico(
             "alertas": [
                 f"⚠️ Coluna '{c}' não existe no banco — rode a migration de ALTER TABLE"
                 for c in colunas_ausentes
+                for c in colunas_ausentes
             ] + [
                 f"📉 Coluna '{c}' está {s['percentual']}% preenchida nos últimos {dias} dias"
                 for c, s in stats_colunas.items()
@@ -7392,7 +7427,6 @@ async def metricas_diagnostico(
     except Exception as e:
         logger.error(f"❌ /metricas/diagnostico erro: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/status")
 async def status_endpoint():

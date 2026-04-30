@@ -100,6 +100,7 @@ const emptyForm: any = {
   promo_cor: "#ff3366",
   promo_emoji: "🔥",
   promo_observacoes: "",
+  promo_voucher_id: null,
 };
 
 // [BLINDAGEM] Coerce qualquer valor pra um JSON object/array seguro
@@ -134,12 +135,30 @@ export default function UnitsPage() {
   const [extractingGrade, setExtractingGrade] = useState(false);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  // [PROMO-VOUCHER] Lista de vouchers EVO ativos pro select
+  const [vouchersDisponiveis, setVouchersDisponiveis] = useState<any[]>([]);
+  const [loadingVouchers, setLoadingVouchers] = useState(false);
 
   const getConfig = () => ({
     headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
   });
 
   useEffect(() => { fetchUnits(); }, []);
+
+  // [PROMO-VOUCHER] Carrega vouchers quando abre modal
+  const fetchVouchers = async () => {
+    setLoadingVouchers(true);
+    try {
+      const res = await axios.get("/api-backend/management/franqueada/vouchers?status=ativos", getConfig());
+      const list = Array.isArray(res.data) ? res.data : (res.data?.vouchers || []);
+      setVouchersDisponiveis(list);
+    } catch (e) {
+      console.error("[vouchers] erro ao carregar:", e);
+      setVouchersDisponiveis([]);
+    } finally {
+      setLoadingVouchers(false);
+    }
+  };
 
   const fetchUnits = async () => {
     setLoading(true);
@@ -155,6 +174,8 @@ export default function UnitsPage() {
 
   const handleOpenModal = async (unit: Unit | null = null) => {
     setActiveTab("identity");
+    // [PROMO-VOUCHER] Carrega vouchers em paralelo (fire-and-forget)
+    fetchVouchers();
     if (unit) {
       setEditingUnit(unit);
       setLoadingUnit(true);
@@ -198,6 +219,7 @@ export default function UnitsPage() {
           promo_cor: data.promo_cor || "#ff3366",
           promo_emoji: data.promo_emoji || "🔥",
           promo_observacoes: data.promo_observacoes || "",
+          promo_voucher_id: data.promo_voucher_id ?? null,
         });
       } catch (e) {
         console.error("Erro ao carregar dados da unidade:", e);
@@ -1061,6 +1083,49 @@ export default function UnitsPage() {
                                   onChange={e => setFormData((p: any) => ({ ...p, promo_observacoes: e.target.value }))}
                                   className={textareaClass}
                                 />
+                              </Field>
+                            </div>
+
+                            {/* [PROMO-VOUCHER] Select de voucher EVO vinculado */}
+                            <div className="md:col-span-2">
+                              <Field label="🎟️ Voucher EVO vinculado (a IA cita o nome quando cliente aceita a promo)" icon={CreditCard}>
+                                {loadingVouchers ? (
+                                  <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+                                    <Loader2 className="w-4 h-4 animate-spin" /> Carregando vouchers da EVO...
+                                  </div>
+                                ) : vouchersDisponiveis.length === 0 ? (
+                                  <div className="text-xs text-amber-400 py-2">
+                                    ⚠️ Nenhum voucher EVO disponível. Cadastre vouchers na EVO ou ative algum em Vouchers.
+                                  </div>
+                                ) : (
+                                  <select
+                                    value={formData.promo_voucher_id ?? ""}
+                                    onChange={e => setFormData((p: any) => ({
+                                      ...p,
+                                      promo_voucher_id: e.target.value ? parseInt(e.target.value) : null
+                                    }))}
+                                    className={inputClass}
+                                  >
+                                    <option value="">— Sem voucher (só desconto manual) —</option>
+                                    {vouchersDisponiveis.map((v: any) => {
+                                      const desc = v.desconto || {};
+                                      const valor = desc.valor;
+                                      const tipo = desc.tipo;
+                                      const meses = desc.meses;
+                                      let label = v.nome || `Voucher #${v.id}`;
+                                      if (valor && tipo === "percentage") label += ` — ${valor}% off`;
+                                      else if (valor) label += ` — R$${valor} off`;
+                                      if (meses) label += ` (${meses}m)`;
+                                      if (v.expira_em) label += ` • exp ${String(v.expira_em).slice(0,10)}`;
+                                      return <option key={v.id} value={v.id}>{label}</option>;
+                                    })}
+                                  </select>
+                                )}
+                                {formData.promo_voucher_id && (
+                                  <p className="text-[10px] text-emerald-400 mt-1.5 italic">
+                                    ✓ Voucher vinculado. A IA vai citar o nome dele quando o cliente aceitar a promo.
+                                  </p>
+                                )}
                               </Field>
                             </div>
 

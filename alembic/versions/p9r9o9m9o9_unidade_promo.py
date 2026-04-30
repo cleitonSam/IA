@@ -28,7 +28,8 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS promo_validade_fim     DATE,
             ADD COLUMN IF NOT EXISTS promo_cor              VARCHAR(7)   DEFAULT '#ff3366',
             ADD COLUMN IF NOT EXISTS promo_emoji            VARCHAR(8)   DEFAULT '🔥',
-            ADD COLUMN IF NOT EXISTS promo_observacoes      TEXT
+            ADD COLUMN IF NOT EXISTS promo_observacoes      TEXT,
+            ADD COLUMN IF NOT EXISTS promo_voucher_id       INTEGER
     """)
 
 
@@ -45,5 +46,6 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS promo_validade_fim,
             DROP COLUMN IF EXISTS promo_cor,
             DROP COLUMN IF EXISTS promo_emoji,
-            DROP COLUMN IF EXISTS promo_observacoes
+            DROP COLUMN IF EXISTS promo_observacoes,
+            DROP COLUMN IF EXISTS promo_voucher_id
     """)
