@@ -65,11 +65,6 @@ from src.services.chatwoot_client import (
     escalar_para_humano,
 )
 from src.services.evo_client import verificar_status_membro_evo, criar_prospect_evo
-from src.services.agendamento_tools import (
-    construir_bloco_prompt_agendamento,
-    detectar_tool_call,
-    executar_tool as _agend_executar_tool,
-)
 import src.services.chatwoot_client as _chatwoot_module
 from src.services.workers import (
     _log_worker_task_result, worker_sync_planos, sync_planos_manual,
@@ -290,7 +285,7 @@ async def shutdown_event():
 
 # --- UTILITÁRIOS ---
 
-def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True, usar_emoji: bool = True, emoji_tipo: str = "") -> List[str]:
+def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = True) -> List[str]:
     """
     Formata os planos de forma bonita para envio ao cliente via WhatsApp/Chatwoot.
     Retorna uma LISTA de strings — cada item = uma mensagem separada no chat.
@@ -318,14 +313,10 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         Quer saber como funciona ou tirar alguma dúvida?
     """
     if not planos:
-        return ["Não temos planos disponíveis no momento." + (" 😕" if usar_emoji else "")]
+        return ["Não temos planos disponíveis no momento. 😕"]
 
-    # Emojis rotativos por posição — só usados se usar_emoji=True
-    if usar_emoji:
-        _emoji_pers_split = [e.strip() for e in (emoji_tipo or "").split() if e.strip()]
-        _EMOJIS_PLANO = _emoji_pers_split if _emoji_pers_split else ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
-    else:
-        _EMOJIS_PLANO = []
+    # Emojis rotativos por posição para dar variedade visual
+    _EMOJIS_PLANO = ["🏋️", "💪", "⚡", "🔥", "🎯", "🌟"]
 
     blocos: List[str] = []
 
@@ -389,16 +380,14 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         pitch = None if _e_codigo or not _pitch_raw else _pitch_raw
 
         # ── Emoji do plano ───────────────────────────────────────────
-        emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)] if _EMOJIS_PLANO else ""
+        emoji = _EMOJIS_PLANO[idx % len(_EMOJIS_PLANO)]
 
         # ── Montagem do bloco ────────────────────────────────────────
         linhas: List[str] = []
 
         # Cabeçalho
-        _selo_emoji = "🏆 " if usar_emoji else ""
-        _selo = f" {_selo_emoji}*MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
-        _prefix = f"{emoji} " if emoji else ""
-        linhas.append(f"{_prefix}*{nome}*{_selo}")
+        _selo = " 🏆 *MELHOR CUSTO-BENEFÍCIO*" if destacar_melhor_preco and idx == 0 else ""
+        linhas.append(f"{emoji} *{nome}*{_selo}")
 
         # Pitch (só se existir e não for código)
         if pitch:
@@ -419,24 +408,21 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
             linhas.append("")
 
         # Preço principal
-        _e_dinheiro = "💰 " if usar_emoji else ""
         if valor_float and valor_float > 0:
             valor_fmt = f"{valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linhas.append(f"{_e_dinheiro}*R${valor_fmt} por mês*")
+            linhas.append(f"💰 *R${valor_fmt} por mês*")
         else:
-            linhas.append(f"{_e_dinheiro}*Consulte o valor*")
+            linhas.append("💰 *Consulte o valor*")
 
         # Promoção (opcional)
         if promo_float and promo_float > 0 and meses_promo:
             promo_fmt = f"{promo_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             linhas.append("")
-            _e_oferta = "⚡ " if usar_emoji else ""
-            linhas.append(f"{_e_oferta}*Oferta: {meses_promo}x R${promo_fmt}/mês*")
+            linhas.append(f"⚡ *Oferta: {meses_promo}x R${promo_fmt}/mês*")
 
         # Link de matrícula
         linhas.append("")
-        _e_seta = "👉 " if usar_emoji else ""
-        linhas.append(f"{_e_seta}Comece agora:")
+        linhas.append("👉 Comece agora:")
         linhas.append(link.strip())
 
         # ⚠️ SEM pergunta de fechamento aqui — vai só no último bloco (ver abaixo)
@@ -444,11 +430,10 @@ def formatar_planos_bonito(planos: List[Dict], destacar_melhor_preco: bool = Tru
         blocos.append("\n".join(linhas))
 
     if not blocos:
-        return ["Não temos planos disponíveis no momento." + (" 😕" if usar_emoji else "")]
+        return ["Não temos planos disponíveis no momento. 😕"]
 
     # Pergunta de fechamento apenas no ÚLTIMO plano
-    _fech_emoji = " 😊" if usar_emoji else ""
-    blocos[-1] += f"\n\nQuer saber mais sobre algum plano ou tirar alguma dúvida?{_fech_emoji}"
+    blocos[-1] += "\n\nQuer saber mais sobre algum plano ou tirar alguma dúvida? 😊"
 
     # Cada bloco = mensagem separada
     return blocos
@@ -561,16 +546,7 @@ def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
     # 3) Juntar blocos muito curtos com o anterior
     final = []
     for b in resultado:
-        # [FMT] nao juntar blocos que parecem ser itens de lista (preserva
-        # estrutura visual: cada bullet vira parte de mensagem unificada
-        # com espaco real, nao junta tudo em uma linha so).
-        b_stripped = b.lstrip()
-        is_lista = b_stripped.startswith(("•", "-", "*", "1.", "2.", "3.", "4.", "5."))
-        prev_lista = final and any(
-            line.lstrip().startswith(("•", "-", "1.", "2.", "3."))
-            for line in final[-1].split("\n")
-        )
-        if final and len(b) < 40 and len(final[-1]) < 200 and not is_lista and not prev_lista:
+        if final and len(b) < 40 and len(final[-1]) < 200:
             final[-1] = f"{final[-1]}\n\n{b}"
         else:
             final.append(b)
@@ -584,20 +560,13 @@ def dividir_em_blocos(texto: str, max_chars: int = 350) -> list:
 async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> List[str]:
     """Coleta mensagens do buffer e limpa a fila da conversa.
 
-    Janela extensível: cada nova mensagem reseta o deadline em +EXTENSAO_POR_MSG
-    para capturar rajadas longas (ex: usuário digita várias msgs lentas no WhatsApp).
-    Garante hard cap (HARD_LIMIT) para nunca travar a resposta indefinidamente.
+    Faz uma coalescência curta para agrupar rajadas (2-4 mensagens seguidas)
+    em uma única resposta, reduzindo respostas duplicadas e melhorando fluidez.
     """
     chave_buffet = f"{empresa_id}:buffet:{conversation_id}"
 
-    JANELA_INICIAL = 5.0     # primeira janela após chamar a coleta
-    EXTENSAO_POR_MSG = 3.0   # ao receber msg nova, espera +3s pela próxima
-    HARD_LIMIT = 15.0        # nunca espera mais que 15s no total
-    QUIETUDE_MIN = 6         # checks vazios consecutivos (~3s) antes de declarar fim de rajada
-
     mensagens_acumuladas: List[str] = []
-    inicio = time.time()
-    deadline = inicio + JANELA_INICIAL
+    deadline = time.time() + 3.0  # janela de 3s para juntar rajada WhatsApp
     _checks_vazios = 0
 
     while True:
@@ -609,10 +578,7 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
         if lote:
             mensagens_acumuladas.extend(lote)
             _checks_vazios = 0
-            # Estende deadline para capturar próxima msg da rajada (respeitando hard cap)
-            novo_deadline = time.time() + EXTENSAO_POR_MSG
-            deadline = min(novo_deadline, inicio + HARD_LIMIT)
-            if len(mensagens_acumuladas) >= 8 or time.time() >= inicio + HARD_LIMIT:
+            if len(mensagens_acumuladas) >= 8 or time.time() >= deadline:
                 break
             await asyncio.sleep(0.5)
             continue
@@ -620,15 +586,12 @@ async def coletar_mensagens_buffer(conversation_id: int, empresa_id: int) -> Lis
         _checks_vazios += 1
         if time.time() >= deadline:
             break
-        if mensagens_acumuladas and _checks_vazios >= QUIETUDE_MIN:
-            # Já tem msgs e buffer ficou vazio QUIETUDE_MIN vezes seguidas — rajada acabou
+        if mensagens_acumuladas and _checks_vazios >= 4:
+            # Já tem msgs e buffer ficou vazio 4x seguidas — rajada acabou
             break
         await asyncio.sleep(0.5)
 
-    logger.info(
-        f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id} "
-        f"(esperou {time.time() - inicio:.1f}s)"
-    )
+    logger.info(f"📦 Buffer tem {len(mensagens_acumuladas)} mensagens para conv {conversation_id}")
     return mensagens_acumuladas
 
 
@@ -727,11 +690,9 @@ async def monitorar_escolha_unidade(account_id: int, conversation_id: int, empre
     # Lembrete amigável — pergunta de novo sem listar todas as unidades
     _pers_monit = await carregar_personalidade(empresa_id) or {}
     _nome_ia_monit = _pers_monit.get('nome_ia') or 'Assistente'
-    _ue_monit = bool(_pers_monit.get('usar_emoji'))
-    _e_monit = " 😊" if _ue_monit else ""
     await enviar_mensagem_chatwoot(
         account_id, conversation_id,
-        f"Só pra eu não te perder de vista{_e_monit}\n\nQual cidade ou bairro você prefere para treinar?",
+        "Só pra eu não te perder de vista 😊\n\nQual cidade ou bairro você prefere para treinar?",
         integracao, empresa_id, nome_ia=_nome_ia_monit
     )
 
@@ -1054,11 +1015,9 @@ async def processar_ia_e_responder(
     watchdog = asyncio.create_task(renovar_lock(chave_lock, lock_val))
 
     try:
-        # ⏱️ Pré-espera curta: a coalescência principal acontece dentro de
-        # coletar_mensagens_buffer, que agora tem janela extensível por msg
-        # (até HARD_LIMIT=15s). Mantemos só 1.5s aqui para reduzir latência
-        # e permitir que mensagens "in flight" cheguem ao buffer.
-        await asyncio.sleep(1.5)
+        # ⏱️ Aguarda período para acumular rajada de mensagens (WhatsApp = msgs curtas em sequência)
+        # Janela de 4s: captura rajadas típicas de WhatsApp (2-4 msgs em sequência)
+        await asyncio.sleep(4.0)
 
         mensagens_acumuladas = await coletar_mensagens_buffer(conversation_id, empresa_id)
         if not mensagens_acumuladas:
@@ -1121,19 +1080,6 @@ async def processar_ia_e_responder(
                     f"⏰ IA fora do horario empresa={empresa_id} conv={conversation_id} — silenciosa "
                     f"(sem fluxo ativo com BusinessHours para complementar)"
                 )
-                # [HORA-01] Envia mensagem custom fora do horario se configurada
-                _msg_fora = (_pers_horario.get("mensagem_fora_horario") or "").strip()
-                if _msg_fora:
-                    try:
-                        from src.services.chatwoot_client import enviar_mensagem_chatwoot
-                        await enviar_mensagem_chatwoot(
-                            account_id, conversation_id, _msg_fora,
-                            integracao, source=source, contato_fone=contato_fone,
-                            nome_ia=(_pers_horario.get("nome_ia") or "Assistente"),
-                        )
-                        logger.info(f"📤 [HORA-01] mensagem_fora_horario enviada conv={conversation_id}")
-                    except Exception as _ehor:
-                        logger.warning(f"[HORA-01] falha ao enviar msg fora horario: {_ehor}")
                 return
 
         if await aguardar_escolha_unidade_ou_reencaminhar(conversation_id, empresa_id, mensagens_acumuladas):
@@ -1194,130 +1140,6 @@ async def processar_ia_e_responder(
         unidade = await carregar_unidade(slug, empresa_id) or {}
         pers = await carregar_personalidade(empresa_id) or {}
         nome_ia = pers.get('nome_ia') or 'Assistente Virtual'
-
-        # ── [FRANQUEADA] Verifica se contato é aluno e aplica etiqueta no Chatwoot ──
-        # Fluxo:
-        #   1) GET /members?phone=X (cred admin global)
-        #   2) Se aluno -> resolve unidade pelo branchName retornado pela EVO (NAO da conversa)
-        #   3) Atualiza nome do contato no Chatwoot com firstName do EVO
-        #   4) Aplica label aluno-{slug} da unidade resolvida
-        # Roda 1x por contato (cache 24h). Fire-and-forget: não bloqueia resposta.
-        try:
-            _u_id_franq = unidade.get("id") if unidade else None
-            logger.info(
-                f"[FRANQUEADA-HOOK] entry empresa={empresa_id} conv={conversation_id} "
-                f"contact_id={contact_id} fone={contato_fone!r} source={source} unid_id={_u_id_franq}"
-            )
-            if contact_id and contato_fone and source == "chatwoot":
-                _flag_key = f"aluno_check:{empresa_id}:{contact_id}"
-                _ja_checou = await redis_client.get(_flag_key)
-                logger.info(f"[FRANQUEADA-HOOK] flag_key={_flag_key} ja_checou={_ja_checou!r}")
-                if not _ja_checou:
-                    async def _check_e_aplicar_label():
-                        try:
-                            from src.services.evo_client import verificar_membro_evo
-                            from src.services.chatwoot_client import aplicar_label_contato_chatwoot, atualizar_nome_contato_chatwoot
-                            from src.services.db_queries import carregar_integracao as _ci
-                            from src.utils.text_helpers import normalizar
-                            res_membro = await verificar_membro_evo(
-                                empresa_id, contato_fone, unidade_id=_u_id_franq
-                            )
-                            logger.info(
-                                f"[FRANQUEADA] check empresa={empresa_id} contato={contact_id} "
-                                f"-> encontrado={res_membro.get('encontrado')} "
-                                f"branch={res_membro.get('branch_name')!r} "
-                                f"nome={res_membro.get('first_name')!r} "
-                                f"erro={res_membro.get('erro')}"
-                            )
-
-                            if not res_membro.get("encontrado"):
-                                # Nao consta na EVO — cache negativo + sai (sem label)
-                                await redis_client.setex(_flag_key, 86400, "0")
-                                return
-                            # [AJUSTE] Se 'encontrado' mas 'ativo=false' (sem mensalidade ativa,
-                            # ou status nao retornado pelo EVO), AINDA aplica label de aluno —
-                            # historicamente e aluno. IA pode ler o status separado se precisar.
-
-                            _integ_cw_lab = await _ci(empresa_id, 'chatwoot')
-                            if not _integ_cw_lab:
-                                logger.warning("[FRANQUEADA] integracao Chatwoot ausente — nao aplica label")
-                                await redis_client.setex(_flag_key, 86400, "1")
-                                return
-
-                            # 1) Atualiza nome do contato com firstName do EVO
-                            _first_name = (res_membro.get("first_name") or "").strip()
-                            if _first_name:
-                                _nome_atualizar = _first_name.title()
-                                try:
-                                    await atualizar_nome_contato_chatwoot(
-                                        account_id, contact_id, _nome_atualizar, _integ_cw_lab
-                                    )
-                                    logger.info(f"[FRANQUEADA] nome contato={contact_id} atualizado p/ '{_nome_atualizar}'")
-                                except Exception as _en:
-                                    logger.debug(f"[FRANQUEADA] atualizar nome falhou: {_en}")
-
-                            # 2) Resolve unidade pelo branchName retornado pela EVO
-                            _branch_evo = (res_membro.get("branch_name") or "").strip()
-                            _id_branch_evo = res_membro.get("id_branch")
-                            _slug_unid = None
-                            try:
-                                import src.core.database as _database
-                                if _database.db_pool and _branch_evo:
-                                    rows = await _database.db_pool.fetch(
-                                        "SELECT id, nome, slug FROM unidades WHERE empresa_id=$1 AND ativa=true",
-                                        empresa_id,
-                                    )
-                                    _alvo = normalizar(_branch_evo).strip(" .")
-                                    _melhor = None
-                                    for r in rows:
-                                        _nome_norm = normalizar(r["nome"] or "").strip(" .")
-                                        # Match: igual, OU branchName CONTIDO no nome da unidade, OU vice-versa
-                                        if (_nome_norm == _alvo
-                                            or _alvo in _nome_norm
-                                            or _nome_norm in _alvo):
-                                            _melhor = r
-                                            break
-                                    if _melhor:
-                                        _slug_unid = (_melhor["slug"] or _melhor["nome"]).strip().lower()
-                                        logger.info(
-                                            f"[FRANQUEADA] branchName '{_branch_evo}' (EVO id={_id_branch_evo}) "
-                                            f"-> unidade DB id={_melhor['id']} slug='{_slug_unid}'"
-                                        )
-                            except Exception as _eu:
-                                logger.debug(f"[FRANQUEADA] resolver unidade pelo branchName falhou: {_eu}")
-
-                            # Fallback: se nao casou, usa unidade da conversa atual
-                            if not _slug_unid:
-                                _slug_unid = (slug or (unidade.get("slug") if unidade else "") or (unidade.get("nome") if unidade else "")).strip().lower()
-                                if _slug_unid:
-                                    logger.info(f"[FRANQUEADA] usando fallback slug da conversa: '{_slug_unid}'")
-
-                            # Sanitiza pra slug Chatwoot (alfanum + dash)
-                            import re as _re_lab
-                            _slug_unid = _re_lab.sub(r"[^a-z0-9]+", "-", _slug_unid or "geral").strip("-") or "geral"
-                            _label = f"aluno-{_slug_unid}"
-
-                            # 3) Aplica label
-                            await aplicar_label_contato_chatwoot(
-                                account_id, contact_id, _label, _integ_cw_lab,
-                                grupo_prefix="aluno-",
-                            )
-                            logger.info(f"[FRANQUEADA] label '{_label}' aplicada contato={contact_id}")
-
-                            await redis_client.setex(_flag_key, 86400, "1")
-                        except Exception as _e_franq:
-                            logger.debug(f"[FRANQUEADA] check falhou: {_e_franq}")
-                    # fire-and-forget — nao bloqueia resposta
-                    asyncio.create_task(_check_e_aplicar_label())
-                else:
-                    logger.info(f"[FRANQUEADA-HOOK] SKIP — ja checou (flag={_ja_checou!r})")
-            else:
-                logger.info(
-                    f"[FRANQUEADA-HOOK] SKIP — falta dado: "
-                    f"contact_id={bool(contact_id)} fone={bool(contato_fone)} chatwoot={source == 'chatwoot'}"
-                )
-        except Exception as _e_outer_franq:
-            logger.warning(f"[FRANQUEADA] outer guard falhou: {_e_outer_franq}")
 
         # ── DETECÇÃO DE NOME DO CLIENTE ──────────────────────────────
         # IA pergunta o nome na conversa. Quando o cliente responde,
@@ -1404,15 +1226,8 @@ async def processar_ia_e_responder(
         ))
         if planos_ativos and intencao in {"planos", "preco"}:
             _planos_filtrados = filtrar_planos_por_contexto(texto_cliente_unificado, planos_ativos)
-            _ue_planos = bool(pers.get("usar_emoji"))  # default OFF
-            _et_planos = (pers.get("emoji_tipo") or "").strip()
-            fast_reply_lista = formatar_planos_bonito(
-                _planos_filtrados,
-                destacar_melhor_preco=True,
-                usar_emoji=_ue_planos,
-                emoji_tipo=_et_planos,
-            )
-            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos, emoji={_ue_planos})")
+            fast_reply_lista = formatar_planos_bonito(_planos_filtrados, destacar_melhor_preco=True)
+            logger.info(f"⚡ Planos: envio em blocos ({len(_planos_filtrados)} planos)")
 
         # Pré-carrega slug para buscar unidade na pergunta de modalidades (sem fast_reply)
         if intencao == "modalidades":
@@ -1661,70 +1476,8 @@ Convênios: {convenios_prompt}
                         continue
                     _extras_prompt += f"\n\n[{label}]\n{valor}"
          
-            # ── [STATUS DO CONTATO] Le labels do Chatwoot pra saber se cliente e aluno ──
-            _status_contato_bloco = ""
-            try:
-                if source == "chatwoot" and contact_id and account_id:
-                    from src.services.chatwoot_client import listar_labels_contato_chatwoot
-                    from src.services.db_queries import carregar_integracao as _ci_lbl
-                    _integ_cw_lbl = await _ci_lbl(empresa_id, 'chatwoot')
-                    if _integ_cw_lbl:
-                        _labels = await listar_labels_contato_chatwoot(
-                            account_id, contact_id, _integ_cw_lbl
-                        )
-                        _aluno_labels = [l for l in (_labels or []) if str(l).lower().startswith("aluno-")]
-                        if _aluno_labels:
-                            # Extrai a unidade do slug: aluno-saude -> saude
-                            _unid_aluno = _aluno_labels[0][len("aluno-"):].replace("-", " ").title()
-                            _status_contato_bloco = (
-                                f"[STATUS DO CONTATO]\n"
-                                f"- Este cliente JA E ALUNO ATIVO da unidade {_unid_aluno}.\n"
-                                f"- NAO ofereca aula experimental — ele ja treina aqui.\n"
-                                f"- NAO peca pra escolher unidade — use a unidade que ele ja frequenta.\n"
-                                f"- Cumprimente como amigo/aluno (ex: 'Oi! Bom te ver de novo!').\n"
-                                f"- Foque em ajudar com duvidas de aluno: faltas, treino, horarios, "
-                                f"renovacao de plano, segunda via de boleto. NAO empurre matricula."
-                            )
-                        else:
-                            _status_contato_bloco = (
-                                f"[STATUS DO CONTATO]\n"
-                                f"- Este contato NAO consta como aluno em nenhuma unidade.\n"
-                                f"- Trate como prospect: descubra interesse, ofereca aula experimental, "
-                                f"apresente planos."
-                            )
-            except Exception as _e_lbl:
-                logger.debug(f"[STATUS CONTATO] falhou ao ler labels: {_e_lbl}")
-
             # --- CONSTRUÇÃO MODULAR DO PROMPT ---
             blocos_prompt = []
-            if _status_contato_bloco:
-                blocos_prompt.append(_status_contato_bloco)
-
-            # [FIX-K] CONTEXTO TEMPORAL — SEMPRE no topo. LLM e PESSIMO em calendar.
-            # Agora calculamos hoje/amanha/proximos 7 dias em PT-BR no servidor e injetamos.
-            _DIAS_PT_FK = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
-                           "sexta-feira", "sábado", "domingo"]
-            _MESES_PT_FK = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
-                            "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
-            _agora_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
-            _proximos_7 = []
-            for _i in range(7):
-                _d = _agora_sp + timedelta(days=_i)
-                _label = "HOJE" if _i == 0 else ("AMANHA" if _i == 1 else f"+{_i}d")
-                _proximos_7.append(
-                    f"  {_label:6s} = {_DIAS_PT_FK[_d.weekday()]}, {_d.day:02d}/{_d.month:02d}/{_d.year}"
-                )
-            _bloco_temporal = (
-                "[CONTEXTO TEMPORAL — DADOS REAIS DO SERVIDOR]\n"
-                f"- Agora: {_DIAS_PT_FK[_agora_sp.weekday()]}, {_agora_sp.day} de {_MESES_PT_FK[_agora_sp.month-1]} de {_agora_sp.year}, "
-                f"{_agora_sp.hour:02d}h{_agora_sp.minute:02d} (horário de São Paulo).\n"
-                "- Próximos 7 dias (use SEMPRE estes valores, NUNCA calcule sozinho):\n"
-                + "\n".join(_proximos_7) + "\n"
-                "- Quando o cliente disser 'amanhã', 'segunda', 'sexta que vem' etc, "
-                "use a data REAL desta tabela. NUNCA invente dia da semana — você sempre erra. "
-                "Quando mostrar uma data ao cliente, use o formato 'sexta-feira, 1 de maio às 09h00'."
-            )
-            blocos_prompt.append(_bloco_temporal)
 
             # 1. Cabeçalho de Regras e Idioma
             t_idioma = pers.get('idioma') or 'Português do Brasil'
@@ -1732,8 +1485,7 @@ Convênios: {convenios_prompt}
 - Idioma obrigatório: {t_idioma}.
 - NUNCA use inglês ou outros idiomas.
 - NUNCA mostre tags internas, avisos de sistema ou colunas técnicas.
-- NUNCA se apresente como IA ou robô.
-- DATA/HORA: use SEMPRE o bloco [CONTEXTO TEMPORAL] acima. NUNCA chute weekday.""")
+- NUNCA se apresente como IA ou robô.""")
 
             # 2. Identidade
             blocos_prompt.append(f"""[IDENTIDADE]
@@ -1751,35 +1503,6 @@ Convênios: {convenios_prompt}
 
             if tom_voz:
                 blocos_prompt.append(f"[TOM DE VOZ]\n{tom_voz}")
-
-            # [FIX-EMOJI] Controles de resposta: usar_emoji + comprimento_resposta
-            # Usa emoji_tipo da Personalidade (campo Branding) quando usar_emoji=True
-            _ue = pers.get('usar_emoji')
-            _compr = (pers.get('comprimento_resposta') or 'normal').lower()
-            _compr_map = {
-                'concisa': 'Respostas CURTAS e diretas (1-2 paragrafos pequenos, sem rodeios).',
-                'normal': 'Respostas com tamanho equilibrado (2-4 paragrafos curtos).',
-                'detalhada': 'Respostas DETALHADAS quando a pergunta exigir, mas ainda assim concisas e bem estruturadas.'
-            }
-            if _ue is True:
-                _emoji_tipo_pers = (pers.get('emoji_tipo') or '').strip()
-                _emoji_cor_pers = (pers.get('emoji_cor') or '').strip()
-                if _emoji_tipo_pers:
-                    _emoji_regra = (
-                        f"Use EMOJIS nas respostas (com moderacao, max 1-2 por mensagem). "
-                        f"Use PREFERENCIALMENTE estes emojis configurados pela marca: {_emoji_tipo_pers}. "
-                        f"Pode variar entre eles ou usar outros que combinem com o tom."
-                    )
-                    if _emoji_cor_pers:
-                        _emoji_regra += f" Paleta visual: {_emoji_cor_pers} (priorize emojis com essa vibe de cor)."
-                else:
-                    _emoji_regra = "Pode usar emojis com moderacao para humanizar (max 1-2 por mensagem)."
-            else:
-                # Default = SEM emoji se Personalidade nao ativou explicitamente
-                _emoji_regra = "PROIBIDO usar QUALQUER emoji nas respostas. Texto puro sem emojis."
-            _compr_regra = _compr_map.get(_compr, _compr_map['normal'])
-            blocos_prompt.append(f"[CONTROLES DE RESPOSTA]\n- {_compr_regra}\n- {_emoji_regra}")
-
             if estilo:
                 blocos_prompt.append(f"[ESTILO DE COMUNICAÇÃO]\n{estilo}")
 
@@ -1803,11 +1526,11 @@ Você é um VENDEDOR, não um robô de FAQ. Siga este fluxo SEMPRE:
 1. Responda a pergunta do cliente de forma direta e curta.
 2. Depois da resposta, faça UMA pergunta de descoberta que avance a conversa.
 
-Exemplos (formato — use os DADOS REAIS da unidade, nunca invente valores):
-• Cliente: "Tem diária?" → consulte se a unidade tem diaria_disponivel. Se sim: "Temos! A diária custa R$ X. Você pretende treinar só hoje ou está pensando em começar academia?". Se nao: "Essa unidade nao trabalha com diaria. Mas tenho otimos planos pra te mostrar! Qual seu objetivo?"
-• Cliente: "Qual o horário?" → use os horários REAIS da unidade. Pergunte "Você já treina ou está começando agora?"
-• Cliente: "Quanto custa?" → use planos REAIS configurados. Pergunte "Qual seu objetivo principal?"
-• Cliente: "Quero começar" → "Que demais, parabens pela decisao! Qual unidade fica mais perto de você?"
+Exemplos:
+• Cliente: "Tem diária?" → "Temos sim! A diária custa R$40 💪 Você pretende treinar só hoje ou está pensando em começar academia?"
+• Cliente: "Qual o horário?" → "Nosso horário é seg-sex 06h às 23h 😊 Você já treina ou está começando agora?"
+• Cliente: "Quanto custa?" → "Temos planos a partir de R$X! Qual seu objetivo principal — musculação, cardio, ou os dois?"
+• Cliente: "Quero começar" → "Que demais, parabéns pela decisão! 💪 Qual unidade fica mais perto de você? Posso te mostrar os planos e horários!"
 
 REGRAS:
 - Resposta + pergunta na MESMA mensagem, SEMPRE.
@@ -1883,38 +1606,14 @@ REGRAS:
             e_tipo = pers.get('emoji_tipo') or "✨"
             e_cor = pers.get('emoji_cor') or "#00d2ff"
             
-            blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP — REGRAS RIGOROSAS]
-- USE SEMPRE *texto* (asterisco simples) para destacar nomes de planos, valores, palavras-chave.
-- NUNCA use **texto** (asterisco duplo / markdown).
-- NUNCA use ## headers, ``` code blocks, ou tags HTML.
-- Para LISTAS: cada item em uma LINHA SEPARADA, comecando com bullet •
-  E separe a INTRODUCAO da lista com LINHA EM BRANCO antes dos itens.
-- Entre paragrafos: SEMPRE uma LINHA EM BRANCO (dupla quebra \\n\\n).
-- TERMINAR sempre frases completas (sem reticencias soltas).
-
-
-EXEMPLO de formato (com OU sem emojis dependendo do CONTROLES DE RESPOSTA):
-
-Temos 3 planos disponiveis:
-
-• *SILVER* — Acesso a unidade Ricardo Jafet
-   Fidelidade de 12 meses
-
-• *PLATINUM* — Acesso a toda rede
-   Sem fidelidade
-
-• *RED PREMIUM* — Acesso total
-   Cancelamento automatico apos 30 dias
-
-Qual te interessa mais?
-
-❌ EXEMPLOS ERRADOS (NUNCA FACA):
-   ❌ "SILVER: x. PLATINUM: y. RED PREMIUM: z."  (TUDO grudado em uma linha)
-   ❌ "SILVER\nPLATINUM\nRED PREMIUM"  (quebra simples sem espaco visual entre itens)
-   ❌ "**SILVER**"  (asterisco duplo vira literal)
-   ❌ "## Planos disponiveis"  (markdown header nao funciona)
-
-REGRA DE OURO: prefira RESPIRO visual. Melhor 5 linhas espacadas que 2 linhas grudadas.
+            blocos_prompt.append(f"""[FORMATAÇÃO WHATSAPP]
+- Use *bold* para destaque. Listas com •.
+- Separe blocos com linha em branco.
+- NUNCA use markdown (**, ##, ```).
+- Tamanho ideal: 2-4 parágrafos curtos.
+- TERMINAR sempre frases completas.
+- EMOJI PRINCIPAL DA IA: {e_tipo}. Use-o com frequência.
+- PALETA DE CORES/VIBE: {e_cor}. Priorize emojis e tons que combinem com esta cor.
 {r_format}""")
 
             # 12. Dados finais e Variáveis do Atendimento
@@ -1930,11 +1629,16 @@ REGRA DE OURO: prefira RESPIRO visual. Melhor 5 linhas espacadas que 2 linhas gr
                 if eh_saudacao(primeira_mensagem or "") and not _tem_historico
                 else ""
             )
-            
+
+            contexto_precarregado_bloco = (
+                f"\n[DADOS AO VIVO DO BANCO — USE ESTES PARA RESPONDER]\n{contexto_precarregado}\n"
+                if contexto_precarregado else ""
+            )
+
             blocos_prompt.append(f"""[DADOS DO ATENDIMENTO]
 Estado emocional: {estado_atual}
 REGRA DE NOME: NUNCA assuma o nome do cliente. Use o nome SOMENTE se o próprio cliente já informou no histórico da conversa. Se ainda não sabe o nome, pergunte de forma natural (ex: "E qual seu nome?" ou "Com quem eu falo?"). Depois que souber, use o primeiro nome do cliente nas mensagens seguintes.
-{contexto_precarregado}{ctx_saudacao}
+{contexto_precarregado_bloco}{ctx_saudacao}
 
 [MENSAGENS DO CLIENTE]
 {mensagens_formatadas}
@@ -1949,11 +1653,6 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                     logger.info(f"🧪 A/B Test '{_ab_info['nome']}' variante={_ab_info['variante']} conv={conversation_id}")
             except Exception as _ab_err:
                 logger.debug(f"A/B test lookup falhou (não crítico): {_ab_err}")
-
-            # [AGEND-02] Bloco de agendamento — so injeta se ativo na personalidade
-            _bloco_agend = construir_bloco_prompt_agendamento(pers)
-            if _bloco_agend:
-                blocos_prompt.append(_bloco_agend)
 
             prompt_sistema = truncar_contexto(blocos_prompt, max_tokens=12000)
 
@@ -2002,11 +1701,9 @@ RESPONDA com a mensagem diretamente — texto puro.""")
 
             # ── Guard de cota do provedor LLM (cooldown) ─────────────────────
             llm_provider_pause_key = f"llm:provider_pause:{empresa_id}"
-            _ue_fb = bool(pers.get("usar_emoji"))
             if await redis_client.get(llm_provider_pause_key) == "1":
-                _e_pause = " 😕" if _ue_fb else ""
                 resposta_texto = (
-                    f"Agora estamos com alto volume no atendimento automático{_e_pause}\n\n"
+                    "Agora estamos com alto volume no atendimento automático 😕\n\n"
                     "Se quiser, me manda sua dúvida em uma frase curta que priorizo aqui pra você."
                 )
                 novo_estado = estado_atual
@@ -2023,19 +1720,16 @@ RESPONDA com a mensagem diretamente — texto puro.""")
             if not goto_send and not _cb_allowed:
                 logger.warning(f"🔴 CircuitBreaker OPEN — usando resposta padrão para conv {conversation_id}")
                 # Resposta de fallback quando LLM está indisponível
-                _e_ola = " 😊" if _ue_fb else ""
-                _e_atend = " 💪" if _ue_fb else ""
                 resposta_texto = (
-                    f"Olá!{_e_ola} Estou com uma lentidão no momento.\n\n"
-                    f"Pode me repetir sua dúvida em instantes? Já vou te atender!{_e_atend}"
+                    "Olá! 😊 Estou com uma lentidão no momento.\n\n"
+                    "Pode me repetir sua dúvida em instantes? Já vou te atender! 💪"
                 )
                 novo_estado = estado_atual
                 # Pula o bloco IA e vai direto para envio
                 goto_send = True
             if not goto_send:
                 if not cliente_ia:
-                    _e_ia = " 😊" if _ue_fb else ""
-                    resposta_texto = f"Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes?{_e_ia}"
+                    resposta_texto = "Estou temporariamente sem conexão com a IA. Pode tentar novamente em instantes? 😊"
                     novo_estado = estado_atual
                     goto_send = True
 
@@ -2063,31 +1757,16 @@ RESPONDA com a mensagem diretamente — texto puro.""")
                 _link_tour = unidade.get("link_tour_virtual")
                 if _link_tour:
                     _oferecer_tour_ativo = pers.get("oferecer_tour", True)
-                    _estrategia_tour = (pers.get("estrategia_tour") or "smart").lower()
-                    _tour_1a_visita = pers.get("tour_perguntar_primeira_visita", True)
-                    _tour_msg_custom = (pers.get("tour_mensagem_custom") or "").strip()
                     _tipo_cli = detectar_tipo_cliente(primeira_mensagem or "")
                     _eh_lead = _tipo_cli is None  # None = lead (não aluno, não gympass)
 
-                    # estrategia_tour controla quando o tour e oferecido:
-                    #   "always"  -> sempre que houver link, mesmo pra alunos atuais
-                    #   "smart"   -> apenas leads (default — comportamento original)
-                    #   "passive" -> apenas se o cliente perguntar (modo passivo)
-                    _modo_proativo = False
-                    if _oferecer_tour_ativo:
-                        if _estrategia_tour == "always":
-                            _modo_proativo = True
-                        elif _estrategia_tour == "smart" and _eh_lead:
-                            _modo_proativo = True
-                        # passive nunca e proativo
-
-                    if _modo_proativo:
+                    if _oferecer_tour_ativo and _eh_lead:
                         # MODO PROATIVO: IA oferece tour ativamente para leads
                         prompt_sistema += f"""
 [TOUR VIRTUAL — MODO PROATIVO]
 Esta unidade possui um vídeo de Tour Virtual disponível.
 
-VOCÊ DEVE oferecer proativamente o tour virtual ao cliente.{(' Este cliente e um LEAD.' if _eh_lead else '')}{(' Use ESTA mensagem custom (e nao a generica): ' + _tour_msg_custom) if _tour_msg_custom else ''}{(' Pergunte SEMPRE na primeira visita.' if _tour_1a_visita else '')}
+VOCÊ DEVE oferecer proativamente o tour virtual ao cliente. Este cliente é um LEAD (potencial novo aluno).
 
 ESTRATÉGIA DE OFERECIMENTO:
 1. Se o cliente demonstrar QUALQUER sinal de interesse em conhecer, visitar ou saber mais sobre a unidade, ofereça o tour IMEDIATAMENTE.
@@ -2141,57 +1820,6 @@ Sempre ofereça ANTES de enviar — não envie sem perguntar. Quando o lead acei
                         resposta_bruta = response.choices[0].message.content
                         if resposta_bruta:
                             logger.info(f"✅ LLM: Resposta recebida ({len(resposta_bruta)} chars). Final: '{resposta_bruta[-20:]}'")
-
-                        # ═══ [AGEND-02] Loop de TOOL CALL ═══
-                        # Se a IA respondeu com <TOOL>...</TOOL>, executa e re-chama o LLM
-                        # com o resultado como mensagem do "system" intermediario.
-                        # Max 3 iteracoes pra evitar loop infinito.
-                        if pers.get("agendamento_experimental_ativo"):
-                            _tool_iters = 0
-                            _msgs_tool = [
-                                {"role": "system", "content": prompt_sistema},
-                                {"role": "user", "content": user_content},
-                            ]
-                            while _tool_iters < 3:
-                                _tool_call = detectar_tool_call(resposta_bruta or "")
-                                if not _tool_call:
-                                    break
-                                _tool_iters += 1
-                                logger.info(f"🛠️ [AGEND-02] tool_call iter={_tool_iters}: {_tool_call.get('name')} args={_tool_call.get('args')}")
-                                _resultado = await _agend_executar_tool(
-                                    name=_tool_call.get("name", ""),
-                                    args=_tool_call.get("args") or {},
-                                    empresa_id=empresa_id,
-                                    conversation_id=conversation_id,
-                                    contato_fone=contato_fone,
-                                    pers=pers,
-                                    # [FIX-A] usa unidade_id da conversa atual — cada
-                                    # filial usa SUA credencial EVO automaticamente.
-                                    unidade_id=unidade.get("id") if isinstance(unidade, dict) else None,
-                                )
-                                # Incorpora resultado e re-chama LLM
-                                # [FIX-Gemini] role=user em vez de system — Gemini retorna
-                                # content=None se receber system no meio apos assistant.
-                                _msgs_tool.append({"role": "assistant", "content": resposta_bruta})
-                                _msgs_tool.append({
-                                    "role": "user",
-                                    "content": f"[Sistema retornou da ferramenta '{_tool_call.get('name')}']\n{__import__('json').dumps(_resultado, ensure_ascii=False, default=str)}\n\nAgora gere resposta em portugues natural pro cliente (sem usar <TOOL>, sem mencionar 'sistema' ou 'ferramenta'). Se ha 'instrucao_ia', siga ela.",
-                                })
-                                try:
-                                    response = await asyncio.wait_for(
-                                        cliente_ia.chat.completions.create(
-                                            model=modelo_escolhido,
-                                            messages=_msgs_tool,
-                                            temperature=temperature,
-                                            max_tokens=max_tokens,
-                                        ),
-                                        timeout=25,
-                                    )
-                                    resposta_bruta = response.choices[0].message.content
-                                    logger.info(f"🛠️ [AGEND-02] LLM apos tool {_tool_iters}: {len(resposta_bruta or '')} chars")
-                                except Exception as _et:
-                                    logger.warning(f"[AGEND-02] re-chamada LLM apos tool falhou: {_et}")
-                                    break
                         # ── Budget Tracker: captura uso de tokens (fire-and-forget) ──
                         try:
                             _usage = getattr(response, "usage", None)
@@ -2993,18 +2621,13 @@ async def chatwoot_webhook(
                     _saud = f"{_cumpr}, {_primeiro_nome}!" if _primeiro_nome else f"{_cumpr}!"
 
                     _horario_hoje = horario_hoje_formatado(_hor_unid)
-                    _ue_conf = bool(_pers_temp.get('usar_emoji'))
-                    _e_clock = "🕒 " if _ue_conf else ""
-                    _e_pin = "📍 " if _ue_conf else ""
-                    _e_gym = " 🏋️" if _ue_conf else ""
-                    _e_smile = " 😊" if _ue_conf else ""
-                    _linha_horario = f"\n{_e_clock}Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
-                    _linha_end = f"\n{_e_pin}{_end_unid}" if _end_unid else ""
+                    _linha_horario = f"\n🕒 Hoje estamos abertos das {_horario_hoje}" if _horario_hoje else ""
+                    _linha_end = f"\n📍 {_end_unid}" if _end_unid else ""
 
                     _msg_confirmacao = (
-                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}*{_e_gym}"
+                        f"{_saud} Que ótimo, vou te atender pela unidade *{_nome_unid}* 🏋️"
                         f"{_linha_end}{_linha_horario}"
-                        f"\n\nComo posso te ajudar?{_e_smile}"
+                        f"\n\nComo posso te ajudar? 😊"
                     )
                     await enviar_mensagem_chatwoot(
                         account_id, id_conv, _msg_confirmacao, integracao, empresa_id, nome_ia=_nome_ia_temp
@@ -3296,11 +2919,4 @@ async def status_endpoint():
 
 async def health():
     """
-    Health check para plataformas (Render, Railway, Fly.io, etc.).
-    HEAD / e GET / retornam 200 — evita falso 'unhealthy' no dashboard.
-    """
-    return {
-        "status": "ok",
-        "service": "Motor SaaS IA",
-        "version": APP_VERSION
-    }
+    Health check para plataformas (Render, Railway, Fly.io, etc.
