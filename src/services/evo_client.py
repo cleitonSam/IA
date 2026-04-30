@@ -1,8 +1,9 @@
 
 async def _aplicar_filtro_atividades(empresa_id: int, lista: list, filtro_ids: list) -> list:
     """Aplica filtro de atividades em lista de horarios.
-    Tenta traduzir IDs em NOMES via discovery (sempre sem unidade_id pra
-    pegar credencial fallback que tem os IDs originais), depois filtra por nome.
+    [FIX-CROSS-BRANCH] Varre TODAS as integracoes EVO da empresa pra encontrar
+    onde os IDs do filtro existem (cada filial tem IDs diferentes pra mesma
+    atividade). Extrai os NOMES e filtra a lista por nome (cross-filial).
     Se traducao falhar, fallback pro filtro por ID puro."""
     if not filtro_ids:
         return lista
@@ -10,12 +11,34 @@ async def _aplicar_filtro_atividades(empresa_id: int, lista: list, filtro_ids: l
     nomes_permitidos: set = set()
     try:
         from src.utils.text_helpers import normalizar
+        from src.services.db_queries import listar_unidades_ativas
+
+        # [FIX] Tenta primeiro com a credencial padrao (cache hit normal)
         todas_atividades = await listar_activities_evo(empresa_id, unidade_id=None)
+        achados = {a.get("id") for a in todas_atividades if a.get("id") in allow_ids}
         for a in todas_atividades:
             if a.get("id") in allow_ids and a.get("name"):
                 nomes_permitidos.add(normalizar(a["name"]).strip(" ."))
-    except Exception:
-        pass
+
+        # [FIX] Se nao achou TODAS as IDs, varre as outras filiais
+        if achados != allow_ids:
+            unidades = await listar_unidades_ativas(empresa_id)
+            for u in unidades or []:
+                _uid = u.get("id") if isinstance(u, dict) else None
+                if not _uid:
+                    continue
+                try:
+                    acts_unid = await listar_activities_evo(empresa_id, unidade_id=_uid)
+                    for a in acts_unid:
+                        if a.get("id") in allow_ids and a.get("name"):
+                            nomes_permitidos.add(normalizar(a["name"]).strip(" ."))
+                            achados.add(a.get("id"))
+                    if achados == allow_ids:
+                        break  # ja achou todos
+                except Exception:
+                    continue
+    except Exception as _e:
+        logger.debug(f"[_aplicar_filtro_atividades] discovery falhou: {_e}")
 
     if nomes_permitidos:
         from src.utils.text_helpers import normalizar
@@ -1423,7 +1446,7 @@ async def agendar_aula_experimental_evo(
     except Exception:
         pass
     _excluido = (
-        "horario da atividade exclu" in _texto_total  # "excluído" / "excluido"
+        "horario da atividade exclu" in _texto_total
         or "horário da atividade exclu" in _texto_total
         or "atividade exclu" in _texto_total
     )
