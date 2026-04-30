@@ -37,6 +37,13 @@ interface Unit {
   palavras_chave?: string[];
   foto_grade?: string;
   link_tour_virtual?: string;
+  // [PROMO-01]
+  promo_ativa?: boolean;
+  promo_nome?: string;
+  promo_chamada?: string;
+  promo_emoji?: string;
+  promo_cor?: string;
+  promo_validade_fim?: string | null;
 }
 
 type TabType = "identity" | "location" | "contact" | "operation" | "extra" | "promo";
@@ -433,11 +440,22 @@ export default function UnitsPage() {
                       <h3 className="text-xl font-black group-hover:text-[#00d2ff] transition-colors uppercase tracking-tight leading-tight mb-1">
                         {unit.nome}
                       </h3>
-                      <div className="flex items-center gap-2 mb-5">
+                      <div className="flex items-center gap-2 mb-5 flex-wrap">
                         <span className="w-1.5 h-1.5 rounded-full bg-[#00d2ff] shadow-[0_0_6px_#00d2ff]" />
                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.25em]">
                           {unit.nome_abreviado || "Unidade"}
                         </p>
+                        {/* [PROMO-01] Badge de promo ativa */}
+                        {unit.promo_ativa && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-white shadow-[0_0_10px_rgba(255,51,102,0.35)]"
+                            style={{ backgroundColor: unit.promo_cor || "#ff3366" }}
+                            title={unit.promo_chamada || ""}
+                          >
+                            <span className="text-xs leading-none">{unit.promo_emoji || "🔥"}</span>
+                            {unit.promo_nome || "Promo"}
+                          </span>
+                        )}
                       </div>
 
                       <div className="space-y-3 pt-5 border-t border-white/5">
@@ -1078,6 +1096,7 @@ export default function UnitsPage() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   form="unitForm"
+                  type="submit"
                   type="submit"
                   disabled={saving || loadingUnit}
                   className="bg-[#00d2ff] text-black px-12 py-4 rounded-2xl font-black uppercase tracking-widest text-sm flex items-center gap-3 transition-all shadow-[0_0_25px_rgba(0,210,255,0.25)] disabled:opacity-50"

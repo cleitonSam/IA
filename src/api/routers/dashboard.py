@@ -130,17 +130,37 @@ async def get_unidades(
             )
             total = total_row["total"] if total_row else 0
 
-            unidades = await _database.db_pool.fetch(
-                """
-                SELECT id, nome, slug, nome_abreviado, cidade, bairro, estado,
-                       whatsapp, instagram, convenios
-                FROM unidades
-                WHERE empresa_id = $1 AND ativa = true
-                ORDER BY nome
-                LIMIT $2 OFFSET $3
-                """,
-                empresa_id, limit, offset
-            )
+            # [PROMO-01] Inclui campos de promo na listagem (com fallback se migration pendente)
+            try:
+                unidades = await _database.db_pool.fetch(
+                    """
+                    SELECT id, nome, slug, nome_abreviado, cidade, bairro, estado,
+                           whatsapp, instagram, convenios,
+                           COALESCE(promo_ativa, false) AS promo_ativa,
+                           promo_nome, promo_chamada,
+                           COALESCE(promo_emoji, '🔥') AS promo_emoji,
+                           COALESCE(promo_cor, '#ff3366') AS promo_cor,
+                           promo_validade_fim
+                    FROM unidades
+                    WHERE empresa_id = $1 AND ativa = true
+                    ORDER BY nome
+                    LIMIT $2 OFFSET $3
+                    """,
+                    empresa_id, limit, offset
+                )
+            except Exception as _e:
+                logger.warning(f"[GET /unidades] Fallback (migration promo pendente?): {_e}")
+                unidades = await _database.db_pool.fetch(
+                    """
+                    SELECT id, nome, slug, nome_abreviado, cidade, bairro, estado,
+                           whatsapp, instagram, convenios
+                    FROM unidades
+                    WHERE empresa_id = $1 AND ativa = true
+                    ORDER BY nome
+                    LIMIT $2 OFFSET $3
+                    """,
+                    empresa_id, limit, offset
+                )
             data = [{
                 "id": u["id"],
                 "nome": u["nome"],
@@ -152,6 +172,12 @@ async def get_unidades(
                 "whatsapp": u.get("whatsapp"),
                 "instagram": u.get("instagram"),
                 "convenios": (json.loads(u["convenios"]) if isinstance(u.get("convenios"), str) else (u.get("convenios") or {})),
+                "promo_ativa": bool(u.get("promo_ativa") or False),
+                "promo_nome": u.get("promo_nome"),
+                "promo_chamada": u.get("promo_chamada"),
+                "promo_emoji": u.get("promo_emoji") or "🔥",
+                "promo_cor": u.get("promo_cor") or "#ff3366",
+                "promo_validade_fim": str(u.get("promo_validade_fim")) if u.get("promo_validade_fim") else None,
             } for u in unidades]
 
         import math
