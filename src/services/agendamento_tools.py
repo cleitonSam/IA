@@ -135,7 +135,8 @@ def _fmt_horarios_para_ia(horarios: list, max_itens: int = 8) -> Dict[str, Any]:
                 "id_activity_session": h.get("idActivitySession"),
                 "id_activity": h.get("idActivity"),
                 "nome_aula": h.get("name"),
-                "instrutor": h.get("instructor"),
+                # [PROFESSOR-OFF] instrutor REMOVIDO do payload — cliente nao precisa saber.
+                # A IA nao tera o dado e nao mostrara na resposta.
                 "data": h.get("activityDate"),  # ISO date (so YYYY-MM-DD)
                 "start_time": h.get("startTime"),  # "HH:MM" — usado para montar datetime
                 "end_time": h.get("endTime"),
@@ -643,4 +644,18 @@ REGRAS IMPORTANTES:
 - Se faltar dado, peca de forma natural (uma coisa por vez).
 - Se o sistema retornar 'lista_expirou' ou 'sessao_excluida', NAO mostre numeros antigos —
   chame consultar_horarios de novo e ofereca a nova lista.
-- Se o sistema retornar erro, peca desculpas e sugira tentar outro horario."""
+- Se o sistema retornar erro, peca desculpas e sugira tentar outro horario.
+
+[FORMATO OBRIGATORIO DA LISTA DE HORARIOS — NAO QUEBRE ESTA REGRA]
+Quando mostrar a lista de horarios pro cliente, o formato eh APENAS:
+   • <data_formatada_ptbr> — <nome_aula>
+Exemplo correto:
+   • quinta-feira, 30 de abril às 18h00 — Funcional
+   • quinta-feira, 30 de abril às 19h00 — Mat Pilates
+
+NUNCA INCLUA:
+- Nome do professor / instrutor (mesmo se aparecer em algum dado, IGNORE)
+- Capacidade ou vagas livres
+- Codigos internos (id_activity, id_session, etc)
+
+Mostre SEMPRE com numeracao (1, 2, 3...) pra cliente escolher por numero."""
