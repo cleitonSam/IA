@@ -47,6 +47,7 @@ from src.utils.time_helpers import (
     saudacao_por_horario, horario_hoje_formatado, formatar_horarios_funcionamento,
     esta_aberta_agora, ia_esta_no_horario
 )
+from src.utils.feriados import status_feriado_para_prompt
 from src.services.llm_service import cliente_ia, cliente_whisper, is_provider_unavailable_error, is_openrouter_auth_error
 
 from src.services.db_queries import (
@@ -1411,6 +1412,13 @@ async def processar_ia_e_responder(
             else:
                 convenios_prompt = ", ".join(normalizar_lista_campo(convenios_raw)) or "não informado"
 
+            # [FERIADOS-01] Verifica feriado da unidade (estado + cidade)
+            _bloco_feriado = status_feriado_para_prompt(
+                estado=unidade.get("estado") or None,
+                cidade=unidade.get("cidade") or None,
+                horario_feriado=unidade.get("horario_feriado") or None,
+            )
+
             dados_unidade = f"""
 DADOS COMPLETOS DA UNIDADE
 Nome: {unidade.get('nome') or 'não informado'}
@@ -1419,7 +1427,7 @@ Endereço: {end_banco or 'não informado'}
 Cidade/Estado: {unidade.get('cidade') or 'não informado'} / {unidade.get('estado') or 'não informado'}
 Telefone: {tel_banco or 'não informado'}
 Status atual: {_status_agora}
-Horários:
+{_bloco_feriado + chr(10) if _bloco_feriado else ""}Horários:
 {horarios_str}
 Planos (com links de matricula):
 {planos_detalhados}
