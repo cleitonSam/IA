@@ -1310,6 +1310,8 @@ async def processar_ia_e_responder(
             faq = await carregar_faq_unidade(slug, empresa_id) or ""
             logger.info(f"🧠 BotCore: FAQ carregado, montando prompt para conv {conversation_id}")
             historico = await bd_obter_historico_local(conversation_id, empresa_id, limit=12) or "Sem histórico."
+            # [FIX-GREET] Define cedo para condicionar bloco de saudação
+            _tem_historico = historico and historico != "Sem histórico."
 
             todas_unidades = await listar_unidades_ativas(empresa_id)
             lista_unidades_nomes = ", ".join([u["nome"] for u in todas_unidades])
@@ -1507,7 +1509,9 @@ Convênios: {convenios_prompt}
                 blocos_prompt.append(f"[ESTILO DE COMUNICAÇÃO]\n{estilo}")
 
             # 4. Saudação e Instruções Base
-            if saudacao:
+            # [FIX-GREET] Saudação só vai no prompt quando NÃO há histórico (primeira mensagem).
+            # Com histórico, o LLM não precisa e acaba gerando "Oi, {nome}!" toda hora → mensagem dupla.
+            if saudacao and not _tem_historico:
                 blocos_prompt.append(f"[SAUDAÇÃO PADRÃO]\n{saudacao}")
             if instrucoes_base:
                 blocos_prompt.append(f"[INSTRUÇÕES BASE]\n{instrucoes_base}")
@@ -1623,11 +1627,15 @@ REGRAS:
             # ctx_saudacao: só força modo-saudação se NÃO há histórico anterior.
             # Se já existe histórico, o cliente pode estar dizendo "oi" no meio de uma
             # conversa em andamento — o LLM deve continuar o contexto normalmente.
-            _tem_historico = historico and historico != "Sem histórico."
+            # [FIX-GREET] _tem_historico já definido acima (logo após carregar historico).
             ctx_saudacao = (
-                f"[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]"
+                "[SISTEMA: O cliente enviou APENAS UMA SAUDAÇÃO SOCIAL. Responda SOMENTE saudação e pergunte como ajudar.]"
                 if eh_saudacao(primeira_mensagem or "") and not _tem_historico
-                else ""
+                else (
+                    "[SISTEMA: Conversa em andamento. NÃO inicie sua resposta com saudação ou cumprimento. "
+                    "Responda diretamente ao que o cliente perguntou.]"
+                    if _tem_historico else ""
+                )
             )
 
             contexto_precarregado_bloco = (
@@ -2897,26 +2905,4 @@ async def status_endpoint():
     """Retorna status detalhado dos serviços."""
     redis_ok = False
     db_ok = False
-    try:
-        await redis_client.ping()
-        redis_ok = True
-    except Exception:
-        pass
-    try:
-        if _database.db_pool:
-            await _database.db_pool.fetchval("SELECT 1")
-            db_ok = True
-    except Exception:
-        pass
-    return {
-        "status": "online",
-        "redis": "✅ conectado" if redis_ok else "❌ offline",
-        "postgres": "✅ conectado" if db_ok else "❌ offline",
-        "prometheus": "✅ ativo" if PROMETHEUS_OK else "⚠️ não instalado",
-        "versao": APP_VERSION,
-    }
-
-
-async def health():
-    """
-    Health check para plataformas (Render, Railway, Fly.io, etc.
+    tr
