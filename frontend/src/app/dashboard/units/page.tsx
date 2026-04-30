@@ -557,7 +557,7 @@ export default function UnitsPage() {
                 <TabBtn id="contact" label="Digital" icon={Globe} activeTab={activeTab} setActiveTab={setActiveTab} />
                 <TabBtn id="operation" label="Operação" icon={Clock} activeTab={activeTab} setActiveTab={setActiveTab} />
                 <TabBtn id="extra" label="Dados Ricos" icon={ListChecks} activeTab={activeTab} setActiveTab={setActiveTab} />
-                <TabBtn id="promo" label="🔥 Promoção" icon={Sparkles} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="promo" label="Promo" icon={Sparkles} activeTab={activeTab} setActiveTab={setActiveTab} />
               </div>
 
               {/* Modal Body */}
@@ -702,7 +702,7 @@ export default function UnitsPage() {
                                   <input type="file" className="hidden" accept="image/*" onChange={e => handleFileUpload(e, "foto_grade")} disabled={!!uploadingField} />
                                 </label>
                               </div>
-                              
+
                               {formData.foto_grade && (
                                 <div className="flex flex-col items-center gap-3">
                                   <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
@@ -779,7 +779,7 @@ export default function UnitsPage() {
                                   <input type="file" className="hidden" accept="video/*" onChange={e => handleFileUpload(e, "link_tour_virtual")} disabled={!!uploadingField} />
                                 </label>
                               </div>
-                              
+
                               {formData.link_tour_virtual && (
                                 <div className="w-44 h-44 rounded-[2rem] overflow-hidden border border-[#00d2ff]/20 bg-slate-900 relative group/preview">
                                   <div className="w-full h-full flex items-center justify-center bg-black/40">
@@ -889,24 +889,24 @@ export default function UnitsPage() {
                       </div>
                     )}
 
-                    {/* TAB: PROMO 🔥 */}
+                    {/* TAB: PROMO */}
                     {activeTab === "promo" && (
-                      <div className="space-y-8">
-                        {/* Header explicativo */}
-                        <div className="flex items-start gap-4 p-5 rounded-2xl bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/20">
-                          <div className="text-3xl">{formData.promo_emoji || "🔥"}</div>
-                          <div className="flex-1">
-                            <h3 className="text-base font-bold text-white">Promoção da Unidade</h3>
-                            <p className="text-xs text-slate-400 mt-1">
-                              Quando ativa, a IA usa essa promo estrategicamente nas conversas — apresenta o desconto, cria urgência pela validade, destaca o brinde como diferencial.
-                            </p>
+                      <div className="space-y-6">
+                        {/* Toggle ativo */}
+                        <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/40 border border-white/5">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="text-2xl flex-shrink-0">{formData.promo_emoji || "🔥"}</span>
+                            <div className="min-w-0">
+                              <div className="text-sm font-bold text-white">Promoção ativa</div>
+                              <div className="text-[11px] text-slate-500 mt-0.5">A IA usa estrategicamente no chat — desconto, urgência, brinde</div>
+                            </div>
                           </div>
                           <button
                             type="button"
                             onClick={() => setFormData((p: any) => ({ ...p, promo_ativa: !p.promo_ativa }))}
-                            className={`relative w-14 h-7 rounded-full transition-all flex-shrink-0 ${formData.promo_ativa ? "bg-emerald-500" : "bg-slate-700"}`}
+                            className={`relative w-12 h-6 rounded-full transition-all flex-shrink-0 ${formData.promo_ativa ? "bg-emerald-500" : "bg-slate-700"}`}
                           >
-                            <div className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-all ${formData.promo_ativa ? "left-8" : "left-1"}`} />
+                            <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${formData.promo_ativa ? "left-6" : "left-0.5"}`} />
                           </button>
                         </div>
 
