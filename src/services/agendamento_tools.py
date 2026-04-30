@@ -102,16 +102,30 @@ _MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
 
 def _formatar_data_ptbr(activity_date: str, start_time: str = "") -> str:
     """Converte '2026-05-03T00:00:00' + '08:00' em 'domingo, 3 de maio às 08h00'.
-    [FIX-J] Calcula dia-da-semana CORRETO (LLM erra calendar) — IA so copia."""
+    [FIX-J] Calcula dia-da-semana CORRETO (LLM erra calendar) — IA so copia.
+    [DATA-NATURAL] Se for hoje/amanha, troca pelo termo natural ('hoje às 08h00')."""
     try:
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, date as _date, timedelta as _td
         _data_iso = str(activity_date or "")[:10]
         if not _data_iso or len(_data_iso) < 10:
             return ""
         dt = _dt.fromisoformat(_data_iso)
-        dia_semana = _DIAS_PT[dt.weekday()]  # 0=segunda...6=domingo
-        mes_nome = _MESES_PT[dt.month - 1]
-        base = f"{dia_semana}, {dt.day} de {mes_nome}"
+        hoje = _date.today()
+        amanha = hoje + _td(days=1)
+        depois = hoje + _td(days=2)
+
+        if dt.date() == hoje:
+            base = "hoje"
+        elif dt.date() == amanha:
+            base = "amanhã"
+        elif dt.date() == depois:
+            # "depois de amanha (sabado)" — ainda da utilidade do dia da semana
+            base = f"depois de amanhã ({_DIAS_PT[dt.weekday()]})"
+        else:
+            dia_semana = _DIAS_PT[dt.weekday()]  # 0=segunda...6=domingo
+            mes_nome = _MESES_PT[dt.month - 1]
+            base = f"{dia_semana}, {dt.day} de {mes_nome}"
+
         if start_time:
             hh = str(start_time)[:5].replace(":", "h")
             base += f" às {hh}"
@@ -644,14 +658,14 @@ REGRAS IMPORTANTES:
 - Se faltar dado, peca de forma natural (uma coisa por vez).
 - Se o sistema retornar 'lista_expirou' ou 'sessao_excluida', NAO mostre numeros antigos —
   chame consultar_horarios de novo e ofereca a nova lista.
-- Se o sistema retornar erro, peca desculpas e sugira tentar outro horario.
 
 [FORMATO OBRIGATORIO DA LISTA DE HORARIOS — NAO QUEBRE ESTA REGRA]
 Quando mostrar a lista de horarios pro cliente, o formato eh APENAS:
    • <data_formatada_ptbr> — <nome_aula>
 Exemplo correto:
+   • hoje às 18h00 — Funcional
+   • amanhã às 09h00 — Mat Pilates
    • quinta-feira, 30 de abril às 18h00 — Funcional
-   • quinta-feira, 30 de abril às 19h00 — Mat Pilates
 
 NUNCA INCLUA:
 - Nome do professor / instrutor (mesmo se aparecer em algum dado, IGNORE)
