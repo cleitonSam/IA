@@ -106,8 +106,8 @@ def formatar_horarios_funcionamento(horarios: Any) -> str:
 def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
     """
     Analisa o horário de funcionamento e retorna (aberta_agora, horario_hoje).
-    Suporta string multi-linha "Seg-Sex: 06:00–23:00\nSáb: 09:00–17:00\nDom: 09:00–13:00"
-    e dict com chaves por dia.
+    Suporta string multi-linha "Seg-Sex: 06:00-23:00\nSab: 09:00-17:00\nDom: 09:00-13:00"
+    e dict com chaves por dia. Também suporta formato "06h às 23h" (sem HH:MM).
     Retorna (None, None) se não conseguir determinar.
     """
     if not horarios:
@@ -144,11 +144,17 @@ def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
         except (json.JSONDecodeError, ValueError):
             for linha in horarios.strip().split('\n'):
                 linha = linha.strip()
-                if ':' not in linha:
+                if not linha:
                     continue
-                partes = linha.split(':', 1)
-                if _dia_na_linha(partes[0].strip()):
-                    horario_hoje = partes[1].strip()
+                # Suporta "Seg-Sex: 06:00-23:00" (com ':') e "06h as 23h" (sem ':')
+                if ':' in linha:
+                    partes = linha.split(':', 1)
+                    if _dia_na_linha(partes[0].strip()):
+                        horario_hoje = partes[1].strip()
+                        break
+                else:
+                    # Linha sem separador de dia — trata como horário único (string simples)
+                    horario_hoje = linha
                     break
 
     if isinstance(horarios, dict):
@@ -158,9 +164,15 @@ def esta_aberta_agora(horarios: Any) -> Tuple[Optional[bool], Optional[str]]:
         return None, None
 
     # Extrai os dois primeiros horários: abertura e fechamento
+    # Suporta "HH:MM" e "NNh" (ex: "06h às 23h", "8h-18h")
     times = re.findall(r'(\d{1,2}):(\d{2})', horario_hoje)
     if len(times) < 2:
-        return None, horario_hoje
+        # Tenta formato "NNh" (ex: "06h às 23h", "6h-23h")
+        horas_h = re.findall(r'\b(\d{1,2})h\b', horario_hoje)
+        if len(horas_h) >= 2:
+            times = [(h, '00') for h in horas_h[:2]]
+        else:
+            return None, horario_hoje
 
     try:
         abertura = dtime(int(times[0][0]), int(times[0][1]))
@@ -231,8 +243,7 @@ def ia_esta_no_horario(config: Any) -> bool:
                 esta_no_periodo = t_ini <= hora_atual <= dtime(23, 59, 59)
             else:
                 t_fim = dtime(h_fim, m_fim)
-                # Período só é válido quando fim > inicio.
-                # Se inicio >= fim o período é ignorado (ex: 23:50-18:00).
+                # Periodo so e valido quando fim > inicio (ex: 23:50-18:00 seria invalido).
                 if t_ini >= t_fim:
                     logger.info(f"🕒 [Horário IA] Período inválido ignorado: {periodo['inicio']} >= {periodo['fim']}")
                     continue
