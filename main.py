@@ -5519,6 +5519,66 @@ Seu nome é {nome_ia}. Você é atendente da academia {nome_empresa}.
                 except Exception as _ev:
                     logger.debug(f"[VOUCHERS] erro injetar bloco: {_ev}")
 
+            # ── [PROMO-01] Promocao ATIVA da unidade — IA usa estrategicamente
+            try:
+                if unidade.get("promo_ativa"):
+                    from datetime import date as _dt_date
+                    _hoje = _dt_date.today()
+                    _ini = unidade.get("promo_validade_inicio")
+                    _fim = unidade.get("promo_validade_fim")
+                    # Se for date object usa direto; se string ISO converte
+                    def _as_date(v):
+                        if v is None: return None
+                        if isinstance(v, _dt_date): return v
+                        try: return _dt_date.fromisoformat(str(v)[:10])
+                        except (ValueError, TypeError): return None
+                    _ini_d = _as_date(_ini)
+                    _fim_d = _as_date(_fim)
+                    _vale_hoje = True
+                    if _ini_d and _hoje < _ini_d:
+                        _vale_hoje = False
+                    if _fim_d and _hoje > _fim_d:
+                        _vale_hoje = False
+                    if _vale_hoje:
+                        _emoji = unidade.get("promo_emoji") or "🔥"
+                        _nome_p = unidade.get("promo_nome") or "Promoção"
+                        _chamada = unidade.get("promo_chamada") or ""
+                        _desc = unidade.get("promo_desconto")
+                        _desc_tipo = unidade.get("promo_desconto_tipo") or "percentual"
+                        _brinde = unidade.get("promo_brinde") or ""
+                        _obs = unidade.get("promo_observacoes") or ""
+                        _bloco_p = f"\n[{_emoji} PROMOÇÃO ATIVA — {_nome_p}]\n"
+                        if _chamada:
+                            _bloco_p += f"💥 {_chamada}\n"
+                        if _desc:
+                            if _desc_tipo == "percentual":
+                                _bloco_p += f"💰 Desconto: {_desc}% OFF\n"
+                            else:
+                                _bloco_p += f"💰 Desconto: R$ {_desc} OFF\n"
+                        if _brinde:
+                            _bloco_p += f"🎁 Brinde/Bônus: {_brinde}\n"
+                        if _fim_d:
+                            _dias_restam = (_fim_d - _hoje).days
+                            if _dias_restam == 0:
+                                _bloco_p += "⏰ ÚLTIMO DIA da promo!\n"
+                            elif _dias_restam <= 3:
+                                _bloco_p += f"⏰ ACABA em {_dias_restam} dia(s)!\n"
+                            else:
+                                _bloco_p += f"⏰ Válido até {_fim_d.strftime('%d/%m/%Y')}\n"
+                        if _obs:
+                            _bloco_p += f"📝 Observações: {_obs}\n"
+                        _bloco_p += (
+                            "\n[REGRAS DE USO DA PROMO — OBRIGATÓRIAS]\n"
+                            "- Mencione a promoção quando o lead mostrar interesse em planos/valores\n"
+                            "- Se cliente reclamar do valor, traga a promo como solução IMEDIATA\n"
+                            "- Crie URGÊNCIA real usando a validade (especialmente nos últimos dias)\n"
+                            "- O brinde é um diferencial — destaque-o pra fechar\n"
+                            "- NUNCA invente promo. Use APENAS o que está acima\n"
+                        )
+                        prompt_sistema += _bloco_p
+            except Exception as _ep:
+                logger.debug(f"[PROMO-01] erro injetar bloco: {_ep}")
+
             _foto_grade = unidade.get("foto_grade")
             _modalidades_texto = unidade.get("modalidades") or ""
             if _foto_grade or _modalidades_texto:

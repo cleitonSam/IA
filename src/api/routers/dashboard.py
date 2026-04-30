@@ -44,6 +44,20 @@ class CriarUnidadeRequest(BaseModel):
     diaria_disponivel: Optional[bool] = False
     diaria_valor: Optional[float] = None
     diaria_observacao: Optional[str] = None
+    # [PROMO-01] Campos de promocao da unidade — IA usa no prompt
+    promo_ativa: Optional[bool] = False
+    promo_nome: Optional[str] = None             # ex: "Black April"
+    promo_chamada: Optional[str] = None          # ex: "3 meses pelo preco de 1!"
+    promo_desconto: Optional[float] = None       # 60 (numero)
+    promo_desconto_tipo: Optional[str] = "percentual"  # "percentual" | "reais"
+    promo_brinde: Optional[str] = None           # ex: "Camiseta + avaliacao fisica"
+    promo_validade_inicio: Optional[str] = None  # ISO date "2026-04-01"
+    promo_validade_fim: Optional[str] = None     # ISO date "2026-04-30"
+    promo_cor: Optional[str] = "#ff3366"
+    promo_emoji: Optional[str] = "🔥"
+    promo_observacoes: Optional[str] = None      # texto extra livre pra IA
+
+    model_config = {"extra": "ignore"}  # tolera campos extras (id, slug, created_at)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -796,6 +810,40 @@ async def criar_unidade(
             body.foto_grade, body.link_tour_virtual,
             bool(body.diaria_disponivel), body.diaria_valor, body.diaria_observacao
         )
+        # [PROMO-01] Salva campos de promocao em UPDATE separado (resiliente se migration pendente)
+        try:
+            from datetime import date as _d
+            def _pd(s):
+                if s is None or s == "":
+                    return None
+                if isinstance(s, _d):
+                    return s
+                try:
+                    return _d.fromisoformat(str(s)[:10])
+                except (ValueError, TypeError):
+                    return None
+            await _database.db_pool.execute(
+                """
+                UPDATE unidades SET
+                    promo_ativa=$1, promo_nome=$2, promo_chamada=$3, promo_desconto=$4,
+                    promo_desconto_tipo=$5, promo_brinde=$6,
+                    promo_validade_inicio=$7, promo_validade_fim=$8,
+                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11
+                WHERE id=$12 AND empresa_id=$13
+                """,
+                bool(body.promo_ativa) if body.promo_ativa is not None else False,
+                body.promo_nome, body.promo_chamada, body.promo_desconto,
+                body.promo_desconto_tipo or "percentual",
+                body.promo_brinde,
+                _pd(body.promo_validade_inicio), _pd(body.promo_validade_fim),
+                body.promo_cor or "#ff3366",
+                body.promo_emoji or "🔥",
+                body.promo_observacoes,
+                row["id"], empresa_id
+            )
+        except Exception as _pe:
+            logger.warning(f"[PROMO-01] save POST unidade falhou (migration pendente?): {_pe}")
+
         # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada
         from src.services.cache_invalidation import invalidate_unidades
         await invalidate_unidades(empresa_id)
@@ -947,18 +995,43 @@ async def get_unidade(
     if perfil == "admin_master" and not empresa_id:
         empresa_id = await _get_empresa_id_da_unidade(unidade_id)
 
-    row = await _database.db_pool.fetchrow(
-        """
-        SELECT id, nome, nome_abreviado, cidade, bairro, estado,
-               endereco, numero, telefone_principal, whatsapp,
-               site, instagram, link_matricula, slug, ativa,
-               horarios, modalidades, planos, formas_pagamento,
-               convenios, infraestrutura, servicos, palavras_chave, foto_grade, link_tour_virtual
-        FROM unidades
-        WHERE id = $1 AND empresa_id = $2
-        """,
-        unidade_id, empresa_id
-    )
+    # [PROMO-01] Tenta SELECT com campos novos. Se migration nao rodou, fallback.
+    try:
+        row = await _database.db_pool.fetchrow(
+            """
+            SELECT id, nome, nome_abreviado, cidade, bairro, estado,
+                   endereco, numero, telefone_principal, whatsapp,
+                   site, instagram, link_matricula, slug, ativa,
+                   horarios, modalidades, planos, formas_pagamento,
+                   convenios, infraestrutura, servicos, palavras_chave, foto_grade, link_tour_virtual,
+                   diaria_disponivel, diaria_valor, diaria_observacao,
+                   COALESCE(promo_ativa, false) AS promo_ativa,
+                   promo_nome, promo_chamada, promo_desconto,
+                   COALESCE(promo_desconto_tipo, 'percentual') AS promo_desconto_tipo,
+                   promo_brinde, promo_validade_inicio, promo_validade_fim,
+                   COALESCE(promo_cor, '#ff3366') AS promo_cor,
+                   COALESCE(promo_emoji, '🔥') AS promo_emoji,
+                   promo_observacoes
+            FROM unidades
+            WHERE id = $1 AND empresa_id = $2
+            """,
+            unidade_id, empresa_id
+        )
+    except Exception as _e:
+        logger.warning(f"[GET /unidades/{{id}}] Fallback (migration promo pendente?): {_e}")
+        row = await _database.db_pool.fetchrow(
+            """
+            SELECT id, nome, nome_abreviado, cidade, bairro, estado,
+                   endereco, numero, telefone_principal, whatsapp,
+                   site, instagram, link_matricula, slug, ativa,
+                   horarios, modalidades, planos, formas_pagamento,
+                   convenios, infraestrutura, servicos, palavras_chave, foto_grade, link_tour_virtual,
+                   diaria_disponivel, diaria_valor, diaria_observacao
+            FROM unidades
+            WHERE id = $1 AND empresa_id = $2
+            """,
+            unidade_id, empresa_id
+        )
     if not row:
         raise HTTPException(status_code=404, detail="Unidade não encontrada")
     result = dict(row)
@@ -1011,6 +1084,18 @@ async def atualizar_unidade(
     if not existing:
         raise HTTPException(status_code=404, detail="Unidade não encontrada ou acesso negado")
 
+    # [PROMO-01] Helpers pra normalizar promo
+    from datetime import date as _date
+    def _parse_date(s):
+        if s is None or s == "":
+            return None
+        if isinstance(s, _date):
+            return s
+        try:
+            return _date.fromisoformat(str(s)[:10])
+        except (ValueError, TypeError):
+            return None
+
     try:
         await _database.db_pool.execute(
             """
@@ -1042,6 +1127,32 @@ async def atualizar_unidade(
             bool(body.diaria_disponivel), body.diaria_valor, body.diaria_observacao,
             unidade_id, empresa_id
         )
+
+        # [PROMO-01] Salva campos de promocao em UPDATE separado (resiliente se migration pendente)
+        try:
+            await _database.db_pool.execute(
+                """
+                UPDATE unidades SET
+                    promo_ativa=$1, promo_nome=$2, promo_chamada=$3, promo_desconto=$4,
+                    promo_desconto_tipo=$5, promo_brinde=$6,
+                    promo_validade_inicio=$7, promo_validade_fim=$8,
+                    promo_cor=$9, promo_emoji=$10, promo_observacoes=$11
+                WHERE id=$12 AND empresa_id=$13
+                """,
+                bool(body.promo_ativa) if body.promo_ativa is not None else False,
+                body.promo_nome, body.promo_chamada,
+                body.promo_desconto,
+                body.promo_desconto_tipo or "percentual",
+                body.promo_brinde,
+                _parse_date(body.promo_validade_inicio),
+                _parse_date(body.promo_validade_fim),
+                body.promo_cor or "#ff3366",
+                body.promo_emoji or "🔥",
+                body.promo_observacoes,
+                unidade_id, empresa_id
+            )
+        except Exception as _pe:
+            logger.warning(f"[PROMO-01] save unidade {unidade_id} falhou (migration pendente?): {_pe}")
         # [CACHE-FIX] invalidate_unidades: lista + por slug + FAQ vinculada (que pode
         # virar stale se nome/slug muda — antes faltava)
         from src.services.cache_invalidation import invalidate_unidades
@@ -1318,7 +1429,7 @@ async def get_metrics_ai_performance(
         where_c = " AND ".join(conditions_c) if conditions_c else "TRUE"
         where_ia = " AND ".join(conditions_ia) if conditions_ia else "TRUE"
 
-        # 1. Métricas de uso da IA
+        # 1. Metricas de uso da IA
         try:
             row_ia = await _database.db_pool.fetchrow(f"""
                 SELECT
@@ -1332,9 +1443,9 @@ async def get_metrics_ai_performance(
                 WHERE {where_ia}
             """, *params)
         except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-            row_ia = None  # tabela/coluna uso_ia ainda não existe (migration pendente)
+            row_ia = None  # tabela/coluna uso_ia ainda nao existe (migration pendente)
 
-        # 2. Métricas de conversas
+        # 2. Metricas de conversas
         row_conv = await _database.db_pool.fetchrow(f"""
             SELECT
                 COUNT(DISTINCT c.id) AS total_conversas,
@@ -1347,7 +1458,7 @@ async def get_metrics_ai_performance(
             WHERE {where_c}
         """, *params)
 
-        # 3. Eventos de escalação e sentimento
+        # 3. Eventos de escalacao e sentimento
         ef_conditions = [c.replace("c.", "c2.") for c in conditions_c]
         ef_where = " AND ".join(ef_conditions) if ef_conditions else "TRUE"
         row_esc = await _database.db_pool.fetchrow(f"""
@@ -1359,7 +1470,7 @@ async def get_metrics_ai_performance(
             WHERE {ef_where}
         """, *params)
 
-        # 4. Distribuição por hora (para gráfico de atividade)
+        # 4. Distribuicao por hora (para grafico de atividade)
         try:
             rows_hora = await _database.db_pool.fetch(f"""
                 SELECT
@@ -1371,7 +1482,7 @@ async def get_metrics_ai_performance(
                 ORDER BY hora
             """, *params)
         except asyncpg.UndefinedTableError:
-            rows_hora = []  # tabela uso_ia ainda não existe (migration pendente)
+            rows_hora = []  # tabela uso_ia ainda nao existe (migration pendente)
 
         ia = dict(row_ia) if row_ia else {}
         conv = dict(row_conv) if row_conv else {}
@@ -1380,8 +1491,8 @@ async def get_metrics_ai_performance(
         total_chamadas = ia.get("total_chamadas", 0) or 1
         total_conversas = conv.get("total_conversas", 0) or 1
 
-        # Latência: usa média real da uso_ia (latencia_ms por chamada LLM).
-        # Fallback para tempo_resp_medio da conversas se uso_ia ainda não tiver dados.
+        # Latencia: usa media real da uso_ia (latencia_ms por chamada LLM).
+        # Fallback para tempo_resp_medio da conversas se uso_ia ainda nao tiver dados.
         _lat_ia = float(ia.get("latencia_media_ms", 0) or 0)
         if _lat_ia == 0:
             tempo_resp = float(conv.get("tempo_resp_medio", 0))
@@ -1412,5 +1523,5 @@ async def get_metrics_ai_performance(
             ],
         }
     except Exception as e:
-        logger.error(f"Erro ao buscar métricas AI performance: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao buscar métricas de performance da IA")
+        logger.error(f"Erro ao buscar metricas AI performance: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao buscar metricas de performance da IA")

@@ -39,7 +39,7 @@ interface Unit {
   link_tour_virtual?: string;
 }
 
-type TabType = "identity" | "location" | "contact" | "operation" | "extra";
+type TabType = "identity" | "location" | "contact" | "operation" | "extra" | "promo";
 
 // ─── Componentes de UI definidos FORA do componente principal ──────────────
 // IMPORTANTE: definir dentro do componente causa remontagem a cada render,
@@ -74,13 +74,25 @@ const TabBtn = ({
   </button>
 );
 
-const emptyForm = {
+const emptyForm: any = {
   nome: "", nome_abreviado: "", cidade: "", bairro: "", estado: "",
   endereco: "", numero: "", telefone_principal: "", whatsapp: "",
   site: "", instagram: "", link_matricula: "", horarios: "", modalidades: "",
   planos: {}, formas_pagamento: {}, convenios: {}, infraestrutura: {}, servicos: {}, palavras_chave: [],
   foto_grade: "",
   link_tour_virtual: "",
+  // [PROMO-01] Campos de promocao
+  promo_ativa: false,
+  promo_nome: "",
+  promo_chamada: "",
+  promo_desconto: null,
+  promo_desconto_tipo: "percentual",
+  promo_brinde: "",
+  promo_validade_inicio: "",
+  promo_validade_fim: "",
+  promo_cor: "#ff3366",
+  promo_emoji: "🔥",
+  promo_observacoes: "",
 };
 
 // [BLINDAGEM] Coerce qualquer valor pra um JSON object/array seguro
@@ -167,6 +179,18 @@ export default function UnitsPage() {
           palavras_chave: safeParseJson(data.palavras_chave, []),
           foto_grade: data.foto_grade || "",
           link_tour_virtual: data.link_tour_virtual || "",
+          // [PROMO-01] Carrega campos de promocao
+          promo_ativa: !!data.promo_ativa,
+          promo_nome: data.promo_nome || "",
+          promo_chamada: data.promo_chamada || "",
+          promo_desconto: data.promo_desconto ?? null,
+          promo_desconto_tipo: data.promo_desconto_tipo || "percentual",
+          promo_brinde: data.promo_brinde || "",
+          promo_validade_inicio: (data.promo_validade_inicio || "").toString().slice(0, 10),
+          promo_validade_fim: (data.promo_validade_fim || "").toString().slice(0, 10),
+          promo_cor: data.promo_cor || "#ff3366",
+          promo_emoji: data.promo_emoji || "🔥",
+          promo_observacoes: data.promo_observacoes || "",
         });
       } catch (e) {
         console.error("Erro ao carregar dados da unidade:", e);
@@ -533,6 +557,7 @@ export default function UnitsPage() {
                 <TabBtn id="contact" label="Digital" icon={Globe} activeTab={activeTab} setActiveTab={setActiveTab} />
                 <TabBtn id="operation" label="Operação" icon={Clock} activeTab={activeTab} setActiveTab={setActiveTab} />
                 <TabBtn id="extra" label="Dados Ricos" icon={ListChecks} activeTab={activeTab} setActiveTab={setActiveTab} />
+                <TabBtn id="promo" label="🔥 Promoção" icon={Sparkles} activeTab={activeTab} setActiveTab={setActiveTab} />
               </div>
 
               {/* Modal Body */}
@@ -861,6 +886,180 @@ export default function UnitsPage() {
                             </div>
                           </div>
                         </Field>
+                      </div>
+                    )}
+
+                    {/* TAB: PROMO 🔥 */}
+                    {activeTab === "promo" && (
+                      <div className="space-y-8">
+                        {/* Header explicativo */}
+                        <div className="flex items-start gap-4 p-5 rounded-2xl bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/20">
+                          <div className="text-3xl">{formData.promo_emoji || "🔥"}</div>
+                          <div className="flex-1">
+                              Quando ativa, a IA usa essa promo estrategicamente nas conversas — apresenta o desconto, cria urgência pela validade, destaca o brinde como diferencial.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setFormData((p: any) => ({ ...p, promo_ativa: !p.promo_ativa }))}
+                            className={`relative w-14 h-7 rounded-full transition-all flex-shrink-0 ${formData.promo_ativa ? "bg-emerald-500" : "bg-slate-700"}`}
+                          >
+                            <div className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-all ${formData.promo_ativa ? "left-8" : "left-1"}`} />
+                          </button>
+                        </div>
+
+                        {formData.promo_ativa && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Nome da promo */}
+                            <Field label="Nome da Promo" icon={Sparkles}>
+                              <input
+                                type="text"
+                                placeholder="Ex: Black April 2026"
+                                value={formData.promo_nome || ""}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_nome: e.target.value }))}
+                                className={inputClass}
+                                maxLength={100}
+                              />
+                            </Field>
+
+                            {/* Emoji */}
+                            <Field label="Emoji do Badge" icon={Sparkles}>
+                              <div className="flex gap-2 items-center">
+                                <input
+                                  type="text"
+                                  placeholder="🔥"
+                                  value={formData.promo_emoji || ""}
+                                  onChange={e => setFormData((p: any) => ({ ...p, promo_emoji: e.target.value }))}
+                                  className={`${inputClass} text-center text-2xl w-20`}
+                                  maxLength={4}
+                                />
+                                <div className="flex gap-1 flex-wrap">
+                                  {["🔥","💥","⚡","🎯","💎","🎁","⭐","🚀"].map(em => (
+                                    <button key={em} type="button"
+                                      onClick={() => setFormData((p: any) => ({ ...p, promo_emoji: em }))}
+                                      className="w-9 h-9 rounded-lg bg-slate-800 hover:bg-slate-700 text-xl flex items-center justify-center transition-all"
+                                    >{em}</button>
+                                  ))}
+                                </div>
+                              </div>
+                            </Field>
+
+                            {/* Chamada */}
+                            <Field label="Chamada Principal (frase de impacto)" icon={Sparkles}>
+                              <input
+                                type="text"
+                                placeholder="Ex: 3 meses pelo preço de 1!"
+                                value={formData.promo_chamada || ""}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_chamada: e.target.value }))}
+                                className={inputClass}
+                              />
+                            </Field>
+
+                            {/* Cor do Badge */}
+                            <Field label="Cor do Badge" icon={Sparkles}>
+                              <div className="flex gap-2 items-center">
+                                <input
+                                  type="color"
+                                  value={formData.promo_cor || "#ff3366"}
+                                  onChange={e => setFormData((p: any) => ({ ...p, promo_cor: e.target.value }))}
+                                  className="w-14 h-10 rounded-lg cursor-pointer border-0"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="#ff3366"
+                                  value={formData.promo_cor || ""}
+                                  onChange={e => setFormData((p: any) => ({ ...p, promo_cor: e.target.value }))}
+                                  className={`${inputClass} font-mono text-xs`}
+                                />
+                              </div>
+                            </Field>
+
+                            {/* Desconto */}
+                            <Field label="Valor do Desconto" icon={CreditCard}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                placeholder="60"
+                                value={formData.promo_desconto ?? ""}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_desconto: e.target.value ? parseFloat(e.target.value) : null }))}
+                                className={inputClass}
+                              />
+                            </Field>
+
+                            {/* Tipo de desconto */}
+                            <Field label="Tipo do Desconto" icon={CreditCard}>
+                              <select
+                                value={formData.promo_desconto_tipo || "percentual"}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_desconto_tipo: e.target.value }))}
+                                className={inputClass}
+                              >
+                                <option value="percentual">% (percentual)</option>
+                                <option value="reais">R$ (reais)</option>
+                              </select>
+                            </Field>
+
+                            {/* Brinde */}
+                            <div className="md:col-span-2">
+                              <Field label="Brinde / Bônus" icon={Sparkles}>
+                                <input
+                                  type="text"
+                                  placeholder="Ex: Camiseta + 1 avaliação física grátis"
+                                  value={formData.promo_brinde || ""}
+                                  onChange={e => setFormData((p: any) => ({ ...p, promo_brinde: e.target.value }))}
+                                  className={inputClass}
+                                />
+                              </Field>
+                            </div>
+
+                            {/* Validade início */}
+                            <Field label="Válido a partir de" icon={Clock}>
+                              <input
+                                type="date"
+                                value={formData.promo_validade_inicio || ""}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_validade_inicio: e.target.value }))}
+                                className={inputClass}
+                              />
+                            </Field>
+
+                            {/* Validade fim */}
+                            <Field label="Válido até" icon={Clock}>
+                              <input
+                                type="date"
+                                value={formData.promo_validade_fim || ""}
+                                onChange={e => setFormData((p: any) => ({ ...p, promo_validade_fim: e.target.value }))}
+                                className={inputClass}
+                              />
+                            </Field>
+
+                            {/* Observações */}
+                            <div className="md:col-span-2">
+                              <Field label="Observações Extras (a IA usa pra argumentar)" icon={Info}>
+                                <textarea
+                                  rows={3}
+                                  placeholder="Ex: válido pra novos alunos, sem fidelidade no primeiro mês, matrícula até dia 30..."
+                                  value={formData.promo_observacoes || ""}
+                                  onChange={e => setFormData((p: any) => ({ ...p, promo_observacoes: e.target.value }))}
+                                  className={textareaClass}
+                                />
+                              </Field>
+                            </div>
+
+                            {/* Preview */}
+                            <div className="md:col-span-2 mt-4">
+                              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3">Preview do Badge</label>
+                              <div
+                                className="inline-flex items-center gap-3 px-5 py-3 rounded-2xl text-white font-bold shadow-lg"
+                                style={{ backgroundColor: formData.promo_cor || "#ff3366" }}
+                              >
+                                <span className="text-2xl">{formData.promo_emoji || "🔥"}</span>
+                                <div>
+                                  <div className="text-sm">{formData.promo_nome || "Nome da Promo"}</div>
+                                  <div className="text-xs opacity-90">{formData.promo_chamada || "Chamada principal aqui"}</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </form>
