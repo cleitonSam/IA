@@ -896,6 +896,8 @@ export default function UnitsPage() {
                         <div className="flex items-start gap-4 p-5 rounded-2xl bg-gradient-to-r from-pink-500/10 to-orange-500/10 border border-pink-500/20">
                           <div className="text-3xl">{formData.promo_emoji || "🔥"}</div>
                           <div className="flex-1">
+                            <h3 className="text-base font-bold text-white">Promoção da Unidade</h3>
+                            <p className="text-xs text-slate-400 mt-1">
                               Quando ativa, a IA usa essa promo estrategicamente nas conversas — apresenta o desconto, cria urgência pela validade, destaca o brinde como diferencial.
                             </p>
                           </div>
