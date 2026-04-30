@@ -417,6 +417,19 @@ export default function PersonalityPage() {
       vouchers_estrategia: p.vouchers_estrategia || "",
       // [CENARIOS-01]
       cenarios: Array.isArray(p.cenarios) ? p.cenarios : [],
+      // [AGEND-LOAD-FIX] Hidrata campos de agendamento (faltavam — UI vinha sempre zerada)
+      agendamento_experimental_ativo: !!p.agendamento_experimental_ativo,
+      agendamento_provider: p.agendamento_provider || "evo",
+      agendamento_dias_a_frente: p.agendamento_dias_a_frente ?? 5,
+      agendamento_id_branch: p.agendamento_id_branch ?? null,
+      agendamento_id_activities: Array.isArray(p.agendamento_id_activities)
+        ? p.agendamento_id_activities
+        : (typeof p.agendamento_id_activities === "string"
+            ? (() => { try { const x = JSON.parse(p.agendamento_id_activities); return Array.isArray(x) ? x : []; } catch { return []; } })()
+            : []),
+      agendamento_id_service: p.agendamento_id_service ?? null,
+      agendamento_texto_oferta: p.agendamento_texto_oferta || "",
+      agendamento_coletar_email: !!p.agendamento_coletar_email,
     });
   };
 
