@@ -209,6 +209,11 @@ async def flush_empresa(empresa_id: int) -> int:
     n += await _delete_by_pattern(f"lead_score:{empresa_id}:*")
     n += await _delete_by_pattern(f"{empresa_id}:lead_score:*")
 
+    # Cache de respostas IA (padrões reais usados pelo bot_core)
+    n += await _delete_by_pattern(f"cache:intent:{empresa_id}:*")
+    n += await _delete_by_pattern(f"cache:ia:{empresa_id}:*")
+    n += await _delete_by_pattern(f"cache:sem:{empresa_id}:*")
+
     logger.warning(f"[CACHE-01] FLUSH TOTAL empresa={empresa_id}: {n} keys apagadas")
     return n
 
@@ -261,7 +266,4 @@ async def reset_all_flow_states(empresa_id: int) -> int:
     # Cooldowns / contadores (pra nao ficarem com valores antigos)
     n += await _delete_by_pattern(f"fluxo_ended:{empresa_id}:*")
     n += await _delete_by_pattern(f"fluxo_restarts:{empresa_id}:*")
-    n += await _delete_by_pattern(f"fluxo_escalation_sent:{empresa_id}:*")
-    n += await _delete_by_pattern(f"fluxo_loop:{empresa_id}:*")
-    logger.info(f"[CACHE-01] flow states empresa={empresa_id} resetados ({n} keys) — conversas vao reiniciar do start")
-    return n
+    n += await _
