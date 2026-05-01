@@ -47,7 +47,7 @@ async def chatwoot_webhook(
     event = payload.get("event")
     id_conv = payload.get("conversation", {}).get("id") or payload.get("id")
     account_id = payload.get("account", {}).get("id")
-    
+
     # Extrai flags importantes do Chatwoot
     is_private = payload.get("private") is True or (payload.get("message") or {}).get("private") is True
 
@@ -126,7 +126,7 @@ async def chatwoot_webhook(
     # Detecta canal de origem (Instagram, WhatsApp, Email, etc.)
     channel_type = payload.get("conversation", {}).get("channel", "") or ""
     is_instagram_channel = "instagram" in channel_type.lower()
-    
+
     # Identificação robusta de mensagens da IA (Sync ou Direta)
     msg_obj = payload.get("message") or {}
     msg_attrs = msg_obj.get("content_attributes") or {}
@@ -170,14 +170,14 @@ async def chatwoot_webhook(
 
     # Extração multiescamada do telefone (Chatwoot pode enviar em locais diferentes)
     contato_fone = (
-        contato.get("phone_number") or 
+        contato.get("phone_number") or
         payload.get("conversation", {}).get("contact", {}).get("phone_number") or
         payload.get("meta", {}).get("sender", {}).get("phone_number")
     )
-    
+
     if contato_fone:
         logger.info(f"📱 Telefone identificado no webhook: {contato_fone} (conv={id_conv})")
-    
+
     # GARANTIA DE PERSISTÊNCIA: Inicia conversa no BD já com o que temos (fone, nome raw, etc)
     # Isso evita que o fone se perca em retornos precoces (esperando nome ou escolhendo unidade)
     _nome_temp = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else "Cliente"
@@ -235,7 +235,7 @@ async def chatwoot_webhook(
         if not await set_tenant_cache(empresa_id, f"msg_incoming_processada:{id_conv}:{mensagem_id}", "1", 120, nx=True):
             logger.info(f"⏭️ Webhook duplicado ignorado conv={id_conv} msg={mensagem_id}")
             return {"status": "duplicado"}
-            
+
     labels = payload.get("conversation", {}).get("labels", [])
     slug_label = next((str(l).lower().strip() for l in labels if l), None)
     slug_redis = await get_tenant_cache(empresa_id, f"unidade_escolhida:{id_conv}")
@@ -403,7 +403,7 @@ async def chatwoot_webhook(
 
     contato = payload.get("sender", {})
     _nome_para_bd = nome_contato_limpo if nome_eh_valido(nome_contato_limpo) else (await get_tenant_cache(empresa_id, f"nome_cliente:{id_conv}")) or "Cliente"
-    
+
     lock_key = f"agendar_lock:{id_conv}"
     if await redis_client.set(f"{empresa_id}:{lock_key}", "1", nx=True, ex=5):
         try:
@@ -506,10 +506,50 @@ async def chatwoot_webhook(
             "slug": str(slug),
             "nome_cliente": str(_nome_para_bd),
             "empresa_id": str(empresa_id),
-            "contato_fone": str(contato_fone if contato_fone else "")
+            "contato_fone": str(contato_fone if contato_fone else ""),
+            "source": "chatwoot",  # explícito: Meta Cloud API e UazAPI Chatwoot usam este valor
+            "channel_type": str(channel_type),  # para debug e futuros filtros por canal
         }
         await redis_client.xadd("ia:webhook:stream", job_data)
         return {"status": "enfileirado"}
     except Exception as e:
         logger.error(f"❌ Erro ao enfileirar job: {e}")
-        # Fallback para execução direta em caso de falh
+        # Fallback para execução direta em caso de falha catastrófica do stream
+        background_tasks.add_task(
+            processar_ia_e_responder,
+            account_id, id_conv, contato.get("id"), slug,
+            _nome_para_bd, str(uuid.uuid4()), empresa_id, integracao
+        )
+        return {"status": "processando_direto_fallback"}
+
+@router.get("/desbloquear/{empresa_id}/{conversation_id}")
+async def desbloquear_ia(empresa_id: int, conversation_id: int):
+    val = await delete_tenant_cache(empresa_id, f"pause_ia:{conversation_id}")
+    return {"status": "sucesso", "mensagem": f"✅ Operação realizada para {conversation_id} (emp={empresa_id})!"}
+
+
+@router.get("/desbloquear-todas/{empresa_id}")
+async def desbloquear_todas_conversas(empresa_id: int):
+    """
+    Desbloqueia TODAS as conversas pausadas de uma empresa.
+    Útil após trocar de UazAPI para Meta Cloud API (ou vice-versa),
+    quando conversas ficam com pause_ia preso no Redis.
+    """
+    pattern = f"{empresa_id}:pause_ia:*"
+    deletadas = 0
+    try:
+        async for key in redis_client.scan_iter(match=pattern, count=100):
+            await redis_client.delete(key)
+            deletadas += 1
+        # Também limpa a pausa global do canal Chatwoot
+        await redis_client.delete(f"{empresa_id}:ia:chatwoot:paused")
+        logger.info(f"🔓 Desbloqueio em massa: empresa={empresa_id} | {deletadas} conversas desbloqueadas")
+        return {
+            "status": "sucesso",
+            "empresa_id": empresa_id,
+            "conversas_desbloqueadas": deletadas,
+            "mensagem": f"✅ {deletadas} conversa(s) desbloqueadas. IA reativada para toda a empresa."
+        }
+    except Exception as e:
+        logger.error(f"Erro ao desbloquear conversas da empresa {empresa_id}: {e}")
+        return {"status": "erro", "detalhe": str(e)}
