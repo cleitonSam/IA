@@ -133,15 +133,27 @@ async def chatwoot_webhook(
     msg_id = payload.get("id") or msg_obj.get("id")
 
     # Verifica se o ID da mensagem está no Redis (marcado pela enviar_mensagem_chatwoot)
+    # Suporta dois formatos de chave: com e sem empresa_id (retrocompat)
     is_ai_in_redis = False
     if msg_id:
-        is_ai_in_redis = await redis_client.exists(f"ai_msg_id:{msg_id}")
+        is_ai_in_redis = bool(
+            await redis_client.exists(f"ai_msg_id:{msg_id}")
+            or (empresa_id and await redis_client.exists(f"ai_msg_id:{empresa_id}:{msg_id}"))
+        )
+
+    # sender_type "agent_bot" = automacao/bot Chatwoot — nunca pausa IA
+    _sender_type_raw = payload.get("sender", {}).get("type", "").lower()
+    _is_agent_bot = _sender_type_raw in ("agent_bot", "bot")
 
     is_ai_message = (
-        content_attrs.get("origin") == "ai" 
+        content_attrs.get("origin") == "ai"
         or msg_attrs.get("origin") == "ai"
         or is_ai_in_redis
         or is_private
+        or _is_agent_bot
+        # Meta Cloud API: ignore_webhook sinaliza que e mensagem do proprio bot
+        or content_attrs.get("ignore_webhook") is True
+        or msg_attrs.get("ignore_webhook") is True
     )
 
     # Recupera o slug (unidade) do Redis se já estiver em atendimento
@@ -500,15 +512,4 @@ async def chatwoot_webhook(
         return {"status": "enfileirado"}
     except Exception as e:
         logger.error(f"❌ Erro ao enfileirar job: {e}")
-        # Fallback para execução direta em caso de falha catastrófica do stream
-        background_tasks.add_task(
-            processar_ia_e_responder,
-            account_id, id_conv, contato.get("id"), slug,
-            _nome_para_bd, str(uuid.uuid4()), empresa_id, integracao
-        )
-        return {"status": "processando_direto_fallback"}
-
-@router.get("/desbloquear/{empresa_id}/{conversation_id}")
-async def desbloquear_ia(empresa_id: int, conversation_id: int):
-    val = await delete_tenant_cache(empresa_id, f"pause_ia:{conversation_id}")
-    return {"status": "sucesso", "mensagem": f"✅ Operação realizada para {conversation_id} (emp={empresa_id})!"}
+        # Fallback para execução direta em caso de falh
